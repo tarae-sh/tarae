@@ -194,7 +194,7 @@ fn at_most(r: impl std::io::Read, max: u64) -> std::io::Result<Option<Vec<u8>>> 
 
 /// The install's card: where it was found, what it registers, what it may do in the load card's words, what it
 /// replaces, and what the yes binds — never its hash (#458: nobody compares hex).
-fn install_card(i: &Install) -> Offer {
+pub(crate) fn install_card(i: &Install) -> Offer {
     let title = match i.call {
         Some(_) => format!("Claude asks to install plugin {}", i.name),
         None => format!("Install plugin {}", i.name),
@@ -236,6 +236,10 @@ fn install_card(i: &Install) -> Offer {
     .deciding(decided);
     // (its first line keeps its end: the file's name)
     o.ends = vec![0];
+    // (Claude's plugin tool asked: its act in words — R1's list a)
+    if i.call.is_some() {
+        o.asked = crate::cards::Asked::of_act(&o.what);
+    }
     o
 }
 

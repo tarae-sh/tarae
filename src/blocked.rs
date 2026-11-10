@@ -36,6 +36,9 @@ pub struct BlockedRun {
     pub key: Option<RunKey>,
     /// Its policy's rule for the files named like keys (`Policy::key_rules`): what a refused one offers.
     pub keys: Option<crate::sandbox::KeyRules>,
+    /// What its card's grant of a place leaves of the files named like keys in it (`sandbox::grant_keys`, worked
+    /// out on the card's worker) — None: not a place's, or not worked out (its words say them open).
+    pub granting: Option<crate::allow::Keys>,
 }
 
 /// A run of the session's: its command's or its tests', and which of them (`generation`: each spawn a new one).
@@ -57,6 +60,7 @@ impl BlockedRun {
             report: None,
             key: None,
             keys: None,
+            granting: None,
         }
     }
 
@@ -426,13 +430,20 @@ impl Editor {
                     });
                     return Ok(());
                 }
-                let Grant::Read(place) = &grant else {
+                if !matches!(grant, Grant::Read(_) | Grant::Write(_)) {
                     self.push_offer(grant_card(grant, &why, &cmd, run, None, (then, closed)));
                     return Ok(());
-                };
-                let place = place.clone();
+                }
+                // A place: what its grant leaves of the files named like keys in it, by the rule its run will have
+                let (basis, llm, here) = (self.caps_basis(), self.config.llm.clone(), self.sandbox_here.clone());
+                let mut run = run;
                 self.events.jobs().spawn(move || {
-                    let said = crate::tokens::found_in(&place).said(&place);
+                    let said = match &grant {
+                        Grant::Read(place) => crate::tokens::found_in(place).said(place),
+                        _ => None,
+                    };
+                    let here = here.map_or_else(crate::sandbox::Here::now, |h| h());
+                    run.granting = crate::sandbox::grant_keys(&llm, &basis.build(), &grant, &here);
                     move |ed: &mut Editor| {
                         let then = then_said(ed, &run);
                         ed.push_offer(grant_card(grant, &why, &cmd, run, said, (then, closed)))
@@ -693,7 +704,10 @@ fn grant_offer(
             let line = masking_lines(n, m).0.join("\n");
             format!("Let Claude's commands {}\n\n{said} {lasts}\n{line}", grant.shown())
         }
-        _ => format!("Let Claude's commands {}{registry}\n\n{said} {lasts}", grant.shown()),
+        _ => format!(
+            "Let Claude's commands {}{registry}\n\n{said} {lasts}",
+            grant.shown_with(run.granting.unwrap_or_default())
+        ),
     };
     if let Some(from) = &run.from {
         question.push_str(&format!("\n\nWhat it refused was read {from}."));
@@ -773,7 +787,7 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
             let no = format!(
                 "The user said no to letting your commands {} — for the rest of this chat: don't ask for it \
                  again. If the command can't work without it, tell the user what it needs.",
-                grant.shown()
+                grant.shown_with(run.granting.unwrap_or_default())
             );
             // (a card tarae raised on the run's refusal: Claude hears how the run ended, then the no)
             return match run.report.take() {
@@ -785,8 +799,9 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
             // (C2: a host is the proxy's to let through — as the user's own choice below)
             Grant::Host(h, p) => crate::hosts::granted(ed, h, *p, scope),
             // (the masked card's `y`: its stamp the key that gave it)
-            Grant::Masked(..) => crate::allow::grant_by(ed, &grant, scope, 'y'),
-            _ => crate::allow::grant(ed, &grant, scope),
+            Grant::Masked(..) => crate::allow::grant_by(ed, &grant, scope, 'y', None),
+            // (told as the card said it: what the place's run leaves of the keys in it)
+            _ => crate::allow::grant_by(ed, &grant, scope, scope.key(), run.granting),
         }
         // (a yes on the terminals: asked again this turn, it takes no more of the turn's `also` cards — frictions29
         // 23, the user's interim decision 2026-10-19)
@@ -805,13 +820,13 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
         // (a host is the proxy's to let through — and the session's, not the conversation's)
         Grant::Host(h, p) => crate::hosts::granted(ed, h, *p, scope),
         // (the panel's masked `y`, as Claude's card's)
-        Grant::Masked(..) => crate::allow::grant_by(ed, &grant, scope, 'y'),
-        _ => crate::allow::grant(ed, &grant, scope),
+        Grant::Masked(..) => crate::allow::grant_by(ed, &grant, scope, 'y', None),
+        _ => crate::allow::grant_by(ed, &grant, scope, scope.key(), run.granting),
     }
     let head = format!(
         "The user ran `{}` again, letting it {}{}. How it ended:",
         run.label(),
-        grant.shown(),
+        grant.shown_with(run.granting.unwrap_or_default()),
         if scope == Scope::Once { " this once" } else { "" }
     );
     rerun_of(ed, &run, &head);
@@ -1428,5 +1443,46 @@ mod tests {
         let g = Grant::Socket(sock);
         assert!(!g.keepable() && g.warning().is_some_and(|w| w.contains("mounts any folder")));
         assert!(Grant::Socket("/tmp/x/app.sock".into()).warning().is_none());
+    }
+
+    /// R1's review, must 1: a yes on a place's card tells Claude, and toasts, what the card said of the files named
+    /// like keys there (`BlockedRun.granting`) — never the plain words, which would let Claude think a key readable.
+    #[test]
+    fn a_places_yes_is_told_and_toasted_in_the_cards_words() {
+        use crate::allow::Keys;
+        let scratch = crate::scratch::Scratch::new("grant-told");
+        let dir = std::fs::canonicalize(&scratch).unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        crate::chat::open(&mut ed);
+        let cases = [
+            (Grant::Read(dir.join("hidden")), Keys::Hidden, "but files named like keys"),
+            (
+                Grant::Write(dir.join("read-only")),
+                Keys::ReadOnly,
+                "files named like keys too, though never read",
+            ),
+            (Grant::Read(dir.join("open")), Keys::Open, ", files named like keys too"),
+        ];
+        for (n, (grant, keys, words)) in cases.into_iter().enumerate() {
+            let c = ed.workspace.claude.chat.as_mut().unwrap();
+            c.state = crate::chat::State::Thinking;
+            let call = crate::tools::Call::of(c.generation(), &format!("t{n}"), serde_json::json!(n));
+            let run = BlockedRun {
+                claude: Some(call),
+                granting: Some(keys),
+                ..BlockedRun::of(crate::tools::Job::Command("true".into(), dir.clone()))
+            };
+            let said = grant.shown_with(keys);
+            assert!(said.contains(words), "{said}");
+            ed.workspace.claude.checkpoints.tell.clear();
+            grant_answer(&mut ed, 0, grant, run, Some(Scope::ThisChat));
+            let told = ed.workspace.claude.checkpoints.tell.join("\n");
+            assert!(told.contains(&format!("The user let your commands {said} — ")), "{told}");
+            let toast = ed.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
+            assert!(toast.starts_with(&format!("Claude's commands may {said} ")), "{toast}");
+        }
     }
 }

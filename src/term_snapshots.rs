@@ -6849,6 +6849,8 @@ fn snapshot_sandbox_blocked() {
     dump(&mut s, "sandbox_blocked_list");
     s.frames_both("sandbox_blocked_list");
     s.keys("<ret>");
+    // (a place's card: what its grant leaves of the files named like keys worked out on a worker — R1 fix 6)
+    s.until("the card", |ed| !ed.offers.is_empty());
     s.check("sandbox_blocked_card");
     dump(&mut s, "sandbox_blocked_card");
     s.frames_both("sandbox_blocked_card");
@@ -6893,6 +6895,7 @@ fn snapshot_sandbox_blocked_with_step() {
         s.keys(" ms");
         s.until("the list", |ed| ed.picker.is_some());
         s.keys("<ret>");
+        s.until("the card", |ed| !ed.offers.is_empty());
         let titles: Vec<&str> = s.ed.offers.iter().map(|o| o.title.as_str()).collect();
         assert_eq!(titles, [crate::blocked::GRANT_TITLE], "the first row's card");
     }
@@ -8463,6 +8466,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         report: None,
         key: None,
         keys: None,
+        granting: Some(crate::allow::Keys::ReadOnly),
     };
     let grant = crate::allow::Grant::Write(p("npm-cache"));
     let reason = "npm keeps its cache there";
@@ -8507,6 +8511,56 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
             "╰─ C-q answer · y once · a chat · s session · v details · n no ─╯",
         ),
     ]
+}
+
+/// R1 step 3's shot question: a card a row taller (the write card with fix 6's words) moves nothing beside or under it
+/// — the chat's rows stay where they were, only the card's own differ — at 120×34 and 80×43. With
+/// `TARAE_FRAMES_DIR`, its frames before fix 6 (the words as they were) and after, both themes, for their screenshots
+/// (`r1-write-{before,after}-{w}`).
+#[test]
+fn a_taller_card_moves_nothing_beside_it() {
+    use crate::chat::{Msg, Role};
+    const SINCE: &str = " — files named like keys too, though never read";
+    crate::clock::hold();
+    for (w, h) in [(120u16, 34u16), (80, 43)] {
+        let shot = |before: bool| {
+            let mut s = Shot::new(w, h);
+            s.ed.offer_popups = true;
+            s.file("src/demo.rs", DEMO_RS);
+            let mut c = crate::chat::Chat::new();
+            c.msgs.push(Msg::new(Role::User, "run the tests", ""));
+            c.msgs.push(Msg::new(Role::Assistant, "npm keeps its cache outside the project. Read them.", ""));
+            s.ed.workspace.claude.chat = Some(c);
+            s.ed.workspace.set_at(crate::workspace::Here::Chat);
+            let mut o = chat112_cards().swap_remove(2).1;
+            assert!(o.question.contains(SINCE), "{}", o.question);
+            if before {
+                o.question = o.question.replace(SINCE, "");
+            }
+            s.ed.push_offer(o);
+            s
+        };
+        let (mut before, mut after) = (shot(true), shot(false));
+        let (b, a) = (shown_rows(&mut before), shown_rows(&mut after));
+        // (the card's rows: its title's to its bottom line's, in each — left of its frame, the same text)
+        let span = |r: &[String]| {
+            let top = r.iter().position(|l| l.contains("Open the sandbox a little"));
+            let top = top.unwrap_or_else(|| panic!("the card:\n{}", r.join("\n")));
+            let bottom = (top..r.len()).find(|&i| r[i].contains('╰')).expect("its bottom line");
+            (top, bottom)
+        };
+        let ((bt, bb), (at, ab)) = (span(&b), span(&a));
+        assert!(ab - at > bb - bt && ab == bb, "{w}: a row taller, its bottom line where it was");
+        for i in 0..a.len() {
+            let left = |l: &str| l.split(['│', '╭']).next().unwrap_or("").trim_end().to_string();
+            match i >= at.min(bt) && i <= ab {
+                false => assert_eq!(a[i], b[i], "{w}: row {i} moved"),
+                true => assert_eq!(left(&a[i]), left(&b[i]), "{w}: row {i} left of the card moved"),
+            }
+        }
+        before.frames_both(&format!("r1-write-before-{w}"));
+        after.frames_both(&format!("r1-write-after-{w}"));
+    }
 }
 
 /// The user's three cards of 2026-10-25, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there,

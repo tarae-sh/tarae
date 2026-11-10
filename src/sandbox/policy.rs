@@ -173,9 +173,37 @@ pub struct KeyRules {
     write: Vec<PathBuf>,
     files: Vec<PathBuf>,
     covered: Vec<PathBuf>,
+    /// Linux tier own: its run's child hides by mounts every file named like a key in the places outside the project
+    /// it reads (D-i) — what one made there would be (`in_grant`).
+    pub(super) hides: bool,
 }
 
+/// A name the files named like keys take (`secretnames`): what `KeyRules::in_grant` asks the rule of.
+pub const KEY_NAMED: &str = "id_ed25519";
+
 impl KeyRules {
+    /// What this rule — the run's with a grant of `place` (real) in it, `sandbox::grant_keys` — does to a file named
+    /// like a key inside it, as the grant's words say (`allow::Grant::shown_with`, R1 fix 6): closed and hidden by
+    /// Linux's mounts, which a run can't write either (`Policy::hidden_keys`); closed to reads only (macOS's profile
+    /// denies reading it, never writing); or open.
+    pub fn in_grant(&self, place: &Path) -> crate::allow::Keys {
+        use crate::allow::Keys;
+        let named = place.join(KEY_NAMED);
+        // (tier own's walk before each run hides every one in its key places: one there is one of them)
+        let covered: Vec<PathBuf> = self
+            .covered
+            .iter()
+            .cloned()
+            .chain((self.supervised && self.hides).then(|| named.clone()))
+            .collect();
+        let view = KeyView { covered: &covered, ..self.view() };
+        match view.rule(&named) {
+            None => Keys::Open,
+            Some(_) if self.supervised => Keys::Hidden,
+            Some(_) => Keys::ReadOnly,
+        }
+    }
+
     /// `Policy::key_rule`.
     pub fn rule(&self, real: &Path) -> Option<KeyRule> {
         self.view().rule(real)
@@ -1051,7 +1079,17 @@ impl Policy {
             write: self.write.clone(),
             files: self.files.clone(),
             covered: self.covered().to_vec(),
+            hides: self.hides(),
         }
+    }
+
+    /// Linux: whether its run's child hides the files named like keys outside the project by mounts (tier own, D-i).
+    fn hides(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(c)) = &self.confine {
+            return c.tier() == "own";
+        }
+        false
     }
 
     /// Linux: every file named like a key its run's mounts hid — the project's (7d) and those outside it (D-i) —

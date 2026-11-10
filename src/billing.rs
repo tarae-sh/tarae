@@ -85,6 +85,7 @@ pub enum Role {
     Reviewer,
     Ask,
     WebSearch,
+    AutoCards,
 }
 
 impl Role {
@@ -94,6 +95,7 @@ impl Role {
             Role::Reviewer => "the reviewer's claude",
             Role::Ask => "the ask's claude",
             Role::WebSearch => "the web search's claude",
+            Role::AutoCards => "the auto cards' claude",
         }
     }
 }

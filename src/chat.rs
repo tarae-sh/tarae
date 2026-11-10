@@ -452,6 +452,11 @@ pub struct Msg {
     /// With `from`: its parent's Claude asked to be woken as this turn ends (`wake` — `orchestra::wake`). Not kept: a
     /// parent's news and wakes are this tarae's.
     pub wake: bool,
+    /// Words the user typed: a message from the chat input or the ask line, sent at once or from its queue
+    /// (`submit_input`), and a steer's row (`steer_take`). The only words auto cards' reviewer reads as the user's
+    /// (`autocards::sent_words`); a row tarae composed (a rerun's report, a wake, a rebase's ask, a review's
+    /// template) never is one, nor a message of tarae's own put back in the queue (`Chat.queued_composed`).
+    pub typed: bool,
     /// Goes up with every change to what it shows (`changed`) — a word replaced, a row's verdict — so its rows
     /// are laid out again, even when the text's length stays.
     version: u64,
@@ -559,6 +564,7 @@ impl Msg {
             from: None,
             from_conversation: None,
             wake: false,
+            typed: false,
             version: 0,
             cache: RefCell::new(None),
         }
@@ -721,6 +727,10 @@ pub struct Chat {
     pub queued_quotes: Vec<crate::quote::Quote>,
     pub queued_screen: Option<Shot>,
     pub queued_pointed: Vec<String>,
+    /// `queued` holds a message tarae composed, put back to go again (a lost conversation's, `start_again`'s): it goes
+    /// as tarae's own, never `Msg.typed` — joined to one of yours, the whole is (the reviewer misses words, never
+    /// takes tarae's for yours). It doesn't steer.
+    pub queued_composed: bool,
     /// What steers the turn under way (the steer key, `chat_steer` — the flow plan's piece 5): the user's words for
     /// Claude's next tool answer (`steer_take`), a second joined to the first a blank line apart; the turn over before an
     /// answer came, they go as the queued message does, ahead of it (`Chat::steer_over`).
@@ -1111,6 +1121,7 @@ impl Chat {
     /// What was queued went (sent, or taken back to edit).
     pub fn queued_gone(&mut self) {
         (self.queued_n, self.queued_last) = (0, String::new());
+        self.queued_composed = false;
     }
 
     /// What waits for this turn's end, as its row and the state say it — (`2 messages queued` · `review notes
@@ -1235,6 +1246,7 @@ impl Chat {
             queued_quotes: Vec::new(),
             queued_screen: None,
             queued_pointed: Vec::new(),
+            queued_composed: false,
             steer: None,
             steer_laid: RefCell::new(None),
             cleared: None,
@@ -2439,9 +2451,13 @@ pub(crate) fn start_again(ed: &mut Editor, message: Option<String>, said: &str) 
     }
     let failed = message.filter(|_| !c.busy()).and_then(|q| {
         let at = c.msgs.iter().rposition(|m| m.role == Role::User && m.text == q)?;
-        Some(c.msgs.remove(at).text)
+        let m = c.msgs.remove(at);
+        Some((m.text, m.typed))
     });
-    let dropped = failed.is_some_and(|q| c.queue(q, true));
+    let dropped = failed.is_some_and(|(q, typed)| {
+        c.queued_composed |= !typed;
+        c.queue(q, true)
+    });
     c.note(said);
     if dropped {
         ed.set_warning(COMPACT_DROPPED);
@@ -3113,6 +3129,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                     }
                     c.queued_pointed = pointed;
                     c.key_pass.extend(m.key_pass);
+                    c.queued_composed |= !m.typed;
                     dropped = c.queue(m.text, true);
                 }
                 let note = match (over, lost) {
@@ -3468,7 +3485,8 @@ pub(crate) fn send_queued(ed: &mut Editor) {
         std::mem::replace(&mut c.pointed, std::mem::take(&mut c.queued_pointed)),
         std::mem::take(&mut c.with),
     );
-    let sent = submit_input(ed, &q);
+    let typed = !c.queued_composed;
+    let sent = submit_input(ed, &q, typed);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     match sent {
         true => c.queued_gone(),
@@ -3561,6 +3579,10 @@ pub fn steer(ed: &mut Editor) {
     if slash_named(&text).is_some() || is_compact(&text) {
         return ed.set_status("a slash name doesn't steer — it goes at the turn's end");
     }
+    if what == Steerable::Queued && c.queued_composed {
+        return ed
+            .set_status("the queued message is tarae's own, going again — it goes whole at the turn's end");
+    }
     if what == Steerable::Queued
         && (!c.queued_quotes.is_empty() || c.queued_screen.is_some() || !c.queued_pointed.is_empty())
     {
@@ -3593,7 +3615,9 @@ pub fn steer(ed: &mut Editor) {
 pub(crate) fn steer_take(ed: &mut Editor, generation: u64) -> Option<String> {
     let c = ed.workspace.claude.chat.as_mut().filter(|c| c.generation == generation)?;
     let text = c.steer.take()?;
-    c.msgs.push(Msg::new(Role::Note, format!("{STEERED}{text}"), ""));
+    let mut row = Msg::new(Role::Note, format!("{STEERED}{text}"), "");
+    row.typed = true;
+    c.msgs.push(row);
     Some(format!("The user, while you work: {text}"))
 }
 
@@ -3724,7 +3748,7 @@ fn send_from(ed: &mut Editor, slash: bool) {
         return ed
             .set_status(format!("not sent yet — answer the card about what you pointed at first ({key})"));
     }
-    if !question.is_empty() && submit_input(ed, &question) {
+    if !question.is_empty() && submit_input(ed, &question, true) {
         let c = ed.workspace.claude.chat.as_mut().expect("just sent");
         c.input.clear();
     }
@@ -3735,7 +3759,7 @@ fn send_from(ed: &mut Editor, slash: bool) {
 /// input's: what was pointed at stays for the input's own message (`submit_input`), and a `y` given for that
 /// one isn't this one's.
 pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Option<String>) -> bool {
-    submit_as(ed, question, about, chip, false, None)
+    submit_as(ed, question, about, chip, false, false, None)
 }
 
 /// A message from the session `from`'s Claude — this one's parent (`orchestra.rs`) — as the next turn: in
@@ -3756,7 +3780,7 @@ pub fn submit_from_with(
     chip: String,
 ) -> bool {
     let (about, chip) = ((!about.is_empty()).then_some(about), (!chip.is_empty()).then_some(chip));
-    if !submit_as(ed, text, about, chip, false, Some(from)) {
+    if !submit_as(ed, text, about, chip, false, false, Some(from)) {
         return false;
     }
     // (the message just pushed: which of the parent's conversations it came from, and whether it wakes it)
@@ -3851,9 +3875,9 @@ pub fn pointed_said(ed: &Editor, id: &str, pass: &[std::path::PathBuf]) -> Strin
 }
 
 /// The chat input's own message: with what the user pointed at (its chips), and the files named like keys a
-/// `y` let go with it (`reads::input_pass`).
-fn submit_input(ed: &mut Editor, question: &str) -> bool {
-    let sent = submit_as(ed, question, None, None, true, None);
+/// `y` let go with it (`reads::input_pass`) — `typed`: the user's (`Msg.typed`), not a message of tarae's put back.
+fn submit_input(ed: &mut Editor, question: &str, typed: bool) -> bool {
+    let sent = submit_as(ed, question, None, None, true, typed, None);
     // (files tarae didn't see made — the terminal's, another program's: the chat's names found again, `places.rs` —
     // a message sent at once or after waiting its turn alike)
     if sent {
@@ -3868,6 +3892,7 @@ fn submit_as(
     about: Option<String>,
     chip: Option<String>,
     input: bool,
+    typed: bool,
     from: Option<&str>,
 ) -> bool {
     if ed.workspace.claude.chat.as_ref().is_none_or(Chat::busy) {
@@ -4005,6 +4030,7 @@ fn submit_as(
         c.said_at = Some(crate::chats::now());
     }
     let mut msg = Msg::new(Role::User, question, String::new());
+    msg.typed = typed;
     if shot.is_some() || !quotes.is_empty() {
         // A copy of what went, to open from its row (written on a worker): the screen's text, the quotes' blocks
         msg.linked = chip.len() + " · ".len();

@@ -1105,6 +1105,30 @@ Not kept:
   the reach is sideways, kept by the same gates (every act of each still asks), said on the start card ("What their
   Claudes read, their reports carry to main's Claude"), not closed.
 
+### 2.y Auto cards (`llm.auto-cards`, off by default)
+
+- **A new decider.** With `llm.auto-cards = "shadow"` a second claude (Haiku, `autocards.rs`) reads each of Claude's
+  cards and says whether your own words already cover it. In the shadow week its verdict answers nothing: it's kept
+  beside your answer to be measured. Only your own config turns it on (`trust::YOURS_ONLY`, `RISKY`).
+- **Its input is reasoning-blind.** tarae's own record of the words you typed (`Msg.typed`, marked where a message is
+  sent: the chat input, the ask line, their queue and the steer) and the card's structured fields
+  (`cards::Input::of`): never a message tarae composes (a rerun's report — a command's output —, a wake, a rebase's
+  ask, a review's template), a tool's output, Claude's prose, `also`'s reason (written on the card's question), a
+  stream's `user` event, or another session's Claude's words. Every sender is in one list or the other
+  (`every_message_sent_is_typed_or_composed`). No secret's value
+  is on a card, and your words go through `tokens::redacted`.
+- **Each field is fenced** under a nonce no field holds (`cardreview::nonce`); anything inside that claims to be tarae,
+  Anthropic or you is itself a reason to ask. A docker command's pinned code is a field tarae makes from the pack's
+  entry, never the command's words.
+- **A never list** in `cardreview::AUTO`: kinds no verdict may ever answer, whatever it says; and a verdict can only
+  ever be "this once" (`Verdict::letter`: `y`, never `a`, `s` or `A`).
+- **Hidden until you answer.** The verdict and its cost stay in memory until the card is answered; they're never in
+  `tarae.log` (Claude's `read` may ask for it) nor the UI state, not even after; the record they go to
+  (`$state/cards/`, its week's inputs in `inputs/`) is tarae's own state, which no run and no card reads.
+- **What's left:** the scope judgment — whether your words cover an action's whole blast radius — is auto mode's own
+  weak spot, and Haiku's answer is one sample, noisy. That's why R1 only measures, and R2 turns it on per kind, the
+  never list kept.
+
 ## 3. What tarae runs as you, outside the sandbox
 
 Not Claude's, but a hostile repository reaches them:

@@ -1091,6 +1091,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "a commit's tree's folder in temp (`run`'s `base`): another folder",
     ),
     ("src/editor.rs", "in fn with_root: billing_kept", NOT_RUNS),
+    ("src/editor.rs", "in fn with_root: auto_cards_told", NOT_RUNS),
     ("src/editor.rs", "in fn with_root: builds", "new sessions' checkouts: compat runs in one"),
     (
         "src/editor.rs",

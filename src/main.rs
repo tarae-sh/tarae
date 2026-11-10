@@ -11,6 +11,7 @@ mod apply;
 mod aside;
 mod ask;
 mod attach;
+mod autocards;
 mod basetree;
 mod beneath;
 mod billing;

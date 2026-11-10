@@ -267,6 +267,27 @@ const MASKED_KEYS: &[&str] = &[
     "@1",
 ];
 
+/// R1's also-read scene's keys: the notes asked for, the run's read refused (the scene's home is in the temp folder,
+/// so `also {read}` finds it open and the sandbox refuses it), then what the sandbox blocked (`space m s`) and its
+/// first row: the folder's grant card, as Claude's `also` raises it.
+const ALSO_READ_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "read my notes on the strands",
+    "\r",
+    "@20?sandbox blocked reading",
+    "\x1b",
+    " ",
+    "m",
+    "s",
+    "@20?allow reading",
+    "\r",
+    "@20?Open the sandbox a little",
+    "@1",
+];
+
 /// #474c's masked-see scene's keys: the masked scene's, then `v` — what the card folded, whole.
 const MASKED_SEE_KEYS: &[&str] = &[
     "@1",
@@ -4313,6 +4334,8 @@ const SCENES: &[Scene] = &[
     Scene { name: "rest-review", claude: "full", files: MAIN, keys: REST_REVIEW_KEYS },
     Scene { name: "rest-removed", claude: "idle", files: MAIN, keys: REST_REMOVED_KEYS },
     Scene { name: "sandbox-runtime", claude: "runtime", files: &["release.sh"], keys: SANDBOX_RUNTIME },
+    // (R1's (c): a folder's read grant card — it says the files named like keys stay closed)
+    Scene { name: "also-read", claude: "alsoread", files: MAIN, keys: ALSO_READ_KEYS },
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },
@@ -6381,9 +6404,12 @@ fn one(
 }
 
 /// Whether scene `name` is shot in a home of its own, the grammars bundled (#474's `refused-`, #481's `rest-`, Short
-/// 4's `sandbox-runtime`).
+/// 4's `sandbox-runtime`, R1's `also-read` — the notes its grant reads are the scene's).
 fn own_home(name: &str) -> bool {
-    name.starts_with("refused-") || name.starts_with("rest-") || name == "sandbox-runtime"
+    name.starts_with("refused-")
+        || name.starts_with("rest-")
+        || name == "sandbox-runtime"
+        || name == "also-read"
 }
 
 /// `scene` measured for the polish plan's "cells tinted in the code" (`--tint`): driven as `one` drives it, its regions
@@ -6960,6 +6986,10 @@ fn prepare(
     // (#474's and Short 4's: a key file in the scene's own home — a stand-in, in two parts)
     if scene.name.starts_with("refused-key") || scene.name == "sandbox-runtime" {
         write(&dir.join("home/.ssh/id_ed25519"), concat!("tarae-fake-", "ssh-key-stand-in\n"))?;
+    }
+    // (R1's also-read: the notes folder its `also {read}` asks for, there to be granted)
+    if scene.name == "also-read" {
+        write(&dir.join("home/notes/strands.md"), "# Strands\n")?;
     }
     // (#481's rest-removed: main.rs's doc comment taken out since the commit — a removed row right above `fn main`)
     if scene.name == "rest-removed" {
@@ -7787,6 +7817,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "searchcard",
     "volumecard",
     "grants",
+    "alsoread",
     "refusedkey",
     "refusedhost",
     "masked",
@@ -7970,6 +8001,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "searchcard" => turn.search_outside()?,
             "volumecard" => turn.read_volume()?,
             "grants" => turn.grants()?,
+            "alsoread" => turn.also_read()?,
             "refusedkey" => turn.refused_key()?,
             "refusedhost" => turn.refused_host()?,
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
@@ -9004,6 +9036,19 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.text("\n")?;
         self.call(1, "run", json!({"command": "curl -sS -I https://uploads.skein.invalid/"}))?;
         self.words("The host is closed to my commands.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// R1's (c): Claude's `also {read}` for a folder outside the project — a run first (the sandbox looked at), then the
+    /// read with the grant (its words saying the files named like keys stay closed).
+    fn also_read(&mut self) -> io::Result<()> {
+        self.words("The strands' notes are outside the project. Let me ask to read them.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "ls"}))?;
+        let also = json!({"command": "cat ~/notes/strands.md", "also": {"read": "~/notes"},
+            "reason": "the strands follow the notes kept there"});
+        self.call(2, "run", also)?;
+        self.words("Read them.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

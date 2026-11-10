@@ -347,6 +347,8 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
     );
     o.rows = rows;
     o.output = Some(("briefs".into(), briefs));
+    // (Claude's session tool asked: its act in words — R1's list a)
+    o.asked = crate::cards::Asked::of_act(&o.what);
     match warn {
         Some(lines) => o.warning(lines),
         None => o,
@@ -1313,6 +1315,10 @@ pub fn carry(mut o: crate::offer::Offer, p: Option<Proposal>) -> crate::offer::O
             o.about = Some(p.workspace);
         }
         o.proposed = Some(p);
+        // (its act in words, with a why of its own — R1's list a: auto cards and the record read it as Claude's)
+        if o.asked.as_ref().is_none_or(|a| a.why == crate::cards::Why::Own) {
+            o.asked = crate::cards::Asked::of_act(&o.what).or(o.asked);
+        }
     }
     o
 }

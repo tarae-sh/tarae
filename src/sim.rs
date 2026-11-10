@@ -29,6 +29,7 @@ mod applies;
 mod arrivals;
 mod ask;
 mod attach;
+mod autocards;
 mod bigturn;
 mod board;
 mod brings;

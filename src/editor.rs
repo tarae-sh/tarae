@@ -1375,6 +1375,11 @@ pub struct Editor {
     pub features: crate::features::Counts,
     /// The card record's folder (`cards.rs`, `$state/cards`) — None in tests: nothing written.
     pub cards_dir: Option<PathBuf>,
+    /// Auto cards' reviews whose verdict or answer is still to come, by card id (`autocards.rs`) — in memory only.
+    pub auto_cards: std::collections::HashMap<u64, crate::autocards::Pending>,
+    /// (tests: auto cards' stand-in reviewer — the messages it's told)
+    #[cfg(test)]
+    pub auto_cards_told: Option<std::sync::mpsc::Sender<String>>,
     /// The call-order record's folder (`calls.rs`, `$state/calls`) — None in tests: nothing written.
     pub calls_dir: Option<PathBuf>,
     /// The reviewers' line (`reviewer::pump`): its memory read under way · its retry pending while memory is
@@ -1761,6 +1766,9 @@ impl Editor {
             } else {
                 crate::config::state_dir().map(|d| d.join(crate::cards::DIR))
             },
+            auto_cards: Default::default(),
+            #[cfg(test)]
+            auto_cards_told: None,
             calls_dir: if cfg!(test) {
                 None
             } else {
@@ -12387,6 +12395,8 @@ mod tests {
         assert_eq!(rows.last().unwrap(), "run it outside the sandbox, once");
         // A card in sight long enough for an answer
         let settled = |ed: &mut Editor, title: &str| {
+            // (a place's card: what its grant leaves of the files named like keys worked out on a worker first)
+            settle_until(ed, |ed| !ed.offers.is_empty());
             assert_eq!(ed.offers.first().map(|o| o.title.clone()).as_deref(), Some(title));
             let s = screen(ed);
             let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
@@ -12485,6 +12495,7 @@ mod tests {
         feed(&mut ed, " ms");
         settle_until(&mut ed, |ed| ed.picker.is_some());
         feed(&mut ed, "<ret>");
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some(crate::blocked::GRANT_TITLE));
         // (drawn, and in sight long enough for an answer)
         crate::term::render(&mut ed, &mut Vec::new(), 160, 40).unwrap();

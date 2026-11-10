@@ -389,8 +389,22 @@ pub enum Grant {
     Masked(String, Vec<String>),
 }
 
+/// What a place's grant leaves of the files named like keys in it, as the run's own key rule says
+/// (`sandbox::KeyRules::in_grant`, R1 fix 6) — what its card says (`Grant::shown_with`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Keys {
+    /// Closed and hidden: neither read nor written (Linux's mounts, tier own — `Policy::hidden_keys`).
+    Hidden,
+    /// Closed to reads only (macOS's profile): never read, but a write may replace or remove one.
+    ReadOnly,
+    /// Open as any file there (Linux's tiers host and unserved outside the project) — or not worked out.
+    #[default]
+    Open,
+}
+
 impl Grant {
-    /// As the card and the toasts say it.
+    /// As the toasts and the run's report say it — and what names it (`caps::props`, the store's carry): a place's
+    /// says nothing of the files named like keys in it, which only the run's rule tells (`shown_with`).
     pub fn shown(&self) -> String {
         match self {
             Grant::Read(p) => format!("read {} and everything in it", tilde(p)),
@@ -408,6 +422,22 @@ impl Grant {
                 hosts.join(", ")
             ),
         }
+    }
+
+    /// `shown`, a place's with what it leaves of the files named like keys in it (`keys`, the rule the run will
+    /// have — `sandbox::grant_keys`): the card's words, and the reviewer's.
+    pub fn shown_with(&self, keys: Keys) -> String {
+        let (verb, p) = match self {
+            Grant::Read(p) => ("read", p),
+            Grant::Write(p) => ("write in", p),
+            _ => return self.shown(),
+        };
+        let rest = match (self, keys) {
+            (_, Keys::Hidden) | (Grant::Read(_), Keys::ReadOnly) => " but files named like keys",
+            (_, Keys::ReadOnly) => " — files named like keys too, though never read",
+            (_, Keys::Open) => ", files named like keys too",
+        };
+        format!("{verb} {} and everything in it{rest}", tilde(p))
     }
 
     /// Whether an answer of it is ever written — `$state/sessions` or the project's store: never a socket, a masked
@@ -1735,11 +1765,13 @@ pub fn grant_keys(ed: &mut crate::editor::Editor, keys: &[PathBuf], scope: Scope
 /// `a`/`s`/`A` on a card about what the sandbox blocked: Claude's commands may do `g` for the rest of this
 /// conversation, this session, or always in this project — and Claude hears it with the next message.
 pub fn grant(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope) {
-    grant_by(ed, g, scope, scope.key())
+    grant_by(ed, g, scope, scope.key(), None)
 }
 
-/// `grant`, given by the card's `key` — the masked card's `y` lasts until you quit (P2b), its stamp the `y`.
-pub fn grant_by(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope, key: char) {
+/// `grant`, given by the card's `key` — the masked card's `y` lasts until you quit (P2b), its stamp the `y`; Claude
+/// and the toast told it in the card's words (`granting`, what its run's rule leaves of the keys in a place —
+/// `BlockedRun.granting`), plain where no card worked that out.
+pub fn grant_by(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope, key: char, granting: Option<Keys>) {
     // (no longer than it may be kept: Docker's socket is as much as the sandbox off — never past one run, #193;
     // another socket this conversation's at most — given by the card's key all the same)
     let scope = scope.min(crate::caps::Caps::storable(g));
@@ -1748,17 +1780,18 @@ pub fn grant_by(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope, key: ch
     }
     add_for(ed, std::slice::from_ref(g), scope, key);
     let (when, toast) = lasting(ed, scope, std::slice::from_ref(g));
-    ed.workspace.claude.checkpoints.tell.push(format!("The user let your commands {} — {when}.", g.shown()));
-    ed.set_success(toasted(g, &toast));
+    let shown = granting.map_or_else(|| g.shown(), |k| g.shown_with(k));
+    ed.workspace.claude.checkpoints.tell.push(format!("The user let your commands {shown} — {when}."));
+    ed.set_success(toasted(g, &shown, &toast));
 }
 
 /// A grant's toast, `toast` how long it lasts after it: what's let, as the card said it — a masked variable's what
 /// happens first, then its hosts, before any cut (#480b, as #470's): `GH_TOKEN masked → api.github.com · github.com
-/// only, until you quit — :granted lists it`.
-fn toasted(g: &Grant, toast: &str) -> String {
+/// only, until you quit — :granted lists it`; else `shown`, as Claude is told it.
+fn toasted(g: &Grant, shown: &str, toast: &str) -> String {
     match g {
         Grant::Masked(n, hosts) => format!("{n} masked → {} only,{toast}", hosts.join(" · ")),
-        _ => format!("Claude's commands may {}{toast}", g.shown()),
+        _ => format!("Claude's commands may {shown}{toast}"),
     }
 }
 

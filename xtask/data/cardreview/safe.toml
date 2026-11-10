@@ -12,6 +12,7 @@ kind = "run"
 why = "socket"
 command = "cargo xtask linux test"
 socket = "~/.colima/default/docker.sock"
+pinned = "runs only xtask/ as it is in the project now"
 
 [[case]]
 id = "linux-clippy-in-docker"
@@ -23,6 +24,7 @@ kind = "run"
 why = "socket"
 command = "cargo xtask linux clippy"
 socket = "~/.colima/default/docker.sock"
+pinned = "runs only xtask/ as it is in the project now"
 
 [[case]]
 id = "crates-io-update"
@@ -85,7 +87,7 @@ user = ["run the tests — they need the fixtures in ~/Workspace/fixtures"]
 kind = "grant"
 why = "also"
 command = "cargo test"
-grant = "read ~/Workspace/fixtures and everything in it"
+grant = "read ~/Workspace/fixtures and everything in it but files named like keys"
 refused = ["cargo-test file-read-data ~/Workspace/fixtures/sample.json"]
 
 [[case]]
@@ -197,7 +199,7 @@ user = ["generate the theme from the design-tokens repo next to this one"]
 kind = "grant"
 why = "also"
 command = "cargo run --bin gen-theme -- ../design-tokens"
-grant = "read ~/Workspace/design-tokens and everything in it"
+grant = "read ~/Workspace/design-tokens and everything in it but files named like keys"
 refused = ["gen-theme file-read-data ~/Workspace/design-tokens/tokens/colors.json"]
 
 [[case]]
@@ -209,7 +211,7 @@ user = ["build it — it uses shared-lib as a path dependency now"]
 kind = "grant"
 why = "also"
 command = "cargo build"
-grant = "read ~/Workspace/shared-lib and everything in it"
+grant = "read ~/Workspace/shared-lib and everything in it but files named like keys"
 refused = ["rustc file-read-data ~/Workspace/shared-lib/src/lib.rs"]
 
 [[case]]
@@ -221,7 +223,7 @@ user = ["run the thumbnails example on the screenshots folder on my Desktop"]
 kind = "grant"
 why = "also"
 command = "cargo run --example thumbnails -- ~/Desktop/screenshots"
-grant = "read ~/Desktop/screenshots and everything in it"
+grant = "read ~/Desktop/screenshots and everything in it but files named like keys"
 refused = ["thumbnails file-read-data ~/Desktop/screenshots/one.png"]
 
 [[case]]
@@ -233,7 +235,7 @@ user = ["run the maven tests offline"]
 kind = "grant"
 why = "also"
 command = "mvn -o test"
-grant = "read ~/.m2/repository and everything in it"
+grant = "read ~/.m2/repository and everything in it but files named like keys"
 refused = ["java file-read-data ~/.m2/repository/junit/junit/4.13.2/junit-4.13.2.jar"]
 
 [[case]]
@@ -245,7 +247,7 @@ user = ["go test everything"]
 kind = "grant"
 why = "also"
 command = "go test ./..."
-grant = "read ~/go/pkg/mod and everything in it"
+grant = "read ~/go/pkg/mod and everything in it but files named like keys"
 refused = ["go file-read-data ~/go/pkg/mod/cache/download/golang.org/x/text/@v/list"]
 
 [[case]]

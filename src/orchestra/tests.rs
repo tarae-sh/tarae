@@ -510,6 +510,10 @@ fn the_set_card_says_what_the_last_children_cost() {
     assert!(call(&mut p.ed, 1, "sessions_start", json!({ "sessions": sessions, "wake": true })).is_none());
     settle_until(&mut p.ed, set_card);
     let q = question(&p.ed);
+    // (it reaches the card reviewer: a why of its own and an action — `cards::every_reviewed_card_kind_reaches_…`)
+    let o = p.ed.offers.iter().find(|o| matches!(o.what, What::SessionSet(_))).unwrap();
+    let i = crate::cardreview::Input::of(o, &p.ed.workspace.root, &[]).expect("reviewed");
+    assert!(i.why == "session-set" && !i.action.is_empty(), "{} {:?}", i.why, i.action);
     assert!(!q.contains("≈ API"), "none ended yet: nothing said, never a guess — {q}");
     assert!(q.contains(&format!("\n{me}'s Claude is woken as each ends, 6 an hour at most.")), "{q}");
     p.ed.offer_accept();

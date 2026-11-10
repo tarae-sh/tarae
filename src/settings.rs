@@ -558,6 +558,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.card_record = b(v),
     },
     Setting {
+        path: "llm.auto-cards",
+        kind: Kind::Enum(crate::autocards::Mode::NAMES),
+        doc: "Auto cards' shadow week — \"shadow\": Haiku reads each of Claude's cards with your own words and its verdict is kept in the card record beside your answer, unseen until you've answered; nothing in the shadow week answers a card. Billed to the card's session, its own usage line (auto cards). While it's on, a crash can lose up to 90 s of verdicts not yet written. Off by default; :set llm.auto-cards off stops it until you quit. Needs llm.card-record. Only your own config sets it",
+        get: |c| Value::from(c.llm.auto_cards.name()),
+        set: |c, v| c.llm.auto_cards = crate::autocards::Mode::parse(s(v)),
+    },
+    Setting {
         path: "llm.turns-max-mb",
         kind: Kind::Int { min: 1, max: 1 << 20 },
         doc: "How much of Claude's turns (space u) a project keeps on disk, in MB — past it the oldest turns go, said once; each goes anyway as its conversation does (Claude Code's cleanupPeriodDays)",

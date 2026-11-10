@@ -34,6 +34,8 @@ pub const RISKY: &[&str] = &[
     // (Claude's edits go in unseen, and the checks run them)
     "llm.review-at-end",
     "llm.chat-settings",
+    // (what Claude's cards and your words are sent to, and billed to you)
+    "llm.auto-cards",
     "llm.sandbox",
     "llm.sandbox-network",
     // (a project's list takes the user's place — it could name more)
@@ -73,6 +75,8 @@ pub const RISKY: &[&str] = &[
 /// trust (`llm.sandbox-ca`), where a masked secret goes (`llm.sandbox-secrets`) — a project never does.
 pub const YOURS_ONLY: &[&str] = &[
     "llm.card-record",
+    // (your words and Claude's cards sent to a model and billed to you — R2's would answer cards)
+    "llm.auto-cards",
     // (a project's 1 would take your `space u` history back to its newest turn)
     "llm.turns-max-mb",
     "review.record",

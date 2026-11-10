@@ -16,8 +16,8 @@
 //!   (`may`, R2's). The never list lives there only, not in `POLICY`: a model told "always ask for sockets" would make
 //!   the socket numbers mean nothing, and rules decide, the model only removes cards.
 
-// (R1 calls it from tarae; until then R0's eval in xtask is its only caller)
-#![allow(dead_code, reason = "R1 calls it; R0's eval (xtask) includes it by path now")]
+// (R0's eval in xtask includes it by path too: what tarae's R1 doesn't call, it does — and the other way)
+#![allow(dead_code, reason = "R0's eval (xtask) includes it by path: each side calls its own part")]
 
 use serde_json::Value;
 
@@ -110,10 +110,12 @@ pub enum Field {
     Reads,
     /// A warning the card says, by id (`cardwarn.rs`).
     Warnings,
+    /// What a docker command's pinned code is, made from the pack's entry — a plain fact, never the command's words.
+    Pinned,
 }
 
 impl Field {
-    fn tag(self) -> &'static str {
+    pub fn tag(self) -> &'static str {
         match self {
             Field::Command => "command",
             Field::Cwd => "cwd",
@@ -123,6 +125,7 @@ impl Field {
             Field::Grant => "grant",
             Field::Reads => "reads",
             Field::Warnings => "warning",
+            Field::Pinned => "pinned",
         }
     }
 }

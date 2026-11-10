@@ -32,9 +32,10 @@
 //!   (`$state/cards/`) as cardauto's tables: the P3 table, what P3 removes, its wrong yeses with their commands, the
 //!   stamp rate, runs refused with no card; and P6's breakdowns: by session, socket cards by command, the bring
 //!   card's `p`, the change sets (see [`cards`]).
-//! - `cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key]` — auto cards' R0
-//!   measure: the dangerous and safe fixtures (`xtask/data/cardreview/`) and the card record's answered cards
-//!   through both stages, the three wirings side by side. It spends model tokens: asked of the user before each run
+//! - `cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--policy NAME] [--budget USD] [--keep-key]
+//!   [--count]` — auto cards' R0 measure: the dangerous and safe fixtures (`xtask/data/cardreview/`) and the card
+//!   record's answered cards, each one call as R1 makes it (Haiku, the reasons prompt — D7); with `--model-2` through
+//!   both stages, the three wirings side by side. It spends model tokens: asked of the user before each run
 //!   (see [`cardeval`]); a key exported in the environment bills only with `--keep-key`.
 //! - `reviews [PATH …]` — the review record (`$state/reviews/`) as the review lens measures it: time per change by
 //!   grade and size, what changes ended as, lens on and off, each high-risk rule's marks and what came of them

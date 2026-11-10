@@ -2296,6 +2296,8 @@ mod tests {
             ("Folder", "containers.rs"),
             // (the web search's helper's, in its `Session`: never in a document, a turn, an output or a transcript)
             ("Folder", "web/search.rs"),
+            // (auto cards' reviewer's, in `Editor.auto_cards`: the same)
+            ("Folder", "autocards.rs"),
             ("Gate", "claudetrust.rs"),
             ("Held", "warm.rs"),
             ("HeldBack", "recovery/tests.rs"),

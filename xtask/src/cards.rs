@@ -10,6 +10,7 @@
 //! - **the stamp rate** by `why`; dropped and never-drawn cards are left out of stamps and times;
 //! - **refused with no card**, each with its command and what Claude was told;
 //! - **tarae's own cards**, by kind and answer;
+//! - **auto cards' reviewer** (`reviewer`, R1's shadow week): its verdict beside your answer, by kind;
 //!
 //! and P6's breakdowns (`breakdown`): every card **by session** (the home checkout — `--home`, its branch, `main`
 //! when not given — and each named one, a child marked by its kept record's parent: `--sessions`, the state
@@ -28,6 +29,7 @@ use serde_json::Value;
 use crate::Result;
 
 mod breakdown;
+mod reviewer;
 
 /// Answered within this long of being drawn: a stamp, not a read (cards.md §1.3).
 const STAMP_MS: u64 = 1500;
@@ -409,6 +411,7 @@ fn report(from: &str, text: &str, o: &Opts) -> String {
         out += &table(&["Kind", "Cards", "Answers", "Median time"], &t);
     }
 
+    out += &reviewer::report(&claude);
     out += &breakdown::by_session(&all, o);
     out += &breakdown::sockets(&all, o);
     out += &breakdown::preflight_again(&all, o);

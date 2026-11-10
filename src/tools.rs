@@ -1437,6 +1437,11 @@ fn also_ask(
             crate::sandbox::key_rules_for(&caps.root, with_allowed(&llm, &caps, None), &here)
         });
         let grant = also_grant(&ask, &cwd, &caps, (&open, localhost), env.as_ref(), &net, Some(&keys));
+        // (a place: what its grant leaves of the files named like keys in it, by the rule its run will have)
+        let granting = match &grant {
+            Ok(Some(g)) => crate::sandbox::grant_keys(&llm, &caps, g, &here),
+            _ => None,
+        };
         // (a place to read: its card says first what looks like a token there)
         let tokens = match &grant {
             Ok(Some(crate::allow::Grant::Read(p))) => crate::tokens::found_in(p).said(p),
@@ -1500,7 +1505,8 @@ fn also_ask(
             };
             call.step("grant card up");
             let job = Job::Command(cmd.clone(), cwd);
-            let run = crate::blocked::BlockedRun { claude: Some(call), ..crate::blocked::BlockedRun::of(job) };
+            let run =
+                crate::blocked::BlockedRun { claude: Some(call), granting, ..crate::blocked::BlockedRun::of(job) };
             let closed = !ed.config.llm.sandbox_network;
             let masking = masking.map(|m| masking_still(ed, m));
             let card = crate::blocked::also_card(g, &reason, (&cmd, masking), Box::new(run), tokens, asks, closed);
@@ -1891,6 +1897,22 @@ impl Again {
         Again { free, ..self }
     }
 
+    /// The code its freed parts run, as a plain fact made from the packs' entries alone — never the command's words:
+    /// `runs only xtask/ as it is in the project now` (auto cards' `pinned` field, R1's list b). None: no part pinned.
+    pub fn pinned(&self) -> Option<String> {
+        let entries = &crate::sandboxpack::get().entry;
+        let mut files: Vec<&str> = Vec::new();
+        for f in self.free.iter().flatten() {
+            let e = entries.iter().find(|e| !e.run.is_empty() && f.inert.run.starts_with(&e.run))?;
+            for x in &e.files {
+                if !files.contains(&x.as_str()) {
+                    files.push(x);
+                }
+            }
+        }
+        pinned_fact(&files)
+    }
+
     /// Whether a part takes any arguments (`any_arguments`).
     pub fn args_free(&self) -> bool {
         self.free.iter().any(Option::is_some)
@@ -1952,6 +1974,15 @@ fn tests_after_in<'a>(part: &'a [String], runners: &[Vec<String>]) -> Option<&'a
     let name =
         |w: &String| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');
     (runner && words.iter().any(|w| w == "test") && part[at + 1..].iter().all(name)).then_some(&part[..=at])
+}
+
+/// The `pinned` fact for an entry's `files`: `runs only xtask/ as it is in the project now` — None for none.
+pub fn pinned_fact(files: &[&str]) -> Option<String> {
+    match files {
+        [] => None,
+        [one] => Some(format!("runs only {one} as it is in the project now")),
+        _ => Some(format!("runs only {} as they are in the project now", files.join(" and "))),
+    }
 }
 
 /// What `a`'s any arguments hold to, as the card says it (`` `xtask/` is as it is now ``): the scripts and the packs' entry files
@@ -3319,6 +3350,11 @@ fn ask_with(
         None => asked,
     };
     let asked = asked.warned(warned.iter().map(|w| w.id.clone()).collect());
+    // (Docker's card with pinned code: that fact for auto cards, from the packs — R1's list b)
+    let asked = match offered.as_ref().filter(|a| docker && a.args_free()).and_then(Again::pinned) {
+        Some(p) => asked.pinned(p),
+        None => asked,
+    };
     call.step("card up");
     let card = RunCard {
         same,
@@ -3593,6 +3629,19 @@ fn told(ed: &mut Editor, head: String, report: String) {
     }
     ed.workspace.claude.checkpoints.tell.push(text);
     ed.note("Claude hears how it ended with your next message");
+}
+
+/// The user's run again of Claude's last turn's failed run ended with `report`, the chat idle: told as `told` tells it,
+/// a message by itself — for tests elsewhere of what reaches whom with it (`autocards::tests`).
+#[cfg(test)]
+pub(crate) fn told_for_test(ed: &mut Editor, report: &str) {
+    let key = crate::blocked::RunKey { tests: false, generation: 1 };
+    let head = "cargo test, run again by you, ended:".to_string();
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.failed = (c.conversation.clone(), vec![key]);
+        c.reruns.push((head.clone(), key));
+    }
+    told(ed, head, report.to_string());
 }
 
 /// What the message a rerun's end sends by itself says last (`told`).

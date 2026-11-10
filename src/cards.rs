@@ -179,6 +179,21 @@ pub enum Why {
     /// A conversation would bill your API key, or leave it (`billing.rs`: `$` in the session list, the plan's
     /// limit hit) — spending credits, no capability.
     Spend,
+    // (R1's list a: a card a Claude call raised or a parent's Claude proposed, each act its own — never `own`)
+    /// A parent's Claude proposed ending a session (`session_act` end).
+    WorkspaceEnd,
+    /// … bringing sessions in order (the bring queue's card).
+    BringQueue,
+    /// … bringing a session into its base (`rebase.rs`'s bring card).
+    Rebased,
+    /// … moving a session up to its base.
+    UpTo,
+    /// … a board's review.
+    Board,
+    /// Claude's session tool starting sessions.
+    SessionSet,
+    /// Claude's plugin tool installing a plugin.
+    PluginInstall,
 }
 
 impl Why {
@@ -207,6 +222,13 @@ impl Why {
             Why::Also => "also".into(),
             Why::Own => "own".into(),
             Why::Spend => "spend".into(),
+            Why::WorkspaceEnd => "workspace-end".into(),
+            Why::BringQueue => "bring-queue".into(),
+            Why::Rebased => "rebased".into(),
+            Why::UpTo => "up-to".into(),
+            Why::Board => "board".into(),
+            Why::SessionSet => "session-set".into(),
+            Why::PluginInstall => "plugin-install".into(),
         }
     }
 
@@ -243,7 +265,14 @@ impl Why {
             | Why::Web
             | Why::WebSearch
             | Why::Own
-            | Why::Spend => return None,
+            | Why::Spend
+            | Why::WorkspaceEnd
+            | Why::BringQueue
+            | Why::Rebased
+            | Why::UpTo
+            | Why::Board
+            | Why::SessionSet
+            | Why::PluginInstall => return None,
         })
     }
 }
@@ -418,6 +447,9 @@ pub struct Asked {
     /// A variable the card offered to pass masked, and its hosts: `GH_TOKEN → api.github.com, github.com` — never
     /// its value (`blocked::also_card`).
     pub masked: Option<String>,
+    /// Docker's card whose command runs code a pack pins (`tools::Again::pinned`): that fact, made from the pack's
+    /// entry alone — `runs only xtask/ as it is in the project now`. Never Claude's words.
+    pub pinned: Option<String>,
 }
 
 /// How a preflight failed, for the record: names only — the step as the project's `[preflight]` names it, the
@@ -450,12 +482,54 @@ impl Asked {
             failing: None,
             files: Vec::new(),
             masked: None,
+            pinned: None,
         }
+    }
+
+    /// Docker's command runs pinned code: that fact (`tools::Again::pinned`).
+    pub fn pinned(self, fact: String) -> Asked {
+        Asked { pinned: Some(fact), ..self }
     }
 
     /// It offered to pass a variable masked: its name and hosts (`masked`).
     pub fn masked(self, said: String) -> Asked {
         Asked { masked: Some(said), ..self }
+    }
+
+    /// What a card a Claude call raised or a parent's Claude proposed asks (`what`), its act in words, with a `Why` of
+    /// its own (R1's list a: never `own` — `xtask cards` and `--record` drop those as tarae's) — None for a card
+    /// that's none of those acts. Set where they're raised: `orchestra::carry` for every proposal, the session tool's
+    /// card, Claude's plugin install.
+    pub fn of_act(what: &crate::offer::What) -> Option<Asked> {
+        use crate::offer::What as W;
+        let tilde = crate::allow::tilde;
+        let (why, said) = match what {
+            W::WorkspaceEnd(e) => (
+                Why::WorkspaceEnd,
+                match &e.branch {
+                    Some(b) => format!(
+                        "end session {}: remove its checkout {} and delete its branch {b}",
+                        e.name,
+                        tilde(&e.root)
+                    ),
+                    None => format!("end session {}: remove its checkout {}", e.name, tilde(&e.root)),
+                },
+            ),
+            W::BringQueue(a) => (
+                Why::BringQueue,
+                format!("bring {} into {}, in that order", a.names.join(", "), a.bases.join(", ")),
+            ),
+            W::Rebased(m) => (Why::Rebased, format!("bring {} into {}", m.name, m.base)),
+            W::UpTo(m) => (Why::UpTo, format!("move {} up to {}", m.name, m.base)),
+            W::Board(a) => (Why::Board, format!("start a board's review of {}, billed to you", a.name)),
+            W::SessionSet(s) => {
+                let names: Vec<&str> = s.sessions.iter().map(|(m, _)| m.branch.as_str()).collect();
+                (Why::SessionSet, format!("start sessions of their own Claude: {}", names.join(", ")))
+            }
+            W::PluginInstall(i) => (Why::PluginInstall, format!("install plugin {} from {}", i.name, i.from)),
+            _ => return None,
+        };
+        Some(Asked::new(why, Request::Own).about(&said))
     }
 
     /// tarae's own question (`Why::Own`), no capability asked for.
@@ -502,7 +576,6 @@ impl crate::cardreview::Input {
     /// title or question (`also`'s reason is written there, a run card's reason for going past the sandbox too), a
     /// run's report or output. None for a kind it doesn't review (`Auto::Own`, or a kind a parent's Claude may propose
     /// that none did) and a card that keeps no `asked`.
-    #[allow(dead_code, reason = "R1 calls it; R0's tests now")]
     pub fn of(o: &Offer, root: &Path, user: &[String]) -> Option<crate::cardreview::Input> {
         use crate::cardreview::{Auto, Field};
         use crate::offer::What;
@@ -540,7 +613,7 @@ impl crate::cardreview::Input {
                 }
             }
             What::Grant { grant, run, masked } => {
-                action.push((Field::Grant, r(&grant.shown())));
+                action.push((Field::Grant, r(&grant.shown_with(run.granting.unwrap_or_default()))));
                 action.extend(
                     masked.as_deref().map(|h| (Field::Grant, r(&crate::cardreview::masked_grant(h)))),
                 );
@@ -558,6 +631,7 @@ impl crate::cardreview::Input {
             What::ProtectedMade { made, .. } => action.extend(made.iter().map(|m| (Field::Path, r(&m.path)))),
             _ => {}
         }
+        action.extend(asked.pinned.as_deref().map(|p| (Field::Pinned, r(p))));
         if !asked.warn.is_empty() {
             action.push((Field::Warnings, asked.warn.join(", ")));
         }
@@ -645,8 +719,9 @@ pub fn said(
 /// The record's folder in tarae's state: a file a month, `2026-10.jsonl`.
 pub const DIR: &str = "cards";
 /// The record's version, in each entry (`v`): 2 keeps a Claude card's `conversation`, a failed preflight's
-/// `step` (`not_run`), `test` (`generated`) and a change set's `files` (`files_more`) — what a 1 has none of.
-const RECORD_V: u64 = 2;
+/// `step` (`not_run`), `test` (`generated`) and a change set's `files` (`files_more`) — what a 1 has none of; 3 a
+/// reviewed card's `reviewer` (auto cards' verdict, `autocards::reviewer`).
+const RECORD_V: u64 = 3;
 
 /// Card `o`'s entry: the line's fields as JSON, with when (local, to the second), the session, the card's id
 /// and kind, its times in ms (`drawn_ms` absent: never drawn) — and what it was about (`what`, `cwd`, the
@@ -852,10 +927,20 @@ impl crate::editor::Editor {
     /// Keeps `entries` in the record (`$state/cards/`), on a worker with nothing to bring back — unless
     /// `llm.card-record` is off or there's no record (tests: none unless given).
     pub fn cards_record(&mut self, entries: Vec<Value>) {
-        let Some(dir) = self.cards_dir.clone().filter(|_| self.config.llm.card_record && !entries.is_empty())
-        else {
+        let Some(dir) = self.cards_dir.clone() else { return };
+        self.cards_record_at(dir, entries);
+    }
+
+    /// `cards_record` into the record's folder `sub` (auto cards' week's inputs, `autocards::INPUTS`).
+    pub fn cards_record_in(&mut self, sub: &str, entries: Vec<Value>) {
+        let Some(dir) = self.cards_dir.as_ref().map(|d| d.join(sub)) else { return };
+        self.cards_record_at(dir, entries);
+    }
+
+    fn cards_record_at(&mut self, dir: std::path::PathBuf, entries: Vec<Value>) {
+        if !self.config.llm.card_record || entries.is_empty() {
             return;
-        };
+        }
         let file = month_file(SystemTime::now());
         WRITING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.events.jobs().background(move || {
@@ -866,8 +951,10 @@ impl crate::editor::Editor {
         });
     }
 
-    /// When tarae ends (`:q`, `:restart`, a signal): the record's writes under way finished first.
-    pub fn cards_flush(&self) {
+    /// When tarae ends (`:q`, `:restart`, a signal): the answered cards' entries auto cards still held written
+    /// (`autocards::quit`), then the record's writes under way finished first.
+    pub fn cards_flush(&mut self) {
+        crate::autocards::quit(self);
         if !wait_written(QUIT_WAIT) {
             crate::log::line(
                 "cards",
@@ -1249,7 +1336,7 @@ mod tests {
         );
         assert_eq!(
             (&card["what"], &card["cwd"], &card["v"]),
-            (&json!("awk 'NR<3' x"), &json!("src"), &json!(2))
+            (&json!("awk 'NR<3' x"), &json!("src"), &json!(3))
         );
         assert!(card.get("drawn_ms").is_none() && card["up_ms"].is_u64(), "never drawn: no time from drawn");
         assert!(card.get("class").is_none() && card.get("same").is_none(), "nothing empty kept: {card}");
@@ -1374,7 +1461,7 @@ mod tests {
         let all = read_record(&dir);
         let of =
             |kind: &str| all.iter().find(|e| e["kind"] == kind).unwrap_or_else(|| panic!("{kind}: {all:?}"));
-        assert_eq!((&of("asks")["conversation"], &of("asks")["v"]), (&json!("conv-asked"), &json!(2)));
+        assert_eq!((&of("asks")["conversation"], &of("asks")["v"]), (&json!("conv-asked"), &json!(3)));
         assert!(of("notes-close").get("conversation").is_none(), "tarae's own: {}", of("notes-close"));
         assert_eq!(of("run")["conversation"], json!("conv-refused"));
     }
@@ -1658,6 +1745,214 @@ mod tests {
         assert!(stray.is_empty(), "not a card kind: {stray:?}");
         assert_eq!(MAY_DECISION, Decision::Grant(Verb::Read).word());
         assert_eq!(MAY_CLASSES, [Class::Home.word()]);
+    }
+
+    /// Every card kind `cardreview::AUTO` reviews, raised as Claude's by its own maker (a proposal carried as
+    /// `orchestra::carry` carries it), reaches the reviewer: an `Input` with a why of its own — never `own` — and an
+    /// action. A kind with no builder here is in `UNBUILT` with why, so a new reviewed kind fails until it's one or
+    /// the other.
+    #[test]
+    fn every_reviewed_card_kind_reaches_the_reviewer() {
+        use crate::cardreview::{AUTO, Auto};
+        const UNBUILT: &[(&str, &str)] = &[(
+            "session-set",
+            "a `worktree::Making`, a real checkout's: `orchestra::tests::the_set_card_says_what_the_last_children_cost` \
+             raises it by the tool and checks it reaches the reviewer",
+        )];
+        let dir = crate::scratch::Scratch::new("every-reviewed-kind");
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let mut seen = Vec::new();
+        for (kind, _) in AUTO.iter().filter(|(_, a)| *a != Auto::Own) {
+            if UNBUILT.iter().any(|(k, _)| k == kind) {
+                continue;
+            }
+            let o = claudes_card(kind, &root);
+            assert_eq!(o.kind(), *kind, "its maker made another kind");
+            let i = crate::cardreview::Input::of(&o, &root, &["the user's words".into()])
+                .unwrap_or_else(|| panic!("{kind}: not reviewed — its maker keeps no `asked`"));
+            assert!(!i.why.is_empty() && i.why != Why::Own.word(), "{kind}: why {}", i.why);
+            assert!(!i.action.is_empty(), "{kind}: no action");
+            seen.push(*kind);
+        }
+        assert_eq!(seen.len() + UNBUILT.len(), AUTO.iter().filter(|(_, a)| *a != Auto::Own).count());
+        assert!(UNBUILT.iter().all(|(k, _)| crate::cardreview::auto(k).is_some_and(|a| a != Auto::Own)));
+    }
+
+    /// Card `kind`, raised as Claude's by its own maker in a chat at `root` (a proposal: carried as a parent's).
+    fn claudes_card(kind: &str, root: &Path) -> Offer {
+        use serde_json::json;
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        let here = || crate::sandbox::Here { served: Some(|| Ok(())), ..crate::sandbox::Here::now() };
+        ed.sandbox_here = Some(std::sync::Arc::new(here));
+        ed.workspace.root = root.to_path_buf();
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        crate::chat::open(&mut ed);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.state = crate::chat::State::Thinking;
+        let call = crate::tools::Call::of(c.generation(), "h1", json!(1));
+        let cmd = "make deploy".to_string();
+        let blocked =
+            || crate::blocked::BlockedRun::of(crate::tools::Job::Command(cmd.clone(), root.to_path_buf()));
+        let (parent, workspace) = (ed.workspace.claude.id, ed.workspace.id);
+        let proposed = |o: Offer, act| {
+            let p = crate::orchestra::Proposal {
+                act,
+                parent,
+                workspace,
+                by: "main".into(),
+                child: "fix".into(),
+                why: String::new(),
+                conversation: None,
+            };
+            crate::orchestra::carry(o, Some(p))
+        };
+        let moved = crate::rebase::Moved {
+            root: root.to_path_buf(),
+            name: "fix".into(),
+            branch: "fix".into(),
+            base: "main".into(),
+            moved: 1,
+            ahead: 1,
+        };
+        use crate::orchestra::Act;
+        match kind {
+            "plugin-install" => crate::plugin::install_card(&crate::plugin::PluginInstall {
+                call: Some(call),
+                name: "k8s".into(),
+                from: "plugins/k8s/k8s.wasm".into(),
+                crate_dir: None,
+                bytes: std::sync::Arc::from(&b"\0asm"[..]),
+                sha256: "0".repeat(64),
+                permissions: Vec::new(),
+                commands: Vec::new(),
+                events: Vec::new(),
+                replaces: false,
+                dir: root.join("plugins"),
+            }),
+            "grant" => crate::blocked::also_card(
+                crate::allow::Grant::Read(PathBuf::from("/opt/tools")),
+                "r",
+                (&cmd, None),
+                Box::new(blocked()),
+                None,
+                Vec::new(),
+                false,
+            ),
+            "host" => crate::hosts::card(crate::hosts::Ask {
+                session: 1,
+                run: 1,
+                host: "example.com".into(),
+                port: 443,
+                process: "curl".into(),
+                label: cmd.clone(),
+                users: false,
+                left: false,
+                open: false,
+                hosts: Default::default(),
+                also: Vec::new(),
+                ended: false,
+            }),
+            "workspace-end" => proposed(
+                crate::worktree::Ending {
+                    root: root.join("fix"),
+                    common: root.join(".git"),
+                    name: "fix".into(),
+                    branch: Some("fix".into()),
+                    tip: "abc".into(),
+                    base: "main".into(),
+                    changed: Vec::new(),
+                    ahead: Vec::new(),
+                    lost: Vec::new(),
+                    entries: Vec::new(),
+                    keep: Default::default(),
+                    brought: None,
+                    days: 7,
+                }
+                .card(),
+                Act::End,
+            ),
+            "rebased" => proposed(moved.bring_card(None, true), Act::Bring),
+            "up-to" => proposed(crate::rebase::Moved { ahead: 0, ..moved }.up_card(), Act::Bring),
+            "bring-queue" => proposed(
+                crate::bringqueue::card(crate::bringqueue::Ask {
+                    ids: vec![workspace],
+                    names: vec!["fix".into(), "docs".into()],
+                    bases: vec!["main".into()],
+                }),
+                Act::Bring,
+            ),
+            "outside" => {
+                ed.workspace.blocked = Some((blocked(), Vec::new()));
+                ed.sandbox_grant("outside").unwrap();
+                ed.offers.pop().expect("its card")
+            }
+            "protected-made" => {
+                ed.workspace.made_protected =
+                    vec![crate::snapshot::Made { path: "build.rs".into(), hash: "0".into() }];
+                let job = crate::tools::Job::Command(cmd.clone(), root.to_path_buf());
+                let then = crate::tools::MadeThen::Claude { job, call, ride: Box::default() };
+                crate::tools::ask_made(&mut ed, then);
+                ed.offers.pop().expect("its card")
+            }
+            "web-search" => {
+                crate::web::search::call(&mut ed, call, &json!({ "query": "tokio" })).unwrap();
+                ed.offers.pop().expect("its card")
+            }
+            "web-read" => {
+                let items = vec![crate::web::tool::item("https://docs.example.com/a")];
+                assert!(crate::web::tool::plan(&mut ed, items, &call, &json!({})).is_none(), "asked");
+                ed.offers.pop().expect("its card")
+            }
+            // (a worker decides these: its card comes as an event)
+            "run" => {
+                let args = json!({ "command": cmd, "outside_sandbox": true, "reason": "r" });
+                crate::tools::run(&mut ed, call, &args).unwrap();
+                pumped(&mut ed, kind)
+            }
+            "read" => {
+                let req =
+                    json!({ "tool_name": "Read", "input": { "file_path": "/opt/tarae-nowhere/notes.txt" } });
+                assert_eq!(crate::reads::request(&mut ed, "r1", &req), None);
+                pumped(&mut ed, kind)
+            }
+            // (a system with no sandbox: what `tools::run` reads of it, a stand-in's)
+            "no-sandbox" => {
+                ed.sandbox = crate::sandbox::Availability::Missing("not on this system".into());
+                crate::tools::run(&mut ed, call, &json!({ "command": cmd, "reason": "r" })).unwrap();
+                pumped(&mut ed, kind)
+            }
+            // (proposed by the parent's Claude, on a snapshot of one changed file)
+            "board" => {
+                let review =
+                    crate::orchestra::ForParent { parent, conversation: None, wake: false, told: false };
+                let proposal = crate::orchestra::Proposal {
+                    act: Act::Board,
+                    parent,
+                    workspace,
+                    by: "main".into(),
+                    child: "fix".into(),
+                    why: String::new(),
+                    conversation: None,
+                };
+                let taken = crate::codereview::Taken::for_test(root.to_path_buf());
+                crate::board::start(&mut ed, taken, None, Some(crate::orchestra::Asked { review, proposal }));
+                ed.offers.pop().expect("its card")
+            }
+            _ => panic!("{kind}: no builder — add one, or list it in UNBUILT with why"),
+        }
+    }
+
+    /// The card a worker's decision brings up in `ed`.
+    fn pumped(ed: &mut crate::editor::Editor, kind: &str) -> Offer {
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        while ed.offers.is_empty() {
+            assert!(Instant::now() < end, "{kind}: no card came");
+            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+        ed.offers.pop().unwrap()
     }
 
     /// A run's denials as one line — the distinct ones as Claude reads them, past what's kept counted.

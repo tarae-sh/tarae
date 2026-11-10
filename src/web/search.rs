@@ -331,6 +331,8 @@ fn ask(ed: &mut Editor, a: Ask) {
         holds.to_string(),
         "What Claude has read can go out in the words it searches for.".to_string(),
     ];
+    // (its words leave the machine: what auto cards judge — R1's list a)
+    let asked = Asked::new(Why::WebSearch, Request::Own).about(&format!("search the web for: {}", lines[0]));
     let o = crate::offer::Offer::new(
         TITLE.to_string(),
         &lines.join("\n"),
@@ -340,7 +342,7 @@ fn ask(ed: &mut Editor, a: Ask) {
     )
     .deciding(0..1)
     .warning(3..4)
-    .asked(Asked::new(Why::WebSearch, Request::Own));
+    .asked(asked);
     ed.push_offer(o);
 }
 

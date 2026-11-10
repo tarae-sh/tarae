@@ -1223,6 +1223,9 @@ pub struct Here {
     /// bridge) — None: as the tier probe says (`tier::Probed.bridged`; on another system: no bridge); a test's
     /// stand-in gives its own.
     pub bridged: Option<fn() -> Result<(), String>>,
+    /// Linux: whether its runs hide the files named like keys outside the project by mounts (tier own, D-i) — None:
+    /// as the tier probe says; a test's stand-in gives its own.
+    pub hides_keys: Option<fn() -> bool>,
     /// What runs besides this project's may write (real paths): every open session's write places with what's
     /// been granted there, the write grants kept for any project (`Editor::others_write`) — a store in or holding
     /// one isn't told (`DiskStores::written_passed`). Another tarae's sessions aren't seen.
@@ -1278,6 +1281,7 @@ impl Here {
             stand_in: None,
             served: None,
             bridged: None,
+            hides_keys: None,
             others_write: Vec::new(),
             windows: crate::winhome::here(),
             #[cfg(target_os = "linux")]
@@ -5189,7 +5193,35 @@ pub fn key_rules_for(root: &Path, w: crate::tools::Widened, here: &Here) -> KeyR
     let mut p = Policy::for_project(&env);
     p.supervised = here.os == Os::Linux;
     w.onto(&mut p);
-    p.key_rules()
+    let mut rules = p.key_rules();
+    rules.hides = hides_keys(here);
+    rules
+}
+
+/// Linux: whether runs here hide the files named like keys outside the project by mounts (tier own, D-i). False
+/// elsewhere.
+fn hides_keys(here: &Here) -> bool {
+    match (here.os, here.hides_keys) {
+        (Os::Linux, Some(f)) => f(),
+        #[cfg(target_os = "linux")]
+        (Os::Linux, None) => tier::get().tier() == tier::Tier::Own,
+        _ => false,
+    }
+}
+
+/// What a grant of a place (`Grant::Read`, `Grant::Write`) leaves of the files named like keys in it, as the rule
+/// its run will have says (`key_rules_for` with `caps` and the grant): the card's words (R1 fix 6). None: not a
+/// place's. Blocks (a worker's).
+pub fn grant_keys(
+    llm: &crate::llm::LlmConfig,
+    caps: &crate::caps::Caps,
+    grant: &crate::allow::Grant,
+    here: &Here,
+) -> Option<crate::allow::Keys> {
+    use crate::allow::Grant;
+    let (Grant::Read(place) | Grant::Write(place)) = grant else { return None };
+    let w = crate::tools::with_allowed(llm, caps, Some(grant));
+    Some(key_rules_for(&caps.root, w, here).in_grant(place))
 }
 
 /// `policy_in`, for a run about to start — only here, on a run's way, is anything made for it: its own folder
@@ -10526,6 +10558,91 @@ mod tests {
         };
         let said = Guard::In(Box::new(p.clone())).kept(&[write]).0;
         assert!(!said.contains("named like a key"), "{said}");
+    }
+
+    /// R1 fix 6: a place's grant says of the files named like keys in it what the rule its run will have does to one
+    /// there (`grant_keys`) — for each case the words agree with the built policy's `key_rule` and, on Linux,
+    /// `hidden_keys` on a stand-in key inside the place: macOS's closed to reads only, Linux's hidden in tier own,
+    /// open in tiers host and unserved. (A made-up home in the test's temp folder, `$TMPDIR` not said.)
+    #[test]
+    fn a_grants_words_say_what_its_runs_rule_does_to_a_key_in_it() {
+        use crate::allow::{Grant, Keys};
+        let base = crate::scratch::Scratch::new("grant-keys");
+        for d in ["home/ref", "home/out", "home/proj"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let home = std::fs::canonicalize(base.join("home")).unwrap();
+        let root = home.join("proj");
+        let none = crate::allow::Allowed::default();
+        let caps = crate::caps::Caps {
+            home: Some(home.clone()),
+            ..crate::caps::Caps::granted(&root, &none, &none, &none)
+        };
+        let llm = crate::llm::LlmConfig::default();
+        let at =
+            |os: Os, hides: Option<fn() -> bool>| Here { tmp: None, os, hides_keys: hides, ..Here::now() };
+        let (read, write) = (Grant::Read(home.join("ref")), Grant::Write(home.join("out")));
+        let cases: [(&str, Here, [&str; 2]); 3] = [
+            (
+                "macOS",
+                at(Os::Mac, None),
+                [
+                    "read ~/ref and everything in it but files named like keys",
+                    "write in ~/out and everything in it — files named like keys too, though never read",
+                ],
+            ),
+            (
+                "Linux tier own",
+                at(Os::Linux, Some(|| true)),
+                [
+                    "read ~/ref and everything in it but files named like keys",
+                    "write in ~/out and everything in it but files named like keys",
+                ],
+            ),
+            (
+                "Linux tier host",
+                at(Os::Linux, Some(|| false)),
+                [
+                    "read ~/ref and everything in it, files named like keys too",
+                    "write in ~/out and everything in it, files named like keys too",
+                ],
+            ),
+        ];
+        let tilde = |s: String| s.replace(&crate::allow::tilde(&home), "~");
+        for (case, here, words) in &cases {
+            for (g, want) in [&read, &write].into_iter().zip(words) {
+                let (Grant::Read(place) | Grant::Write(place)) = g else { unreachable!() };
+                let key = place.join(policy::KEY_NAMED);
+                std::fs::write(&key, "tarae-fake-token\n").unwrap();
+                let keys = grant_keys(&llm, &caps, g, here).unwrap();
+                assert_eq!(tilde(g.shown_with(keys)), *want, "{case}");
+                // (the policy built for that system, but Linux's confinement: what its rule closes)
+                let w = crate::tools::with_allowed(&llm, &caps, Some(g));
+                let mut p = run_policy_with(&root, &w.llm, &w.reads, &w.folders, here).unwrap();
+                w.onto(&mut p);
+                match keys {
+                    Keys::ReadOnly => assert!(p.key_rule(&key).is_some() && !p.supervised, "{case} {g:?}"),
+                    Keys::Open => assert_eq!(p.key_rule(&key), None, "{case} {g:?}"),
+                    // (tier own's: what its mounts hide — the real one below, on Linux)
+                    Keys::Hidden => assert!(p.supervised, "{case} {g:?}"),
+                }
+            }
+        }
+        // On Linux, the real tier here: hidden by the confined policy's mounts exactly where the words say so
+        #[cfg(target_os = "linux")]
+        if keys_tested_here("a_grants_words_say_what_its_runs_rule_does_to_a_key_in_it") {
+            let here = Here { tmp: None, ..Here::now() };
+            for g in [&read, &write] {
+                let (Grant::Read(place) | Grant::Write(place)) = g else { unreachable!() };
+                let key = std::fs::canonicalize(place.join(policy::KEY_NAMED)).unwrap();
+                let p = policy_from(&root, crate::tools::with_allowed(&llm, &caps, Some(g)), &here).unwrap();
+                let p = confined(Policy { run: RunDir::new().ok(), ..p });
+                let hidden = p.hidden_keys().contains(&key);
+                let said = grant_keys(&llm, &caps, g, &here);
+                assert_eq!(said == Some(Keys::Hidden), hidden, "{g:?}: tier {:?}", p.tier_said());
+                assert_eq!(said == Some(Keys::Open), p.key_rule(&key).is_none() && !hidden, "{g:?}");
+            }
+        }
     }
 
     /// frictions29: the files named like keys are closed in the places outside the project a grant or a default

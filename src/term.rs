@@ -32586,7 +32586,7 @@ mod tests {
         ed.docs[0].text = ropey::Rope::from_str("one\n");
         let hosts = ["api.github.com", "github.com", "uploads.github.com"].map(String::from).to_vec();
         let masked = crate::allow::Grant::Masked("GH_TOKEN".into(), hosts);
-        crate::allow::grant_by(&mut ed, &masked, crate::allow::Scope::Session, 'y');
+        crate::allow::grant_by(&mut ed, &masked, crate::allow::Scope::Session, 'y', None);
         render(&mut ed, &mut Vec::new(), 80, 43).unwrap();
         let (x, y, cw, ch) = ed.screen.toast_card.get().expect("its card");
         let (frame, fw, fh) = ed.last_frame.as_ref().unwrap();

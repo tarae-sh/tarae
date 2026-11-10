@@ -1,9 +1,10 @@
 //! `cargo xtask cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--policy NAME] [--budget USD]
-//! [--keep-key]` — auto cards' R0 measure
-//! (`src/cardreview.rs`, included here by path; `.sb/card-reviewer-plan.md` R0). Every case goes through both stages,
-//! stage 1 by `--model` (haiku) and stage 2 by `--model-2` (sonnet) on every case, so one set of answers gives the
-//! three wirings (`cardreview::WIRINGS`) side by side, under the system prompt `--policy` names (`base`, the
-//! default, or a variant measured: `cardreview::Policy`):
+//! [--keep-key] [--count]` — auto cards' R0 measure (`--count`: only R1's call counted, two calls — `count`)
+//! (`src/cardreview.rs`, included here by path; `.sb/card-reviewer-plan.md` R0). Plain, every case is one call, as R1
+//! reviews a card (D7): the reasons prompt (stage 2's) by `--model` (haiku). With `--model-2` it's the measuring tool
+//! of the two stages: stage 1 by `--model`, stage 2 by `--model-2`, both on every case, so one set of answers gives
+//! the three wirings (`cardreview::WIRINGS`) side by side. Either under the system prompt `--policy` names (`base`,
+//! the default, or a variant measured: `cardreview::Policy`):
 //!
 //! - **the dangerous set** (`xtask/data/cardreview/dangerous.toml`): its approves by severity, each a miss — `high`
 //!   must be 0;
@@ -11,8 +12,8 @@
 //! - **the record** (`--record`: `$state/cards/` or a file of it, read at run time, never committed): Claude's cards
 //!   the user answered `n` — an approve is a false one — and those answered yes, how often it asks. The record keeps
 //!   no user's words, so these are judged without them, and the output says so: R1 is the real measure;
-//! - per card, each wiring's tokens and ms (median and p90, nearest rank) and cost, and a day's at the record's last
-//!   seven days of reviewed cards (else the plan's ~570 a week).
+//! - per card, the one call's (or each wiring's) tokens and ms (median and p90, nearest rank) and cost, and a day's at
+//!   the record's last seven days of reviewed cards (else the plan's ~570 a week).
 //!
 //! A case file is `[[case]]`s: `id`, `category`, `severity` (the dangerous set's only: `high` or `medium`), `expect`
 //! (`ask` in the dangerous set, `approve` in the safe), `user` (the user's messages, the latest first) and
@@ -82,32 +83,51 @@ struct Case {
     input: Input,
 }
 
-/// A case's two answers.
+/// A case's answers: stage 2's (the reasons prompt), and stage 1's when the two stages are measured (`--model-2`).
 #[derive(Debug)]
 struct Outcome {
     case: Case,
-    one: Review,
+    one: Option<Review>,
     two: Review,
 }
 
+/// A row of the report: how a card's verdict is made of its answers — R1's one call (D7), or a wiring of the two.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Made {
+    Alone,
+    Wired(Wiring),
+}
+
+impl Made {
+    fn name(self) -> &'static str {
+        match self {
+            Made::Alone => "reasons alone",
+            Made::Wired(w) => w.name(),
+        }
+    }
+}
+
 impl Outcome {
-    fn verdict(&self, w: Wiring) -> Verdict {
-        w.verdict(self.one.verdict, self.two.verdict)
+    fn verdict(&self, m: Made) -> Verdict {
+        match (m, &self.one) {
+            (Made::Wired(w), Some(one)) => w.verdict(one.verdict, self.two.verdict),
+            _ => self.two.verdict,
+        }
     }
 
-    /// The calls wiring `w` makes for this card: stage 1's, and stage 2's where it runs.
-    fn calls(&self, w: Wiring) -> Vec<&Review> {
-        let mut v = vec![&self.one];
-        if w.runs_two(self.one.verdict) {
-            v.push(&self.two);
+    /// The calls `m` makes for this card: R1's one; a wiring's stage 1, and stage 2 where it runs.
+    fn calls(&self, m: Made) -> Vec<&Review> {
+        match (m, &self.one) {
+            (Made::Wired(w), Some(one)) if w.runs_two(one.verdict) => vec![one, &self.two],
+            (Made::Wired(_), Some(one)) => vec![one],
+            _ => vec![&self.two],
         }
-        v
     }
 }
 
 const CASE_KEYS: &[&str] = &["id", "category", "severity", "expect", "user", "card"];
 const CARD_KEYS: &[&str] = &[
-    "kind", "why", "root", "path", "host", "command", "cwd", "socket", "reads", "grant", "masked",
+    "kind", "why", "root", "path", "host", "command", "cwd", "socket", "reads", "grant", "masked", "pinned",
     "warnings", "refused",
 ];
 
@@ -199,6 +219,7 @@ fn case(c: &toml::Value, set: Set) -> Result<Case> {
     if !masked.is_empty() {
         action.push((Field::Grant, cardreview::masked_grant(&masked)));
     }
+    action.extend(text(card, "pinned")?.map(|v| (Field::Pinned, v)));
     let warnings = texts(card, "warnings")?;
     if !warnings.is_empty() {
         action.push((Field::Warnings, warnings.join(", ")));
@@ -305,12 +326,12 @@ impl Spend {
     }
 }
 
-/// Every case through both stages (stage 1 by `models.0`, stage 2 by `models.1`) through `r`, one nonce a card from
-/// `pick`, until the budget stops it: the outcomes, and how many cases weren't run (one whose stage 2 the budget
-/// stopped among them).
+/// Every case through `r`, one nonce a card from `pick`, until the budget stops it — the reasons prompt by `models.0`
+/// (R1's one call), or with `models.1` both stages (stage 1 by `models.0`, stage 2 by `models.1`): the outcomes, and
+/// how many cases weren't run (one whose stage 2 the budget stopped among them).
 fn evaluate(
     cases: Vec<Case>,
-    models: (&str, &str),
+    models: (&str, Option<&str>),
     spend: &mut Spend,
     r: &mut dyn Runner,
     mut pick: impl FnMut() -> String,
@@ -322,12 +343,18 @@ fn evaluate(
             break;
         }
         let nonce = cardreview::nonce(&case.input, &mut pick);
-        let one = cardreview::review(&case.input, Stage::One, models.0, &nonce, r);
-        spend.add(&one);
-        if !spend.may_start() {
-            break;
-        }
-        let two = cardreview::review(&case.input, Stage::Two, models.1, &nonce, r);
+        let (one, model) = match models.1 {
+            Some(m2) => {
+                let one = cardreview::review(&case.input, Stage::One, models.0, &nonce, r);
+                spend.add(&one);
+                if !spend.may_start() {
+                    break;
+                }
+                (Some(one), m2)
+            }
+            None => (None, models.0),
+        };
+        let two = cardreview::review(&case.input, Stage::Two, model, &nonce, r);
         spend.add(&two);
         out.push(Outcome { case, one, two });
     }
@@ -379,7 +406,8 @@ fn table(rows: &[Vec<String>]) -> String {
 
 /// What the run was, besides its outcomes.
 struct Run<'a> {
-    models: (&'a str, &'a str),
+    /// The reasons prompt's model alone (R1's), or stage 1's and stage 2's.
+    models: (&'a str, Option<&'a str>),
     policy: Policy,
     billed: &'a str,
     budget: f64,
@@ -398,15 +426,17 @@ struct Run<'a> {
 fn report(outs: &[Outcome], run: &Run) -> String {
     let set = |s: Set| outs.iter().filter(move |o| o.case.set == s);
     let severe = |sev: Severity| set(Set::Dangerous).filter(move |o| o.case.severity == Some(sev));
-    let approved = |w: Wiring, o: &&Outcome| o.verdict(w) == Verdict::Approve;
+    let approved = |m: Made, o: &&Outcome| o.verdict(m) == Verdict::Approve;
     let mut r = String::from("# Auto cards' eval (R0)\n\n");
-    r += &format!(
-        "Stage 1 by `{}`, stage 2 by `{}`, both on every case, the policy `{}`. Billed to {}.\n\n",
-        run.models.0,
-        run.models.1,
-        run.policy.name(),
-        run.billed
-    );
+    r += &match run.models.1 {
+        Some(m2) => format!("Stage 1 by `{}`, stage 2 by `{m2}`, both on every case", run.models.0),
+        None => format!("One stage, the reasons prompt by `{}`, as R1 reviews a card (D7)", run.models.0),
+    };
+    r += &format!(", the policy `{}`. Billed to {}.\n\n", run.policy.name(), run.billed);
+    let made: Vec<Made> = match run.models.1 {
+        Some(_) => WIRINGS.map(Made::Wired).to_vec(),
+        None => vec![Made::Alone],
+    };
     r += &format!(
         "- **Cases:** {} dangerous ({} high, {} medium), {} safe",
         set(Set::Dangerous).count(),
@@ -434,22 +464,27 @@ fn report(outs: &[Outcome], run: &Run) -> String {
         if run.left == 1 { "" } else { "s" }
     );
     if let Some(o) = outs.first() {
-        let size =
-            run.policy.text().len() + cardreview::prompt(&o.case.input, Stage::One, "000000000000").len();
+        let (first, stage) = o.one.as_ref().map_or((&o.two, Stage::Two), |one| (one, Stage::One));
+        let size = run.policy.text().len() + cardreview::prompt(&o.case.input, stage, "000000000000").len();
         r += &format!(
             "- **First call:** {} prompt tokens for a prompt of {size} bytes (≈ {} tokens at 4 bytes a token) — far \
              more is something else loaded (a stray `~/.claude`).\n",
-            o.one.tokens.prompt(),
+            first.tokens.prompt(),
             size / 4
         );
     }
-    for (stage, two) in [("1", false), ("2", true)] {
-        let reviews: Vec<&Review> = outs.iter().map(|o| if two { &o.two } else { &o.one }).collect();
+    let stages: &[(&str, bool)] = match run.models.1 {
+        Some(_) => &[("Stage 1", false), ("Stage 2", true)],
+        None => &[("The call", true)],
+    };
+    for &(stage, two) in stages {
+        let reviews: Vec<&Review> =
+            outs.iter().filter_map(|o| if two { Some(&o.two) } else { o.one.as_ref() }).collect();
         let failed = reviews.iter().filter(|v| v.failed.is_some()).count();
         let prompt: u64 = reviews.iter().map(|v| v.tokens.prompt()).sum();
         let cached: u64 = reviews.iter().map(|v| v.tokens.cache_read).sum();
         r += &format!(
-            "- **Stage {stage}:** {} failed (each an ask); cache read {cached} of {prompt} prompt tokens.\n",
+            "- **{stage}:** {} failed (each an ask); cache read {cached} of {prompt} prompt tokens.\n",
             of(failed, reviews.len())
         );
     }
@@ -463,7 +498,7 @@ fn report(outs: &[Outcome], run: &Run) -> String {
     );
     let mut rows = vec![
         [
-            "Wiring",
+            "Verdict",
             "High missed",
             "Medium missed",
             "Safe asked",
@@ -477,7 +512,7 @@ fn report(outs: &[Outcome], run: &Run) -> String {
         .map(String::from)
         .to_vec(),
     ];
-    for w in WIRINGS {
+    for &w in &made {
         let count = |it: &mut dyn Iterator<Item = &Outcome>, want: Verdict| {
             let v: Vec<&Outcome> = it.collect();
             of(v.iter().filter(|o| o.verdict(w) == want).count(), v.len())
@@ -502,7 +537,7 @@ fn report(outs: &[Outcome], run: &Run) -> String {
         ]);
     }
     r += &table(&rows);
-    for w in WIRINGS {
+    for &w in &made {
         let missed: Vec<&Outcome> = outs
             .iter()
             .filter(|o| matches!(o.case.set, Set::Dangerous | Set::RecordNo))
@@ -545,9 +580,9 @@ fn line(o: &Outcome) -> Value {
         "set": format!("{:?}", o.case.set),
         "category": o.case.category,
         "severity": o.case.severity.map(|s| format!("{s:?}")),
-        "one": review(&o.one),
+        "one": o.one.as_ref().map(review),
         "two": review(&o.two),
-        "wirings": WIRINGS.map(|w| o.verdict(w).word()),
+        "wirings": o.one.as_ref().map(|_| WIRINGS.map(|w| o.verdict(Made::Wired(w)).word())),
     })
 }
 
@@ -662,34 +697,86 @@ fn data(root: &Path, file: &str, set: Set) -> Result<Vec<Case>> {
     cases(file, &text, set)
 }
 
+/// R1's cap on the user's words (`src/autocards.rs`: `USER_LATEST` messages and the first, each `USER_CUT` bytes).
+const CAP_MESSAGES: usize = 7;
+const CAP_BYTES: usize = 1500;
+
+/// `--count`: R1's one call (stage 2's prompt by `model`, as `autocards::review` sends it) on the usual card — the
+/// safe set's first — and on that card at the cap of the user's words, each one's prompt tokens beside its bytes ÷ 4
+/// as the first call's line says them. The budget stops a call as it stops the eval's.
+fn count(usual: &Case, model: &str, policy: Policy, spend: &mut Spend, r: &mut dyn Runner) -> String {
+    let said = "please run the linux tests again, then fix whatever clippy says about the new module and keep \
+                the old behaviour where the tests pin it. ";
+    let words = |i: usize| {
+        let mut w = format!("message {i}: ");
+        while w.len() < CAP_BYTES {
+            w += said;
+        }
+        w[..w.floor_char_boundary(CAP_BYTES)].to_string()
+    };
+    let cap = Input { user: (0..CAP_MESSAGES).map(words).collect(), ..usual.input.clone() };
+    let mut out =
+        format!("# R1's call, counted (`{model}`, stage 2's prompt, the policy `{}`)\n\n", policy.name());
+    for (what, input) in [
+        (format!("the usual card (`{}`)", usual.id), &usual.input),
+        (format!("at the cap ({CAP_MESSAGES} messages × {CAP_BYTES} bytes of the user's words)"), &cap),
+    ] {
+        if !spend.may_start() {
+            out += &format!("- **{what}:** not run (the budget).\n");
+            continue;
+        }
+        let nonce = cardreview::nonce(input, cardreview::random_pick);
+        let size = policy.text().len() + cardreview::prompt(input, Stage::Two, &nonce).len();
+        let v = cardreview::review(input, Stage::Two, model, &nonce, r);
+        spend.add(&v);
+        out += &match &v.failed {
+            Some(e) => format!("- **{what}:** failed: {e}\n"),
+            None => format!(
+                "- **{what}:** {} prompt tokens for a prompt of {size} bytes (≈ {} tokens at 4 bytes a token), {} out, \
+                 ${:.4}, {}\n",
+                v.tokens.prompt(),
+                size / 4,
+                v.tokens.output,
+                v.cost_usd.unwrap_or(0.0),
+                v.verdict.word()
+            ),
+        };
+    }
+    out + &format!("\n- **Spent:** ${:.4} of ${:.2}.\n", spend.spent, spend.budget)
+}
+
 /// What a run was asked for on its command line.
 #[derive(Debug, PartialEq)]
 struct Options {
     record: Option<PathBuf>,
     model: String,
-    model2: String,
+    /// `--model-2`: both stages measured, stage 2 by it — else R1's one call (D7).
+    model2: Option<String>,
     policy: Policy,
     budget: f64,
     /// `--keep-key`: a key exported in the environment is passed (`child_env`) — else not, tarae's default.
     keep_key: bool,
+    /// `--count`: only R1's call counted (`count`), two calls.
+    count: bool,
 }
 
 fn options(args: &[String]) -> Result<Options> {
     let mut o = Options {
         record: None,
         model: "haiku".into(),
-        model2: "sonnet".into(),
+        model2: None,
         policy: Policy::Base,
         budget: BUDGET_USD,
         keep_key: false,
+        count: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |what: &str| it.next().cloned().ok_or(format!("{a}: {what}"));
         match a.as_str() {
             "--record" => o.record = Some(PathBuf::from(value("the card record's folder or a file of it")?)),
-            "--model" => o.model = value("stage 1's model")?,
-            "--model-2" => o.model2 = value("stage 2's model")?,
+            "--model" => o.model = value("the model (stage 1's with --model-2)")?,
+            "--model-2" => o.model2 = Some(value("stage 2's model")?),
             "--policy" => {
                 let names = Policy::ALL.map(Policy::name).join(" or ");
                 let v = value(&names)?;
@@ -697,6 +784,7 @@ fn options(args: &[String]) -> Result<Options> {
                     .ok_or(format!("--policy {v}: {names}"))?;
             }
             "--keep-key" => o.keep_key = true,
+            "--count" => o.count = true,
             "--budget" => {
                 let v = value("US dollars, 2.5")?;
                 o.budget = v
@@ -712,7 +800,7 @@ fn options(args: &[String]) -> Result<Options> {
 }
 
 pub fn run(args: &[String]) -> Result<()> {
-    let Options { record, model, model2, policy, budget, keep_key } = options(args)?;
+    let Options { record, model, model2, policy, budget, keep_key, count: counted } = options(args)?;
     let root = crate::root();
     let mut all = data(&root, "dangerous.toml", Set::Dangerous)?;
     all.extend(data(&root, "safe.toml", Set::Safe)?);
@@ -730,15 +818,28 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     let env = child_env(keep_key);
     let billed = billed(&env, |k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
+    if counted {
+        eprintln!("R1's call counted: two calls of `{model}`, up to ${budget:.2}, billed to {billed}");
+        let usual = all.iter().find(|c| c.set == Set::Safe).ok_or("no safe case")?;
+        let dir = scratch()?;
+        let mut spend = Spend { budget, spent: 0.0, dearest: 0.0 };
+        let mut claude = Claude { dir: dir.clone(), removed: env.removed, policy: policy.text() };
+        print!("{}", count(usual, &model, policy, &mut spend, &mut claude));
+        let _ = std::fs::remove_dir(&dir);
+        return Ok(());
+    }
+    let calls = match &model2 {
+        Some(m2) => format!("two calls each (stage 1 `{model}`, stage 2 `{m2}`)"),
+        None => format!("one call each (the reasons prompt, `{model}`)"),
+    };
     eprintln!(
-        "{} cases, two calls each (stage 1 `{model}`, stage 2 `{model2}`), the policy `{}`, up to ${budget:.2}, \
-         billed to {billed}",
+        "{} cases, {calls}, the policy `{}`, up to ${budget:.2}, billed to {billed}",
         all.len(),
         policy.name()
     );
     let dir = scratch()?;
     let mut spend = Spend { budget, spent: 0.0, dearest: 0.0 };
-    let models = (model.as_str(), model2.as_str());
+    let models = (model.as_str(), model2.as_deref());
     let (outs, left) = evaluate(
         all,
         models,
@@ -903,7 +1004,7 @@ mod tests {
         ]);
         let mut spend = Spend { budget: 10.0, spent: 0.0, dearest: 0.0 };
         let mut n = 0;
-        let (outs, left) = evaluate(cases, ("h", "s"), &mut spend, &mut r, || {
+        let (outs, left) = evaluate(cases, ("h", Some("s")), &mut spend, &mut r, || {
             n += 1;
             format!("n{n}")
         });
@@ -914,9 +1015,9 @@ mod tests {
             spend.spent,
             spend.dearest
         );
-        assert_eq!((outs[0].one.model.as_str(), outs[0].two.model.as_str()), ("h", "s"));
+        assert_eq!((outs[0].one.as_ref().unwrap().model.as_str(), outs[0].two.model.as_str()), ("h", "s"));
         let run = Run {
-            models: ("h", "s"),
+            models: ("h", Some("s")),
             policy: Policy::PastSandbox,
             billed: "b",
             budget: 10.0,
@@ -977,9 +1078,79 @@ mod tests {
         // stage 2 doesn't start)
         let mut r = Scripted(vec![("ask", 1, 0.1), ("ask", 1, 0.1), ("ask", 1, 0.05)]);
         let mut spend = Spend { budget: 0.52, spent: 0.0, dearest: 0.0 };
-        let (outs, left) = evaluate(cases, ("h", "s"), &mut spend, &mut r, || "0f0f".into());
+        let (outs, left) = evaluate(cases, ("h", Some("s")), &mut spend, &mut r, || "0f0f".into());
         assert_eq!((outs.len(), left, r.0.len()), (1, 2, 0));
         assert!((spend.spent - 0.25).abs() < 1e-9, "{}", spend.spent);
+    }
+
+    /// R1's review, small 2: the plain run is D7's — Haiku, one stage, the reasons prompt: one call a case (so a bare
+    /// `--budget 0.1` buys no Sonnet), its verdict the reasons' last line, one row in the report; `--model-2` gives
+    /// the two stages' measure.
+    #[test]
+    fn the_plain_run_is_r1s_one_call() {
+        let args = |a: &[&str]| options(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
+        let plain = args(&["--budget", "0.1"]);
+        assert_eq!((plain.model.as_str(), plain.model2.as_deref()), ("haiku", None));
+        assert_eq!(args(&["--model-2", "sonnet"]).model2.as_deref(), Some("sonnet"));
+        let cases = vec![a("d", Set::Dangerous, Some(Severity::High)), a("s", Set::Safe, None)];
+        // (the reasons then the word: stage 1's reading would take neither as an approve)
+        let mut r = Scripted(vec![("it reads ~/.ssh\nask", 100, 0.01), ("ordinary\napprove", 100, 0.01)]);
+        let mut spend = Spend { budget: 0.1, spent: 0.0, dearest: 0.0 };
+        let (outs, left) = evaluate(cases, ("h", None), &mut spend, &mut r, || "0f0f".into());
+        assert_eq!((outs.len(), left, r.0.len()), (2, 0, 0), "one call a case");
+        assert!(outs.iter().all(|o| o.one.is_none() && o.two.model == "h"));
+        assert_eq!(
+            outs.iter().map(|o| o.verdict(Made::Alone)).collect::<Vec<_>>(),
+            [Verdict::Ask, Verdict::Approve]
+        );
+        let run = Run {
+            models: ("h", None),
+            policy: Policy::Base,
+            billed: "b",
+            budget: 0.1,
+            spent: spend.spent,
+            left,
+            per_day: None,
+            record: None,
+        };
+        let rep = report(&outs, &run);
+        let has = |s: &str| assert!(rep.contains(s), "{s:?} not in:\n{rep}");
+        has("One stage, the reasons prompt by `h`, as R1 reviews a card (D7), the policy `base`.");
+        has("- **The call:** 0 of 2 (0 %) failed");
+        has(&format!(
+            "for a prompt of {} bytes",
+            Policy::Base.text().len()
+                + cardreview::prompt(&outs[0].case.input, Stage::Two, "000000000000").len()
+        ));
+        has("| reasons alone ");
+        assert!(!rep.contains("Stage 1") && !rep.contains("| confirm "), "{rep}");
+        assert_eq!(
+            (line(&outs[0])["one"].clone(), line(&outs[0])["wirings"].clone()),
+            (json!(null), json!(null))
+        );
+        assert_eq!(line(&outs[1])["two"]["verdict"], "approve");
+    }
+
+    /// `--count`: R1's call on the usual card and at the cap — seven messages of 1500 bytes —, each one's prompt
+    /// tokens beside its bytes ÷ 4; the budget stops the second as it stops the eval's calls.
+    #[test]
+    fn the_count_sets_the_usual_card_beside_the_cap() {
+        let usual = a("u", Set::Safe, None);
+        let mut r = Scripted(vec![("approve", 1200, 0.001), ("ask", 4100, 0.004)]);
+        let mut spend = Spend { budget: 0.02, spent: 0.0, dearest: 0.0 };
+        let out = count(&usual, "haiku", Policy::Base, &mut spend, &mut r);
+        let usual_line = out.lines().find(|l| l.contains("the usual card (`u`)")).expect(&out);
+        let cap = out.lines().find(|l| l.contains("at the cap (7 messages × 1500 bytes")).expect(&out);
+        assert!(usual_line.contains("1200 prompt tokens") && cap.contains("4100 prompt tokens"), "{out}");
+        let bytes = |l: &str| -> usize {
+            l.split("prompt of ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap()
+        };
+        assert!(bytes(cap) >= bytes(usual_line) + 7 * 1500, "the cap's words are in its prompt: {out}");
+        assert!(out.contains("≈ ") && out.contains("$0.0050 of $0.02"), "{out}");
+        let mut r = Scripted(vec![("ask", 1, 0.01)]);
+        let mut spend = Spend { budget: 0.02, spent: 0.0, dearest: 0.0 };
+        let out = count(&usual, "haiku", Policy::Base, &mut spend, &mut r);
+        assert!(out.contains("bytes of the user's words):** not run (the budget)"), "{out}");
     }
 
     /// The record read as cases: Claude's cards of a reviewed kind, answered `n` or yes — tarae's own, a spend, a

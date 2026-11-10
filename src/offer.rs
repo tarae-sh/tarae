@@ -1802,10 +1802,11 @@ impl crate::editor::Editor {
         let (mut dropped, mut kept) = (Vec::new(), Vec::new());
         for o in self.workspace.parked.iter().chain(self.offers.iter().filter(|_| front)) {
             if gone(&o.what) {
-                kept.push(o.said(&session, "dropped", self.workspace.claude.caps()));
+                kept.push((o.id, o.said(&session, "dropped", self.workspace.claude.caps())));
                 dropped.push(o.id);
             }
         }
+        let kept = kept.into_iter().filter_map(|(id, e)| crate::autocards::answered(self, id, e)).collect();
         self.cards_record(kept);
         for id in dropped {
             self.card_how(id, why);
@@ -1907,6 +1908,8 @@ impl crate::editor::Editor {
                 l.parked.retain(|x| !same(x));
             }
         }
+        // (auto cards' shadow: reviewed beside it as it lands, wherever — parked too; nothing drawn changes)
+        let auto = crate::autocards::prepare(self, &o);
         // (the call it holds waits on it — watched until it's answered: `asking_sync`)
         if let Some(asker) = o.asker() {
             self.workspace.claude.asking.push(Asking { card: o.id, asker, what: o.title.clone() });
@@ -1917,17 +1920,20 @@ impl crate::editor::Editor {
             && self.workspaces.iter().any(|l| l.id == at)
         {
             self.count(crate::features::Area::Card, o.kind());
+            let id = o.id;
             if let Some(l) = self.workspaces.iter_mut().find(|l| l.id == at) {
                 l.parked.push(o);
             }
-            return;
+            return crate::autocards::review(self, id, auto);
         }
         // From a session behind: it waits in that session, and comes up when the session is in front (`workspace_in`)
         if self.background() {
             self.count(crate::features::Area::Card, o.kind());
             // (still waiting a while later: one warning names it — `card_nudge`)
             self.nudge_later(self.workspace.id, o.id);
-            return self.workspace.parked.push(o);
+            let id = o.id;
+            self.workspace.parked.push(o);
+            return crate::autocards::review(self, id, auto);
         }
         // (one holding a call isn't merged into another by its title — the other's call would be lost; nor is a
         // plugin's ask — the other's request would be: one asking the same joins its card, `plugin_ask`; nor a
@@ -1951,6 +1957,7 @@ impl crate::editor::Editor {
             // (a proposed card never gets here: bring and end cards are one a checkout, above, a board's one at a time —
             // `board::ask`)
             let yours = o.yours;
+            let mut merged = None;
             if !old.installing() {
                 (old.question, old.working, old.failed) = (o.question, o.working, o.failed);
                 (old.decided, old.warning, old.asked, old.diff) = (o.decided, o.warning, o.asked, o.diff);
@@ -1958,9 +1965,14 @@ impl crate::editor::Editor {
                 (old.held, old.gate, old.held_changes, old.aside) = (o.held, o.gate, o.held_changes, false);
                 (old.what, old.state) = (o.what, OfferState::Asking);
                 old.rev += 1;
+                merged = Some(old.id);
             }
             if yours && self.offers.first().is_some_and(|f| f.title == o.title) {
                 self.card_focus_front();
+            }
+            // (what it asks now reviewed again, the old rev's verdict dropped — `autocards::REVS_MAX` at most)
+            if let Some(id) = merged {
+                crate::autocards::review(self, id, auto);
             }
             return;
         }
@@ -1970,7 +1982,9 @@ impl crate::editor::Editor {
         // (asked: counted once it's stacked — one asked again while it's up only refreshed the one there, above)
         self.count(crate::features::Area::Card, o.kind());
         let (at, yours) = (self.offer_place(&o), o.yours);
+        let id = o.id;
         self.offers.insert(at, o);
+        crate::autocards::review(self, id, auto);
         // What your own key asked for is focused at once — in front, nothing else being answered there (P3 §3.8)
         if yours && at == 0 {
             self.card_focus_front();
@@ -2950,7 +2964,10 @@ impl crate::editor::Editor {
     /// (`features.rs`) — every answer goes through here.
     fn offer_said(&mut self, o: &Offer, key: char) {
         let entry = o.said(&self.workspace.log(), &key.to_string(), self.workspace.claude.caps());
-        self.cards_record(vec![entry]);
+        // (auto cards' verdict held for it: the entry waits for it — `autocards::answered`)
+        if let Some(entry) = crate::autocards::answered(self, o.id, entry) {
+            self.cards_record(vec![entry]);
+        }
         self.card_how(o.id, format!("answered {key}"));
         crate::orchestra::proposal_answered(self, o, key);
         if self.counting() {
