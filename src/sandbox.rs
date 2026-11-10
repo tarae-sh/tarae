@@ -10563,7 +10563,8 @@ mod tests {
     /// R1 fix 6: a place's grant says of the files named like keys in it what the rule its run will have does to one
     /// there (`grant_keys`) — for each case the words agree with the built policy's `key_rule` and, on Linux,
     /// `hidden_keys` on a stand-in key inside the place: macOS's closed to reads only, Linux's hidden in tier own,
-    /// open in tiers host and unserved. (A made-up home in the test's temp folder, `$TMPDIR` not said.)
+    /// open in tiers host and unserved. (A made-up home in the test's temp folder, `$TMPDIR` not said.) A machine said
+    /// to give a tier (`TARAE_EXPECT_TIER`) fails where the real policy's is another.
     #[test]
     fn a_grants_words_say_what_its_runs_rule_does_to_a_key_in_it() {
         use crate::allow::{Grant, Keys};
@@ -10637,6 +10638,10 @@ mod tests {
                 let key = std::fs::canonicalize(place.join(policy::KEY_NAMED)).unwrap();
                 let p = policy_from(&root, crate::tools::with_allowed(&llm, &caps, Some(g)), &here).unwrap();
                 let p = confined(Policy { run: RunDir::new().ok(), ..p });
+                if let Ok(want) = std::env::var("TARAE_EXPECT_TIER").map(|w| w.trim().to_string()) {
+                    let got = p.tier_said().unwrap_or_default();
+                    assert_eq!(got, want, "tier {want} expected by TARAE_EXPECT_TIER, got {got}");
+                }
                 let hidden = p.hidden_keys().contains(&key);
                 let said = grant_keys(&llm, &caps, g, &here);
                 assert_eq!(said == Some(Keys::Hidden), hidden, "{g:?}: tier {:?}", p.tier_said());
