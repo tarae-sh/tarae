@@ -109,6 +109,8 @@ pub fn choices_by(
     let mut out: Vec<Choice> = Vec::new();
     let home = caps.home.as_deref().unwrap_or(Path::new("/"));
     let (root, kept, later) = (caps.root.as_path(), &caps.kept, &caps.later);
+    // (a key's name as its row and the run's report say it: from the project its rule is for)
+    let named = |t: &Path| crate::allow::from_project(keys.map_or(root, |k| k.root()), t);
     for d in denials {
         let target = crate::sandbox::profile_path(Path::new(&d.target));
         let below = |dir: &Path| {
@@ -169,7 +171,7 @@ pub fn choices_by(
             found.push(Choice {
                 grant: Grant::Key(target.clone()),
                 hint: format!("{} {doing} · named like a key", d.process),
-                why: format!("{} was {doing} {}, named like a key", d.process, crate::allow::tilde(&target)),
+                why: format!("{} was {doing} {}, named like a key", d.process, named(&target)),
             });
         } else if file && !d.terminal() && read {
             found.extend(crate::allow::read_choices(&target, home, kept).into_iter().map(|place| {
@@ -221,14 +223,16 @@ pub fn choices_by(
 }
 
 /// A file named like a key as the list offers it (`Grant::Key`): used where runs write, since its writes reach
-/// there (`KeyRules::written`); read elsewhere — home, a place read only. With no rule, the project's only.
+/// there (`KeyRules::written`); read elsewhere — home, a place read only. With no rule, the project's only. Named
+/// as the run's report names it (`allow::from_project`): from the project its rule is for (`root` with none).
 pub(crate) fn key_label(k: &Path, keys: Option<&crate::sandbox::KeyRules>, root: &Path) -> String {
+    let root = keys.map_or(root, |r| r.root());
     let written = match keys {
         Some(rules) => rules.written(k),
         None => k.starts_with(root),
     };
     let verb = if written { "using" } else { "reading" };
-    format!("allow {verb} {} — that file only", crate::allow::tilde(k))
+    format!("allow {verb} {} — that file only", crate::allow::from_project(root, k))
 }
 
 /// What could open for the variables `names` (left out of a run's environment, named in its output): each one
@@ -735,10 +739,7 @@ fn grant_offer(
             let line = masking_lines(n, m).0.join("\n");
             format!("Let Claude's commands {}\n\n{said} {lasts}\n{line}", grant.shown())
         }
-        _ => format!(
-            "Let Claude's commands {}{registry}\n\n{said} {lasts}",
-            grant.shown_with(run.granting.unwrap_or_default())
-        ),
+        _ => format!("Let Claude's commands {}{registry}\n\n{said} {lasts}", card_grant(&grant, &run)),
     };
     if let Some(from) = &run.from {
         question.push_str(&format!("\n\nWhat it refused was read {from}."));
@@ -815,11 +816,7 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
             if let Some(c) = ed.workspace.claude.chat.as_mut() {
                 c.also_refused.push(grant.clone());
             }
-            let no = format!(
-                "The user said no to letting your commands {} — for the rest of this chat: don't ask for it \
-                 again. If the command can't work without it, tell the user what it needs.",
-                grant.shown_with(run.granting.unwrap_or_default())
-            );
+            let no = refused_said(&grant, &run);
             // (a card tarae raised on the run's refusal: Claude hears how the run ended, then the no)
             return match run.report.take() {
                 Some(report) => crate::tools::answer(ed, call, Ok(format!("{report}\n{no}\n"))),
@@ -854,17 +851,37 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
         Grant::Masked(..) => crate::allow::grant_by(ed, &grant, scope, 'y', None),
         _ => crate::allow::grant_by(ed, &grant, scope, scope.key(), run.granting),
     }
-    let head = format!(
-        "The user ran `{}` again, letting it {}{}. How it ended:",
-        run.label(),
-        grant.shown_with(run.granting.unwrap_or_default()),
-        if scope == Scope::Once { " this once" } else { "" }
-    );
+    let head = rerun_head(&grant, &run, scope);
     rerun_of(ed, &run, &head);
     // (the answer rides along whatever its scope: an `A` with no chat open is the store's only once written, and
     // a failed take-back of it hides it until then — the run again is of the answer just given)
     let extra = Extra { grant: Some(grant), outside: false, base: None };
     crate::tools::guard_and_go(ed, For::User(head), run.job, true, extra);
+}
+
+/// What a grant's card offered, as Claude is told the user's answer — in the card's words (`card_grant`).
+pub(crate) fn refused_said(grant: &Grant, run: &BlockedRun) -> String {
+    format!(
+        "The user said no to letting your commands {} — for the rest of this chat: don't ask for it again. If the \
+         command can't work without it, tell the user what it needs.",
+        card_grant(grant, run)
+    )
+}
+
+/// What Claude hears first of the user's run again from a grant's card (`scope` its answer's).
+pub(crate) fn rerun_head(grant: &Grant, run: &BlockedRun, scope: Scope) -> String {
+    format!(
+        "The user ran `{}` again, letting it {}{}. How it ended:",
+        run.label(),
+        card_grant(grant, run),
+        if scope == Scope::Once { " this once" } else { "" }
+    )
+}
+
+/// A grant as its card says it — the card's line, Claude's answer, the reviewer's record: a key in the project named
+/// from the root of the run's key rule (`Grant::shown_from`), a place with what that rule leaves of the keys in it.
+pub(crate) fn card_grant(grant: &Grant, run: &BlockedRun) -> String {
+    grant.shown_from(run.keys.as_ref().map(|k| k.root()), run.granting.unwrap_or_default())
 }
 
 /// The user's run again of `run` is told with `head` as it ends (`tools::told`): which run it was, for whether it
@@ -1204,8 +1221,9 @@ mod tests {
         let got: Vec<(&Grant, &str, &str)> =
             all.iter().map(|c| (&c.grant, c.hint.as_str(), c.why.as_str())).collect();
         let g = Grant::Key(env.clone());
-        let why = format!("node was reading {}, named like a key", crate::allow::tilde(&env));
-        assert_eq!(got, [(&g, "node reading · named like a key", why.as_str())]);
+        // (named from the project, as the run's report names it)
+        let why = "node was reading app/.env, named like a key";
+        assert_eq!(got, [(&g, "node reading · named like a key", why)]);
         // (outside the project, by the run's own rule: `sandbox::tests::every_user_of_the_key_rule_gives_one_answer`;
         // with none, the project's only)
         let outside = choices(&[d("/Users/u/q/.env")], &crate::caps::Caps::at(home, root));
@@ -1248,7 +1266,7 @@ mod tests {
             let all = choices(&[d(op, "/Users/u/p/app/.env")], &caps);
             let got: Vec<(&Grant, &str, &str)> =
                 all.iter().map(|c| (&c.grant, c.hint.as_str(), c.why.as_str())).collect();
-            let why = format!("sh was {doing} {}, named like a key", crate::allow::tilde(&env));
+            let why = format!("sh was {doing} app/.env, named like a key");
             let hint = format!("sh {doing} · named like a key");
             assert_eq!(got, [(&g, hint.as_str(), why.as_str())], "{op}");
         }

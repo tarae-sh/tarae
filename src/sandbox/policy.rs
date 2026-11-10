@@ -207,6 +207,11 @@ impl KeyRules {
         }
     }
 
+    /// The project its rule is for (real).
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// `Policy::key_rule`.
     pub fn rule(&self, real: &Path) -> Option<KeyRule> {
         self.view().rule(real)

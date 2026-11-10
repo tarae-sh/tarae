@@ -414,7 +414,7 @@ impl Grant {
             Grant::Terminals => "open terminals (/dev/ttys*) — every one, yours too".into(),
             // (its reads, and its writes where runs write — macOS's profile closes both by its name, B1; Linux's
             // mounts hide it whole)
-            Grant::Key(k) => format!("use {} as any file there, named like a key — that one file", tilde(k)),
+            Grant::Key(k) => key_shown(&tilde(k)),
             Grant::Localhost => "connect to every port on this machine".into(),
             Grant::Env(n) => format!("have your variable {n} (its value is never shown)"),
             Grant::Masked(n, hosts) => format!(
@@ -438,6 +438,15 @@ impl Grant {
             Keys::Open => ", files named like keys too",
         };
         format!("{verb} {} and everything in it{rest}", tilde(p))
+    }
+
+    /// `shown_with` as its card says it: a key in the project (`root`, the run's) named from it, as the list's row
+    /// and the run's report name it (`from_project`).
+    pub fn shown_from(&self, root: Option<&Path>, keys: Keys) -> String {
+        match (self, root) {
+            (Grant::Key(k), Some(root)) => key_shown(&from_project(root, k)),
+            _ => self.shown_with(keys),
+        }
     }
 
     /// Whether an answer of it is ever written — `$state/sessions` or the project's store: never a socket, a masked
@@ -548,6 +557,21 @@ pub fn tilde(p: &Path) -> String {
         Some(rest) if rest.as_os_str().is_empty() => "~".into(),
         Some(rest) => format!("~/{}", rest.display()),
         None => p.display().to_string(),
+    }
+}
+
+/// What `Grant::Key` lets, the file named `name`.
+fn key_shown(name: &str) -> String {
+    format!("use {name} as any file there, named like a key — that one file")
+}
+
+/// `p` as the run's report names a file: from the project when it's inside `root` (`.env`, `app/.env`), else with
+/// home spelled `~` (`tilde`) — the list's row for it and its card say it the same.
+pub fn from_project(root: &Path, p: &Path) -> String {
+    match p.strip_prefix(root) {
+        // (no root — none known: every path is under an empty one)
+        Ok(rel) if !rel.as_os_str().is_empty() && !root.as_os_str().is_empty() => rel.display().to_string(),
+        _ => tilde(p),
     }
 }
 

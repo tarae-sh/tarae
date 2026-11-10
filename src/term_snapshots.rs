@@ -7013,8 +7013,9 @@ fn snapshot_granted() {
 }
 
 /// B1's screens (macOS, a key's change refused), for their screenshots — only with `TARAE_FRAMES_DIR` set (both
-/// themes there, 120×34 and 80×43; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): a run refused deleting
-/// `.env` and writing `config/server.pem` — the run panel's rows, then its list of what could open (`space m s`).
+/// themes there, 120×34 and 80×34 — the chat open at 80, as Short 4's beat 6; `cargo xtask shot` draws them with
+/// `TARAE_SHOT_REPLAY`): a run refused deleting `.env` and writing `config/server.pem` — the run panel's rows, then
+/// its list of what could open (`space m s`), then the card its first row opens (`enter`).
 #[cfg(target_os = "macos")]
 #[test]
 fn frames_of_key_writes() {
@@ -7023,42 +7024,89 @@ fn frames_of_key_writes() {
     }
     let root = PathBuf::from("/private/tmp/tarae-shot-keys/app");
     std::fs::create_dir_all(root.join("config")).unwrap();
-    for (w, h) in [(120, 34), (80, 43)] {
-        let mut s = Shot::new(w, h);
-        s.root = root.clone();
-        s.ed.workspace.root = root.clone();
-        s.file("src/demo.rs", DEMO_RS);
-        let watch = crate::sandbox::Watch::quiet("t.");
-        let d = |op: &str, f: &str| crate::sandbox::Denial {
-            process: "sh".into(),
-            op: op.into(),
-            target: root.join(f).display().to_string(),
-        };
-        watch.record(d("file-write-unlink", ".env"));
-        watch.record(d("file-write-data", "config/server.pem"));
-        let env = crate::sandbox::Env { root: root.clone(), ..crate::sandbox::Env::default() };
-        let policy =
-            crate::sandbox::Policy { watch: Some(watch), ..crate::sandbox::Policy::for_project(&env) };
-        let task =
-            crate::task::Task { name: "./reset.sh".into(), cmd: "./reset.sh".into(), cwd: root.clone() };
-        let mut r = crate::task::Run::for_test(task);
-        r.state = crate::task::State::Failed(Some(1));
-        r.took = Some(Duration::from_millis(140));
-        r.by_claude = true;
-        r.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
-        r.output = [
-            (true, "rm: .env: Operation not permitted"),
-            (true, "./reset.sh: line 3: config/server.pem: Operation not permitted"),
-        ]
-        .into_iter()
-        .collect();
-        s.ed.workspace.task_run = Some(r);
-        s.ed.workspace.claude.sandbox = Some(crate::sandbox::guarantees::Guarantees::seatbelt(false, false));
+    for (w, h) in [(120, 34), (80, 34)] {
+        let mut s = key_writes_run(w, h, &root, w == 80);
         s.frames_both(&format!("keywrites-panel-{w}"));
         s.keys(" ms");
         s.until("the list", |ed| ed.picker.is_some());
         s.frames_both(&format!("keywrites-list-{w}"));
+        s.keys("<ret>");
+        s.until("the card", |ed| !ed.offers.is_empty());
+        s.frames_both(&format!("keywrites-card-{w}"));
     }
+}
+
+/// B1's run (macOS) in `root` (real): Claude's `./reset.sh` refused deleting `.env` and writing `config/server.pem`,
+/// on the run's panel — the chat column open with `chat`.
+#[cfg(target_os = "macos")]
+fn key_writes_run(w: u16, h: u16, root: &Path, chat: bool) -> Shot {
+    let mut s = Shot::new(w, h);
+    s.root = root.to_path_buf();
+    s.ed.workspace.root = root.to_path_buf();
+    s.file("src/demo.rs", DEMO_RS);
+    if chat {
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    }
+    let watch = crate::sandbox::Watch::quiet("t.");
+    let d = |op: &str, f: &str| crate::sandbox::Denial {
+        process: "sh".into(),
+        op: op.into(),
+        target: root.join(f).display().to_string(),
+    };
+    watch.record(d("file-write-unlink", ".env"));
+    watch.record(d("file-write-data", "config/server.pem"));
+    let env = crate::sandbox::Env { root: root.to_path_buf(), ..crate::sandbox::Env::default() };
+    let policy = crate::sandbox::Policy { watch: Some(watch), ..crate::sandbox::Policy::for_project(&env) };
+    let task =
+        crate::task::Task { name: "./reset.sh".into(), cmd: "./reset.sh".into(), cwd: root.to_path_buf() };
+    let mut r = crate::task::Run::for_test(task);
+    r.state = crate::task::State::Failed(Some(1));
+    r.took = Some(Duration::from_millis(140));
+    r.by_claude = true;
+    r.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
+    r.output = [
+        (true, "rm: .env: Operation not permitted"),
+        (true, "./reset.sh: line 3: config/server.pem: Operation not permitted"),
+    ]
+    .into_iter()
+    .collect();
+    s.ed.workspace.task_run = Some(r);
+    s.ed.workspace.claude.sandbox = Some(crate::sandbox::guarantees::Guarantees::seatbelt(false, false));
+    s
+}
+
+/// F1 (Short 4's minute recut): a file named like a key in the project is named from it, as the run's report names
+/// it — the list's row whole at 80 columns with the chat open ("allow using .env — that file only", not cut), and
+/// the card its `enter` opens says it the same, its reason line too.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_key_in_the_project_is_named_from_it_in_the_list_and_its_card() {
+    let base = crate::scratch::Scratch::new("key-row");
+    std::fs::create_dir_all(base.join("app/config")).unwrap();
+    let root = std::fs::canonicalize(base.join("app")).unwrap();
+    let mut s = key_writes_run(80, 34, &root, true);
+    // (the run panel's lead row, as the report names it — F1 widened)
+    let rows = rows_of(&mut s, (0, 0, 80, 34));
+    assert!(
+        rows.iter().any(|r| r.contains("▲ sandbox blocked deleting .env  +1")),
+        "the panel's row: {rows:#?}"
+    );
+    s.keys(" ms");
+    s.until("the list", |ed| ed.picker.is_some());
+    let rows = rows_of(&mut s, (0, 0, 80, 34));
+    let row =
+        rows.iter().find(|r| r.contains("allow using ")).unwrap_or_else(|| panic!("no key row: {rows:#?}"));
+    assert!(row.contains("allow using .env — that file only"), "whole at 80 with the chat: {rows:#?}");
+    s.keys("<ret>");
+    s.until("the card", |ed| !ed.offers.is_empty());
+    let card = &s.ed.offers[0].question;
+    assert!(
+        card.starts_with(
+            "Let Claude's commands use .env as any file there, named like a key — that one file\n"
+        ) && card.contains("\n\nsh was deleting .env, named like a key, in `./reset.sh`")
+            && !card.contains(&root.display().to_string()),
+        "{card}"
+    );
 }
 
 #[cfg(target_os = "macos")]

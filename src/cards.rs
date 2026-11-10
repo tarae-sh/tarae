@@ -609,7 +609,8 @@ impl crate::cardreview::Input {
                 }
             }
             What::Grant { grant, run, masked } => {
-                action.push((Field::Grant, r(&grant.shown_with(run.granting.unwrap_or_default()))));
+                // (the card's words: the reviewer judges the card the user saw)
+                action.push((Field::Grant, r(&crate::blocked::card_grant(grant, run))));
                 action.extend(
                     masked.as_deref().map(|h| (Field::Grant, r(&crate::cardreview::masked_grant(h)))),
                 );

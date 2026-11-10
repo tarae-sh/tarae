@@ -111,8 +111,9 @@ fn heading(label: &str) -> Item {
     Item { label: label.into(), action: Action::Heading, hint: String::new(), glyph: None }
 }
 
-/// What `g` lets, as its row says it.
-fn label(g: &Grant) -> String {
+/// What `g` lets, as its row says it — a key in the checkout (`root`, real) named from it, as its card named it
+/// (`allow::from_project`); one elsewhere, another checkout's too, by its `~` path.
+fn label(g: &Grant, root: &Path) -> String {
     let t = crate::allow::tilde;
     match g {
         Grant::Read(p) => format!("read {}", t(p)),
@@ -121,7 +122,7 @@ fn label(g: &Grant) -> String {
         Grant::Socket(s) => format!("connect to the socket {}", t(s)),
         Grant::Host(h, p) => format!("reach {h}:{p}"),
         Grant::Terminals => "open terminals, yours too".into(),
-        Grant::Key(k) => format!("use {}, named like a key", t(k)),
+        Grant::Key(k) => format!("use {}, named like a key", crate::allow::from_project(root, k)),
         Grant::Localhost => "connect to every port here, the risky ones too".into(),
         Grant::Env(n) => format!("have your variable {n}"),
         Grant::Masked(n, hosts) => format!("have your variable {n} masked → {}", hosts.join(", ")),
@@ -228,6 +229,8 @@ pub fn items(
     }
     let mut seen: Vec<Grant> = Vec::new();
     let mut answered = 0;
+    // (as the profile sees it, without the disk: a key's path is real)
+    let root = crate::sandbox::profile_path(&caps.root);
     let groups = [(ALWAYS_SHARED, &every), (ALWAYS, &own), ("this session", session), ("this chat", chat)];
     for (title, a) in groups {
         let mut rows: Vec<(u64, Item)> = Vec::new();
@@ -242,7 +245,7 @@ pub fn items(
                 true => when(at, now),
                 false => "you · until you quit".into(),
             };
-            rows.push((at.unwrap_or(0), answer(label(&g), hint, Taken::Grant(taken_as(&g)), key)));
+            rows.push((at.unwrap_or(0), answer(label(&g, &root), hint, Taken::Grant(taken_as(&g)), key)));
             seen.push(g);
         }
         if title == "this session" {
@@ -1122,10 +1125,9 @@ mod tests {
             |label: &str| listed.iter().position(|r| r.0 == label).unwrap_or_else(|| panic!("{listed:?}"));
         let (shared, own) = (at(ALWAYS_SHARED), at(ALWAYS));
         assert_eq!(at("read /opt/tarae-stand-in"), shared + 1, "{listed:?}");
-        assert_eq!(
-            at(&format!("use {}, named like a key", crate::allow::tilde(&main.join(".env")))),
-            own + 1
-        );
+        // (the checkout's own key named from it, as its card named it — another checkout's by its `~` path:
+        // `sandbox::tests::every_user_of_the_key_rule_gives_one_answer`)
+        assert_eq!(at("use .env, named like a key"), own + 1, "{listed:?}");
         assert_eq!(listed.last().unwrap().0, "1 more kept for other checkouts — not used here");
         let p = ed.picker.as_mut().unwrap();
         p.select_where(

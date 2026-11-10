@@ -585,10 +585,7 @@ impl Guard {
                         false => !p.reads_allow(path),
                     } =>
                 {
-                    let shown = match path.strip_prefix(&p.root) {
-                        Ok(rel) => rel.display().to_string(),
-                        Err(_) => crate::allow::tilde(path),
-                    };
+                    let shown = crate::allow::from_project(&p.root, path);
                     // (in a temp folder every program writes: one the run made there too — its own goes in its
                     // `TMPDIR`)
                     match p.key_rule(path) {
@@ -2702,6 +2699,15 @@ impl Denial {
         home_shown(&self.target)
     }
 
+    /// `target_shown`, but a path in the project (`root`, the run's policy's, real) named from it — as the run's
+    /// report and the list's row name it (`allow::from_project`).
+    fn target_in(&self, root: Option<&Path>) -> String {
+        match root.filter(|r| !r.as_os_str().is_empty()).map(|r| Path::new(&self.target).strip_prefix(r)) {
+            Some(Ok(rel)) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+            _ => self.target_shown(),
+        }
+    }
+
     /// As Seatbelt says it: `file-write-create ~/x`.
     pub fn shown(&self) -> String {
         format!("{} {}", self.op, self.target_shown()).trim_end().to_string()
@@ -2735,11 +2741,12 @@ impl Denial {
     }
 
     /// As a run's sandbox line says it (`panel_line`) — the user's no to a host in their words, `reaching
-    /// uploads.example.invalid — you said no` (`:443` left out, as the card asked it), the rest `plain`.
-    fn lead(&self) -> String {
+    /// uploads.example.invalid — you said no` (`:443` left out, as the card asked it), the rest `plain_in` the
+    /// project `root` (`deleting .env`).
+    fn lead(&self, root: Option<&Path>) -> String {
         match self.target.split_once(": ").filter(|_| self.user_refused()) {
             Some((at, _)) => format!("reaching {} — you said no", at.strip_suffix(":443").unwrap_or(at)),
-            None => self.plain(),
+            None => self.plain_in(root),
         }
     }
 
@@ -2754,7 +2761,12 @@ impl Denial {
     /// In plain words: `writing ~/x`, `connecting to port 9`, `opening apps` — Seatbelt's own (`shown`) for
     /// what has none. Its network denials name no address, only the port (`remote:*:9` — measured).
     pub fn plain(&self) -> String {
-        let t = self.target_shown();
+        self.plain_in(None)
+    }
+
+    /// `plain`, a path in the project `root` named from it (`target_in`): `deleting .env` — the run's panel row.
+    pub fn plain_in(&self, root: Option<&Path>) -> String {
+        let t = self.target_in(root);
         let op = self.op.as_str();
         // (a pty the run made, or the user's: Seatbelt can't tell them apart — the grant opens them all)
         if self.terminal() {
@@ -3933,6 +3945,12 @@ pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Ins
     let g = guard?;
     let b = g.watch().map(|w| w.blocked()).unwrap_or_default();
     let line = |line: String| PanelLine { line, calm: false, quiet: None, designed: None };
+    // (a file in the project named from it, as the run's report names it — the policy's root is real, as a denial's
+    // target is)
+    let root = match g {
+        Guard::In(p) => Some(p.root.as_path()),
+        _ => None,
+    };
     // (nothing denied yet: what the checkout's build tool config named and stays closed — #20)
     let Some(first) = b.seen.first() else {
         let Guard::In(p) = g else { return None };
@@ -3958,7 +3976,7 @@ pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Ins
         let said = match ran {
             // (#290's point kept, calmly: nothing else was refused — they may be why)
             RunIs::Failed => format!("sandbox: {} refused by design — may be why it failed", b.distinct),
-            _ => format!("sandbox refused by design: {}{}", first.plain(), more(b.distinct)),
+            _ => format!("sandbox refused by design: {}{}", first.plain_in(root), more(b.distinct)),
         };
         return Some(PanelLine { calm: true, ..line(said) });
     }
@@ -3970,7 +3988,7 @@ pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Ins
         )
     });
     Some(PanelLine {
-        line: format!("sandbox blocked {}{}", first.lead(), more(b.distinct - designed)),
+        line: format!("sandbox blocked {}{}", first.lead(root), more(b.distinct - designed)),
         calm: false,
         quiet,
         designed: (designed > 0).then(|| format!("{designed} more by design")),
@@ -10636,12 +10654,63 @@ mod tests {
             };
             let said = Guard::In(Box::new(p.clone())).kept(std::slice::from_ref(&d)).0;
             assert_eq!(said.contains("named like a key"), some, "{file:?}: the report: {said}");
-            let panel = crate::blocked::choices_by(&[d], &caps, Some(&rules));
+            let panel = crate::blocked::choices_by(std::slice::from_ref(&d), &caps, Some(&rules));
             let key = Grant::Key(file.clone());
             assert_eq!(panel.iter().any(|c| c.grant == key), some, "{file:?}: the panel: {panel:?}");
             assert!(!some || panel.iter().all(|c| !matches!(c.grant, Grant::Read(_))), "{file:?}: {panel:?}");
             let also = crate::tools::also_read(file.clone(), &caps, Some(&rules));
-            assert_eq!(also.as_ref().ok() == Some(&Some(key)), some, "{file:?}: also: {also:?}");
+            assert_eq!(also.as_ref().ok() == Some(&Some(key.clone())), some, "{file:?}: also: {also:?}");
+            // (one name for the file wherever it's read — from the project inside it, else its `~` path, another
+            // checkout's too: the run's report, its panel row, the list's row, the card, Claude's answer, the
+            // reviewer's record, `:granted` — F1)
+            if some {
+                let name = crate::allow::from_project(root, &file);
+                match file.starts_with(root) {
+                    true => assert!(!name.starts_with('/'), "{file:?}: from the project: {name}"),
+                    false => assert_eq!(name, crate::allow::tilde(&file), "{file:?}: its path"),
+                }
+                assert!(said.contains(name.as_str()), "{file:?}: the report: {said}");
+                let w = Watch::quiet("t.");
+                w.record(d.clone());
+                let g = Guard::In(Box::new(Policy { watch: Some(w), ..p.clone() }));
+                let row = panel_line(Some(&g), RunIs::Failed, std::time::Instant::now()).map(|l| l.line);
+                assert_eq!(
+                    row,
+                    Some(format!("sandbox blocked reading {name}")),
+                    "{file:?}: the run's panel row"
+                );
+                let label = crate::blocked::key_label(&file, Some(&rules), root);
+                assert!(label.contains(&format!(" {name} — ")), "{file:?}: the list's row: {label}");
+                let run = || crate::blocked::BlockedRun {
+                    keys: Some(rules.clone()),
+                    ..crate::blocked::BlockedRun::of(crate::tools::Job::Command("cat x".into(), root.into()))
+                };
+                let card = crate::blocked::card_grant(&key, &run());
+                assert_eq!(card, format!("use {name} as any file there, named like a key — that one file"));
+                let no = crate::blocked::refused_said(&key, &run());
+                assert!(no.contains(&card), "{file:?}: Claude's no: {no}");
+                let again = crate::blocked::rerun_head(&key, &run(), crate::allow::Scope::Once);
+                assert!(again.contains(&card), "{file:?}: Claude's run again: {again}");
+                let o = crate::blocked::also_card(
+                    key.clone(),
+                    "it reads x",
+                    ("cat x", None),
+                    Box::new(run()),
+                    None,
+                    Vec::new(),
+                    false,
+                );
+                let record = crate::cardreview::Input::of(&o, root, &[]).expect("a grant is reviewed");
+                let field = record.action.iter().find(|(f, _)| *f == crate::cardreview::Field::Grant);
+                assert_eq!(field.map(|(_, v)| v.as_str()), Some(card.as_str()), "{file:?}: the reviewer's");
+                let kept = Allowed { keys: vec![file.clone()], ..Default::default() };
+                let more = crate::granted::More::default();
+                let listed = crate::granted::items(&caps, [&kept, &none, &none], &[], &more, 0);
+                let row =
+                    listed.iter().find(|i| i.label.ends_with("named like a key")).map(|i| i.label.as_str());
+                let want = format!("use {name}, named like a key");
+                assert_eq!(row, Some(want.as_str()), "{file:?}: :granted");
+            }
             // (Claude's Read, both ways: it asks where runs close one and reads where they read — by macOS's rule
             // on every system, as designed — but outside home, where it asks wherever: cardauto D3)
             let claude =
@@ -10775,11 +10844,16 @@ mod tests {
         let ours = root.join(".env");
         assert!(p.key_refuses_change(&ours));
         let said = Guard::In(Box::new(p.clone())).kept(&[change(&ours)]).0;
-        assert!(said.contains("named like a key"), "{said}");
+        assert!(said.contains("named like a key") && said.contains(".env"), "{said}");
+        assert!(!said.contains(&root.display().to_string()), "the report names it from the project: {said}");
         let panel = crate::blocked::choices_by(&[change(&ours)], &caps, Some(&rules));
+        assert_eq!(
+            panel.iter().map(|c| c.why.as_str()).collect::<Vec<_>>(),
+            ["sh was writing .env, named like a key"]
+        );
         assert_eq!(panel.into_iter().map(|c| c.grant).collect::<Vec<_>>(), [Grant::Key(ours.clone())]);
         let label = crate::blocked::key_label(&ours, Some(&rules), root);
-        assert_eq!(label, format!("allow using {} — that file only", crate::allow::tilde(&ours)));
+        assert_eq!(label, "allow using .env — that file only", "the project's: from it, as the report");
         let opened = policy(vec!["~/out".into(), "~/ref".into()]);
         let theirs = shared.join("id_ed25519");
         assert!(opened.key_refuses_change(&theirs) && opened.key_rules().refuses_change(&theirs));
