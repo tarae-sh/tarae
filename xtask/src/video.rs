@@ -1258,7 +1258,7 @@ fn text(text: &str, px: f32, fg: Rgb, ground: Rgb, bold: bool, fonts: &Fonts) ->
     let [gr, gg, gb] = ground;
     let weight = if bold { "1;" } else { "" };
     p.process(format!("\x1b[?25l\x1b[{weight}38;2;{r};{g};{b};48;2;{gr};{gg};{gb}m{text}").as_bytes());
-    shot::render_px(p.screen(), fonts, px)
+    shot::render_px(p.screen(), fonts, px, None)
 }
 
 /// The end card's name: `t a r a e` in the accent, the address `tarae.sh` under it in ink (the user, 2026-11-05: where to
@@ -1304,7 +1304,7 @@ fn caption_text(lines: &[String], fonts: &Fonts) -> Picture {
         bytes.push_str(&format!("\x1b[{};1H{line}", k + 1));
     }
     p.process(bytes.as_bytes());
-    shot::render_px(p.screen(), fonts, CAPTION_SHORT_PX)
+    shot::render_px(p.screen(), fonts, CAPTION_SHORT_PX, None)
 }
 
 /// A card's frame, `dims` px: `lines` (text, size, colour, bold) one under another, centred, the seal stamped under
@@ -1876,7 +1876,8 @@ impl Video<'_> {
                 if drawn.len() == DRAWN_KEPT {
                     drawn.remove(0);
                 }
-                drawn.push((key, shot::render_px(&self.rec.frames[i].1, &self.fonts, px)));
+                let pointer = self.rec.pointers.get(i).copied().flatten();
+                drawn.push((key, shot::render_px(&self.rec.frames[i].1, &self.fonts, px, pointer)));
                 drawn.len() - 1
             }
         };
@@ -2470,6 +2471,7 @@ mod tests {
         let sounds = vec![(50, "landing".to_string()), (1_500, "still".to_string())];
         let rec = Recorded {
             frames,
+            pointers: Vec::new(),
             beats: Vec::new(),
             waits: Vec::new(),
             zooms: Vec::new(),
@@ -2599,6 +2601,7 @@ mod tests {
         let late = 300 + FIND_MS + 100;
         let rec = Recorded {
             frames: vec![(0, plain()), (50, tagged("‹fix ●›")), (500, plain()), (late, tagged("‹late"))],
+            pointers: Vec::new(),
             beats: vec![(0, "one".into())],
             waits: Vec::new(),
             zooms: Vec::new(),
@@ -2810,6 +2813,7 @@ mod tests {
         let plain = || screen(1, &["fn main() {", "    let x = 1;", "}"]);
         let rec = |frames: Vec<(u64, vt100::Screen)>, zooms: &[(u64, &str, bool)]| Recorded {
             frames,
+            pointers: Vec::new(),
             beats: vec![(0, "one".into()), (300, "two".into()), (450, "three".into())],
             waits: Vec::new(),
             zooms: zooms.iter().map(|(t, z, deep)| (*t, z.to_string(), *deep)).collect(),

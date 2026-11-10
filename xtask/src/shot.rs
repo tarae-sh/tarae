@@ -15,7 +15,9 @@
 //! (`TARAE_MOTION_AT=<ms>` instead pins every motion at that age, for one picture of a step; `TARAE_SHOT_SHEET_ROWS=0,5-6`
 //! makes the sheet those rows of each frame, one frame's strip under the one before). A wait that times out
 //! fails the shot (the picture is still saved, of the screen as it was then):
-//! a shot of the wrong frame never passes as one that worked.
+//! a shot of the wrong frame never passes as one that worked. `@pointer` marks, from there on, where the mouse went last:
+//! a small arrow the shot draws over its pictures (`POINTER`; never tarae's), the picture and every frame it keeps — a
+//! hover scene's, so a rest that shows nothing reads as one too.
 //!
 //! Environment:
 //! - `TARAE_SHOT_XDG` — config home (`tarae/config.toml` under it; default `/tmp/tarae-shot/xdg`). Point it at
@@ -360,6 +362,8 @@ pub(crate) fn record_at(
 /// `@hook` it opens on. A `@cut?<text>` ends the take on the last frame before `<text>` shows (`cut_at`).
 pub(crate) struct Recorded {
     pub(crate) frames: Frames,
+    /// Each frame's pointer mark (`@pointer`): the cell where the mouse rests, drawn over it.
+    pub(crate) pointers: Vec<Option<Cell>>,
     pub(crate) beats: Vec<(u64, String)>,
     pub(crate) waits: Vec<(u64, String)>,
     pub(crate) zooms: Vec<(u64, String, bool)>,
@@ -386,6 +390,7 @@ impl Recorded {
         let at = self.end;
         let moved = |v: Vec<(u64, String)>| v.into_iter().map(move |(t, s)| (at + t, s));
         self.frames.extend(then.frames.into_iter().map(|(t, s)| (at + t, s)));
+        self.pointers.extend(then.pointers);
         self.beats.extend(moved(then.beats));
         self.waits.extend(moved(then.waits));
         self.zooms.extend(then.zooms.into_iter().map(|(t, z, deep)| (at + t, z, deep)));
@@ -439,6 +444,7 @@ pub(crate) fn record(
     let end = vt.ended.or(vt.captured.last().map(|f| f.0)).map_or(0, ms);
     Ok(Recorded {
         frames: vt.captured.into_iter().map(|(d, s)| (ms(d), s)).collect(),
+        pointers: vt.captured_pointers,
         beats: vt.beats.iter().zip(vt.captions).map(|((d, _), c)| (ms(*d), c)).collect(),
         waits: vt.waited.into_iter().map(|(d, w)| (ms(d), w)).collect(),
         zooms: vt.zooms.into_iter().map(|(d, z, deep)| (ms(d), z, deep)).collect(),
@@ -526,7 +532,7 @@ fn picture_of(vt: &Vt, scale: usize, out: &Path, missed: &[String]) -> Result<()
 /// The screen as a PNG at `out`.
 fn picture(vt: &Vt, scale: usize, out: &Path) -> Result<()> {
     let fonts = Fonts::load(scale)?;
-    let (w, h, px) = render(vt.parser.screen(), &fonts, scale);
+    let (w, h, px) = render_pointed(vt.parser.screen(), &fonts, scale, vt.shown());
     save_png(out, w, h, &px)?;
     println!("saved {} ({w}, {h})", out.display());
     Ok(())
@@ -667,6 +673,11 @@ struct Vt {
     capturing: Option<Instant>,
     /// The frames `@~N` or `@rec` kept: the screen before its key, then each frame drawn, with when it came.
     captured: Vec<(Duration, vt100::Screen)>,
+    /// Each `captured` frame's pointer mark, as it was kept (`shown`).
+    captured_pointers: Vec<Option<Cell>>,
+    /// The cell the mouse went to last (row, column), and whether `@pointer` marks it in the pictures.
+    pointer: Option<Cell>,
+    marked: bool,
     /// The beat snapshots `@beat` marked during `@rec`, and each one's caption (`@beat:<caption>`; else empty).
     beats: Vec<(Duration, vt100::Screen)>,
     captions: Vec<String>,
@@ -698,6 +709,9 @@ impl Vt {
             held: Vec::new(),
             capturing: None,
             captured: Vec::new(),
+            captured_pointers: Vec::new(),
+            pointer: None,
+            marked: false,
             beats: Vec::new(),
             captions: Vec::new(),
             waited: Vec::new(),
@@ -723,6 +737,7 @@ impl Vt {
         self.wire.retain(|w| w.0 < end);
         self.captured.truncate(at);
         self.captured_ends.truncate(at);
+        self.captured_pointers.truncate(at);
         Some(self.captured.last().map_or(Duration::ZERO, |f| f.0))
     }
 
@@ -730,6 +745,12 @@ impl Vt {
     fn keep(&mut self, at: Duration) {
         self.captured.push((at, self.parser.screen().clone()));
         self.captured_ends.push(self.ends);
+        self.captured_pointers.push(self.shown());
+    }
+
+    /// Where the pictures mark the pointer: the cell the mouse went to last, once `@pointer` came.
+    fn shown(&self) -> Option<Cell> {
+        self.pointer.filter(|_| self.marked)
     }
 
     fn feed(&mut self, data: &[u8]) {
@@ -779,8 +800,9 @@ fn contact_sheet(vt: &Vt, scale: usize, out: &Path) -> Result<()> {
         let stem = out.file_stem().unwrap_or_default().to_string_lossy();
         out.with_file_name(format!("{stem}-{tail}.png"))
     };
-    let pictures: Vec<(usize, usize, Vec<u8>)> =
-        vt.captured.iter().map(|(_, screen)| render(screen, &fonts, scale)).collect();
+    let pictures: Vec<(usize, usize, Vec<u8>)> = (vt.captured.iter().zip(&vt.captured_pointers))
+        .map(|((_, screen), pointer)| render_pointed(screen, &fonts, scale, *pointer))
+        .collect();
     for (i, ((t, _), (w, h, px))) in vt.captured.iter().zip(&pictures).enumerate() {
         let path = named(&format!("{:02}", i + 1));
         save_png(&path, *w, *h, px)?;
@@ -983,13 +1005,18 @@ fn drive_with(
     let mut seen = None;
     for k in keys {
         if k == "@seen" {
-            seen = Some((vt.parser.screen().clone(), vt.ends));
+            seen = Some((vt.parser.screen().clone(), vt.ends, vt.shown()));
+            continue;
+        }
+        if k == "@pointer" {
+            vt.marked = true;
             continue;
         }
         if k == "@rec" {
             let since = Instant::now();
             vt.captured.clear();
             vt.captured_ends.clear();
+            vt.captured_pointers.clear();
             vt.beats.clear();
             vt.captions.clear();
             vt.waited.clear();
@@ -999,9 +1026,10 @@ fn drive_with(
             vt.keys.clear();
             vt.sounds.clear();
             vt.hook = None;
-            if let Some((screen, ends)) = seen.take() {
+            if let Some((screen, ends, pointer)) = seen.take() {
                 vt.captured.push((Duration::ZERO, screen));
                 vt.captured_ends.push(ends);
+                vt.captured_pointers.push(pointer);
             }
             vt.keep(Duration::ZERO);
             vt.capturing = Some(since);
@@ -1122,6 +1150,7 @@ fn drive_with(
                         vt.keep(Duration::ZERO);
                         vt.capturing = Some(Instant::now());
                     }
+                    vt.pointer = Some((row, col + cells));
                     let _ = master.write_all(report.at(col + cells + 1, row + 1).as_bytes());
                     pump(vt, secs.unwrap_or(0.35));
                     if secs.is_some() {
@@ -1662,13 +1691,65 @@ pub(crate) fn color(c: vt100::Color, default: Rgb) -> Rgb {
 /// The screen as RGB pixels at `s` times the size: glyphs drawn at `SIZE` × `s`, every other measure the 1×
 /// picture's times `s` — so 2× is the 1× layout at twice the pixels, lines and blocks on whole pixels.
 pub(crate) fn render(screen: &vt100::Screen, fonts: &Fonts, s: usize) -> (usize, usize, Vec<u8>) {
-    draw(screen, fonts, SIZE, s)
+    draw(screen, fonts, SIZE, s, None)
+}
+
+/// `render` with the pointer marked at `pointer`'s cell (`@pointer`), when there's one.
+pub(crate) fn render_pointed(
+    screen: &vt100::Screen,
+    fonts: &Fonts,
+    s: usize,
+    pointer: Option<Cell>,
+) -> (usize, usize, Vec<u8>) {
+    draw(screen, fonts, SIZE, s, pointer)
 }
 
 /// The screen as RGB pixels with its glyphs at `size` px, its cells `cell(fonts, size)`, lines a pixel thick, the
-/// margin `PAD` (a video's: `video.rs`).
-pub(crate) fn render_px(screen: &vt100::Screen, fonts: &Fonts, size: f32) -> (usize, usize, Vec<u8>) {
-    draw(screen, fonts, size, 1)
+/// margin `PAD` (a video's: `video.rs`); the pointer marked at `pointer`'s cell, when there's one.
+pub(crate) fn render_px(
+    screen: &vt100::Screen,
+    fonts: &Fonts,
+    size: f32,
+    pointer: Option<Cell>,
+) -> (usize, usize, Vec<u8>) {
+    draw(screen, fonts, size, 1, pointer)
+}
+
+/// A cell on the screen: its row and column, from 0.
+pub(crate) type Cell = (u16, u16);
+
+/// The pointer's mark (`@pointer`), in 1× pixels from its tip, a row a line: `o` the screen's ink, `#` its ground — an
+/// arrow nine pixels wide and thirteen tall (two thirds of a row), its tip at the centre of the cell where the mouse
+/// rests, so it reads on code and a card alike, in both themes.
+#[rustfmt::skip]
+const POINTER: [&str; 13] = [
+    "#",
+    "##",
+    "#o#",
+    "#oo#",
+    "#ooo#",
+    "#oooo#",
+    "#ooooo#",
+    "#oooooo#",
+    "#ooooooo#",
+    "#ooo#####",
+    "#oo#",
+    "#o#",
+    "##",
+];
+
+/// The screen's ink: of the colours its text is written in on its ground, the one that stands out most from it (the
+/// theme's own text — near white on meok, near black on hanji — rather than a faint hint's grey).
+fn ink(screen: &vt100::Screen, bg: Rgb) -> Rgb {
+    let light = |c: Rgb| 299 * c[0] as i32 + 587 * c[1] as i32 + 114 * c[2] as i32;
+    let (rows, cols) = screen.size();
+    (0..rows)
+        .flat_map(|y| (0..cols).filter_map(move |x| screen.cell(y, x)))
+        .filter(|c| !c.contents().trim().is_empty() && !c.inverse() && color(c.bgcolor(), bg) == bg)
+        .map(|c| color(c.fgcolor(), FG))
+        // (the contrast, then the colour: one answer for one screen)
+        .max_by_key(|&c| ((light(c) - light(bg)).abs(), c))
+        .unwrap_or(FG)
 }
 
 /// A cell's width and height in pixels with glyphs at `size` px: the mono font's advance, 1.45 times the size.
@@ -1677,7 +1758,13 @@ pub(crate) fn cell(fonts: &Fonts, size: f32) -> (usize, usize) {
 }
 
 /// `render`'s drawing with `base` for `SIZE`: the 1× layout at `base` px, `s` times.
-fn draw(screen: &vt100::Screen, fonts: &Fonts, base: f32, s: usize) -> (usize, usize, Vec<u8>) {
+fn draw(
+    screen: &vt100::Screen,
+    fonts: &Fonts,
+    base: f32,
+    s: usize,
+    pointer: Option<Cell>,
+) -> (usize, usize, Vec<u8>) {
     let (rows, cols) = screen.size();
     let (rows, cols) = (rows as usize, cols as usize);
     let size = base * s as f32;
@@ -1788,6 +1875,17 @@ fn draw(screen: &vt100::Screen, fonts: &Fonts, base: f32, s: usize) -> (usize, u
         let (px, py) = (pad + cx * cw, pad + cy * ch);
         cv.rect(px, py, px + 2 * s, py + ch, fg);
     }
+    // 4) The pointer (`@pointer`): the shot's own mark, over everything tarae drew
+    if let Some((row, col)) = pointer {
+        let ink = ink(screen, bg);
+        let (tx, ty) = (pad + col as usize * cw + cw / 2, pad + row as usize * ch + ch / 2);
+        for (y, line) in POINTER.iter().enumerate() {
+            for (x, b) in line.bytes().enumerate() {
+                let (px, py) = (tx + x * s, ty + y * s);
+                cv.rect(px, py, px + s, py + s, if b == b'o' { ink } else { bg });
+            }
+        }
+    }
     (w, h, cv.px)
 }
 
@@ -1833,6 +1931,7 @@ mod tests {
         let screen = || vt100::Parser::new(1, 4, 0).screen().clone();
         let one = |t: u64, hook: Option<u64>, end: u64| Recorded {
             frames: vec![(0, screen()), (t, screen())],
+            pointers: vec![None, Some((0, t as u16))],
             beats: vec![(t, "beat".into())],
             waits: vec![(t, "?w".into())],
             zooms: vec![(t, "code:1-2".into(), false)],
@@ -1847,6 +1946,7 @@ mod tests {
         };
         let rec = one(100, Some(50), 1_000).joined(one(200, Some(150), 3_000), 0);
         assert_eq!(rec.frames.iter().map(|f| f.0).collect::<Vec<_>>(), [0, 100, 1_000, 1_200]);
+        assert_eq!(rec.pointers, [None, Some((0, 100)), None, Some((0, 200))], "a mark a frame");
         assert_eq!(rec.beats.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
         assert_eq!(rec.waits.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
         assert_eq!(rec.zooms.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
@@ -2405,6 +2505,38 @@ mod tests {
                 .as_bytes(),
         );
         vt
+    }
+
+    /// `@pointer`'s mark: an arrow whose tip is the cell's centre, filled in the screen's ink (of its text's colours the
+    /// one that stands out most from its ground) and edged in its ground — the rest of the picture as it is without it,
+    /// and nothing drawn where none is asked. (Skipped without JetBrains Mono, which the cell's width comes from.)
+    #[test]
+    fn the_pointers_mark_is_a_small_arrow_at_its_cell_in_the_screens_colours() {
+        let Ok(f) = Fonts::load(1) else { return };
+        let mut vt = vt100::Parser::new(3, 12, 0);
+        vt.process(b"\x1b[38;2;90;90;90mabcdefgh\x1b[38;2;10;200;10mxy\x1b[?25l");
+        let plain = render(vt.screen(), &f, 1);
+        assert_eq!(render_pointed(vt.screen(), &f, 1, None).2, plain.2);
+        let marked = render_pointed(vt.screen(), &f, 1, Some((1, 4)));
+        let (cw, ch) = cell(&f, SIZE);
+        let (tx, ty) = (PAD + 4 * cw + cw / 2, PAD + ch + ch / 2);
+        let px = |p: &(usize, usize, Vec<u8>), x: usize, y: usize| {
+            let i = (y * p.0 + x) * 3;
+            [p.2[i], p.2[i + 1], p.2[i + 2]]
+        };
+        assert_eq!(
+            px(&marked, tx + 1, ty + 4),
+            [10, 200, 10],
+            "filled in the ink, not the grey most text has"
+        );
+        assert_eq!(px(&marked, tx, ty + 4), BG, "edged in the ground");
+        for y in 0..plain.1 {
+            for x in 0..plain.0 {
+                if !(tx..tx + 9).contains(&x) || !(ty..ty + POINTER.len()).contains(&y) {
+                    assert_eq!(px(&marked, x, y), px(&plain, x, y), "at ({x}, {y})");
+                }
+            }
+        }
     }
 
     /// At 2× the picture is the 1× one at twice the pixels: twice as wide and tall, and everything but the

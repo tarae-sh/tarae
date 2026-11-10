@@ -570,8 +570,9 @@ cursor or document moved on are dropped.
   preview of an open file — but only where the text drawn is the buffer's own, since the server knows only the buffer:
   the edit review's lines as they are now (not the ones it proposes, as the buffer holds the old text until you
   accept), the code review's lines (not the base's removed ones). Elsewhere, and on a folded doc comment's rows, it
-  shows nothing. `space k` follows the same rule: at the cursor, which is always on the buffer's text; the edit review
-  has no cursor, so it says so there. A list of
+  shows nothing — but a name in Claude's answers rests as one in the code does
+  ([A name in the conversation](claude-integration.md#a-name-in-the-conversation)). `space k` follows the same rule:
+  at the cursor, which is always on the buffer's text; the edit review has no cursor, so it says so there. A list of
   places (`gr`, or several `gi`) shows each one's code: the line trimmed, the name standing out, line numbers
   right-aligned, by file then line. For `gr` the declaration (the server's own definition) comes first, marked `decl`.
   While the server is still starting or loading the project, `gr` doesn't wait: the name's text matches (whole

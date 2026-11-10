@@ -154,8 +154,9 @@ const REFUSED_HOST_FOLLOW_KEYS: &[&str] = &[
 ];
 
 /// #481's rest-review scene's keys: Claude's edit review up, the pointer resting on `Thread` in a line it keeps (the
-/// buffer's own text).
+/// buffer's own text) — marked (#485), as every rest scene's.
 const REST_REVIEW_KEYS: &[&str] = &[
+    "@pointer",
     "@1",
     " ",
     "l",
@@ -170,7 +171,8 @@ const REST_REVIEW_KEYS: &[&str] = &[
 
 /// #481's rest-removed scene's keys: `space v v` on main.rs, the pointer resting on its removed doc comment (the base's
 /// text, not the buffer's).
-const REST_REMOVED_KEYS: &[&str] = &["@1", " ", "v", "v", "@?/// 실타래", "@1", "@hover+6?/// 실타래", "@2"];
+const REST_REMOVED_KEYS: &[&str] =
+    &["@pointer", "@1", " ", "v", "v", "@?/// 실타래", "@1", "@hover+6?/// 실타래", "@2"];
 
 /// Short 4, "tarae's own sandbox" (`--video --shorts sandbox-runtime`; main's `.sb/short4-sandbox-brief.md`): the
 /// release script open, its key, upload and token lines in view; Claude asked to ship it, its three runs each answered
@@ -1019,8 +1021,9 @@ const FLAG_HOVER: &[&str] = a1b_two_keys!("@hover+13?&threads {", "@1");
 /// #391: the pointer onto line 11's `¶`, its card only after the rest (every frame of 0.9 s kept), then up onto line 10's
 /// (its card under line 11's covers the lines below) — handed off at once (0.4 s kept).
 const FLAG_REST: &[&str] =
-    a1b_two_keys!("@~900", "@hover+13?&threads {", "@1", "@~400", "@hover+10?first);", "@1");
+    a1b_two_keys!("@pointer", "@~900", "@hover+13?&threads {", "@1", "@~400", "@hover+10?first);", "@1");
 const CHATLINK_REST: &[&str] = chatlink_keys!(
+    "@pointer",
     "@~200",
     "@hover+6?many knots",
     "@0.2",
@@ -6715,7 +6718,8 @@ fn record(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &P
     write(&at.join("play.html"), &recording::page(&value, &title)?)?;
     let mut marks = rec.waits.clone();
     marks.extend(rec.beats.iter().filter(|b| !b.1.is_empty()).cloned());
-    let shown = recording::sheet(&rec.frames, &marks, &shot::Fonts::load(1)?, &at.join("sheet.png"))?;
+    let shown =
+        recording::sheet(&rec.frames, &rec.pointers, &marks, &shot::Fonts::load(1)?, &at.join("sheet.png"))?;
     let end = rec.frames.last().map_or(0, |f| f.0);
     println!(
         "saved {} ({:.1} s, {} frames, {} kept, {:.1} KB; sheet.png {shown} frames; play.html)",

@@ -335,10 +335,12 @@ pub(crate) fn sheet_picks(times: &[u64], marks: &[(u64, String)], every: u64) ->
 }
 
 /// The contact sheet of `frames` at `out` (`sheet_picks`: every `SHEET_EVERY_MS` and at each of `marks`), two
-/// across, each frame's time and marks written under it; past `PAGE` frames also in pages of `PAGE` beside it
-/// (`sheet-01.png` …), which read at their size where the whole sheet is scaled down. What it returns: the frames shown.
+/// across, each frame's time and marks written under it (and its pointer, `pointers`, marked on it); past `PAGE`
+/// frames also in pages of `PAGE` beside it (`sheet-01.png` …), which read at their size where the whole sheet is
+/// scaled down. What it returns: the frames shown.
 pub(crate) fn sheet(
     frames: &[(u64, vt100::Screen)],
+    pointers: &[Option<shot::Cell>],
     marks: &[(u64, String)],
     fonts: &Fonts,
     out: &Path,
@@ -350,7 +352,8 @@ pub(crate) fn sheet(
         .map(|(at, said)| {
             let screen = &frames[*at].1;
             let (_, cols) = screen.size();
-            labelled(shot::render(screen, fonts, 1), said, usize::from(cols), fonts)
+            let pointer = pointers.get(*at).copied().flatten();
+            labelled(shot::render_pointed(screen, fonts, 1, pointer), said, usize::from(cols), fonts)
         })
         .collect();
     pages(&pictures, out)
