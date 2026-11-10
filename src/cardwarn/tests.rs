@@ -541,6 +541,117 @@ say = "cargo xtask linux runs Docker: {missing}."
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// F2: a warning with a `lead` leads the card with what the command does — the bash pack's `rm -r`, with the folder
+/// it names — and the pack's how-to is the card's details: never drawn on it, whole on `v` (`C-q v`, as a person
+/// answers). Claude, the log and the run's record keep the whole words, as before: the lead is the card's alone.
+/// The folder is the test's own, a marker in it; the answer is `n`, and the marker is still there after.
+#[test]
+fn a_cards_warning_leads_with_what_it_does_and_folds_the_how_to() {
+    let (mut ed, generation, dir) = chat_in("lead", "");
+    let old = dir.join("old");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("marker"), "stays").unwrap();
+    let cmd = format!("rm -rf {}", old.display());
+    ask(&mut ed, generation, 1, &cmd).expect("its card");
+    let say = &crate::sandboxpack::get().warn.iter().find(|w| w.id == "rm-r-unchecked").unwrap().say;
+    let o = &ed.offers[0];
+    let lines: Vec<&str> = o.question.split('\n').collect();
+    let lead = format!("▲ It removes {} and everything in it (bash pack)", crate::allow::tilde(&old));
+    assert_eq!(lines[2], lead, "right under the command: {lines:#?}");
+    assert_eq!(lines[3], format!("  {say}"), "the how-to after it, hanging");
+    assert_eq!((o.warnings.len(), &o.warnings[0]), (1, &(2..3)), "the lead in the warning colour");
+    assert_eq!((o.details.len(), &o.details[0]), (1, &(3..4)), "the how-to folded off the card");
+    // Drawn: the lead whole, the how-to nowhere, `v see` on its bottom line
+    let shown = |ed: &mut crate::editor::Editor| {
+        let mut frame = Vec::new();
+        crate::term::render(ed, &mut frame, 120, 34).unwrap();
+        let mut screen = vt100::Parser::new(34, 120, 0);
+        screen.process(&frame);
+        screen.screen().rows(0, 120).collect::<Vec<String>>().join("\n")
+    };
+    let card = shown(&mut ed);
+    let flat = card.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("▲ It removes") && flat.contains("and everything in it (bash pack)"), "{card}");
+    assert!(!card.contains("mktemp") && !card.contains("checked form"), "the how-to folded:\n{card}");
+    assert!(card.lines().any(|r| r.contains("╰") && r.contains("v see")), "{card}");
+    // `C-q v`: the card's whole text, the how-to in it
+    crate::chatnotes::tests::feed(&mut ed, "<C-q>v");
+    assert!(ed.offer_reading(), "its whole text in sight");
+    let text = ed.doc().text.to_string();
+    assert!(text.contains(&lead) && text.contains(say.as_str()), "{text}");
+    // Claude's words, the log's and the run's record: the whole `say`, never the lead
+    let warned = &crate::tools::warned(
+        &ed,
+        crate::tools::WarnOn {
+            cmd: &cmd,
+            cwd: &dir,
+            scripts: &[],
+            reads: &[],
+            script_changed: false,
+            outside: false,
+        },
+    )[0];
+    assert_eq!(warned.line(), format!("{say} (bash pack)"));
+    assert!(
+        warned.lead.as_ref().is_some_and(|l| l.starts_with("It removes /") || l.starts_with("It removes ~"))
+    );
+    ed.offer_dismiss();
+    pump_until(&mut ed, &|_| answered(1).is_some(), "told no");
+    assert!(old.join("marker").exists(), "nothing ran");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A lead's names (F2): what the matched command names as written — home spelled `~`, after a `--` too, an option's
+/// value left out — `a and b`, `a, b and c`, then `and N more`; `{it}` by their count; a command naming nothing has
+/// no lead (its `say` is the line). A `lead` is checked as `say` is, and its placeholders are its own.
+#[test]
+fn a_lead_names_what_the_command_names() {
+    let w = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+    let home = crate::allow::home().expect("a home");
+    let docs = home.join("Documents").display().to_string();
+    let lead = "It removes {named} and everything in {it}";
+    let fill = |names: &[&str]| fill_lead(lead, &named(&w(names), &w(&["-o"])));
+    assert_eq!(fill(&["-rf", &docs]).as_deref(), Some("It removes ~/Documents and everything in it"));
+    assert_eq!(fill(&["-r", "a", "b"]).as_deref(), Some("It removes a and b and everything in them"));
+    assert_eq!(fill(&["-r", "a", "b", "c"]).as_deref(), Some("It removes a, b and c and everything in them"));
+    assert_eq!(
+        fill(&["-r", "a", "b", "c", "d", "e"]).as_deref(),
+        Some("It removes a, b, c and 2 more and everything in them")
+    );
+    assert_eq!(fill(&["-r", "--", "-x"]).as_deref(), Some("It removes -x and everything in it"));
+    assert_eq!(fill(&["-r", "-o", "v", "$T"]).as_deref(), Some("It removes $T and everything in it"));
+    assert_eq!(fill(&["-r", "a\nb"]).as_deref(), Some("It removes a b and everything in it"));
+    assert_eq!(fill(&["-r"]), None, "nothing named: no lead");
+    assert_eq!(fill_lead("It can't gain privileges", &[]).as_deref(), Some("It can't gain privileges"));
+    // Through `judge`: the line's own command, its lead filled; `said` the whole `say`
+    let warn =
+        warns("[[warn]]\nid = \"x\"\nrun = [\"rm\"]\nlead = \"It removes {named}\"\nsay = \"How-to.\"\n");
+    let got = Judge::default().judged(&warn, "cd /tmp && rm -r old");
+    assert_eq!((got[0].lead.as_deref(), got[0].said.as_str()), (Some("It removes old"), "How-to."));
+    // Checked: one line of words, short, placeholders where they mean something
+    for (text, why) in [
+        ("lead = \"a\\nb\"", "control character"),
+        ("lead = \"▲ x\"", "mark of the card's"),
+        (&format!("lead = \"{}\"", "x".repeat(101)) as &str, "longer than 100"),
+        ("lead = 3", "isn't words"),
+    ] {
+        let t: toml::Table =
+            format!("[[warn]]\nid = \"x\"\nrun = [\"rm\"]\nsay = \"s\"\n{text}\n").parse().unwrap();
+        let mut problems = Vec::new();
+        assert!(read(&t["warn"], "tools pack", &mut problems).is_empty(), "{text}");
+        assert!(problems[0].contains(why), "{text}: {problems:?}");
+    }
+    for (text, why) in [
+        ("fact = \"reads-outside\"\nsay = \"s\"\nlead = \"{named}\"", "only with `run`"),
+        ("run = [\"rm\"]\nsay = \"{named}\"", "a `lead`'s"),
+    ] {
+        let t: toml::Table = format!("[[warn]]\nid = \"x\"\n{text}\n").parse().unwrap();
+        let mut problems = Vec::new();
+        assert!(read(&t["warn"], "tools pack", &mut problems).is_empty(), "{text}");
+        assert!(problems[0].contains(why), "{text}: {problems:?}");
+    }
+}
+
 /// tarae's own `.tarae.toml` warns of `cargo xtask linux` without Docker's own settings — and not of step 6c's
 /// line, which set all three (the plan's count: none of 6c's Docker runs would have been warned of).
 #[test]

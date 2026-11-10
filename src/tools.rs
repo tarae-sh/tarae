@@ -3157,14 +3157,10 @@ fn ask_with(
         matches!(why, crate::cards::Why::ScriptChanged) || since.as_ref().is_some_and(|s| s.script_changed);
     let whole = outside.as_ref().is_some_and(|b| b.socket.is_none());
     let on = WarnOn { cmd: &cmd, cwd: &cwd, scripts: &texts, reads: &reads, script_changed, outside: whole };
+    // — each leading with what it does where its data says it plainly, the rest folded to `v` (F2)
     let warned = warned(ed, on);
-    if !warned.is_empty() {
-        let at = question.split('\n').count() + 1;
-        let lines: Vec<String> = warned.iter().map(|w| format!("▲ {}", w.line())).collect();
-        question.push_str("\n\n");
-        question.push_str(&lines.join("\n"));
-        warnings.push(at..at + lines.len());
-    }
+    let mut details = Vec::new();
+    crate::cardwarn::put_on_card(&mut question, &warned, &mut warnings, &mut details);
     // Why it asks, where nothing below says it (#164: `cd ~/…/*/x && grep …` asked in silence)
     if let Some(said) = why.said() {
         question.push_str(&format!("\n\n{said}"));
@@ -3357,7 +3353,7 @@ fn ask_with(
     };
     let what = crate::offer::What::Run(Box::new(card));
     let o = crate::offer::Offer::new(title, &question, "Running…", "Claude's command".into(), what);
-    let mut o = o.deciding(decided).asked(asked);
+    let mut o = o.deciding(decided).asked(asked).with_details(details);
     (o.diff, o.warnings, o.told) = (diff, warnings, tells);
     ed.push_offer(match warning {
         Some(lines) => o.warning(lines),

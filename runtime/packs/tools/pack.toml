@@ -121,6 +121,7 @@ say = "It rewrites git history or resets files — what it drops may not come ba
 [[claude.warn]]
 id = "privileges"
 run = ["sudo", "su", "pkexec", "doas"]
+lead = "It can't gain privileges here — run it yourself in tarae's terminal (space T)"
 say = "It can't gain privileges: there's no terminal for a password, and on Linux tarae's AppArmor profile runs Claude's commands outside the sandbox with no_new_privs. If it's needed, run it yourself in tarae's terminal (space T) — your own tools keep their privileges."
 
 # An edit of Claude's to a file that runs later outside the sandbox (`sandbox::protected_names`) — the edit

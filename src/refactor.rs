@@ -725,14 +725,7 @@ fn card(l: &Landing) -> crate::offer::Offer {
 /// The warnings of a card with a file that runs later outside the sandbox: under what it asks, in the
 /// warning colour.
 fn warn(o: &mut crate::offer::Offer, warned: &[crate::cardwarn::Warned]) {
-    if warned.is_empty() {
-        return;
-    }
-    let lines: Vec<String> = warned.iter().map(|w| format!("▲ {}", w.line())).collect();
-    o.question.push_str("\n\n");
-    let at = o.question.split('\n').count() - 1;
-    o.question.push_str(&lines.join("\n"));
-    o.warnings.push(at..at + lines.len());
+    crate::cardwarn::put_on_card(&mut o.question, warned, &mut o.warnings, &mut o.details);
 }
 
 /// The front landing of `whose`, while its card is up.

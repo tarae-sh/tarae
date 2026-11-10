@@ -317,6 +317,40 @@ const ALSO_READ_KEYS: &[&str] = &[
     "@1",
 ];
 
+/// F2's rm-card scene's keys: the chat asked and left, the card up and focused.
+const RM_CARD_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "clear the old release folder",
+    "\r",
+    "@1",
+    "\x1b",
+    "@20?outside the sandbox",
+    "@1",
+    "\x11",
+    "@1",
+];
+
+/// F2's rm-card-see scene's keys: the rm card's, then `v` — the pack's how-to it folded, whole.
+const RM_CARD_SEE_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "clear the old release folder",
+    "\r",
+    "@1",
+    "\x1b",
+    "@20?outside the sandbox",
+    "@1",
+    "\x11",
+    "@1",
+    "v",
+    "@1",
+];
+
 /// #474c's masked-see scene's keys: the masked scene's, then `v` — what the card folded, whole.
 const MASKED_SEE_KEYS: &[&str] = &[
     "@1",
@@ -4376,6 +4410,9 @@ const SCENES: &[Scene] = &[
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },
+    // (F2: a folder removed whole — its card led by what it removes, the pack's how-to behind `v`; `-see` the `v`)
+    Scene { name: "rm-card", claude: "rmcard", files: MAIN, keys: RM_CARD_KEYS },
+    Scene { name: "rm-card-see", claude: "rmcard", files: MAIN, keys: RM_CARD_SEE_KEYS },
     Scene { name: "masked-unmaskable", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-unknown", claude: "maskedother", files: MAIN, keys: MASKED_KEYS },
     // (#484b: masked-toast's, the chat left open beside the code — the toast in the narrower code's corner)
@@ -7881,6 +7918,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "maskedopen",
     "maskedother",
     "runtime",
+    "rmcard",
     "big",
     "fork",
     "foot41",
@@ -8054,6 +8092,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "refusedhost" => turn.refused_host()?,
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
+            "rmcard" => turn.rm_card()?,
             "runtime" => turn.runtime()?,
             "big" => turn.big()?,
             // (the fork's scenes: a big conversation, then a turn still going — its edit held mid-line)
@@ -9089,6 +9128,18 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "reason": "the release script reads it to call GitHub's API"});
         self.call(3, "run", also)?;
         self.words("It holds a stand-in; the real value goes only toward GitHub.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// F2's turn: a folder removed whole, asked outside the sandbox — the card's warning line says what it removes.
+    /// The scene's home is its own: nothing of yours is named.
+    fn rm_card(&mut self) -> io::Result<()> {
+        self.words("The old release staging folder is in the way. I will ask to remove it.")?;
+        self.text("\n")?;
+        let run = json!({"command": "rm -rf ~/Documents/skein-release", "outside_sandbox": true,
+            "reason": "the release script stages into that folder and refuses a stale one"});
+        self.call(1, "run", run)?;
+        self.words("Removed.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

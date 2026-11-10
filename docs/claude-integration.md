@@ -1675,7 +1675,13 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   `unless-all` + `same` (regexes for a checked form: the command's own text, then its guards before it in the
   line or script, in order — the named groups equal in all), `unless-in = "outputs"`, `fact` (`reads-outside`,
   `script-changed`, `edit-protected`, `outside-sandbox`; `{paths}` with the first), `say`, `asks`, `start`
-  (said as the run starts when no card asks: one toast, its chat row, Claude's report).
+  (said as the run starts when no card asks: one toast, its chat row, Claude's report), and `lead` — what it
+  does, in plain words, at most 100 characters: the card's `▲` line, its `say` then the card's details, off
+  the card and whole on `v see`; Claude, the log and the run's chat row keep `say`. In a lead `{named}` is what
+  the command names, as written, home spelled `~` (`a, b and c`, then `and 2 more`), `{it}` is `it` or `them`;
+  a command naming nothing has no lead, its `say` the line. The bash pack's `rm -r` says
+  `▲ It removes ~/Documents and everything in it (bash pack)`, its checked form behind `v`; `sudo`'s leads with
+  running it yourself in tarae's terminal.
   `edit-protected` is an edit's: Claude's edit to a file that runs later outside the sandbox (a build script, a
   manifest, a hook — the names its commands can't write, where its path really leads: `..` taken, links
   followed) is always asked, review at the end or not, and says it on the review's header, under the title in

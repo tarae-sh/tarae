@@ -28,6 +28,12 @@
 //! its chat row marked from then, a line in Claude's report — what a manifest tool changes, piece F).
 //! `{missing}` and `{paths}` are filled in.
 //!
+//! `lead` (F2): what it does, in plain words, for the person answering — the card's warning line, `say` then
+//! its details, folded off the card and whole on `v`; Claude, the log and the run's own record keep `say`. In a
+//! lead `{named}` is what the matched command names (its words that aren't options: `~/Documents`, `a, b and
+//! c`, as written where a variable or a glob says it) and `{it}` is `it` or `them` by their count — a command
+//! naming nothing has no lead: `say` is its line.
+//!
 //! Each text an entry puts on a card (`say`, `missing`'s) is one line of words: no control character, no mark of
 //! the card's, at most `SAY_MAX` characters — whose it is, tarae says after it. An id is one entry's: the first
 //! to say it keeps it (the packs', then yours — `config.rs` refuses a project's that's taken).
@@ -92,6 +98,8 @@ pub struct Warn {
     pub unless_outputs: bool,
     pub fact: Option<Fact>,
     pub say: String,
+    /// What it does, in plain words: the card's line, `say` its details (`lead`).
+    pub lead: Option<String>,
     pub asks: bool,
     /// Said as the run starts when no card asks (`start`).
     pub start: bool,
@@ -119,6 +127,8 @@ pub fn read(v: &Value, whose: &str, problems: &mut Vec<String>) -> Vec<Warn> {
 /// A warning's words at most (characters) — a card's line, not a page; and each of `missing`'s.
 const SAY_MAX: usize = 300;
 const MISSING_SAY_MAX: usize = 160;
+/// A lead's at most: a row of a card, not a paragraph.
+const LEAD_MAX: usize = 100;
 
 /// `s`, a warning's words (`what` names the key), as a card may show them: one line — no control character
 /// (a newline would make lines of its own that read as tarae's, `Its reason: …`), no mark that's the card's
@@ -152,6 +162,7 @@ const KEYS: &[&str] = &[
     "unless-in",
     "fact",
     "say",
+    "lead",
     "asks",
     "start",
 ];
@@ -178,6 +189,11 @@ fn entry(e: &Value, whose: &str) -> Result<Warn, String> {
     }
     let say = s("say").filter(|s| !s.trim().is_empty()).ok_or("no `say`")?;
     let say = card_words(&say, "say", SAY_MAX)?;
+    let lead = match t.get("lead") {
+        None => None,
+        Some(Value::String(l)) if !l.trim().is_empty() => Some(card_words(l, "lead", LEAD_MAX)?),
+        Some(_) => return Err("`lead` isn't words".into()),
+    };
     let run: Vec<Vec<String>> =
         list("run")?.iter().map(|r| r.split_whitespace().map(str::to_string).collect()).collect();
     if run.iter().any(Vec::is_empty) {
@@ -232,6 +248,12 @@ fn entry(e: &Value, whose: &str) -> Result<Warn, String> {
     if say.contains("{paths}") && fact != Some(Fact::ReadsOutside) {
         return Err("`{paths}` is said only with `fact = \"reads-outside\"`".into());
     }
+    if say.contains("{named}") || say.contains("{it}") {
+        return Err("`{named}` and `{it}` are a `lead`'s".into());
+    }
+    if lead.as_ref().is_some_and(|l| l.contains("{named}") || l.contains("{it}")) && run.is_empty() {
+        return Err("`{named}` and `{it}` are said only with `run`".into());
+    }
     let flag = |k: &str| -> Result<bool, String> {
         t.get(k)
             .map(|a| a.as_bool().ok_or(format!("`{k}` isn't true or false")))
@@ -255,6 +277,7 @@ fn entry(e: &Value, whose: &str) -> Result<Warn, String> {
         unless_outputs,
         fact,
         say,
+        lead,
         asks,
         start,
     })
@@ -279,7 +302,7 @@ pub struct Facts<'a> {
 }
 
 /// A warning that holds for a command: its id, its words filled in, whose, whether `a` lets it through, and
-/// whether it's said as the run starts (`start`).
+/// whether it's said as the run starts (`start`); `lead`, what it does in plain words, filled in (`lead`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warned {
     pub id: String,
@@ -287,13 +310,64 @@ pub struct Warned {
     pub whose: String,
     pub asks: bool,
     pub start: bool,
+    pub lead: Option<String>,
 }
 
 impl Warned {
-    /// As a card's line says it: `Docker: no timeout … (tools pack)`.
+    /// Its whole words, as Claude, the log and the run's record say them: `Docker: no timeout … (tools pack)`.
     pub fn line(&self) -> String {
         format!("{} ({})", self.said, self.whose)
     }
+}
+
+/// `warned` as a card puts them under what it asks: each `▲` line its lead (whose after it) — else its whole
+/// words —, a lead's whole words on the line after it, hanging. Returns the lines, then which of them are the
+/// warnings' (`Offer.warnings`) and which their details (`Offer.details`: off the card, whole on `v`), counted
+/// from the first line.
+pub fn card_lines(warned: &[Warned]) -> (Vec<String>, Vec<usize>, Vec<usize>) {
+    let (mut lines, mut warns, mut details) = (Vec::new(), Vec::new(), Vec::new());
+    for w in warned {
+        warns.push(lines.len());
+        match &w.lead {
+            Some(lead) => {
+                lines.push(format!("▲ {lead} ({})", w.whose));
+                details.push(lines.len());
+                lines.push(format!("  {}", w.said));
+            }
+            None => lines.push(format!("▲ {}", w.line())),
+        }
+    }
+    (lines, warns, details)
+}
+
+/// `warned`'s card lines (`card_lines`) put at the end of `question` after a blank line, their ranges in
+/// `warnings` and `details` (lines of the question).
+pub fn put_on_card(
+    question: &mut String,
+    warned: &[Warned],
+    warnings: &mut Vec<std::ops::Range<usize>>,
+    details: &mut Vec<std::ops::Range<usize>>,
+) {
+    if warned.is_empty() {
+        return;
+    }
+    let (lines, warns, folded) = card_lines(warned);
+    question.push_str("\n\n");
+    let at = question.split('\n').count() - 1;
+    question.push_str(&lines.join("\n"));
+    // (lines next to each other one range: `2..4`, as before leads)
+    let ranges = |lines: Vec<usize>| {
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        for i in lines {
+            match out.last_mut() {
+                Some(r) if r.end == at + i => r.end += 1,
+                _ => out.push(at + i..at + i + 1),
+            }
+        }
+        out
+    };
+    warnings.extend(ranges(warns));
+    details.extend(ranges(folded));
 }
 
 /// The warnings among `warns` that hold for `f`, each once, in their order.
@@ -306,7 +380,7 @@ pub fn judge<'w>(warns: impl IntoIterator<Item = &'w Warn>, f: &Facts) -> Vec<Wa
     for w in warns {
         let warned = match w.fact {
             Some(fact) if !holds(fact, f) => None,
-            Some(_) if w.run.is_empty() => Some(fill(w, &[], f)),
+            Some(_) if w.run.is_empty() => Some((fill(w, &[], f), w.lead.clone())),
             _ => {
                 let mut said = None;
                 // (the line's commands, then each script's — each with its own text and what's around it)
@@ -335,17 +409,22 @@ pub fn judge<'w>(warns: impl IntoIterator<Item = &'w Warn>, f: &Facts) -> Vec<Wa
                         if !w.missing.is_empty() && missing.is_empty() {
                             continue;
                         }
-                        said = Some(fill(w, &missing, f));
+                        let lead = w
+                            .lead
+                            .as_ref()
+                            .and_then(|l| fill_lead(l, &named(&c.words[at..], &w.option_values)));
+                        said = Some((fill(w, &missing, f), lead));
                         break 'all;
                     }
                 }
                 said
             }
         };
-        if let Some(said) = warned
+        if let Some((said, lead)) = warned
             && !out.iter().any(|o| o.id == w.id)
         {
-            out.push(Warned { id: w.id.clone(), said, whose: w.whose.clone(), asks: w.asks, start: w.start });
+            let whose = w.whose.clone();
+            out.push(Warned { id: w.id.clone(), said, whose, asks: w.asks, start: w.start, lead });
         }
     }
     out
@@ -366,6 +445,51 @@ fn fill(w: &Warn, missing: &[&str], f: &Facts) -> String {
     let paths: Vec<String> = f.reads.iter().map(|p| crate::allow::tilde(p)).collect();
     let paths: String = paths.join(", ").chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     w.say.replace("{missing}", &missing.join("; ")).replace("{paths}", &paths)
+}
+
+/// What a command names (`words`, after its `run`): its words that aren't options — every one after a `--` —
+/// nor an option's value (`values`).
+fn named(words: &[String], values: &[String]) -> Vec<String> {
+    let (mut out, mut ended, mut i) = (Vec::new(), false, 0);
+    while i < words.len() {
+        let w = &words[i];
+        i += 1;
+        if ended || !w.starts_with('-') || w == "-" {
+            out.push(w.clone());
+        } else if w == "--" {
+            ended = true;
+        } else if values.contains(w) {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The most of a command's names a lead lists before `and N more`.
+const NAMED_MAX: usize = 3;
+
+/// A lead, `{named}` and `{it}` filled in from what the command names (`named`): home spelled `~`, a control
+/// character a space, the rest as written. None where it names nothing and the lead would say it.
+fn fill_lead(lead: &str, named: &[String]) -> Option<String> {
+    if named.is_empty() && (lead.contains("{named}") || lead.contains("{it}")) {
+        return None;
+    }
+    let shown: Vec<String> = named
+        .iter()
+        .map(|p| match p.starts_with('/') {
+            true => crate::allow::tilde(Path::new(p)),
+            false => p.clone(),
+        })
+        .map(|p| p.chars().map(|c| if c.is_control() { ' ' } else { c }).collect())
+        .collect();
+    let list = match shown.len() {
+        0 => String::new(),
+        1 => shown[0].clone(),
+        n if n <= NAMED_MAX => format!("{} and {}", shown[..n - 1].join(", "), shown[n - 1]),
+        n => format!("{} and {} more", shown[..NAMED_MAX].join(", "), n - NAMED_MAX),
+    };
+    let it = if shown.len() > 1 { "them" } else { "it" };
+    Some(lead.replace("{named}", &list).replace("{it}", it))
 }
 
 /// One command of a line or a script: its text as written, where it starts there (bytes), its words (quotes

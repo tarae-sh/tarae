@@ -5777,6 +5777,7 @@ mod tests {
             whose: "tools pack".into(),
             asks: false,
             start: false,
+            lead: None,
         };
         let mut m = Msg::tool(look, "c1");
         m.ran = Some(Ran::of(

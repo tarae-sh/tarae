@@ -27428,6 +27428,7 @@ mod tests {
             whose: "tools pack".into(),
             asks: false,
             start: false,
+            lead: None,
         };
         let ran = |mark: &str, past: bool, warned: Vec<crate::cardwarn::Warned>| crate::chat::Ran {
             mark: mark.into(),

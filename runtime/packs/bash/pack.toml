@@ -39,7 +39,8 @@ risky = [
 # and by `case` against that prefix before its `rm -rf` — or a build's scratch below a pack's `outputs` folder
 # (`target/…`). The regexes say the form's parts, matched before the `rm` in their order; `same`: the variable
 # and the prefix one in all of them. The `rm` itself names that folder, or a path in it — no `..` part, none
-# with `.` alone (`"$T/.."` leaves it).
+# with `.` alone (`"$T/.."` leaves it). `lead` says what it does, with what it names, for the person answering
+# (the card's line, F2); `say` is the how-to behind its `v`, and what Claude is told.
 [[claude.warn]]
 id = "rm-r-unchecked"
 run = ["rm"]
@@ -53,4 +54,5 @@ unless-all = [
     'case\s+"\$\{?(?P<v>[A-Za-z_][A-Za-z0-9_]*)\}?"\s+in\s+/private/tmp/(?P<p>[A-Za-z0-9._-]+)\.\*\)',
 ]
 same = ["v", "p"]
+lead = "It removes {named} and everything in {it}"
 say = "It removes folders whole (rm -r), not in the checked form — set -eu, one `mktemp -d /private/tmp/<name>.XXXXXX` folder checked non-empty and by `case` before its `rm -rf` — read what it removes."
