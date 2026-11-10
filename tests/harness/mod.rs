@@ -107,6 +107,26 @@ const SUN_PATH: usize = 108;
 /// working folder — cargo runs a test in its package's root, inside the project.
 const SOCKETS: &str = "target/e2e-sockets";
 
+/// `paths` of this repository as of `commit` written into `to` (`git archive`): each file's time the commit's, so
+/// two copies of one commit look the same to cargo. False when this clone hasn't that commit.
+pub fn extract_commit(to: &Path, commit: &str, paths: &[&str]) -> bool {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    fs::create_dir_all(to).unwrap();
+    let mut archive = Command::new("git")
+        .args(["-C", here.to_str().unwrap(), "archive", "--format=tar", commit, "--"])
+        .args(paths)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let untarred = Command::new("tar")
+        .args(["-x", "-C", to.to_str().unwrap()])
+        .stdin(archive.stdout.take().unwrap())
+        .status()
+        .is_ok_and(|s| s.success());
+    archive.wait().is_ok_and(|s| s.success()) && untarred
+}
+
 impl Sandbox {
     pub fn new(name: &str) -> Self {
         static N: AtomicUsize = AtomicUsize::new(0);
@@ -205,21 +225,7 @@ impl Sandbox {
     /// The project's files = `paths` of this repository as of `commit` (`git archive`) — a tree that stays
     /// the same however the repository grows. False when this clone hasn't that commit.
     pub fn copy_commit(&self, commit: &str, paths: &[&str]) -> bool {
-        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-        fs::create_dir_all(self.work()).unwrap();
-        let mut archive = Command::new("git")
-            .args(["-C", here.to_str().unwrap(), "archive", "--format=tar", commit, "--"])
-            .args(paths)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let untarred = Command::new("tar")
-            .args(["-x", "-C", self.work().to_str().unwrap()])
-            .stdin(archive.stdout.take().unwrap())
-            .status()
-            .is_ok_and(|s| s.success());
-        archive.wait().is_ok_and(|s| s.success()) && untarred
+        extract_commit(&self.work(), commit, paths)
     }
 
     /// Runs git in the work dir with the sandbox's git config; panics if it fails.

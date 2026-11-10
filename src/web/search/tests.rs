@@ -415,13 +415,13 @@ fn off_the_tool_list_is_todays_and_on_it_holds_web_search() {
         l["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
     };
     for parent in [false, true] {
-        let (off, on) = (crate::tools::list(parent, false, false), crate::tools::list(parent, false, true));
+        let (off, on) = (crate::tools::list(parent, false), crate::tools::list(parent, true));
         assert!(!off.to_string().contains("web_search"));
         let (off, on) = (names(&off), names(&on));
         assert_eq!(on[..off.len()], off[..]);
         assert_eq!(on[off.len()..], ["web_search"]);
     }
-    let on = crate::tools::list(false, false, true);
+    let on = crate::tools::list(false, true);
     let w = on["tools"].as_array().unwrap().last().unwrap();
     assert_eq!(
         w["annotations"],
@@ -433,10 +433,10 @@ fn off_the_tool_list_is_todays_and_on_it_holds_web_search() {
         let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
         crate::tools::mcp(ed, generation, "r1", &msg).unwrap()["result"].clone()
     };
-    let (parent, compound) = (crate::orchestra::lists(&ed), crate::orchestra::compound(&ed));
-    assert_eq!(ask(&mut ed), crate::tools::list(parent, compound, true));
+    let parent = crate::orchestra::lists(&ed);
+    assert_eq!(ask(&mut ed), crate::tools::list(parent, true));
     ed.workspace.claude.chat.as_mut().unwrap().web_search = false;
-    let off = crate::tools::list(parent, compound, false).to_string();
+    let off = crate::tools::list(parent, false).to_string();
     assert_eq!(ask(&mut ed).to_string(), off, "byte for byte");
     let msg = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": { "name": "web_search", "arguments": { "query": "x" } } });

@@ -5550,18 +5550,18 @@ fn mcp_image_and_pdf_reach_the_model() {
     }
 }
 
-// ── Code mode (a)'s A/B ──────────────────────────────────────────────────────────
+// ── Code mode (a)'s a6 A/B ───────────────────────────────────────────────────────
 
-/// A fix loop of the compound A/B: a bug planted in the corpus first (file, old, new), then a task whose check passes
-/// once it's fixed.
+/// A fix loop of the a6 A/B: a bug planted in the corpus first (file, old, new), then a task whose check passes once
+/// it's fixed.
 struct FixTask {
     task: EditTask,
     plant: (&'static str, &'static str, &'static str),
 }
 
-/// The fix loops (the design session's brief, 2026-11-09): both go through `run` — a type error (rustc's ` --> `
-/// form, read today) the task says to run the check for, and a test that panics, its task naming no tool (Claude picks
-/// `run` or `run_tests`: the compounds used say whether a6 fired).
+/// The fix loops (the design session's brief, 2026-11-09): a type error (rustc's ` --> ` form) the task says to `run`
+/// the check for, and a test that panics, its task naming no tool (Claude picks `run` or `run_tests` — a6 is at both
+/// ends since 2026-11-10).
 const FIX_TASKS: [FixTask; 2] = [
     FixTask {
         task: EditTask {
@@ -5592,57 +5592,38 @@ const FIX_TASKS: [FixTask; 2] = [
     },
 ];
 
-/// Tokens the long-context turn's conversation carries from its first request (`large_claude_md`).
-const LONG_CONTEXT: usize = 150_000;
-
-/// A turn of the compound A/B: a question (its key), an edit task or a fix loop (its check), or a question asked
-/// in a conversation primed to `LONG_CONTEXT`.
-#[derive(Clone, Copy)]
-enum AbTurn {
-    Ask(&'static Question),
-    Edit(&'static EditTask),
-    Fix(&'static FixTask),
-    Long(&'static Question),
-}
-
-impl AbTurn {
-    fn name(&self) -> String {
-        match self {
-            AbTurn::Ask(q) => q.name.to_string(),
-            AbTurn::Edit(t) => t.name.to_string(),
-            AbTurn::Fix(f) => f.task.name.to_string(),
-            AbTurn::Long(q) => format!("long-{}", q.name),
-        }
-    }
-
-    fn ask(&self) -> &'static str {
-        match self {
-            AbTurn::Ask(q) | AbTurn::Long(q) => q.ask,
-            AbTurn::Edit(t) => t.ask,
-            AbTurn::Fix(f) => f.task.ask,
-        }
-    }
-}
-
-/// What the compound A/B reads of a turn beside `measure`'s: its tokens by kind (claude's result), the compound
-/// answers it used (`search` with `show`, a run's report with the lines it points at), and the run → run hops whose
-/// first passed (`exit 0`) — two calls of `run` in a row, so no edit between, the second in the next assistant message
-/// (two in one message are a parallel pair, not a chain): what a8 would save if they stay common.
+/// What the a6 A/B reads of a turn beside `measure`'s: its tokens by kind (claude's result), its failed runs and
+/// test runs (`run`'s `exit` not 0, `run_tests`' `failed`) — a6's chances — and those whose report brought the lines
+/// they point at; of the failed test runs, those with no failed case (`unbuilt`: a build that failed — a6 points only
+/// round failed cases, so it has nothing to bring there, and a low pointed/failed isn't read as a6 missing); and the
+/// crates its first run's cargo compiled (a cold build in the turn shows there).
 #[derive(Debug, Default, PartialEq)]
 struct Compounded {
     input: u64,
     read: u64,
     write: u64,
     output: u64,
-    shows: usize,
+    failed: usize,
+    unbuilt: usize,
     pointed: usize,
-    hops: usize,
+    compiled: Vec<String>,
+}
+
+/// The crates cargo compiled as `said` tells it: its `Compiling x v…` and `Checking x v…` lines' names, in order.
+fn compiled(said: &str) -> Vec<String> {
+    said.lines()
+        .filter_map(|l| {
+            let l = l.trim_start();
+            let rest = l.strip_prefix("Compiling ").or_else(|| l.strip_prefix("Checking "))?;
+            rest.split(' ').next().map(String::from)
+        })
+        .collect()
 }
 
 fn compounded(stream: &str) -> Compounded {
     let mut c = Compounded::default();
-    // (the call's id, its tool, its input, its assistant message's id)
-    let mut calls: Vec<(String, String, serde_json::Value, String)> = Vec::new();
+    // (the call's id and its tool)
+    let mut calls: Vec<(String, String)> = Vec::new();
     let mut results: std::collections::HashMap<String, String> = Default::default();
     for line in stream.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -5656,9 +5637,7 @@ fn compounded(stream: &str) -> Compounded {
                 {
                     let id = b["id"].as_str().unwrap_or_default().to_string();
                     if !calls.iter().any(|x| x.0 == id) {
-                        let name = b["name"].as_str().unwrap_or_default().into();
-                        let message = v["message"]["id"].as_str().unwrap_or_default().to_string();
-                        calls.push((id, name, b["input"].clone(), message));
+                        calls.push((id, b["name"].as_str().unwrap_or_default().into()));
                     }
                 }
             }
@@ -5693,27 +5672,31 @@ fn compounded(stream: &str) -> Compounded {
             _ => {}
         }
     }
-    let said = |id: &str| results.get(id).map_or("", String::as_str);
-    for (i, (id, name, input, message)) in calls.iter().enumerate() {
-        match name.as_str() {
-            "mcp__tarae__search" if input["show"] == "symbol" => c.shows += 1,
-            "mcp__tarae__run" => {
-                c.pointed += usize::from(said(id).contains("\nLines it points at:\n"));
-                let next = calls.get(i + 1).is_some_and(|n| n.1 == "mcp__tarae__run" && n.3 != *message);
-                c.hops += usize::from(next && said(id).starts_with("exit 0"));
-            }
-            _ => {}
+    let mut first = true;
+    for (id, name) in &calls {
+        let said = results.get(id).map_or("", String::as_str);
+        let failed = match name.as_str() {
+            "mcp__tarae__run" => said.starts_with("exit ") && !said.starts_with("exit 0 "),
+            "mcp__tarae__run_tests" => said.starts_with("failed"),
+            _ => continue,
+        };
+        if std::mem::take(&mut first) {
+            c.compiled = compiled(said);
         }
+        c.failed += usize::from(failed);
+        // (a failed test run's report shows its output's tail only when no case failed — `tools::report`)
+        c.unbuilt +=
+            usize::from(failed && name == "mcp__tarae__run_tests" && said.contains("\nOutput (last "));
+        c.pointed += usize::from(said.contains("\nLines it points at:\n"));
     }
     c
 }
 
-/// The compound A/B's yardstick on a stream written by hand: tokens by kind from the result, `show` and a report's
-/// lines counted as used, a run → run hop counted only when the first passed, nothing came between and the second is
-/// in the next request (a parallel pair in one message, each block its own line as claude writes them, is none). Runs
-/// offline, in every `cargo test`.
+/// The a6 A/B's yardstick on a stream written by hand: tokens by kind from the result, a failed run or test run
+/// counted, and one whose report brought lines; a passed one, or another tool's answer, neither; a failed test run
+/// with no failed case counted apart too; the first run's compiled crates. Runs offline, in every `cargo test`.
 #[test]
-fn the_compound_ab_reads_its_counts_from_claudes_stream() {
+fn the_pointed_ab_reads_its_counts_from_claudes_stream() {
     use serde_json::json;
     let call_in = |message: &str, id: &str, name: &str, input: serde_json::Value| {
         json!({ "type": "assistant", "message": { "id": message, "content": [
@@ -5730,31 +5713,45 @@ fn the_compound_ab_reads_its_counts_from_claudes_stream() {
     };
     let run = |cmd: &str| json!({ "command": cmd });
     let lines = [
-        call("s1", "mcp__tarae__search", json!({ "pattern": "x", "show": "symbol" })),
-        result("s1", "1 matching line in 1 file:"),
+        call("s1", "mcp__tarae__search", json!({ "pattern": "x" })),
+        result("s1", "1 matching line in 1 file:\n\nLines it points at:\n"),
         call("r1", "mcp__tarae__run", run("cargo build")),
-        result("r1", "exit 0 in 2.0s"),
+        result(
+            "r1",
+            "exit 0 in 2.0s\n$ cargo build\n   Compiling cc v1.2.0\n    Checking tarae v0.1.0 (/p)\n    Finished `dev`\n",
+        ),
         call("r2", "mcp__tarae__run", run("cargo test")),
         result("r2", "exit 101 in 3.0s\n$ cargo test\n\nLines it points at:\nsrc/a.rs\n  3: x\n"),
-        call("e1", "mcp__tarae__edit", json!({ "edits": [] })),
-        result("e1", "edited"),
-        call("r3", "mcp__tarae__run", run("cargo build")),
-        result("r3", "exit 0 in 1.0s"),
-        call("r4", "mcp__tarae__run", run("cargo test")),
-        result("r4", "exit 101 in 1.0s"),
-        call_in("m5", "r5", "mcp__tarae__run", run("cargo fmt --check")),
-        call_in("m5", "r6", "mcp__tarae__run", run("cargo clippy")),
-        result("r5", "exit 0 in 1.0s"),
-        result("r6", "exit 0 in 4.0s"),
+        call("r3", "mcp__tarae__run", run("cargo check")),
+        result("r3", "exit 101 in 1.0s"),
+        call("t1", "mcp__tarae__run_tests", json!({ "path": "src/a.rs" })),
+        result("t1", "failed (exit 101) in 1.0s — tests::t\n\nLines it points at:\nsrc/a.rs\n  3: x\n"),
+        call("t2", "mcp__tarae__run_tests", json!({ "path": "src/a.rs" })),
+        result("t2", "passed in 1.0s — tests::t"),
+        call("t3", "mcp__tarae__run_tests", json!({ "path": "src/a.rs" })),
+        result(
+            "t3",
+            "failed (exit 101) in 1.0s — a\n$ cargo test\n\nOutput (last 2 lines):\nerror[E0308]: mismatched types\n\
+             error: could not compile `a`\n",
+        ),
         json!({ "type": "result", "usage": { "input_tokens": 7, "cache_read_input_tokens": 900,
             "cache_creation_input_tokens": 80, "output_tokens": 40 } })
         .to_string(),
     ];
     let c = compounded(&lines.join("\n"));
-    let want = Compounded { input: 7, read: 900, write: 80, output: 40, shows: 1, pointed: 1, hops: 2 };
+    let want = Compounded {
+        input: 7,
+        read: 900,
+        write: 80,
+        output: 40,
+        failed: 4,
+        unbuilt: 1,
+        pointed: 2,
+        compiled: vec!["cc".into(), "tarae".into()],
+    };
     assert_eq!(
         c, want,
-        "r1 → r2 and r3 → r4; r2 and r4 failed, an edit came after r2, and r5, r6 are a parallel pair"
+        "r2, r3, t1 and t3 failed, t3 with no case; r2 and t1 brought lines; s1 isn't a run; r1 compiled two"
     );
 }
 
@@ -5766,77 +5763,310 @@ fn plant(sb: &Sandbox, (file, old, new): (&str, &str, &str)) {
     std::fs::write(&path, text.replacen(old, new, 1)).unwrap();
 }
 
-/// Code mode (a): do tarae's compound answers (`llm.compound` — `search`'s `show`, a failed `run`'s lines it points
-/// at, `run`'s word on `&&`) save requests and $? One build, two arms by its config (`off` · `on`), rotated (A B,
-/// then B A), on `TOOLS_CORPUS` with rust-analyzer on: the three questions, the three edit tasks, the two fix loops
-/// (`FIX_TASKS`) and a question over a ~150k context. Measured from claude's stream: requests, calls, calls a request,
-/// tokens by kind, $, wall time, the answer's key or the edit's check, the compounds used, and the run → run hops whose
-/// first passed. It pays if $ falls on the multi-hop rows and the long-context one, the short rows cost ≤ +5 %, and
-/// no key or check is lost.
+/// A fix loop's project as every cell has it: `TOOLS_CORPUS` in a live sandbox (its files' times the commit's), the
+/// warm build kept in `seed` cloned into its `target` (`clone_dir`, then `moved_build`; none kept yet: none), that `target` cargo's
+/// target-dir and build-dir both — inside the project, where the sandbox lets Claude's cargo write: the first A/B's
+/// target-dir sat outside it and the sandbox refused its `.cargo-lock` (2026-11-10: fix-type never compiled; the
+/// harness answers no card `y` — that refusal is tarae's rule) — and out of tarae's walk (a folder with no git reads
+/// `.ignore`).
+fn fix_cell(name: &str, seed: &Path, bin: Option<&str>) -> Sandbox {
+    let mut sb = Sandbox::live(name);
+    assert!(sb.copy_commit(TOOLS_CORPUS, &EDIT_CORPUS_PATHS), "commit {TOOLS_CORPUS} in this clone");
+    let built = sb.work().join("target");
+    // (a build kept with no word of where it was built is none: its generated files can't be moved)
+    if let Ok(from) = std::fs::read_to_string(seed.join("built-in")) {
+        clone_dir(&seed.join("target"), &built);
+        moved_build(&built, from.lines(), &sb.work());
+    }
+    sb.write(".ignore", "/target/\n");
+    sb = sb
+        .with_env("CARGO_TARGET_DIR", built.to_str().unwrap())
+        .with_env("CARGO_BUILD_BUILD_DIR", built.to_str().unwrap());
+    if let Some(b) = bin {
+        sb = sb.with_bin(Path::new(b));
+    }
+    sb
+}
+
+/// `cmds` through tarae's own `run` tool in `sb`'s project, one after another — the path Claude's cargo takes: the
+/// task runner, its sandbox and the environment it hands a run — by a stand-in claude that calls it and nothing else
+/// (no model, no spend). With `lsp` rust-analyzer starts first, as in a cell (its code trusted, waited for, then 10 s
+/// of quiet): its own cargo works in the same target, with tarae's environment rather than a run's. Each call's
+/// report, in order; Err when they weren't all in within `patience` (a card that asks meanwhile is answered `n`, as
+/// the A/B's turns answer).
+fn through_run(sb: &Sandbox, cmds: &[&str], patience: Duration, lsp: bool) -> Result<Vec<String>, String> {
+    use serde_json::json;
+    let say = |v: serde_json::Value| format!("  printf '%s\\n' '{v}'\n");
+    let outs: Vec<std::path::PathBuf> =
+        (0..cmds.len()).map(|k| sb.outside(&format!("run-{k}.json"))).collect();
+    let mut turn = String::new();
+    for (k, cmd) in cmds.iter().enumerate() {
+        turn += &say(json!({ "type": "control_request", "request_id": format!("q{k}"), "request": {
+            "subtype": "mcp_message", "server_name": "tarae", "message": { "jsonrpc": "2.0", "id": k,
+            "method": "tools/call", "params": { "name": "run", "arguments": { "command": cmd } } } } }));
+        // (claude waits for tarae's answer — the run ended — and keeps it)
+        turn += &format!(
+            "  while read -r l; do case \"$l\" in *'\"request_id\":\"q{k}\"'*) printf '%s\\n' \"$l\" > '{}'; break;; \
+             esac; done\n",
+            outs[k].display()
+        );
+    }
+    turn += &say(json!({ "type": "result", "result": "done" }));
+    let script = sb.outside("run-claude.sh");
+    std::fs::write(
+        &script,
+        format!("while read -r line; do\n  case \"$line\" in '{{\"message\"'*) ;; *) continue;; esac\n{turn}done\n"),
+    )
+    .unwrap();
+    let off = if lsp { "" } else { "lsp = false\n" };
+    sb.write_config(&format!(
+        "{LIVE_CONFIG}{off}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\n",
+        script.display()
+    ));
+    let mut t = sb.spawn(&["src/main.rs"]);
+    if lsp {
+        code_trusted(&mut t);
+        t.wait_text("rust-analyzer ready");
+        quiet(&mut t, 10);
+    }
+    chat_focus(&mut t);
+    t.send("the warm check\r");
+    let end = Instant::now() + patience;
+    while !outs.iter().all(|o| o.exists()) {
+        if Instant::now() > end {
+            return Err(format!(
+                "{} of {} runs' reports in {patience:?}\n{}",
+                outs.iter().filter(|o| o.exists()).count(),
+                outs.len(),
+                t.screen()
+            ));
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        let st = t.state_json(0);
+        let asking = st["cards"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|c| c["state"] == "asking" && c["up"] == "front");
+        if asking {
+            let lent = st["keys"]["region"].as_str().is_some_and(|r| r.contains("card"));
+            t.send(if lent { "n" } else { "\x11" });
+        }
+    }
+    // (the report: the texts in the tool's answer, `result.content`)
+    fn texts(v: &serde_json::Value, out: &mut String) {
+        match v {
+            serde_json::Value::Object(m) => m.iter().for_each(|(k, x)| match (k.as_str(), x) {
+                ("text", serde_json::Value::String(s)) => out.push_str(s),
+                _ => texts(x, out),
+            }),
+            serde_json::Value::Array(a) => a.iter().for_each(|x| texts(x, out)),
+            _ => {}
+        }
+    }
+    Ok(outs
+        .iter()
+        .map(|o| {
+            let line = std::fs::read_to_string(o).unwrap_or_default();
+            let mut said = String::new();
+            texts(&serde_json::from_str(&line).unwrap_or_default(), &mut said);
+            said
+        })
+        .collect())
+}
+
+/// The fix loops' build, warm: built for both turns' checks through tarae's own `run` (`through_run`) in a cell made
+/// as every cell is (`fix_cell`, from the last warm build if there is one) — so its environment is the cells' by
+/// construction: a build script's `rerun-if-env-changed` (the `cc` crate's CC, CFLAGS, SDKROOT,
+/// MACOSX_DEPLOYMENT_TARGET — the grammars build with it) sees what Claude's cargo will — then its `target` kept in
+/// `seed`. Cargo keeps a target moved with its workspace fresh (`.sb/codemode-a-reloc.sh`); `warm_check` proves it
+/// on the corpus. The first time: minutes of cargo, no Claude. Ok with how many crates each command compiled.
+fn warm_seed(seed: &Path, bin: Option<&str>) -> Result<Vec<usize>, String> {
+    let sb = fix_cell("pointed-ab-seed", seed, bin);
+    let cmds = ["cargo check --bin tarae", "cargo test --bin tarae --no-run"];
+    let said = through_run(&sb, &cmds, Duration::from_secs(60 * 60), false)?;
+    if let Some((cmd, s)) = cmds.iter().zip(&said).find(|(_, s)| !s.starts_with("exit 0 ")) {
+        let tail: Vec<&str> = s.lines().rev().take(12).collect();
+        return Err(format!("{cmd}: {}", tail.into_iter().rev().collect::<Vec<_>>().join(" ⏎ ")));
+    }
+    let _ = std::fs::remove_dir_all(seed);
+    std::fs::create_dir_all(seed).unwrap();
+    let built = sb.work().join("target");
+    // (where it was built, as given and as the disk names it — `moved_build`'s `from`, once this folder is gone)
+    let work = sb.work();
+    let real = std::fs::canonicalize(&work).unwrap_or_else(|_| work.clone());
+    std::fs::write(seed.join("built-in"), format!("{}\n{}\n", real.display(), work.display())).unwrap();
+    if std::fs::rename(&built, seed.join("target")).is_err() {
+        clone_dir(&built, &seed.join("target"));
+    }
+    Ok(said.iter().map(|s| compiled(s).len()).collect())
+}
+
+/// The corpus's build script writes its `OUT_DIR`'s absolute path into the code it generates (`include_bytes!` of
+/// `queries.z`, its build.rs), so a target moved from a project at `from` (its paths, the disk's first) to one at
+/// `to` keeps that build script fresh and the path old: tarae's next compile reads a folder gone (`warm_check` found
+/// it, 2026-11-10). Running the script again would compile the grammars with cc inside Claude's turn, so its files
+/// that name `from` are written naming `to` — tarae's only: a crate that won't compile again is left as it is.
+fn moved_build<'a>(target: &Path, from: impl Iterator<Item = &'a str>, to: &Path) {
+    let real = std::fs::canonicalize(to).unwrap_or_else(|_| to.to_path_buf());
+    let pairs: Vec<(&str, String)> =
+        from.filter(|f| !f.is_empty()).zip([real.display().to_string(), to.display().to_string()]).collect();
+    let dirs = |p: &Path| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()).collect()
+    };
+    for profile in dirs(target) {
+        let ours = dirs(&profile.join("build"))
+            .into_iter()
+            .filter(|b| b.file_name().is_some_and(|n| n.to_string_lossy().starts_with("tarae-")));
+        for file in
+            ours.flat_map(|b| dirs(&b.join("out"))).filter(|f| f.extension().is_some_and(|e| e == "rs"))
+        {
+            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+            let moved = pairs.iter().fold(text.clone(), |t, (f, to)| t.replace(f, to));
+            if moved != text {
+                std::fs::write(&file, moved).unwrap();
+            }
+        }
+    }
+}
+
+/// The cells' build is warm where Claude's cargo runs: a cell made and started as each is (`fix_cell`, rust-analyzer
+/// on), unplanted but its
+/// `src/main.rs` touched (as a plant touches a file — and so the report must show tarae compiled: a report that showed
+/// none of cargo's lines would pass for warm), both turns' builds through tarae's own `run` (`cargo check --bin
+/// tarae`, `cargo test --bin tarae --no-run`) — Ok when each compiled tarae alone, else Err naming what else: a cell
+/// would build that cold inside Claude's turn.
+fn warm_check(seed: &Path, bin: Option<&str>) -> Result<Vec<String>, String> {
+    let sb = fix_cell("pointed-ab-warm", seed, bin);
+    let main = std::fs::File::options().append(true).open(sb.file("src/main.rs")).unwrap();
+    main.set_modified(std::time::SystemTime::now()).unwrap();
+    let cmds = ["cargo check --bin tarae", "cargo test --bin tarae --no-run"];
+    let mut all = Vec::new();
+    for (cmd, said) in cmds.iter().zip(through_run(&sb, &cmds, LIVE_TIMEOUT, true)?) {
+        let built = compiled(&said);
+        if !said.starts_with("exit 0 ") {
+            return Err(format!("{cmd} failed: {}", said.lines().take(12).collect::<Vec<_>>().join(" ⏎ ")));
+        }
+        if built != ["tarae"] {
+            return Err(format!("{cmd} compiled {built:?}, not tarae alone"));
+        }
+        all.extend(built);
+    }
+    Ok(all)
+}
+
+/// `from` copied to `to` as clones of its files where the disk can (APFS's `clonefile`, a reflink elsewhere), their
+/// times kept — a warm target in seconds, not its gigabytes written again.
+fn clone_dir(from: &Path, to: &Path) {
+    let mut cp = Command::new("cp");
+    match cfg!(target_os = "macos") {
+        true => cp.args(["-c", "-Rp"]),
+        false => cp.args(["-Rp", "--reflink=auto"]),
+    };
+    let st = cp.arg(from).arg(to).status();
+    assert!(st.is_ok_and(|s| s.success()), "cloning {} to {}", from.display(), to.display());
+}
+
+/// `pointed_ab`'s steps before its spend, alone: the warm build through tarae's own `run` and its proof on a cell
+/// (`warm_seed`, `warm_check`) — a stand-in claude, no model: free. What it compiled is printed as `POINTED_AB warm`.
+#[test]
+#[ignore = "live: run with `cargo live` (cargo through tarae's run; no Claude)"]
+fn pointed_ab_warm() {
+    if !have("cargo") {
+        return;
+    }
+    let bin = std::env::var("TARAE_AB_BIN").ok().filter(|b| !b.is_empty());
+    let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/pointed-ab-seed");
+    let started = Instant::now();
+    let n = warm_seed(&seed, bin.as_deref()).unwrap_or_else(|e| panic!("the warm build: {e}"));
+    eprintln!("POINTED_AB seed built through tarae's run in {:?}, crates compiled {n:?}", started.elapsed());
+    match warm_check(&seed, bin.as_deref()) {
+        Ok(built) => eprintln!("POINTED_AB warm: a cell's check through tarae's run compiled {built:?}"),
+        Err(e) => panic!("not warm — {e}"),
+    }
+}
+
+/// Code mode (a)'s a6: does a failed run's or test run's report with the lines it points at (`llm.compound`) save
+/// requests and $ on real fix loops? The first A/B (`compound_ab`, 2026-11-10, $18.84, git has it) never gave a6 a
+/// failing run it could see: fix-panic's failure went through `run_tests`, where a6 had no hook, and fix-type's
+/// check never compiled (its target-dir outside the project, refused). Now a6 is at both ends and each cell's target
+/// is inside its project, warm (`warm_seed`). Two arms by its config (`off` · `on`), rotated (A B, then B A), on
+/// `TOOLS_CORPUS` with rust-analyzer on, the two fix loops (`FIX_TASKS`) only. Measured from claude's stream:
+/// requests, calls, calls a request, tokens by kind, $, wall time, the check, the failed runs and test runs and those
+/// whose report brought lines (and the failed test runs with no failed case apart: a build that failed, nothing for
+/// a6 to point at). It pays by the rule set before it (main's `.sb/decisions/chat.md`, "a6's keep-or-drop rule").
 ///
-/// **Its spend is the user's call, asked each time** — a pilot (`TARAE_AB_RUNS=1`, one run a cell, ~$4.5), then 3
-/// runs (54, ~$17): it starts only with `TARAE_AB_GO=1`, said after the user's yes. `TARAE_AB_BUDGET` ($ claude
-/// reports, 20: no run starts past it), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_EFFORT`, `TARAE_AB_BIN`,
-/// `TARAE_AB_TURNS` (names, comma-separated; all). Rows to `target/live/compound-ab.tsv`, streams beside them in
-/// `target/live/compound-ab/`; one cargo target for every run (`target/live/compound-ab-target`).
+/// Before anything spends: the warm build (`warm_seed`, through tarae's `run`) and its proof (`warm_check`: a cell's
+/// check compiling anything but tarae refuses to start). **Its spend is the user's call, asked each time** — 5 runs
+/// (2 turns × 2 arms × 5 = 20 cells, ~$10): it starts only with `TARAE_AB_GO=1`, said after the user's yes.
+/// `TARAE_AB_RUNS` (5: the last run), `TARAE_AB_FROM` (1: the first — run 1 alone, `TARAE_AB_RUNS=1`, reported
+/// before runs 2–5, `TARAE_AB_FROM=2`; the arms' order is the run's number's), `TARAE_AB_SPENT` ($ the runs before
+/// `TARAE_AB_FROM` spent, as the last report says it: 0), `TARAE_AB_BUDGET` ($ claude reports, 15: no run starts
+/// that the last run's cost — the mean of the runs before, going on — would carry past it; never mid-run, which
+/// would leave the arms unbalanced), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_EFFORT`, `TARAE_AB_BIN`, `TARAE_AB_TURNS`
+/// (names, comma-separated; both). Rows to `target/live/pointed-ab.tsv`, streams beside them in
+/// `target/live/pointed-ab/`; the warm build in `target/live/pointed-ab-seed` (built cold the first time: minutes,
+/// no Claude).
 #[test]
 #[ignore = "live: run with `cargo live` (uses Claude and rust-analyzer — its spend asked of the user first)"]
-fn compound_ab() {
+fn pointed_ab() {
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     if var("TARAE_AB_GO").as_deref() != Some("1") {
-        skip("TARAE_AB_GO=1 once the user said yes to the spend (a pilot ~$4.5, the run ~$17)");
+        skip("TARAE_AB_GO=1 once the user said yes to the spend (~$10)");
         return;
     }
     if !have("claude") || !have("cargo") || !have("rust-analyzer") {
         return;
     }
     let bin = var("TARAE_AB_BIN");
-    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(1);
-    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(20.0);
+    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(5);
+    let from: usize = var("TARAE_AB_FROM").and_then(|r| r.parse().ok()).unwrap_or(1).max(1);
+    let mut spent: f64 = var("TARAE_AB_SPENT").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(15.0);
     let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
     let effort = var("TARAE_AB_EFFORT").unwrap_or_default();
     let only = var("TARAE_AB_TURNS");
-    let mut turns: Vec<AbTurn> = QUESTIONS.iter().map(AbTurn::Ask).collect();
-    turns.extend(EDIT_TASKS.iter().map(AbTurn::Edit));
-    turns.extend(FIX_TASKS.iter().map(AbTurn::Fix));
-    turns.push(AbTurn::Long(&QUESTIONS[0]));
-    turns.retain(|t| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == t.name())));
+    let turns: Vec<&FixTask> = FIX_TASKS
+        .iter()
+        .filter(|f| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == f.task.name)))
+        .collect();
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let live = here.join("target/live");
-    let (tsv, kept) = (live.join("compound-ab.tsv"), live.join("compound-ab"));
-    let (check, target) = (live.join("compound-ab-check"), live.join("compound-ab-target"));
+    let (tsv, kept) = (live.join("pointed-ab.tsv"), live.join("pointed-ab"));
+    let (check, target) = (live.join("pointed-ab-check"), live.join("pointed-ab-target"));
+    let seed = live.join("pointed-ab-seed");
     std::fs::create_dir_all(&kept).unwrap();
-    // (an edit check that can't pass, or passes already, measures nothing — found before anything is spent)
-    if turns.iter().any(|t| matches!(t, AbTurn::Edit(_)))
-        && let Err(e) = edit_corpus_checked(&check, &target)
-    {
-        panic!("COMPOUND_AB not started: {e}");
+    // (the warm build and its proof, before anything is spent)
+    match warm_seed(&seed, bin.as_deref()) {
+        Ok(n) => eprintln!("POINTED_AB seed: crates compiled through tarae's run {n:?}"),
+        Err(e) => panic!("POINTED_AB not started: the warm build: {e}"),
+    }
+    match warm_check(&seed, bin.as_deref()) {
+        Ok(built) => eprintln!("POINTED_AB warm: a cell's check through tarae's run compiled {built:?}"),
+        Err(e) => panic!("POINTED_AB not started: not warm — {e}"),
     }
     let arms = ["off", "on"];
-    let mut rows: Vec<(String, &str, Measured, Compounded)> = Vec::new();
-    let mut spent = 0.0;
-    'runs: for run in 0..runs {
+    let mut rows: Vec<(&str, &str, Measured, Compounded)> = Vec::new();
+    let (spent_before, mut last) = (spent, if from > 1 { spent / (from - 1) as f64 } else { 0.0 });
+    let mut done = from - 1;
+    for run in from - 1..runs {
+        if spent + last > budget {
+            eprintln!(
+                "POINTED_AB budget: ${spent:.2} spent + ${last:.2} (the last run's) passes ${budget} — run {} not \
+                 started",
+                run + 1
+            );
+            break;
+        }
+        let at_start = spent;
         for turn in &turns {
+            let name = turn.task.name;
             for k in 0..arms.len() {
                 let arm = arms[(k + run) % arms.len()];
-                if spent > budget {
-                    eprintln!("COMPOUND_AB budget: ${spent:.2} spent, past ${budget} — no more runs");
-                    break 'runs;
-                }
-                let mut sb = Sandbox::live(&format!("compound-ab-{}-{arm}", turn.name()))
-                    .with_env("CARGO_TARGET_DIR", target.to_str().unwrap());
-                if let Some(b) = &bin {
-                    sb = sb.with_bin(Path::new(b));
-                }
-                assert!(
-                    sb.copy_commit(TOOLS_CORPUS, &EDIT_CORPUS_PATHS),
-                    "commit {TOOLS_CORPUS} in this clone"
-                );
-                match turn {
-                    AbTurn::Fix(f) => plant(&sb, f.plant),
-                    AbTurn::Long(_) => drop(sb.write("CLAUDE.md", &large_claude_md(LONG_CONTEXT))),
-                    _ => {}
-                }
+                let sb = fix_cell(&format!("pointed-ab-{name}-{arm}"), &seed, bin.as_deref());
+                let work = sb.work();
+                let built = work.join("target");
+                plant(&sb, turn.plant);
                 let llm = format!(
                     "model = \"{model}\"\neffort = \"{effort}\"\nreview-at-end = true\ncompound = {}\n",
                     arm == "on"
@@ -5847,33 +6077,22 @@ fn compound_ab() {
                 t.wait_text("rust-analyzer ready");
                 let loading = !quiet(&mut t, 10);
                 let started = Instant::now();
-                let (cards, capped) = ab_turn(&mut t, turn.ask(), &stream);
-                let work = sb.work();
+                let (cards, capped) = ab_turn(&mut t, turn.task.ask, &stream);
                 let text = std::fs::read_to_string(&stream).unwrap_or_default();
                 let mut m = measure(&text, work.to_str().unwrap());
                 m.wall_ms = started.elapsed().as_millis() as u64;
                 (m.cards, m.capped, m.loading) = (cards, capped, loading);
                 drop(t);
-                let checked = match turn {
-                    AbTurn::Ask(q) | AbTurn::Long(q) => {
-                        let lower = m.answer.to_lowercase();
-                        let met = q
-                            .key
-                            .iter()
-                            .filter(|alts| alts.iter().any(|a| lower.contains(&a.to_lowercase())));
-                        Ok(met.count() as f64 / q.key.len() as f64)
-                    }
-                    AbTurn::Edit(task) => edit_check(task, &work, &check, &target).map(|()| 1.0),
-                    AbTurn::Fix(f) => edit_check(&f.task, &work, &check, &target).map(|()| 1.0),
-                };
-                m.right = *checked.as_ref().unwrap_or(&0.0);
+                // (the check copies the project: its build stays behind — the sandbox's own folder)
+                let _ = std::fs::remove_dir_all(&built);
+                let checked = edit_check(&turn.task, &work, &check, &target);
+                m.right = if checked.is_ok() { 1.0 } else { 0.0 };
                 let c = compounded(&text);
                 spent += m.cost;
                 let said = format!(
-                    "COMPOUND_AB {} {arm} run {}: {} requests, {} calls {:?}, tokens in {} · read {} · written {} · out \
-                     {}, ${:.3}, {} ms, shows {}, lines pointed {}, run→run after a pass {}, cards {}, capped {}, \
-                     outside {}, right {:.2}{}\n  answer: {}",
-                    turn.name(),
+                    "POINTED_AB {name} {arm} run {}: {} requests, {} calls {:?}, tokens in {} · read {} · written {} · out \
+                     {}, ${:.3}, {} ms, failed runs {} ({} test runs with no case), lines pointed {}, first run \
+                     compiled {:?}, cards {}, capped {}, outside {}, right {:.2}{}\n  answer: {}",
                     run + 1,
                     m.requests,
                     m.calls,
@@ -5884,9 +6103,10 @@ fn compound_ab() {
                     c.output,
                     m.cost,
                     m.wall_ms,
-                    c.shows,
+                    c.failed,
+                    c.unbuilt,
                     c.pointed,
-                    c.hops,
+                    c.compiled,
                     m.cards,
                     m.capped,
                     m.outside,
@@ -5899,12 +6119,11 @@ fn compound_ab() {
                     m.answer.replace('\n', " ⏎ "),
                 );
                 eprintln!("{said}");
-                let one = format!("{}-{arm}-{}-{}", turn.name(), run + 1, std::process::id());
+                let one = format!("{name}-{arm}-{}-{}", run + 1, std::process::id());
                 let _ = std::fs::copy(&stream, kept.join(format!("{one}.jsonl")));
                 std::fs::write(kept.join(format!("{one}.txt")), &said).unwrap();
                 let row = format!(
-                    "{TOOLS_CORPUS}\t{}\t{arm}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{:?}\n",
-                    turn.name(),
+                    "{TOOLS_CORPUS}\t{name}\t{arm}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{:?}\n",
                     run + 1,
                     m.requests,
                     m.calls,
@@ -5914,9 +6133,10 @@ fn compound_ab() {
                     c.output,
                     m.cost,
                     m.wall_ms,
-                    c.shows,
+                    c.failed,
+                    c.unbuilt,
                     c.pointed,
-                    c.hops,
+                    c.compiled.len(),
                     m.capped,
                     m.right,
                     m.loading,
@@ -5925,26 +6145,49 @@ fn compound_ab() {
                 use std::io::Write;
                 let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
                 f.write_all(row.as_bytes()).unwrap();
-                rows.push((turn.name(), arm, m, c));
+                rows.push((name, arm, m, c));
             }
         }
+        (last, done) = (spent - at_start, run + 1);
     }
+    // (what the driver reads before the next runs: warm in each cell, a6 firing in the on arm, $ a cell)
+    eprintln!("POINTED_AB report, runs {from}–{done}:");
+    for (name, arm, m, c) in &rows {
+        eprintln!(
+            "POINTED_AB   {name} {arm}: ${:.3}, failed runs {} ({} with no case), lines pointed {}, first run compiled \
+             {:?}",
+            m.cost, c.failed, c.unbuilt, c.pointed, c.compiled
+        );
+    }
+    for turn in &turns {
+        let on: Vec<&Compounded> =
+            rows.iter().filter(|r| r.0 == turn.task.name && r.1 == "on").map(|r| &r.3).collect();
+        let fired = on.iter().filter(|c| c.pointed > 0).count();
+        eprintln!("POINTED_AB   {}: a6 brought lines in {fired} of {} on cells", turn.task.name, on.len());
+    }
+    let cold = rows.iter().filter(|r| r.3.compiled.iter().any(|c| c != "tarae")).count();
+    eprintln!("POINTED_AB   cells whose first run compiled more than tarae: {cold} of {}", rows.len());
     eprintln!(
-        "COMPOUND_AB median (min–max) — turn arm n: requests · calls/request · read · written · out · $ · wall ms · \
-         shows · lines pointed · run→run after a pass · right"
+        "POINTED_AB   spent ${:.2} in these runs, ${spent:.2} in all — to go on: TARAE_AB_FROM={} TARAE_AB_SPENT={spent:.2}",
+        spent - spent_before,
+        done + 1
+    );
+    eprintln!(
+        "POINTED_AB median (min–max) — turn arm n: requests · calls/request · read · written · out · $ · wall ms · \
+         failed runs · with no case · lines pointed · right"
     );
     for turn in &turns {
         for arm in arms {
             let of: Vec<(&Measured, &Compounded)> =
-                rows.iter().filter(|r| r.0 == turn.name() && r.1 == arm).map(|r| (&r.2, &r.3)).collect();
+                rows.iter().filter(|r| r.0 == turn.task.name && r.1 == arm).map(|r| (&r.2, &r.3)).collect();
             let at = |f: &dyn Fn(&Measured, &Compounded) -> f64, p: usize| {
                 let v: Vec<f64> = of.iter().map(|(m, c)| f(m, c)).collect();
                 let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |(l, h), x| (l.min(*x), h.max(*x)));
                 format!("{:.p$} ({lo:.p$}–{hi:.p$})", median(v))
             };
             eprintln!(
-                "COMPOUND_AB {} {arm} {}: {} · {} · {} · {} · {} · {} · {} · {} · {} · {} · {}",
-                turn.name(),
+                "POINTED_AB {} {arm} {}: {} · {} · {} · {} · {} · {} · {} · {} · {} · {} · {}",
+                turn.task.name,
                 of.len(),
                 at(&|m, _| m.requests as f64, 0),
                 at(&|m, _| m.calls as f64 / m.requests.max(1) as f64, 2),
@@ -5953,13 +6196,12 @@ fn compound_ab() {
                 at(&|_, c| c.output as f64, 0),
                 at(&|m, _| m.cost, 3),
                 at(&|m, _| m.wall_ms as f64, 0),
-                at(&|_, c| c.shows as f64, 0),
+                at(&|_, c| c.failed as f64, 0),
+                at(&|_, c| c.unbuilt as f64, 0),
                 at(&|_, c| c.pointed as f64, 0),
-                at(&|_, c| c.hops as f64, 0),
                 at(&|m, _| m.right, 2),
             );
         }
     }
-    eprintln!("COMPOUND_AB spent ${spent:.2}");
     assert!(!rows.is_empty(), "no run");
 }

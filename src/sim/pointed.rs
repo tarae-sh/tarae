@@ -1,7 +1,7 @@
-//! A failed run's lines it points at (code mode (a)'s a6, `pointed.rs`), simulated: Claude's runs end failed or passed
-//! with a place in the project, the setting as the chat's process started flips (a new process), the file the place
-//! is in is written shorter or longer meanwhile, frames are drawn, time passes — each step's jobs (the lines read on a
-//! worker) and their results interleaved by seed. After every step: each call answered once at most, a report with
+//! A failed run's lines it points at (code mode (a)'s a6, `pointed.rs`), simulated: Claude's runs and test runs end
+//! failed or passed with a place in the project (a test run's: its failed case's), the setting as the chat's process
+//! started flips (a new process), the file the place is in is written shorter or longer meanwhile, frames are drawn,
+//! time passes — each step's jobs (the lines read on a worker) and their results interleaved by seed. After every step: each call answered once at most, a report with
 //! lines only for a run that failed with the setting on, one without them answered within its own step (no worker:
 //! today's way), and the file seen only by the process that was shown it.
 
@@ -72,28 +72,47 @@ fn input(
             let (generation, on) = (chat.generation(), chat.compound);
             let failed = *c.pick(&[true, true, false]);
             let line = *c.pick(&[2, 9, 30]);
+            let tests = *c.pick(&[false, true]);
             *n += 1;
-            let task = crate::task::Task { name: "check".into(), cmd: "make check".into(), cwd: root.into() };
-            let mut r = crate::task::Run::for_test(task);
-            r.state = if failed { crate::task::State::Failed(Some(2)) } else { crate::task::State::Passed };
-            r.places = vec![crate::quickfix::Item {
-                path: root.join("a.rs"),
-                line,
-                col: 0,
-                message: "boom".into(),
-                severity: 1,
-                mark: None,
-            }];
-            r.chat = Some(crate::tools::Call::of(generation, "", serde_json::json!(*n)));
-            ed.workspace.task_run = Some(r);
-            crate::tools::run_done(ed);
+            let call = crate::tools::Call::of(generation, "", serde_json::json!(*n));
+            if tests {
+                use crate::test_results::{Case, Status};
+                let status = if failed { Status::Failed } else { Status::Passed };
+                let at = Some((root.join("a.rs"), line));
+                let case = Case { name: "t".into(), status, secs: None, message: vec!["boom".into()], at };
+                let mut r = crate::testing::TestRun::finished("t", vec![case], Vec::new());
+                if !failed {
+                    r.state = crate::testing::RunState::Passed;
+                }
+                r.chat = Some(call);
+                ed.workspace.test_run = Some(r);
+                crate::tools::tests_done(ed);
+            } else {
+                let task =
+                    crate::task::Task { name: "check".into(), cmd: "make check".into(), cwd: root.into() };
+                let mut r = crate::task::Run::for_test(task);
+                r.state =
+                    if failed { crate::task::State::Failed(Some(2)) } else { crate::task::State::Passed };
+                r.places = vec![crate::quickfix::Item {
+                    path: root.join("a.rs"),
+                    line,
+                    col: 0,
+                    message: "boom".into(),
+                    severity: 1,
+                    mark: None,
+                }];
+                r.chat = Some(call);
+                ed.workspace.task_run = Some(r);
+                crate::tools::run_done(ed);
+            }
             seen.borrow_mut().calls.push((*n, failed && on));
+            let what = if tests { "test run" } else { "run" };
             // (no lines to bring: answered now, as before the setting)
             if !(failed && on) && answers(*n) != 1 {
-                return format!("run {n} ended but its report waits");
+                return format!("{what} {n} ended but its report waits");
             }
             format!(
-                "run {n} ended {} at line {}, the setting {}",
+                "{what} {n} ended {} at line {}, the setting {}",
                 if failed { "failed" } else { "passed" },
                 line + 1,
                 on

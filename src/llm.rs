@@ -199,8 +199,8 @@ pub struct LlmConfig {
     pub stuck_after_outside: u64,
     /// Whose chat gets the session tools (`orchestra.rs`): `any` · `home` · `off`.
     pub session_tools: String,
-    /// Chat: compound answers on tarae's own tools (code mode (a)) — `search`'s `show`, a failed `run`'s lines it
-    /// points at, `run`'s word on `&&`; fixed per claude process (`Chat.compound`).
+    /// Chat: compound answers on tarae's own tools (code mode (a)'s a6) — a failed `run`'s or `run_tests`' report
+    /// brings the lines it points at; fixed per claude process (`Chat.compound`).
     pub compound: bool,
     /// How many sessions one parent's Claude may have open at once (`orchestra.rs`).
     pub children_max: usize,

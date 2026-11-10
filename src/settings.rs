@@ -602,7 +602,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "llm.compound",
         kind: Kind::Bool,
-        doc: "Chat: tarae's tools answer more in one call — search's show: \"symbol\" brings each hit's function, a failed run brings the lines its output points at. From Claude's next start",
+        doc: "Chat: a failed run's or test run's report brings the source lines its output points at. From Claude's next start",
         get: |c| Value::from(c.llm.compound),
         set: |c, v| c.llm.compound = b(v),
     },

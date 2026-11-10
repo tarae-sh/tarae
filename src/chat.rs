@@ -740,7 +740,7 @@ pub struct Chat {
     /// process's life — the tools are the cache's prefix, the same to the byte while it runs; `:set` changes the next.
     pub session_tools: bool,
     /// Whether its process has the compound answers (`llm.compound` as it was spawned): fixed for its life, as
-    /// `session_tools` — its tools' schemas (`tools::list`) and what a failed run's report adds (`tools::pointed`).
+    /// `session_tools` — what a failed run's or test run's report adds (`pointed.rs`).
     pub compound: bool,
     /// Whether its process lists `web_search` (`llm.web-search` as it was spawned): fixed for its life, as
     /// `session_tools`.
@@ -7920,7 +7920,7 @@ mod tests {
     /// review of web search step 2: `web_search` missed it). Each gates itself (`ALLOWED`'s doc).
     #[test]
     fn every_listed_tool_is_allowed() {
-        let listed = crate::tools::list(true, true, true);
+        let listed = crate::tools::list(true, true);
         let allowed: Vec<&str> = ALLOWED.split(',').collect();
         for t in listed["tools"].as_array().unwrap() {
             let name = format!("mcp__tarae__{}", t["name"].as_str().unwrap());

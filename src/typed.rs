@@ -595,7 +595,7 @@ fn set_value(editor: &mut Editor, path: &str, v: toml::Value, persist: bool) -> 
         crate::edits::at_end_follow_here(editor);
     }
     crate::edits::at_end_follow_config(editor);
-    // (what a claude process is given as it starts — its tools' schemas, the cache's prefix: the next one has it)
+    // (what a claude process is given as it starts — `Chat.compound`: the next one has it)
     let when = if path == "llm.compound" { " — Claude has it from its next start" } else { "" };
     match kept {
         Some(Ok(file)) => editor.set_status(format!("{path} = {v}{when}  (saved to {})", file.display())),

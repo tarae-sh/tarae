@@ -1,7 +1,8 @@
 //! A failed run's report with the lines its output points at (code mode (a)'s a6, `llm.compound`): the places every
-//! run finds already (`Run.places` — the packs' `[[places]]` and the form every tool shares, `task::Matcher`), the
-//! first `POINTS_MAX` of them in the project, a few lines round each, read on a worker once the run ended — the read
-//! that would follow, in the report. No form of place is known here: those are the packs' data.
+//! run finds already (`Run.places` — the packs' `[[places]]` and the form every tool shares, `task::Matcher`; a test
+//! run's failed cases, `Case.at`), the first `POINTS_MAX` of them in the project, a few lines round each, read on a
+//! worker once the run ended — the read that would follow, in the report. No form of place is known here: those are
+//! the packs' data.
 
 use std::path::{Path, PathBuf};
 
@@ -18,12 +19,40 @@ const LOOKED_MAX: usize = 64;
 #[derive(Debug, Default)]
 pub struct Pointed {
     pub text: String,
-    pub showed: crate::nav::Showed,
+    pub showed: Showed,
+}
+
+/// What a report showed Claude of files beyond its output: the lines, and each file's stamp as it was read (taken
+/// before).
+#[derive(Debug, Default)]
+pub(crate) struct Showed {
+    pub(crate) lines: Vec<crate::replay::Shown>,
+    pub(crate) stamps: Vec<(PathBuf, Option<crate::disk::Stamp>)>,
+}
+
+impl Showed {
+    /// Seen by claude process `generation` as `read`'s answer is: each file by its stamp (`edittool::saw`), the lines
+    /// on the stops of calls `rows` (`follow::shown`).
+    pub(crate) fn seen(self, ed: &mut Editor, generation: u64, rows: &[String]) {
+        if self.stamps.is_empty() {
+            return;
+        }
+        let went: Vec<PathBuf> = (self.stamps.iter())
+            .filter(|(p, s)| crate::edittool::went(ed, generation, p, *s))
+            .map(|(p, _)| p.clone())
+            .collect();
+        for (p, s) in self.stamps {
+            crate::edittool::saw(ed, generation, &p, s);
+        }
+        for row in rows {
+            crate::follow::shown(ed, row, self.lines.clone(), &went);
+        }
+    }
 }
 
 /// The places of `places` a report may bring the lines of (path as found, line from 0) — judged on the worker.
-pub fn wanted(places: &[crate::quickfix::Item]) -> Vec<(PathBuf, usize)> {
-    places.iter().take(LOOKED_MAX).map(|it| (it.path.clone(), it.line)).collect()
+pub fn wanted<'a>(places: impl IntoIterator<Item = (&'a Path, usize)>) -> Vec<(PathBuf, usize)> {
+    places.into_iter().take(LOOKED_MAX).map(|(p, l)| (p.to_path_buf(), l)).collect()
 }
 
 /// `then` with what a failed run's report brings of `wanted`: read on a worker (`keys`: the chat's, which files
@@ -111,7 +140,7 @@ pub fn read(root: &Path, wanted: &[(PathBuf, usize)], keys: &crate::reads::Keys)
 
 /// `path`'s first `lines` lines (`usize::MAX`: all of it), read from that very file as opened (`paths::open_read`,
 /// as `outlines::of` reads one) — no further: a big generated file isn't read whole for a few lines at its top.
-pub(crate) fn text_of(path: &Path, lines: usize) -> Option<String> {
+fn text_of(path: &Path, lines: usize) -> Option<String> {
     use std::io::BufRead;
     let o = crate::paths::open_read(path).ok()?;
     if o.real != path || !o.meta.is_file() {
@@ -208,7 +237,7 @@ mod tests {
             mark: None,
         };
         let places: Vec<_> = (0..100).map(item).collect();
-        assert_eq!(super::wanted(&places).len(), LOOKED_MAX);
+        assert_eq!(super::wanted(places.iter().map(|it| (it.path.as_path(), it.line))).len(), LOOKED_MAX);
     }
 
     /// a6's code holds no form of place and names no tool or language: those are the packs' data (`[[places]]`).

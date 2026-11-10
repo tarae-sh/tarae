@@ -29,14 +29,14 @@ fn a_short_base_is_said_whole_on_the_set_card() {
 #[test]
 fn a_childs_chat_lists_no_session_tool() {
     let names = |parent| -> Vec<String> {
-        let l = crate::tools::list(parent, false, false);
+        let l = crate::tools::list(parent, false);
         l["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
     };
     let (child, parent) = (names(false), names(true));
     assert!(!child.iter().any(|n| n.starts_with("session")), "{child:?}");
     assert_eq!(parent[..child.len()], child[..]);
     assert_eq!(parent[child.len()..], ["sessions_start", "session_send", "sessions", "session_act"]);
-    let all = crate::tools::list(true, true, true);
+    let all = crate::tools::list(true, true);
     assert!(all["tools"].as_array().unwrap().iter().all(|t| t["annotations"]["title"].is_string()));
 }
 
@@ -1245,25 +1245,20 @@ fn the_session_tools_are_fixed_per_chat_process() {
     assert!(!listed(&mut p.ed), "the next process's");
 }
 
-/// The compound answers (`llm.compound`, code mode (a)) are fixed as a chat's claude starts, as the session tools are:
-/// `:set` says the next start has them, the list stays while its process runs, the next process goes by it.
+/// The compound answers (`llm.compound`, code mode (a)'s a6) are fixed as a chat's claude starts, as the session
+/// tools are: `:set` says the next start has them, they stay as they were while its process runs, the next process
+/// goes by it.
 #[test]
 fn the_compound_answers_are_fixed_per_chat_process() {
     let mut p = place("compound");
-    let shows = |ed: &mut Editor| {
-        let msg = json!({ "jsonrpc": "2.0", "id": 12, "method": "tools/list" });
-        let l = crate::tools::mcp(ed, 0, "r12", &msg).unwrap();
-        let tools = l["result"]["tools"].as_array().unwrap().clone();
-        tools.iter().any(|t| t["name"] == "search" && !t["inputSchema"]["properties"]["show"].is_null())
-    };
-    assert!(!shows(&mut p.ed) && !super::compound(&p.ed), "off by default");
+    assert!(!super::compound(&p.ed), "off by default");
     crate::typed::execute(&mut p.ed, "set llm.compound true").unwrap();
     let said = p.ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert!(said.contains("llm.compound = true — Claude has it from its next start"), "{said}");
-    assert!(!shows(&mut p.ed), "the same list while its process runs");
+    assert!(!super::compound(&p.ed), "as it was while its process runs");
     p.ed.workspace.claude.chat = None;
     crate::chat::open(&mut p.ed);
-    assert!(shows(&mut p.ed) && super::compound(&p.ed), "the next process's");
+    assert!(super::compound(&p.ed), "the next process's");
 }
 
 /// The set card's `y` with its briefs cut at their rows' ends answers — it doesn't wait for `v` (user, 2026-10-28):

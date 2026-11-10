@@ -1144,7 +1144,7 @@ pub fn lists(ed: &Editor) -> bool {
 }
 
 /// Whether the chat of `ed.workspace` has the compound answers (`llm.compound`): as its process started
-/// (`Chat.compound`), for the same reason.
+/// (`Chat.compound`) — one process's reports are all one way, the A/B's arm.
 pub fn compound(ed: &Editor) -> bool {
     ed.workspace.claude.chat.as_ref().is_some_and(|c| c.compound)
 }

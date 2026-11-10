@@ -637,8 +637,8 @@ mod tests {
     }
 
     /// Code mode (a)'s yardstick: the call-order record counts a turn's requests as they come, so the same work with
-    /// and without the compound answers (`llm.compound`) says what they save — a search and the read of what it
-    /// found, a failed run and the read of the lines it named: one request each.
+    /// and without the compound answers (`llm.compound`) says what they save — a failed run and the read of the lines
+    /// it named: one request.
     #[test]
     fn the_record_counts_what_the_compound_answers_save() {
         let tool = |name: &str, input: Value| (format!("mcp__tarae__{name}"), input);
@@ -655,11 +655,9 @@ mod tests {
             let steps = t.take_steps();
             (steps.clone(), t.end(&vec![100; steps.len()], None, 0).sums)
         };
-        let (search, read) = (json!({ "pattern": "fn x" }), json!({ "files": ["src/a.rs:x"] }));
+        let read = json!({ "files": ["src/a.rs:x"] });
         let (edit, run) = (json!({ "edits": [] }), json!({ "command": "cargo test" }));
         let without = vec![
-            vec![tool("search", search.clone())],
-            vec![tool("read", read.clone())],
             vec![tool("edit", edit.clone())],
             vec![tool("run", run.clone())],
             vec![tool("read", read)],
@@ -667,21 +665,16 @@ mod tests {
             vec![tool("run", run.clone())],
         ];
         let with = vec![
-            vec![tool("search", json!({ "pattern": "fn x", "show": "symbol" }))],
             vec![tool("edit", edit.clone())],
             vec![tool("run", run.clone())],
             vec![tool("edit", edit)],
             vec![tool("run", run)],
         ];
         let ((off, a), (on, b)) = (turn(without), turn(with));
-        assert_eq!(off, [["search"], ["read"], ["edit"], ["run"], ["read"], ["edit"], ["run"]]);
-        assert_eq!(on, [["search"], ["edit"], ["run"], ["edit"], ["run"]]);
-        assert_eq!((a.requests, a.calls, a.context), (7, 7, 700));
-        assert_eq!(
-            (b.requests, b.calls, b.context),
-            (5, 5, 500),
-            "two requests, and what they carried, fewer"
-        );
+        assert_eq!(off, [["edit"], ["run"], ["read"], ["edit"], ["run"]]);
+        assert_eq!(on, [["edit"], ["run"], ["edit"], ["run"]]);
+        assert_eq!((a.requests, a.calls, a.context), (5, 5, 500));
+        assert_eq!((b.requests, b.calls, b.context), (4, 4, 400), "a request, and what it carried, fewer");
     }
 
     /// Kept with the conversation and read back the same; a turn kept before calls were counted has none.
