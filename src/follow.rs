@@ -290,12 +290,6 @@ pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value,
                 (look.link.as_ref().map(|l| l.path.clone()), lines, from)
             }
         }
-        // a web search: the list it got, once it's in (`web::search::landed`)
-        "mcp__tarae__web_search" => {
-            let words = input["query"].as_str().unwrap_or_default();
-            page = Some(crate::replay::PageAt { url: crate::web::search::page_url(words), copy: None });
-            (None, None, 0)
-        }
         // A test run: to the test (the file's top for all of them); references: to the name asked about
         "mcp__tarae__run_tests"
         | "mcp__tarae__references"

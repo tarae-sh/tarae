@@ -209,11 +209,6 @@ pub struct LlmConfig {
     /// How many turns of its own a parent's Claude may be woken for in an hour (`orchestra::wake`: a turn it started in
     /// a child, asked with `wake`, ended).
     pub parent_wakes: usize,
-    /// Chat: Claude has `web_search` (`web::search`) — fixed for a chat's process, as the session tools are. Only your
-    /// own config sets it.
-    pub web_search: bool,
-    /// The model its search runs on (`--model` of the helper `web::search` starts). Only your own config sets it.
-    pub web_search_model: String,
     /// `web.signed-in`: your wikis, each with the variable holding its token (`web::signed`) — here, beside what every
     /// claude is made from, so no claude tarae starts can miss leaving the variable out (`command`). Only your own
     /// config sets it.
@@ -260,8 +255,6 @@ impl Default for LlmConfig {
             children_max: 3,
             children_total: 6,
             parent_wakes: 6,
-            web_search: false,
-            web_search_model: crate::web::search::MODEL.into(),
             signed_in: Vec::new(),
         }
     }
@@ -680,8 +673,6 @@ pub enum StreamEv {
     Tool { id: String, name: String, input: serde_json::Value },
     /// What a tool returned (its first 4 KB — enough to see where a search landed).
     ToolResult { id: String, text: String, error: bool },
-    /// Claude Code's WebSearch returned, whole (`web::search::found`): the web search's helper reads its list here.
-    Searched(Box<crate::web::search::Found>),
     /// claude asks the host something (`mcp_message` for tarae's own tools) — needs a `control_response`.
     Control { request_id: String, request: serde_json::Value },
     /// The process's conversation (claude's `session_id`), the model it runs, Claude Code's version and the
@@ -943,8 +934,6 @@ fn tool_events(ev: &serde_json::Value) -> Vec<StreamEv> {
                 let error = b["is_error"].as_bool() == Some(true);
                 StreamEv::ToolResult { id: id(b, "tool_use_id"), text, error }
             })
-            // (and a WebSearch's list, whole — its own line's `tool_use_result`)
-            .chain(crate::web::search::found(ev).map(|f| StreamEv::Searched(Box::new(f))))
             .collect(),
         _ => Vec::new(),
     }
@@ -1507,7 +1496,6 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
             | StreamEv::Writing(_)
             | StreamEv::ThinkingBlock(_)
             | StreamEv::ToolResult { .. }
-            | StreamEv::Searched(_)
             | StreamEv::Control { .. }
             | StreamEv::Compaction(_)
             | StreamEv::Exit(_) => {
@@ -2173,8 +2161,8 @@ pub(crate) mod tests {
     }
 
     /// Every claude tarae starts is without your wiki's token (`web.signed-in`'s variable) — inherited from tarae's
-    /// environment or given — so neither it, its children nor what they print has it: the chat, the helpers and the
-    /// web search's all start through `command`.
+    /// environment or given — so neither it, its children nor what they print has it: the chat and the helpers all start
+    /// through `command`.
     #[test]
     fn every_claude_tarae_starts_has_no_wiki_token() {
         let t: toml::Table = toml::from_str(
@@ -2752,12 +2740,6 @@ pub(crate) mod tests {
             {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "a.rs:3:fn a"}]}]}});
         assert!(matches!(&tool_events(&result)[..],
             [StreamEv::ToolResult { id, text, error: false }] if id == "t1" && text == "a.rs:3:fn a"));
-        // (a WebSearch's: its list too, whole — the web search's helper's)
-        let searched = serde_json::json!({"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "t2", "content": "Web search results for query: \"q\""}]},
-            "tool_use_result": {"query": "q", "results": [{"content": [{"title": "A", "url": "https://a.test/"}]}]}});
-        assert!(matches!(&tool_events(&searched)[..],
-            [StreamEv::ToolResult { id, .. }, StreamEv::Searched(f)] if id == "t2" && f.links[0].url == "https://a.test/"));
         // Summarized thinking carries text; the omitted kind is just a signal
         let delta = |t: &str| {
             serde_json::json!({"type": "stream_event", "event": {"type": "content_block_delta",

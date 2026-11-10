@@ -6,14 +6,12 @@
 //!
 //! `:web https://… [main|article|page]` fetches a page into a buffer, `:web <path> [url] […]` reads a saved one
 //! (`open.rs`); a page is a buffer as code is (`page.rs`). Claude's `read` takes an `https://` URL (`tool.rs`): its own gate, the page framed as data.
-//! Claude's `web_search` (`search.rs`, behind `llm.web-search`): a small model's search, a list of pages framed as data.
 //! Your work wiki (`signed.rs`, `source.rs`, behind `web.signed-in`): its token at its base, its pages through its API.
 
 pub mod fetch;
 mod http;
 pub mod open;
 pub mod page;
-pub mod search;
 pub mod serve;
 pub mod signed;
 pub mod source;

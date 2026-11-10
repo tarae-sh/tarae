@@ -16,6 +16,9 @@ use crate::editor::Editor;
 
 const USAGE: &str = "usage: :web <https://…> | <saved page> [its address] — then [main|article|page]";
 
+/// Said of words that aren't an address or a saved page (the web decisions' "`:web`'s other words", 2026-11-10).
+pub(super) const TAKES: &str = ":web takes an address (https://…) or a saved page, not other words";
+
 /// `:web` (`again`: `:web!` — fetched anew whatever the session kept).
 pub fn web(ed: &mut Editor, rest: &str, again: bool) -> Result<(), String> {
     let (mut path, mut url, mut prefer) = (None, None, Prefer::Guess);
@@ -23,6 +26,8 @@ pub fn web(ed: &mut Editor, rest: &str, again: bool) -> Result<(), String> {
         match Prefer::named(&w) {
             Some(p) => prefer = p,
             None if w.contains("://") => url = Some(w),
+            // (a saved page is one word — quoted when it has a space; a second is words)
+            None if path.is_some() => return Err(TAKES.into()),
             None => path = Some(crate::typed::typed_path(ed, &w)),
         }
     }
@@ -60,10 +65,13 @@ pub(super) fn file_url(path: &Path) -> String {
 
 /// The file's first `PAGE_MAX` bytes and one more (so the reader says it was cut) — a plain file only, judged by
 /// what was opened: opened without waiting (a FIFO with no writer would hold the worker inside open(2)), and a FIFO
-/// or a device refused, said.
+/// or a device refused, said. One that isn't there says what `:web` takes (a word that names no file).
 pub(super) fn bytes_of(path: &Path) -> Result<Vec<u8>, String> {
     let said = |e: std::io::Error| format!("{}: {e}", path.display());
-    let opened = crate::paths::open_read(path).map_err(said)?;
+    let opened = crate::paths::open_read(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => format!("{}: no such file — {TAKES}", path.display()),
+        _ => said(e),
+    })?;
     if !opened.meta.is_file() {
         return Err(format!("{}: not a file", path.display()));
     }

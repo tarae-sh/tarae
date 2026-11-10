@@ -106,6 +106,22 @@ fn web_reads_a_saved_page_into_a_buffer_named_by_its_title() {
     assert_eq!(ed.doc().paint.len(), 1, "faint");
 }
 
+/// `:web`'s other words: words that aren't an address or a saved page get one line saying what it takes — several
+/// at once before anything is made, one naming no file on its read's line.
+#[test]
+fn web_says_what_it_takes_of_other_words() {
+    let root = crate::scratch::Scratch::new("web-words");
+    let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
+    let (before, docs) = (toasts(&ed).len(), ed.docs.len());
+    feed(&mut ed, ":web tokio set_times msrv<ret>");
+    assert!(toasts(&ed)[before..].iter().any(|t| t == super::open::TAKES), "{:?}", toasts(&ed));
+    assert!(none_reading(&ed) && ed.docs.len() == docs, "nothing under way, no buffer");
+    feed(&mut ed, ":web tokio<ret>");
+    let said = format!("/tokio: no such file — {}", super::open::TAKES);
+    settle_until(&mut ed, |ed| toasts(ed).iter().any(|t| t.starts_with("web: ") && t.ends_with(&said)));
+}
+
 /// `:web https://…` with the session's copy of that page (fetched within `KEEP`, by the address asked or the one it
 /// came from) opens it with no network, said with its age; an address the fetch refuses is said at once, nothing
 /// fetched, no buffer made.

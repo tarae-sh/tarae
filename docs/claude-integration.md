@@ -2056,9 +2056,7 @@ sends reading and searching here, and `:usage`
 counts the runs that only read text, by program.
 
 **Pages and the web.** `read` takes an `https://` URL too, a host Claude's commands don't reach asked on a card first
-([Claude reads pages](web.md#claude-reads-pages)). With `llm.web-search` on in your own config (off by default) a chat
-has a `web_search` tool besides: a small model's search beside the chat, told only the words, a list of pages back,
-a chat's first search asked on a card showing its words ([Claude searches the web](web.md#claude-searches-the-web)).
+([Claude reads pages](web.md#claude-reads-pages)).
 
 **A plugin of yours.** Asked for a plugin, Claude asks you to type `:plugin-new <dir>` (`Cargo.toml` and `.cargo` are
 names a run can't write), reads the API in the crate's `REFERENCE.md`, edits and builds in its run, and asks to

@@ -344,12 +344,11 @@ fn a_token_read_asks_on_its_own_card_whatever_runs_reach() {
         lines[1..],
         [
             "Claude's read · port 443 · through tarae's proxy · GET with your token, nothing else of yours",
-            "After it, this chat's web searches ask each time.",
+            "Reads of pages there only — a yes lets none of Claude's commands reach it.",
             "What it reads goes to Claude — your wiki's pages as your account sees them.",
         ]
     );
     while heads.try_recv().is_ok() {}
-    assert!(!ed.workspace.claude.chat.as_ref().unwrap().signed_read);
     ed.offer_accept();
     settle(&mut ed, &|_| answered(2).is_some());
     let t = answered(2).unwrap().unwrap();
@@ -357,7 +356,6 @@ fn a_token_read_asks_on_its_own_card_whatever_runs_reach() {
     assert!(t.contains(
         "<page from=\"https://page.test/confluence/pages/viewpage.action?pageId=7\" title=\"Runbook\""
     ));
-    assert!(ed.workspace.claude.chat.as_ref().unwrap().signed_read, "the chat read with your token");
     // the copy it kept came with the token: no card skipped for it either
     read(&mut ed, generation, 3, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
     assert!(card(&ed).is_some(), "a token copy is carded as a token read");
@@ -428,26 +426,6 @@ fn a_plain_answer_never_covers_a_token_read() {
     read(&mut ed, generation, 5, &[wiki, "https://page.test/plain4"]);
     assert!(card(&ed).is_none(), "a token card's s covers both");
     settle(&mut ed, &|_| answered(5).is_some());
-}
-
-/// W3: the mark is kept with the conversation the moment a token read lands, not at the turn's end — a crash right
-/// after still has it marked when the conversation is continued.
-#[test]
-fn a_token_read_is_kept_as_it_lands() {
-    let (mut ed, generation, _heads) = wiki_editor(Some("tarae-fake-token"));
-    let store = crate::scratch::Scratch::new("web-token-kept");
-    ed.chats_dir = Some(store.path().to_path_buf());
-    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c-wiki".into());
-    let kept = |ed: &Editor| {
-        crate::chats::load(store.path(), &ed.workspace.root).into_iter().find(|s| s.id == "c-wiki")
-    };
-    read(&mut ed, generation, 1, &["https://page.test/plain"]);
-    ed.offer_accept();
-    settle(&mut ed, &|_| answered(1).is_some());
-    assert!(kept(&ed).is_none_or(|s| !s.signed_read), "a plain read marks nothing");
-    read(&mut ed, generation, 2, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
-    ed.offer_accept();
-    settle(&mut ed, &|ed| answered(2).is_some() && kept(ed).is_some_and(|s| s.signed_read));
 }
 
 /// W1: with the wiki's variable holding no token when tarae started — unset, only whitespace, or what a token can't

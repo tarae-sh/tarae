@@ -607,20 +607,6 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.session_tools = s(v).to_string(),
     },
     Setting {
-        path: "llm.web-search",
-        kind: Kind::Bool,
-        doc: "Chat: Claude can search the web (web_search) — a small model's search beside the chat (llm.web-search-model), a list of pages back; a chat's first search asks on a card showing its words, which leave the machine for Anthropic's search engine. A change takes the next chat. Only your own config sets it",
-        get: |c| Value::from(c.llm.web_search),
-        set: |c, v| c.llm.web_search = b(v),
-    },
-    Setting {
-        path: "llm.web-search-model",
-        kind: Kind::Str,
-        doc: "The model Claude's web search runs on (llm.web-search): a name or alias claude --model takes. Only your own config sets it",
-        get: |c| Value::from(c.llm.web_search_model.as_str()),
-        set: |c, v| c.llm.web_search_model = s(v).to_string(),
-    },
-    Setting {
         path: "llm.children-max",
         kind: Kind::Int { min: 0, max: 16 },
         doc: "Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",

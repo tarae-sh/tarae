@@ -167,8 +167,6 @@ pub enum Why {
     Host,
     /// A page at a host Claude's `read` of a URL wasn't let reach (`web::tool`) — a read, not a run's.
     Web,
-    /// A chat's first web search (`web::search`): its words leave the machine.
-    WebSearch,
     /// A warning of it asks each time, whatever was allowed before (`cardwarn.rs`, `asks` — D2, D4): its ids.
     Asks(String),
     /// Claude's `also`: one thing past the session's capabilities its command asks for (cardauto P3).
@@ -217,7 +215,6 @@ impl Why {
             Why::Blocked => "blocked".into(),
             Why::Host => "host".into(),
             Why::Web => "web".into(),
-            Why::WebSearch => "web-search".into(),
             Why::Asks(ids) => format!("asks:{ids}"),
             Why::Also => "also".into(),
             Why::Own => "own".into(),
@@ -263,7 +260,6 @@ impl Why {
             | Why::Also
             | Why::Host
             | Why::Web
-            | Why::WebSearch
             | Why::Own
             | Why::Spend
             | Why::WorkspaceEnd
@@ -1893,10 +1889,6 @@ mod tests {
                 let job = crate::tools::Job::Command(cmd.clone(), root.to_path_buf());
                 let then = crate::tools::MadeThen::Claude { job, call, ride: Box::default() };
                 crate::tools::ask_made(&mut ed, then);
-                ed.offers.pop().expect("its card")
-            }
-            "web-search" => {
-                crate::web::search::call(&mut ed, call, &json!({ "query": "tokio" })).unwrap();
                 ed.offers.pop().expect("its card")
             }
             "web-read" => {

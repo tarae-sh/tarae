@@ -115,13 +115,11 @@ const TOOLS: &str = "";
 /// named like a key before Claude was let read it — `reads::Keys`; `ui` the screen's structure at Claude's level
 /// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `sessions_start` asks on its
 /// own card, `session_send` and `sessions` reach only the chat's own children, and only a parent's chat lists them —
-/// `orchestra.rs`; `plugin` asks on its own card — `plugin/install.rs`; `web_search` asks on its own card, a chat's
-/// first — `web/search.rs` — and is listed only with `llm.web-search` on)
+/// `orchestra.rs`; `plugin` asks on its own card — `plugin/install.rs`)
 const ALLOWED: &str = "mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
 mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
-mcp__tarae__plugin,mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act,\
-mcp__tarae__web_search";
+mcp__tarae__plugin,mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
@@ -700,12 +698,6 @@ pub struct Chat {
     pub web_refused: Vec<(String, u16)>,
     /// Those of `web_hosts` answered on a card that said your wiki's token (W3): only these let a token read through.
     pub web_signed: Vec<(String, u16)>,
-    /// The answer on this conversation's web search card (`web::search`): Some(true) its searches go unasked, Some(false)
-    /// refused with no card — None: the next asks.
-    pub searches: Option<bool>,
-    /// This conversation read a page with your wiki's token (`web::tool::landed`): each of its web searches asks from
-    /// then on, whatever `searches` holds but a no (W3 — internal words could leave in a public query).
-    pub signed_read: bool,
     /// The user said yes to the terminals on an `also` card this turn: asked again, they take none of its
     /// `ALSO_MAX` (frictions29 23: each e2e or scenes run asked, and the turn ran out of cards).
     pub also_yes: bool,
@@ -749,9 +741,6 @@ pub struct Chat {
     /// Whether its process lists the session tools (`orchestra::may_parent` as it was spawned): fixed for the
     /// process's life — the tools are the cache's prefix, the same to the byte while it runs; `:set` changes the next.
     pub session_tools: bool,
-    /// Whether its process lists `web_search` (`llm.web-search` as it was spawned): fixed for its life, as
-    /// `session_tools`.
-    pub web_search: bool,
     /// The line that says who a parent's message is from went in this conversation (`orchestra::FRAMING`): once.
     pub framed: bool,
     /// The turn under way is a wake (`orchestra::wake`): the children it was woken for, and how many turns its usage had
@@ -1189,8 +1178,6 @@ impl Chat {
         self.web_hosts.clear();
         self.web_refused.clear();
         self.web_signed.clear();
-        self.searches = None;
-        self.signed_read = false;
         self.framed = false;
         self.said_at = None;
     }
@@ -1236,8 +1223,6 @@ impl Chat {
             web_hosts: Vec::new(),
             web_refused: Vec::new(),
             web_signed: Vec::new(),
-            searches: None,
-            signed_read: false,
             also_yes: false,
             run_scripts: Vec::new(),
             queued: None,
@@ -1263,7 +1248,6 @@ impl Chat {
             transcript: None,
             sends: Vec::new(),
             session_tools: false,
-            web_search: false,
             framed: false,
             waking: None,
             queued_laid: RefCell::new(None),
@@ -1841,8 +1825,6 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
     c.msgs.push(Msg::new(Role::Note, format!("continued from {when}"), ""));
     c.continued = back.then(|| saved.past());
     c.plan = saved.plan.as_ref().and_then(crate::plan::Plan::from_json);
-    // (it read a page with your wiki's token: still so — W3's searches ask each time)
-    c.signed_read |= saved.signed_read;
     // (its answers' notes back, the last one's gone — their words cut again from these rows)
     crate::chatnotes::restore(ed, saved.places.as_ref());
     let Some(c) = &mut ed.workspace.claude.chat else { return };
@@ -1930,8 +1912,6 @@ pub struct Restored {
     pub at_end: Option<PathBuf>,
     /// A session behind's: no claude until its first message (which resumes the conversation).
     pub lazy: bool,
-    /// Its conversation read a page with your wiki's token (`Chat.signed_read`).
-    pub signed_read: bool,
 }
 
 /// The note a conversation carried over a restart ends with (one — earlier ones go).
@@ -1946,7 +1926,6 @@ pub fn restore(ed: &mut Editor, r: Restored) {
     }
     let mut c = Chat::new();
     c.follow.on = r.follow;
-    c.signed_read = r.signed_read;
     c.input.set_at(&r.input, r.cursor);
     c.edits.at_end = r.at_end;
     ed.workspace.claude.chat = Some(c);
@@ -2022,7 +2001,6 @@ pub(crate) fn saved_of(l: &crate::workspace::Workspace) -> Option<crate::chats::
         rows: crate::chats::rows_of(&c.msgs),
         plan,
         seq: crate::chats::seq(),
-        signed_read: c.signed_read,
     })
 }
 
@@ -2525,7 +2503,6 @@ fn ensure_proc(ed: &mut Editor) {
     let tx = ed.events.sender();
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
-    let web_search = ed.config.llm.web_search;
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
@@ -2614,7 +2591,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.generation = crate::tools::generation();
     let generation = c.generation;
     c.proc = Some(Proc { stdin, pid: child.id() });
-    (c.session_tools, c.web_search) = (parent, web_search);
+    c.session_tools = parent;
     llm::pump(child, false, tx, move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
@@ -2814,8 +2791,6 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         }
         StreamEv::Answered(model) => c.model = model,
         StreamEv::Compaction(e) => crate::compaction::on_event(ed, e),
-        // (the web search's helper's alone: the chat has no WebSearch)
-        StreamEv::Searched(_) => {}
         StreamEv::Limits(report) => {
             // (its own claude's `rate_limit_event`: sent to plan users only — `limits::on_plan`)
             if report.readings.iter().any(|r| r.from == crate::limits::Source::Event) {
@@ -4565,15 +4540,6 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             let place = if input["glob"].is_string() { s("glob") } else { s("path") };
             Look { verb: "search", what: s("pattern"), pattern: true, range: within(place), link: None }
         }
-        // (its words, where: the web or the sites it names — its stop shows the list it got: `web::search::landed`)
-        "mcp__tarae__web_search" => {
-            let what = s("query").split_whitespace().collect::<Vec<_>>().join(" ");
-            let range = match s("sites").split_whitespace().collect::<Vec<_>>() {
-                sites if sites.is_empty() => "the web".to_string(),
-                sites => format!("on {}", sites.join(" ")),
-            };
-            Look { verb: "web", what, pattern: true, range, link: None }
-        }
         // (its first file, where its first range starts; the rest counted)
         "mcp__tarae__read" => {
             let files: Vec<&str> = input["files"]
@@ -4771,7 +4737,6 @@ const WORDS: &[(&str, &str, &str)] = &[
     ("search", "search", "searching"),
     ("grep", "search", "searching"),
     ("glob", "search", "searching"),
-    ("web", "search", "searching"),
     ("references", "look up", "looking up"),
     ("definition", "look up", "looking up"),
     ("symbols", "look up", "looking up"),
@@ -7936,11 +7901,11 @@ mod tests {
     }
 
     /// Every tool tarae lists is allowed up front: a real claude asks `can_use_tool` for one that isn't, and
-    /// `edits::request` refuses it — the stand-ins answer below claude's permission layer and never see it (the
-    /// review of web search step 2: `web_search` missed it). Each gates itself (`ALLOWED`'s doc).
+    /// `edits::request` refuses it — the stand-ins answer below claude's permission layer and never see it. Each
+    /// gates itself (`ALLOWED`'s doc).
     #[test]
     fn every_listed_tool_is_allowed() {
-        let listed = crate::tools::list(true, true);
+        let listed = crate::tools::list(true);
         let allowed: Vec<&str> = ALLOWED.split(',').collect();
         for t in listed["tools"].as_array().unwrap() {
             let name = format!("mcp__tarae__{}", t["name"].as_str().unwrap());

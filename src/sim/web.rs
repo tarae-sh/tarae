@@ -4,12 +4,10 @@
 //! threads outlive a step), an address the fetch refuses, `C-c` on the page in front, the buffer in front closed, the
 //! user taking their time, a frame; Claude's `read` of a page (P4): the session's copy, this machine's page at a port
 //! runs reach, a host not let through (its card, answered `y`, `s` or `n`) — the reads' and fetches' jobs landing
-//! among them in any order; Claude's `web_search` (its first card answered `y`, `s` or `n`, a helper's list, cost and
-//! end landing whenever, the turn's end); Claude's read of your wiki's page (a copy fetched with your token: its own
-//! card, and after it each search asks). After every step: one buffer at most per page's address, what isn't a page
-//! never read into its buffer, no step left by a read, no card for a host answered for the session or the
-//! conversation, a wiki's card saying the token, no search card once the chat or the session answered but W3's own
-//! after a token read, no search's helper twice.
+//! among them in any order, the turn's end; Claude's read of your wiki's page (a copy fetched with your token: its own
+//! card). After every step: one buffer at most per page's address, what isn't a page never read into its buffer, no
+//! step left by a read, no card for a host answered for the session or the conversation, a wiki's card saying the
+//! token.
 
 use std::time::Duration;
 
@@ -43,10 +41,6 @@ fn run(choices: Choices) -> Vec<String> {
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.path().to_path_buf();
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.claude.chat.as_mut().unwrap().web_search = true;
-    // (the search's helper a stand-in: what it's told goes here, its stream the steps')
-    let (told, _heard) = std::sync::mpsc::channel();
-    ed.search_lines = Some(told);
     ed.config.llm.sandbox_ports.push(at.port());
     ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| crate::web::fetch::Way { stop, ..base.clone() }));
@@ -106,62 +100,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, fetched: &str, n: u64) -> String {
     let c = &mut sim.choices;
     // (by arm: the page 3, another part of it 2, the PDF 1, the session's copy 2, a fetch 2, a refused address 1, a
     // stop 1, a close 1, time 2, a frame 1; Claude reading the copy 1, this machine's page 1, a new host 2, a card's
-    // answer 2; Claude searching 3, a helper's stream 2, a search card's answer 2, the turn's end 1; Claude reading the
-    // wiki's copy 2)
-    match c.weighted(&[3, 2, 1, 2, 2, 1, 1, 1, 2, 1, 1, 1, 2, 2, 3, 2, 2, 1, 2]) {
-        18 => claude_reads(ed, n, WIKI),
+    // answer 2; the turn's end 1; Claude reading the wiki's copy 2)
+    match c.weighted(&[3, 2, 1, 2, 2, 1, 1, 1, 2, 1, 1, 1, 2, 2, 1, 2]) {
+        15 => claude_reads(ed, n, WIKI),
         14 => {
-            let Some(generation) = ed.workspace.claude.chat.as_ref().map(|c| c.generation()) else {
-                return "(no chat)".into();
-            };
-            let call = crate::tools::Call::of(generation, "", serde_json::json!(1000 + n));
-            let words = format!("tokio release {n}");
-            match crate::web::search::call(ed, call, &serde_json::json!({ "query": words })) {
-                Ok(()) => format!("Claude searches {words:?}"),
-                Err(e) => format!("Claude searches {words:?} — {e}"),
-            }
-        }
-        15 => {
-            let Some(s) = ed.workspace.claude.searches.first() else { return "(no search runs)".into() };
-            // (named by its words: its id is a process-wide count, never the same run to run)
-            let (id, answered, words) = (s.id, s.answered, s.query.words.clone());
-            use crate::llm::StreamEv;
-            let ev = match *c.pick(&[0, 1, 2]) {
-                0 if !answered => StreamEv::Searched(Box::new(crate::web::search::Found {
-                    links: vec![crate::web::search::Link {
-                        title: "Tokio".into(),
-                        url: "https://tokio.test/".into(),
-                    }],
-                    summary: String::new(),
-                })),
-                0 | 1 => StreamEv::Spent(crate::usage::Spent {
-                    total_cost: Some(0.01),
-                    at_ms: n,
-                    ..Default::default()
-                }),
-                _ => StreamEv::Done(Err("error_max_turns".into())),
-            };
-            let what = match &ev {
-                StreamEv::Searched(_) => "its list",
-                StreamEv::Spent(_) => "its cost",
-                _ => "its end",
-            };
-            crate::web::search::on_event(ed, id, ev);
-            format!("search {words:?}: {what}")
-        }
-        16 => {
-            if !ed.offers.first().is_some_and(|o| o.kind() == "web-search") {
-                return "(no search's card up)".into();
-            }
-            let key = *c.pick(&['y', 's', 'n']);
-            match key {
-                'y' => ed.offer_accept(),
-                's' => ed.offer_for_session(),
-                _ => ed.offer_dismiss(),
-            }
-            format!("answered a search's card {key}")
-        }
-        17 => {
             crate::tools::turn_over(ed);
             "the turn ends".into()
         }
@@ -273,33 +215,8 @@ fn held(ed: &Editor) -> Result<(), String> {
         .offers
         .iter()
         .any(|o| matches!(&o.what, crate::offer::What::WebRead(a) if a.host == "wiki.test" && !a.signed));
-    if unsaid {
-        return Err("a card for the wiki's page that doesn't say the token".into());
-    }
-    // (a search's card only while neither the chat nor the session answered — but W3's, each search's own after a
-    // token read)
-    let searched = ed.workspace.claude.searches_ok
-        || ed.workspace.claude.chat.as_ref().is_some_and(|c| c.searches.is_some());
-    let unguarded =
-        ed.offers.iter().any(|o| matches!(&o.what, crate::offer::What::WebSearch(a) if !a.guarded));
-    if searched && unguarded {
-        return Err("a search's card after the chat or the session answered".into());
-    }
-    let read_signed = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.signed_read);
-    if !read_signed
-        && ed.offers.iter().any(|o| matches!(&o.what, crate::offer::What::WebSearch(a) if a.guarded))
-    {
-        return Err("W3's search card in a chat that read no page with your token".into());
-    }
-    // (three helpers at most, and one waits only while three run)
-    let (running, queued) = (ed.workspace.claude.searches.len(), ed.workspace.claude.searches_queued.len());
-    if running > crate::web::search::RUNNING_MAX || queued > 0 && running < crate::web::search::RUNNING_MAX {
-        return Err(format!("{running} searches run, {queued} wait"));
-    }
-    let mut ids: Vec<u64> = ed.workspace.claude.searches.iter().map(|s| s.id).collect();
-    ids.dedup();
-    match ids.len() == ed.workspace.claude.searches.len() {
-        true => Ok(()),
-        false => Err("a search twice".into()),
+    match unsaid {
+        true => Err("a card for the wiki's page that doesn't say the token".into()),
+        false => Ok(()),
     }
 }

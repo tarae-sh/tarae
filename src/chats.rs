@@ -42,8 +42,6 @@ pub struct Saved {
     /// When this snapshot was taken (ns) — saves run on workers and may finish out of order; an older one
     /// never replaces a newer (`save`).
     pub seq: u64,
-    /// It read a page with your wiki's token (`Chat.signed_read`): continued, its web searches still ask each time.
-    pub signed_read: bool,
 }
 
 /// An earlier conversation as the chat lists it: the empty chat's first row, `C-p`'s picker, a continued one's top line.
@@ -112,7 +110,6 @@ fn stored(dir: &Path, root: &Path) -> Vec<Saved> {
                         usage: c.get("usage").filter(|u| !u.is_null()).cloned(),
                         places: c.get("places").filter(|p| !p.is_null()).cloned(),
                         seq: c["seq"].as_u64().unwrap_or(0),
-                        signed_read: c["signed_read"].as_bool().unwrap_or(false),
                     })
                 })
                 .collect()
@@ -212,7 +209,7 @@ pub fn save_in(dir: &Path, roots: &[PathBuf], mut chat: Saved) {
         .into_iter()
         .map(|c| {
             json!({ "id": c.id, "title": c.title, "updated": c.updated, "rows": c.rows, "plan": c.plan,
-                    "usage": c.usage, "places": c.places, "seq": c.seq, "signed_read": c.signed_read })
+                    "usage": c.usage, "places": c.places, "seq": c.seq })
         })
         .collect();
     let times: Vec<Value> = chats.iter().map(|c| json!([c["id"], c["updated"]])).collect();
@@ -440,7 +437,6 @@ mod tests {
                     usage: None,
                     places: None,
                     seq: seq(),
-                    signed_read: false,
                 };
                 save(&dir, root, chat);
             }
@@ -524,7 +520,6 @@ mod tests {
             usage: Some(json!({"turns": [], "cost_so_far": 0.25})),
             places: None,
             seq: t,
-            signed_read: false,
         };
         save(&dir, root, saved("s1", 10));
         save(&dir, root, saved("s2", 20));
@@ -593,17 +588,6 @@ mod tests {
         assert_eq!(load(&scratch, root)[0].id, "older", "a message puts it in front");
     }
 
-    /// A conversation that read a page with your wiki's token is kept so (W3): continued, its searches still ask.
-    #[test]
-    fn a_token_read_is_kept_with_the_conversation() {
-        let scratch = crate::scratch::Scratch::new("chats-signed");
-        let root = Path::new("/p/project");
-        save(&scratch, root, Saved { signed_read: true, ..with_places("wiki", Vec::new()) });
-        save(&scratch, root, Saved { updated: 2, ..with_places("plain", Vec::new()) });
-        let read = |id: &str| load(&scratch, root).into_iter().find(|c| c.id == id).unwrap().signed_read;
-        assert!(read("wiki") && !read("plain"));
-    }
-
     /// A conversation `id` kept with `places`, one answer's.
     fn with_places(id: &str, places: Vec<Value>) -> Saved {
         let places = json!([{ "back": 0, "asked": "why?", "at": 1, "places": places, "flow": null }]);
@@ -616,7 +600,6 @@ mod tests {
             usage: None,
             places: Some(places),
             seq: seq(),
-            signed_read: false,
         }
     }
 

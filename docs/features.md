@@ -502,10 +502,6 @@ configs carry over as they are.
 - **Claude reads pages** — its `read` takes an `https://` URL beside files, a host its commands don't reach asked on a
   card first; the page framed as someone else's words; each read a replay stop showing the copy Claude read
   ([web pages](web.md#claude-reads-pages))
-- **Claude searches the web** — with `llm.web-search` on in your own config (off by default), a chat has a
-  `web_search` tool: a small model's search beside the chat, a list of pages back framed as someone else's words, a
-  chat's first search asked on a card showing its words; its cost a `web-search` entry in `:usage`
-  ([web pages](web.md#claude-searches-the-web))
 - **`gf`** opens the path or address under the cursor (or each selection's): a file as `:open` does, from the file's
   folder or the project's (`file:12:5` at its line), a folder as its file list, an address as a page
 

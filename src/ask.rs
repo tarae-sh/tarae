@@ -368,7 +368,6 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         | StreamEv::Tool { .. }
         | StreamEv::ThinkingBlock(_)
         | StreamEv::ToolResult { .. }
-        | StreamEv::Searched(_)
         | StreamEv::Compaction(_) => {}
     }
 }

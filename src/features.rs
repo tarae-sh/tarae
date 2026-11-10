@@ -201,7 +201,6 @@ pub const CLAUDE_TOOLS: &[&str] = &[
     "sessions_start",
     "symbols",
     "ui",
-    "web_search",
 ];
 
 /// A tool name from Claude's stream, as counted.

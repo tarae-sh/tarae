@@ -1191,7 +1191,6 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         | StreamEv::Text(_)
         | StreamEv::Writing(_)
         | StreamEv::ToolResult { .. }
-        | StreamEv::Searched(_)
         | StreamEv::Requesting(_)
         | StreamEv::Answered(_)
         | StreamEv::Compaction(_)

@@ -229,7 +229,7 @@ pub struct Fetched {
     /// off — Claude's: its next read is asked at that host).
     pub elsewhere: Option<String>,
     /// Fetched with your wiki's token (a request of it carried it): Claude's read of the copy is carded as a token
-    /// read's, and that chat's web searches ask each time after it (W3).
+    /// read's (W3).
     pub signed: bool,
 }
 

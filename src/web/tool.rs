@@ -19,8 +19,7 @@
 //!
 //! Your wiki's pages (`web.signed-in`, the work-wiki plan W3): a read under its base goes with your token, so it gets
 //! what no run's curl could — neither a run's grant nor `llm.sandbox-hosts` opens it, and no copy fetched with the
-//! token reaches Claude without it: only the read card's own answers (`y`, `a`, `s`), the card saying the token. Once
-//! a chat read one, its web searches ask each time (`Chat.signed_read`, `search::gate`).
+//! token reaches Claude without it: only the read card's own answers (`y`, `a`, `s`), the card saying the token.
 
 use std::ops::Range;
 
@@ -320,14 +319,14 @@ fn ask(ed: &mut Editor, a: Ask) {
     use crate::cards::{Asked, Request, Why};
     let at = format!("{}:{}", a.host, a.port);
     let lines = match a.signed {
-        // (W3: the token said, and what follows from it — the chat's searches ask each time after it)
+        // (W3: the token said)
         true => [
             crate::nav::clip(&a.url, 300),
             format!(
                 "Claude's read · port {} · through tarae's proxy · GET with your token, nothing else of yours",
                 a.port
             ),
-            "After it, this chat's web searches ask each time.".to_string(),
+            "Reads of pages there only — a yes lets none of Claude's commands reach it.".to_string(),
             "What it reads goes to Claude — your wiki's pages as your account sees them.".to_string(),
         ],
         false => [
@@ -482,15 +481,6 @@ struct Room {
 pub fn landed(ed: &mut Editor, got: Vec<Got>) {
     let now = crate::clock::now();
     let mut kept: Vec<(String, Instant)> = Vec::new();
-    // (W3: a page read with your token — this chat's web searches ask each time from now; kept at once, not at the
-    // turn's end, so a crash right after still has the conversation marked when it's continued)
-    if got.iter().any(|g| g.f.signed)
-        && let Some(c) = ed.workspace.claude.chat.as_mut()
-        && !c.signed_read
-    {
-        c.signed_read = true;
-        crate::chat::keep_places(ed);
-    }
     for g in got {
         let at = match g.at {
             Some(at) => at,

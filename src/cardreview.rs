@@ -486,7 +486,6 @@ pub const AUTO: &[(&str, Auto)] = &[
     ("repo-trust", Auto::Own),
     ("code-trust", Auto::Own),
     ("web-read", Auto::Never),
-    ("web-search", Auto::Never),
     ("preflight", Auto::Own),
     ("branch-delete", Auto::Own),
     ("force-push", Auto::Own),
