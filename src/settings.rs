@@ -1182,7 +1182,7 @@ mod tests {
              servers that run beside it |\n\
              | `[[cards.warn]]` | What a card for one of Claude's commands warns of, besides the language packs' — \
              only adds (an id a pack or your config has is left out): `id`, `run`, `options`, `option-values`, \
-             `missing`, `unless-part`, `unless-all`, `same`, `unless-in`, `fact`, `say`, `asks`, `start` — see \
+             `missing`, `unless-part`, `unless-all`, `same`, `unless-in`, `fact`, `say`, `lead`, `asks`, `start` — see \
              [Claude integration](../claude-integration.md) |\n",
         );
         out
