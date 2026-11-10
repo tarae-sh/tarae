@@ -3934,8 +3934,8 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
             }
             if let Some(None) = pins {
                 ed.set_warning(
-                    "not allowed for the chat: what it runs by its path isn't a text script in this checkout, \
-                     or what it runs isn't all in it — it runs this once",
+                    "it runs this once, not allowed for the chat — what it runs by its path isn't a text script in \
+                     this checkout, or what it runs isn't all in it",
                 );
             }
             // (a file it showed changed since: it doesn't run, and the answer isn't kept — what's there now

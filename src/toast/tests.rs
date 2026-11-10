@@ -6,6 +6,234 @@ use crate::pane::GroupKind;
 use crate::uistate::Region;
 use crate::workspace::Here;
 
+/// A toast's kind's setter (`set_status`, …).
+type Say = fn(&mut Editor, String);
+
+/// Every toast tarae's code says, from where it's made (#482): each `set_status`, `set_success`, `set_warning`,
+/// `set_error` and `say` of a text written at the call (`written`: its literals, each `{…}` a stand-in path, or a
+/// `const`'s) — its kind's setter, the text and its file; and how many make theirs elsewhere (a variable, a function's
+/// result), not walked.
+fn toasts_said() -> (Vec<(Say, String, String)>, usize) {
+    use crate::editor::ToastKind;
+    let setters: [(&str, Say); 4] = [
+        (".set_status(", |ed, s| ed.set_status(s)),
+        (".set_success(", |ed, s| ed.set_success(s)),
+        (".set_warning(", |ed, s| ed.set_warning(s)),
+        (".set_error(", |ed, s| ed.set_error(s)),
+    ];
+    let kinds: [(&str, Say); 4] = [
+        ("ToastKind::Info,", |ed, s| ed.say(ToastKind::Info, s)),
+        ("ToastKind::Success,", |ed, s| ed.say(ToastKind::Success, s)),
+        ("ToastKind::Warning,", |ed, s| ed.say(ToastKind::Warning, s)),
+        ("ToastKind::Error,", |ed, s| ed.say(ToastKind::Error, s)),
+    ];
+    let (mut said, mut elsewhere) = (Vec::new(), 0);
+    for (file, code) in crate::sim::lint::sources() {
+        let mut at = |rest: &str, set: fn(&mut Editor, String)| match written(rest, &code)[..] {
+            [] => elsewhere += 1,
+            ref texts => said.extend(texts.iter().map(|t| (set, t.clone(), file.clone()))),
+        };
+        for (call, set) in setters {
+            for (i, _) in code.match_indices(call) {
+                at(&code[i + call.len()..], set);
+            }
+        }
+        for (i, _) in code.match_indices(".say(") {
+            let rest = code[i + ".say(".len()..].trim_start();
+            if let Some((kind, set)) = kinds.iter().find(|(k, _)| rest.starts_with(k)) {
+                at(&rest[kind.len()..], *set);
+            }
+        }
+    }
+    (said, elsewhere)
+}
+
+/// The texts a call's argument writes (`rest`, from after its `(`, in `code`): each literal in it — one, a
+/// `format!`'s, each arm's of a `match` or an `if` — or a `const`'s of this file it names, each `{…}` a stand-in; none
+/// where it's made elsewhere.
+fn written(rest: &str, code: &str) -> Vec<String> {
+    // (the argument: up to its call's `)`, past what's in literals)
+    let (mut depth, mut end, mut quoted, mut escaped) = (0usize, rest.len(), false, false);
+    for (i, c) in rest.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '(' | '[' | '{' if !quoted => depth += 1,
+            ')' | ']' | '}' if !quoted && depth == 0 => {
+                end = i;
+                break;
+            }
+            ')' | ']' | '}' if !quoted => depth -= 1,
+            _ => {}
+        }
+    }
+    let arg = &rest[..end];
+    let mut texts = Vec::new();
+    let mut from = 0;
+    while let Some(q) = arg[from..].find('"') {
+        let Some((text, len)) = literal(&arg[from + q + 1..]) else { break };
+        texts.push(text);
+        from += q + 1 + len;
+    }
+    // (a `const` of this file's, named alone)
+    let name = arg.trim();
+    if texts.is_empty() && !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+        let def = format!("const {name}: &str = \"");
+        if let Some(i) = code.find(&def) {
+            texts.extend(literal(&code[i + def.len()..]).map(|t| t.0));
+        }
+    }
+    texts
+}
+
+/// A literal's text from after its opening quote, each `{…}` a stand-in, and the bytes it took (its closing quote too).
+fn literal(body: &str) -> Option<(String, usize)> {
+    let (mut text, mut chars) = (String::new(), body.chars());
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next()? {
+                'n' => text.push('\n'),
+                't' => text.push('\t'),
+                // (a line continued: its next line's indent left out)
+                '\n' => {
+                    let left: String = chars.clone().collect();
+                    let trimmed = left.trim_start_matches([' ', '\t', '\n']);
+                    chars = body[body.len() - trimmed.len()..].chars();
+                }
+                'u' => {
+                    let hex: String = chars.by_ref().skip(1).take_while(|&c| c != '}').collect();
+                    text.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                c => text.push(c),
+            },
+            c => text.push(c),
+        }
+    }
+    let took = body.len() - chars.as_str().len();
+    // (`{{` a brace; a `{…}` a stand-in — a path, as long as a common one; one right after a word's end none: a part
+    // that goes on it, a plural's `s` or what follows when there's one — `freed{branch}{left}`)
+    let (mut out, mut it) = (String::new(), text.chars().peekable());
+    while let Some(c) = it.next() {
+        match c {
+            '{' if it.peek() == Some(&'{') => out.push(it.next()?),
+            '}' if it.peek() == Some(&'}') => out.push(it.next()?),
+            '{' => {
+                it.by_ref().take_while(|&c| c != '}').for_each(drop);
+                if out.chars().last().is_none_or(char::is_whitespace) {
+                    out.push_str("src/lib.rs");
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    Some((out, took))
+}
+
+/// The toasts the walk can't read, their text made away from the call — a count that only goes down.
+const MADE_ELSEWHERE: usize = 176;
+
+/// What's wrong with the notification card on the frame just drawn (80 columns): each toast on it read row by row — a
+/// word not the text's (cut, or broken across rows) or its lead (`term::toast_lead`) not whole —, the newest `texts[0]`,
+/// the one under it `texts[1]`. A routine message said on the status line instead: there whole.
+fn card_wrong(ed: &Editor, texts: &[&str]) -> Option<String> {
+    let (frame, fw, fh) = ed.last_frame.as_ref().unwrap();
+    let screen = crate::screen::text(frame, *fw, *fh).unwrap_or_default();
+    let words = |s: &str| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+    let Some((x, y, w, h)) = ed.screen.toast_card.get() else {
+        let status = screen.lines().last().unwrap_or_default();
+        let said = ed.screen.toast_said.get() && words(status).join(" ").contains(&words(texts[0]).join(" "));
+        return (!said).then(|| format!("no card, not on the status line whole:\n{screen}"));
+    };
+    let rows: Vec<String> =
+        screen.lines().skip(y).take(h).map(|r| r.chars().skip(x).take(w).collect()).collect();
+    // (a toast's rows: from its bar to the next one's — the `+N earlier` row none's)
+    let mut toasts: Vec<Vec<String>> = Vec::new();
+    for r in &rows {
+        let (bar, words_of) = (r.chars().nth(1) == Some('▎'), words(&r.replace('▎', " ")));
+        match toasts.last_mut() {
+            Some(t) if !bar => t.extend(words_of),
+            _ => toasts.push(words_of),
+        }
+    }
+    let card = rows.join("\n");
+    for (text, shown) in texts.iter().zip(&toasts) {
+        let own = words(text);
+        if let Some(bad) = shown.iter().find(|w| *w != "…" && !own.contains(w)) {
+            return Some(format!("`{bad}` isn't a word of {text:?} — cut or broken:\n{card}"));
+        }
+        // (its `·`s left out: one a break took isn't drawn)
+        let lead: Vec<String> =
+            crate::term::toast_words(crate::term::toast_lead(text)).into_iter().map(String::from).collect();
+        let shown: Vec<String> = shown.iter().filter(|w| *w != "·").cloned().collect();
+        if !shown.starts_with(&lead) {
+            return Some(format!("its lead {:?} isn't whole:\n{card}", lead.join(" ")));
+        }
+    }
+    None
+}
+
+/// #482: every toast tarae says leads with what happens, wraps at words and folds its details first — walked from
+/// where each is made (`toasts_said`), at 80 columns: alone, beside the chat, and stacked two (#484c) beside it, over
+/// the host's toast and under the masked one. A toast whose text the walk can't read is counted (`MADE_ELSEWHERE`).
+#[test]
+fn every_toast_leads_with_what_happens_at_80() {
+    let (said, elsewhere) = toasts_said();
+    assert!(said.len() > 500, "the walk finds the toasts: {}", said.len());
+    let host = "uploads.skein.invalid refused for this session — space m s opens it";
+    let masked = "GH_TOKEN masked → api.github.com · github.com · uploads.github.com only, until you quit — \
+                  :granted lists it";
+    let mut ed = editor();
+    let mut wrong = Vec::new();
+    for (set, text, file) in &said {
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        // (alone, then beside the chat; stacked over the host's, then under the masked one)
+        let ways: [(bool, Option<&str>, Option<&str>); 4] =
+            [(false, None, None), (true, None, None), (true, Some(host), None), (true, None, Some(masked))];
+        for (chat, under, over) in ways {
+            ed.toasts.clear();
+            ed.screen.toast_narrow.set(None);
+            ed.workspace.claude.chat = chat.then(crate::chat::Chat::new);
+            if let Some(u) = under {
+                ed.set_status(u);
+            }
+            set(&mut ed, text.to_string());
+            if let Some(o) = over {
+                ed.set_success(o);
+            }
+            crate::term::render(&mut ed, &mut Vec::new(), 80, 43).unwrap();
+            let texts: Vec<&str> = match (under, over) {
+                (Some(u), _) => vec![text, u],
+                (_, Some(o)) => vec![o, text],
+                _ => vec![text],
+            };
+            if let Some(why) = card_wrong(&ed, &texts) {
+                let way = match (chat, under, over) {
+                    (false, ..) => "alone",
+                    (_, Some(_), _) => "over the host's, beside the chat",
+                    (_, _, Some(_)) => "under the masked one, beside the chat",
+                    _ => "beside the chat",
+                };
+                wrong.push(format!("{file}: {text:?} ({way}): {why}"));
+                break;
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} toasts:\n\n{}", wrong.len(), wrong.join("\n\n"));
+    assert!(
+        elsewhere <= MADE_ELSEWHERE,
+        "{elsewhere} toasts made away from their call, more than {MADE_ELSEWHERE}: write its text at the call"
+    );
+    assert!(
+        elsewhere == MADE_ELSEWHERE,
+        "{elsewhere} toasts made away from their call: lower MADE_ELSEWHERE to it"
+    );
+}
+
 fn frame(ed: &mut Editor) -> String {
     ed.focus_sync();
     crate::term::render(ed, &mut Vec::new(), 160, 40).unwrap();

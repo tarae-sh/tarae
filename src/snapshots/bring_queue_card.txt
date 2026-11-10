@@ -3,8 +3,8 @@
 00 ─ tarae › [scratch] ───────────────────────────────────────────────────── main · fix-login · docs · parser · + ─
 01   1
 02
-03                                                    ▎ parser marked to bring 2nd — B brings the 2 in turn
-04                                                    ▎ fix-login marked to bring — m on another, then B brings…
+03                                                         ▎ parser marked to bring 2nd — B brings the 2 in turn
+04                                                         ▎ fix-login marked to bring …
 05
 06
 07                       ╭─ sessions ── 4 sessions ────────────────────────────────────────╮
@@ -34,8 +34,8 @@
 00
 01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 02
-03                                                   1111111111111111111111111111111111111111111111111111111111111
-04                                                   1111111111111111111111111111111111111111111111111111111111111
+03                                                        11111111111111111111111111111111111111111111111111111111
+04                                                        11111111111111111111111111111111111111111111111111111111
 05
 06
 07
@@ -65,8 +65,8 @@
 00 f ddddd f TTTTTTTTT fffffffffffffffffffffffffffffffffffffffffffffffffffff BBBB f           f      f        f d f
 01   A
 02
-03                                                    a
-04                                                      ddddddddd dddddd dd ddddd d d dd dddddddd dddd d ddddddd
+03                                                         a
+04                                                           ddddddddd dddddd dd ddddd d
 05
 06
 07                       ff TTTTTTTT ff d dddddddd fffffffffffffffffffffffffffffffffffffffff

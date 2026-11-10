@@ -13857,8 +13857,9 @@ pub(crate) const TOAST_OLDER: usize = 2;
 const PEEK_STEP: f32 = 0.3;
 
 /// The notification card — news, never a pane with the keys (`toast.rs`): what came together is one card, borderless
-/// on the peek's slight ground — the newest message on top (its kind's bar, wrapped up to three rows), the ones before
-/// it under it, dimmer, a row each, the rest counted. It fades in with its first message and out with its last. It
+/// on the peek's slight ground — the newest message on top (its kind's bar, wrapped up to three rows, more only for its
+/// lead), the ones before it under it, dimmer, a row each where it fits one, else its lead, the rest counted — every
+/// toast by #482's one rule (`toast_rows`). It fades in with its first message and out with its last. It
 /// keeps out of the other cards' way (`taken`: the note, the minimized chat, the thought card, a grammar offer, the
 /// cursor's row, the change in hand), a row of air between: the top right of the editing area or its bottom right. No
 /// free place, or code too narrow to keep off for a routine message → false (the status line carries the newest
@@ -13878,29 +13879,20 @@ const SAID_WHOLE: usize = 40;
 
 /// A toast's line in rows of `w` cells at most, broken between phrases (#318: `would / conflict` at 80 columns): where a
 /// row would end inside a phrase, the phrase goes to the next row whole — a phrase ends after `—`, `·`, or a word
-/// ending in `,` `;` `:`. A phrase longer than a row breaks between its words; a word longer than a row (a path) at the
-/// row's end, its rest on the next. `phrases` false: between words only.
+/// ending in `,` `;` `:`. A phrase longer than a row breaks between its words. A word is never broken (#482: a number, a
+/// path, a host read across rows reads wrong — `…invalid:44` / `3 refused`): one wider than a row is a row of its own,
+/// cut where it's drawn, whole under the mouse. A row doesn't begin with a separator: a `·` that falls at a break isn't
+/// drawn, at its row's end or the next one's start — the break says it (a ` — ` stays at its row's end). `phrases`
+/// false: between words only.
 fn toast_wrap(line: &str, w: usize, phrases: bool) -> Vec<String> {
     let ends_phrase = |word: &str| phrases && (matches!(word, "—" | "·") || word.ends_with([',', ';', ':']));
     let mut rows: Vec<String> = Vec::new();
     let mut row: Vec<&str> = Vec::new();
     let width = |ws: &[&str]| ws.iter().map(|w| w.width()).sum::<usize>() + ws.len().saturating_sub(1);
-    // (a word wider than a row in pieces of a row each, at its characters' bounds)
-    let words = line.split_whitespace().flat_map(|word| {
-        let mut pieces = Vec::new();
-        let (mut from, mut cells) = (0, 0);
-        for (i, c) in word.char_indices() {
-            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-            if cells + cw > w.max(2) && i > from {
-                pieces.push(crate::cut::slice(word, from..i));
-                (from, cells) = (i, 0);
-            }
-            cells += cw;
+    for word in line.split_whitespace() {
+        if row.is_empty() && !rows.is_empty() && word == "·" {
+            continue;
         }
-        pieces.push(crate::cut::slice(word, from..));
-        pieces
-    });
-    for word in words {
         if row.is_empty() || width(&row) + 1 + word.width() <= w {
             row.push(word);
             continue;
@@ -13912,14 +13904,125 @@ fn toast_wrap(line: &str, w: usize, phrases: bool) -> Vec<String> {
             .find(|&i| ends_phrase(row[i - 1]))
             .filter(|&i| !ends_phrase(row[row.len() - 1]) && width(&row[i..]) + 1 + word.width() <= w);
         let next: Vec<&str> = from.map_or_else(Vec::new, |i| row.split_off(i));
+        while row.len() > 1 && row.last() == Some(&"·") {
+            row.pop();
+        }
         rows.push(row.join(" "));
         row = next;
         row.push(word);
+        let dots = row.iter().take_while(|w| **w == "·").count();
+        row.drain(..dots);
     }
     if !row.is_empty() {
         rows.push(row.join(" "));
     }
     rows
+}
+
+/// What a toast says first (#482, the rule #470's crash toast set): its first line up to its first ` — ` — what
+/// happens, in sight whatever the width; what comes after it is details, last, and folded first where there's no room
+/// (`toast_fold`). `GH_TOKEN masked → api.github.com · github.com only, until you quit — :granted lists it`.
+pub(crate) fn toast_lead(text: &str) -> &str {
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    first.split(" — ").next().unwrap_or(first)
+}
+
+/// A toast's words as its rows say them: its `·`s left out, the one a break took (`toast_wrap`) as the others — for
+/// what's shown read against its text.
+pub(crate) fn toast_words(text: &str) -> Vec<&str> {
+    text.split_whitespace().filter(|w| *w != "·").collect()
+}
+
+/// `rows` kept to `n`, what's past them folded: words dropped from the last one's end until its ` …` fits `w` cells —
+/// a `—` or `·` left at its end with them, and back to its last ` — ` where it has one (a part of the details whole
+/// or none of it: never `space m s …`); never a word cut for it. Whether anything was folded.
+fn toast_fold(mut rows: Vec<String>, n: usize, w: usize) -> (Vec<String>, bool) {
+    if rows.len() <= n {
+        return (rows, false);
+    }
+    rows.truncate(n);
+    if let Some(last) = rows.last_mut() {
+        let mut words: Vec<&str> = last.split(' ').collect();
+        while words.len() > 1
+            && (words.join(" ").width() + 2 > w || matches!(words.last(), Some(&"—" | &"·")))
+        {
+            words.pop();
+        }
+        if let Some(i) = words.iter().rposition(|w| *w == "—").filter(|&i| i > 0) {
+            words.truncate(i);
+        }
+        *last = format!("{} …", words.join(" "));
+    }
+    (rows, true)
+}
+
+/// The most rows a toast's lead may take where its card can't widen enough for three (#482: what happens, always in
+/// sight) — past them it's cut all the same, a lead too long for a toast (`every_toast_leads_with_what_happens_at_80`).
+const TOAST_LEAD_MAX: usize = 5;
+
+/// A notification card's rows (#482's one rule for every toast): the newest's text and the older ones' (newest first),
+/// in rows `w` cells wide — `w` as wide as its words (`natural`) up to `base`, wider (up to `room`) where the newest's
+/// lead wouldn't fit three rows or a word a row: the lead whole on the newest's first rows, its words never broken, its
+/// details after it, folded first (`…`) where they don't fit three rows. An older one: its first line where it fits a
+/// row, else its lead whole, its details folded. Every toast shown counts toward the width, within the limit the
+/// newest's lead set (`base`, or `room` once it widened): the card a few cells wider where that keeps more of them whole
+/// (an older toast's key, the part of it one acts on). Each toast's rows and whether something of it was folded.
+fn toast_rows(
+    newest: &str,
+    older: &[&str],
+    (base, room): (usize, usize),
+) -> (usize, Vec<(Vec<String>, bool)>) {
+    let marked = |text: &str| {
+        let lead = toast_lead(text);
+        if lead == text.trim() { lead.to_string() } else { format!("{lead} …") }
+    };
+    let words = |s: &str| s.split_whitespace().map(|w| w.width()).max().unwrap_or(0);
+    let firsts = older.iter().map(|t| t.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default());
+    let natural = (newest.lines().chain(firsts).map(|l| l.trim_end().width()).max().unwrap_or(0)).min(base);
+    let lead = marked(newest);
+    let widest = std::iter::once(newest).chain(older.iter().copied()).map(|t| words(toast_lead(t))).max();
+    let from = natural.max(widest.unwrap_or(0).min(room)).max(1);
+    let to = room.max(from);
+    // (as narrow as holds the lead in three rows, else in the fewest its room gives, `TOAST_LEAD_MAX` at most; a lead
+    // no width holds so: as it was, cut)
+    let fits = |w: usize, n: usize| toast_wrap(&lead, w, false).len() <= n;
+    let least = toast_wrap(&lead, to, false).len().max(3);
+    let w = (from..=to)
+        .find(|&w| fits(w, least))
+        .filter(|_| least <= TOAST_LEAD_MAX)
+        .unwrap_or(from.max(base.min(to)));
+    let lay = |w: usize| {
+        let n = toast_wrap(&lead, w, false).len().clamp(3, TOAST_LEAD_MAX);
+        // The newest: messages with newlines (language server notices etc.) wrap per paragraph, between phrases where
+        // that keeps it within its rows and its lead whole — else between words, never cut for its phrases' sake
+        let wrap = |phrases: bool| -> Vec<String> {
+            (newest.lines().filter(|l| !l.trim().is_empty()))
+                .flat_map(|l| toast_wrap(l.trim_end(), w, phrases))
+                .collect()
+        };
+        let holds =
+            |rows: &[String]| toast_words(&rows.join(" ")).starts_with(&toast_words(toast_lead(newest)));
+        let (p, wd) = (wrap(true), wrap(false));
+        let wrapped =
+            if p.len() > n && p.len() > wd.len() || !holds(&toast_fold(p.clone(), n, w).0) { wd } else { p };
+        let mut all = vec![toast_fold(wrapped, n, w)];
+        for t in older {
+            let first = t.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+            let rows = toast_wrap(first, w, false);
+            let k = if rows.len() <= 1 { 1 } else { toast_wrap(&marked(first), w, false).len().min(3) };
+            all.push(toast_fold(rows, k, w));
+        }
+        all
+    };
+    // (every toast shown counts: within the lead's limit, the narrowest width that folds the fewest of them)
+    let limit = if w > base { to } else { base.min(to).max(w) };
+    let folds = |all: &[(Vec<String>, bool)]| all.iter().filter(|t| t.1).count();
+    let at = lay(w);
+    if folds(&at) == 0 {
+        return (w, at);
+    }
+    let w = (w..=limit).min_by_key(|&x| (folds(&lay(x)), x)).unwrap_or(w);
+    (w, lay(w))
 }
 
 fn draw_toasts(
@@ -13960,43 +14063,39 @@ fn draw_toasts(
     // (bar, text, style) per row · its words painted (`Toast.paint`) · the toast each one starts
     let mut rows: Vec<(Option<Style>, Fit, Style)> = Vec::new();
     let mut segs: Vec<Vec<(String, Option<&'static str>)>> = Vec::new();
-    let mut starts: Vec<(usize, u64)> = vec![(0, newest.id)];
-    // The newest: messages with newlines (language server notices etc.) wrap per paragraph, between phrases
-    let natural = newest.text.lines().map(|l| l.trim_end().width()).max().unwrap_or(0).min(max_inner);
-    let wrap = |phrases: bool| -> Vec<String> {
-        (newest.text.lines().filter(|l| !l.trim().is_empty()))
-            .flat_map(|l| toast_wrap(l.trim_end(), natural.max(1), phrases))
-            .collect()
-    };
-    // (between phrases where that keeps it within its three rows — a longer one breaks between words, never cut for
-    // its phrases' sake)
-    let wrapped = match (wrap(true), wrap(false)) {
-        (p, w) if p.len() > 3 && p.len() > w.len() => w,
-        (p, _) => p,
-    };
-    let cut = wrapped.len() > 3;
-    for (i, l) in wrapped.into_iter().take(3).enumerate() {
-        let mut text = Fit::plain(l);
-        if cut && i == 2 {
-            text = crate::whole::fit_part(&format!("{} …", text.shown()), max_inner, newest.text.trim());
-        }
-        rows.push(((i == 0).then(|| bar(newest.kind)), text, body));
-    }
-    let texts: Vec<String> = rows.iter().map(|r| r.1.shown().to_string()).collect();
-    segs.extend(toast_paint(&texts, &newest.paint));
-    let older = toasts.len() - 1;
-    for t in toasts.iter().rev().skip(1).take(TOAST_OLDER) {
-        let first = t.text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default();
+    let mut starts: Vec<(usize, u64)> = Vec::new();
+    // (#482's one rule, `toast_rows`: the lead whole, a word never broken, details last and folded first — the card
+    // wider than half the code, up to three quarters of it, where a lead needs it)
+    let shown: Vec<&crate::editor::Toast> =
+        std::iter::once(newest).chain(toasts.iter().rev().skip(1).take(TOAST_OLDER).copied()).collect();
+    let room = ((fr - fx) * 3 / 4).min((fr - fx).saturating_sub(8)).max(max_inner);
+    let older_texts: Vec<&str> = shown[1..].iter().map(|t| t.text.as_str()).collect();
+    let (natural, laid) = toast_rows(&newest.text, &older_texts, (max_inner, room));
+    for (k, (t, (lines, folded))) in shown.iter().zip(laid).enumerate() {
         // An earlier error or warning keeps its weight — only the routine ones step back
         let (b, style) = match t.kind {
+            _ if k == 0 => (bar(t.kind), body),
             ToastKind::Error | ToastKind::Warning => (bar(t.kind), body),
             _ => (Style { fg: blend(toast_color(editor, ui, t.kind), bg, 0.45), ..bar(t.kind) }, dim),
         };
         starts.push((rows.len(), t.id));
-        let text = crate::whole::fit_part(first.trim_end(), max_inner, t.text.trim());
-        segs.extend(toast_paint(&[text.shown().to_string()], &t.paint));
-        rows.push((Some(b), text, style));
+        // (a row as laid — cut only where one word alone is wider than the card may be; the whole carried by a cut row
+        // and by the last where something of it isn't shown — folded, or its lines after the first: whole under the
+        // mouse)
+        let partial = folded || toast_words(&lines.join(" ")) != toast_words(&t.text);
+        let (at, last) = (rows.len(), lines.len().saturating_sub(1));
+        for (i, l) in lines.into_iter().enumerate() {
+            let text = if l.width() > natural || partial && i == last {
+                crate::whole::fit_part(&l, natural.max(l.width().min(room)), t.text.trim())
+            } else {
+                Fit::plain(l)
+            };
+            rows.push(((i == 0).then_some(b), text, style));
+        }
+        let texts: Vec<String> = rows[at..].iter().map(|r| r.1.shown().to_string()).collect();
+        segs.extend(toast_paint(&texts, &t.paint));
     }
+    let older = toasts.len() - 1;
     if older > TOAST_OLDER {
         starts.push((rows.len(), 0));
         let text = format!("+{} earlier · :messages", older - TOAST_OLDER);
@@ -32848,7 +32947,7 @@ mod tests {
     }
 
     /// #318: a toast breaks between phrases — after `—`, `·`, `,` — never inside one where the phrase fits a row of its
-    /// own; a phrase longer than a row breaks between its words, a word longer than a row at the row's end.
+    /// own; a phrase longer than a row breaks between its words, a word longer than a row never (#482): a row of its own.
     #[test]
     fn a_toast_breaks_between_phrases() {
         let said = "fix ≈ docs · src/a.rs L10 — would conflict";
@@ -32862,7 +32961,64 @@ mod tests {
             toast_wrap("a — one two three four five six", 12, true),
             ["a — one two", "three four", "five six"]
         );
-        assert_eq!(toast_wrap("go: abcdefghijkl x", 8, true), ["go:", "abcdefgh", "ijkl x"]);
+        assert_eq!(toast_wrap("go: abcdefghijkl x", 8, true), ["go:", "abcdefghijkl", "x"]);
+    }
+
+    /// #482's one rule: the lead whole — the card widened for it, up to its room, else more rows —, details folded first at
+    /// a word, a `—` left at the fold dropped; an older toast its first line where it fits a row, else its lead.
+    #[test]
+    fn a_toasts_lead_is_whole_and_its_details_fold_first() {
+        let masked = "GH_TOKEN masked → api.github.com · github.com · uploads.github.com only, until you quit — \
+                      :granted lists it";
+        assert_eq!(
+            toast_lead(masked),
+            "GH_TOKEN masked → api.github.com · github.com · uploads.github.com only, until you quit"
+        );
+        // (base 24, room 33: widened until the lead fits three rows, its key folded; the `·` at the first break not
+        // drawn — no row begins with a separator)
+        let (w, laid) = toast_rows(masked, &[], (24, 33));
+        assert_eq!(w, 32);
+        assert_eq!(
+            laid[0],
+            (
+                vec![
+                    "GH_TOKEN masked → api.github.com".to_string(),
+                    "github.com · uploads.github.com".into(),
+                    "only, until you quit …".into()
+                ],
+                true
+            )
+        );
+        // A `·` at a break: not drawn, at the next row's start (10) or its row's end (12), between words or phrases; a
+        // ` — ` stays at its row's end
+        for phrases in [false, true] {
+            assert_eq!(toast_wrap("saved a.rs · 42 lines", 10, phrases), ["saved a.rs", "42 lines"]);
+            assert_eq!(toast_wrap("saved a.rs · 42 lines", 12, phrases), ["saved a.rs", "42 lines"]);
+            assert_eq!(toast_wrap("saved a.rs — 42 lines", 12, phrases), ["saved a.rs —", "42 lines"]);
+        }
+        // (room 30: the lead takes four rows, whole — 27 holds it in four; 30, within its room, all of it in four)
+        let (w, laid) = toast_rows(masked, &[], (24, 30));
+        assert_eq!((w, laid[0].0.len(), laid[0].1), (30, 4, false), "{laid:?}");
+        let said = laid[0].0.join(" ");
+        assert!(toast_words(&said).starts_with(&toast_words(toast_lead(masked))), "{:?}", laid[0]);
+        assert!(laid[0].0.iter().all(|r| !r.starts_with('·')), "no row begins with a `·`: {:?}", laid[0]);
+        // An older toast: its lead whole, never one cut row — its rows the lead's; it counts toward the width, so its
+        // key is kept where a cell more holds it (33, the newest's lead held in 32), folded where it isn't there
+        let host = "uploads.skein.invalid refused for this session — space m s opens it";
+        let (w, laid) = toast_rows(masked, &[host], (24, 33));
+        let rows = ["uploads.skein.invalid refused for", "this session — space m s opens it"];
+        assert_eq!((w, &laid[1]), (33, &(rows.map(String::from).to_vec(), false)));
+        let (w, laid) = toast_rows(masked, &[host], (24, 32));
+        let rows = ["uploads.skein.invalid refused", "for this session …"];
+        assert_eq!((w, &laid[1]), (32, &(rows.map(String::from).to_vec(), true)));
+        let (_, laid) = toast_rows(masked, &[host], (24, 30));
+        let rows = ["uploads.skein.invalid refused", "for this session …"];
+        assert_eq!(laid[1], (rows.map(String::from).to_vec(), true));
+        // A short one is as wide as its words; a word wider than its base widens it, never broken
+        assert_eq!(toast_rows("Saved a.rs", &[], (24, 33)), (10, vec![(vec!["Saved a.rs".into()], false)]));
+        let long = "wrote /very/long/path/to/some/file/in/a/folder.rs";
+        let (w, laid) = toast_rows(long, &[], (24, 60));
+        assert_eq!((w, laid[0].0.len()), (43, 2), "{laid:?}");
     }
 
     /// #480b: the masked toast says what happens first, then the hosts — at 80 columns all three in sight before any cut
@@ -32881,10 +33037,9 @@ mod tests {
         let card: Vec<String> =
             text.lines().skip(y).take(ch).map(|r| r.chars().skip(x).take(cw).collect::<String>()).collect();
         let said = card.iter().map(|r| r.trim_matches([' ', '▎'])).collect::<Vec<_>>().join(" ");
-        assert!(
-            said.starts_with("GH_TOKEN masked → api.github.com · github.com · uploads.github.com only"),
-            "{said}"
-        );
+        // (a `·` at a break isn't drawn)
+        let hosts = toast_words("GH_TOKEN masked → api.github.com · github.com · uploads.github.com only,");
+        assert!(toast_words(&said).starts_with(&hosts), "{said}");
         assert!(!said.contains('…'), "{said}");
     }
 

@@ -1445,7 +1445,8 @@ fn a_cut_toasts_message_is_whole_under_the_mouse() {
     for t in &mut ed.toasts {
         (t.at, t.shown) = (fresh, true);
     }
-    let whole = whole_under_the_mouse(&mut ed, On::Toast, "farewell");
+    // (its first line, all of it what happens, is whole on the toast — #482 —; its lines after it fold)
+    let whole = whole_under_the_mouse(&mut ed, On::Toast, "fourth line");
     assert!(whole.contains("fourth line"), "the message whole, every line: {whole:?}");
 }
 

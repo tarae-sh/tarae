@@ -2206,7 +2206,7 @@ pub fn base_reached(ed: &mut Editor) {
                 n => format!(" — {} kept", crate::nav::count(n, "draft")),
             };
             ed.set_status(format!(
-                "review since {name} ended: {name} has all of it now, nothing differs from its tip{kept}"
+                "review since {name} ended — {name} has all of it now, nothing differs from its tip{kept}"
             ));
         }
     });
@@ -7196,7 +7196,7 @@ mod tests {
         settle_until(&mut ed, |ed| ed.workspace.code_review.is_none());
         let said = ed.toasts.iter().map(|t| t.text.clone()).collect::<Vec<_>>();
         assert!(
-            said.iter().any(|t| t.starts_with("review since main ended: main has all of it now")),
+            said.iter().any(|t| t.starts_with("review since main ended — main has all of it now")),
             "{said:?}"
         );
         std::fs::remove_dir_all(&dir).ok();

@@ -4,7 +4,7 @@
 01   1 use std::collections::HashMap;                                      │
 02   2                                                                     │
 03   3 ▎ Counts how often each word appea ▎ fix-login · waiting 3m 00s —   │
-04     ▎                                    Claude changes 3 files ·       │
+04     ▎                                    Claude changes 3 files         │
 05     ▎ Words are split on whitespace; c   C-q goes there                 │
 06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize> {            │
 07   7     let mut counts = HashMap::new();                                │

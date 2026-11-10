@@ -248,6 +248,33 @@ const SANDBOX_RUNTIME: &[&str] = &[
     "@2.4",
 ];
 
+/// #484c's sandbox-runtime-toasts scene's keys: Short 4's three runs as a still — the key's read, the host's `n`, the
+/// token's `y` — ending on the masked toast with the host's under it.
+const RUNTIME_TOASTS_KEYS: &[&str] = &[
+    "@1",
+    " l",
+    "ship the release",
+    "\r",
+    "@20?sandbox blocked reading",
+    "@1",
+    "@touch:.s4-upload",
+    "@20?command reach",
+    "@1",
+    "\x11",
+    "@0.6",
+    "n",
+    "@20?reaching uploads",
+    "@1",
+    "@touch:.s4-token",
+    "@20?Open the sandbox a little",
+    "@1",
+    "\x11",
+    "@0.6",
+    "y",
+    "@20?GH_TOKEN masked",
+    "@0.5",
+];
+
 /// P2b's masked scenes' keys: the chat asked, the code zoomed (at 80 the chat beside it would cut the card), the card
 /// up and focused.
 const MASKED_KEYS: &[&str] = &[
@@ -4337,6 +4364,13 @@ const SCENES: &[Scene] = &[
     Scene { name: "rest-review", claude: "full", files: MAIN, keys: REST_REVIEW_KEYS },
     Scene { name: "rest-removed", claude: "idle", files: MAIN, keys: REST_REMOVED_KEYS },
     Scene { name: "sandbox-runtime", claude: "runtime", files: &["release.sh"], keys: SANDBOX_RUNTIME },
+    // (#484c: Short 4's runs as a still, up to the masked toast stacked over the host's)
+    Scene {
+        name: "sandbox-runtime-toasts",
+        claude: "runtime",
+        files: &["release.sh"],
+        keys: RUNTIME_TOASTS_KEYS,
+    },
     // (R1's (c): a folder's read grant card — it says the files named like keys stay closed)
     Scene { name: "also-read", claude: "alsoread", files: MAIN, keys: ALSO_READ_KEYS },
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
@@ -4344,6 +4378,26 @@ const SCENES: &[Scene] = &[
     Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },
     Scene { name: "masked-unmaskable", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-unknown", claude: "maskedother", files: MAIN, keys: MASKED_KEYS },
+    // (#484b: masked-toast's, the chat left open beside the code — the toast in the narrower code's corner)
+    Scene {
+        name: "masked-toast-chat",
+        claude: "maskedopen",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "pass the token to the release script",
+            "\r",
+            "@20?Open the sandbox a little",
+            "@1",
+            "\x11",
+            "@1",
+            "y",
+            "@20?masked →",
+        ],
+    },
     // (#480b: the masked card's `y`, and the toast that says it — the hosts before its cut)
     Scene {
         name: "masked-toast",
@@ -6411,7 +6465,7 @@ fn one(
 fn own_home(name: &str) -> bool {
     name.starts_with("refused-")
         || name.starts_with("rest-")
-        || name == "sandbox-runtime"
+        || name.starts_with("sandbox-runtime")
         || name == "also-read"
 }
 
@@ -6988,7 +7042,7 @@ fn prepare(
 ) -> Result<Setup> {
     demo_crate_at(demo, scene.name == "trusted", &run_files(scene.name), Some(&dates().0))?;
     // (#474's and Short 4's: a key file in the scene's own home — a stand-in, in two parts)
-    if scene.name.starts_with("refused-key") || scene.name == "sandbox-runtime" {
+    if scene.name.starts_with("refused-key") || scene.name.starts_with("sandbox-runtime") {
         write(&dir.join("home/.ssh/id_ed25519"), concat!("tarae-fake-", "ssh-key-stand-in\n"))?;
     }
     // (R1's also-read: the notes folder its `also {read}` asks for, there to be granted)
@@ -7065,7 +7119,7 @@ fn masked_env(scene: &str) -> Vec<(&'static str, Option<&'static str>)> {
         "masked-unknown" => {
             vec![("MY_SERVICE_TOKEN", Some(concat!("tarae-fake-", "token-0123456789abcdef")))]
         }
-        s if s.starts_with("masked") || s == "sandbox-runtime" => vec![("GH_TOKEN", Some(GH))],
+        s if s.starts_with("masked") || s.starts_with("sandbox-runtime") => vec![("GH_TOKEN", Some(GH))],
         _ => Vec::new(),
     }
 }
@@ -7667,7 +7721,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         }
         // (Short 4's release script: its key, upload and token lines — what Claude's runs reach for; the host a made-up
         // name, the repository the demo's)
-        "sandbox-runtime" => vec![("release.sh", RELEASE_SH.into())],
+        "sandbox-runtime" | "sandbox-runtime-toasts" => vec![("release.sh", RELEASE_SH.into())],
         "output-task" | "panes-task-places" | "group-task-detail" | "group-task-stacked" => vec![
             (".tarae.toml", "[task.check]\ncmd = \"sh check.sh\"\n".into()),
             ("check.sh", CHECK_SH.into()),

@@ -309,8 +309,9 @@ pub const LIMIT_ASK: u32 = 80;
 pub const LIMIT_SUGGEST: u32 = 95;
 
 /// Said once, as API billing first goes on — on the card that turns it on, else as a warning (D3).
-pub const WEAKNESS: &str = "Your key is in the Keychain. Sandboxed commands can't reach it. A command you allow \
-                            outside the sandbox can — tarae warns when one asks for it, but can't see every way.";
+/// (what happens first, #482: a toast's lead is whole at 80 — the rest after its ` — `)
+pub const WEAKNESS: &str = "A command you allow outside the sandbox can reach your key in the Keychain — sandboxed \
+                            ones can't; tarae warns when one asks for it, but can't see every way.";
 
 /// What tarae keeps of billing across starts (`$state/billing.json`): new sessions and the reviewer on the key
 /// until the plan's weekly window resets (`a` on the limit card), and whether `WEAKNESS` was said. No key, no

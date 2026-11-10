@@ -3,8 +3,8 @@
 00 ─ tarae › [scratch] ──────────────────────────────── main · fix-login bringing · preflight · docs · parser · + ─
 01   1
 02
-03                                                    ▎ parser lines up to be brought — 3rd in line, after docs
-04                                                    ▎ docs lines up to be brought — 2nd in line, after fix-lo…
+03                                                     ▎ parser lines up to be brought — 3rd in line, after docs
+04                                                     ▎ docs lines up to be brought …
 05
 06
 07                       ╭─ sessions ── 4 sessions ──────── enter switch  / search  o new ─╮
