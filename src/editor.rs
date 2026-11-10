@@ -6818,7 +6818,10 @@ impl Editor {
         let text = p.split().0;
         let Some((name, _)) = text.split_once(char::is_whitespace) else { return };
         match crate::cmdline::find(name).map(|c| c.arg) {
-            Some(crate::cmdline::Arg::File) => {
+            // (`:plugin-new`'s folder only: its `--from` and example are a list of its own)
+            Some(a @ (crate::cmdline::Arg::File | crate::cmdline::Arg::Plugin))
+                if a == crate::cmdline::Arg::File || crate::cmdline::arg_index(&text) == 0 =>
+            {
                 let token = text.rsplit(char::is_whitespace).next().unwrap_or_default();
                 let (dir, _) = crate::cmdline::file_query(token, &self.workspace.start());
                 if self.cmd_lists.dirs.contains_key(&dir) || !self.cmd_loading.insert(dir.clone()) {
@@ -7328,6 +7331,40 @@ mod tests {
         assert_eq!(text(&ed), "toggle editor.inlay-hints", "→ = accept the dim suggestion");
         feed(&mut ed, "<ret>");
         assert!(!ed.config.inlay_hints, "the completed command runs as is");
+    }
+
+    /// `:plugin-new <dir> --from <tab>` lists the examples `:plugin-new` checks against, each with its idea, and a
+    /// prefix narrows them; the folder before `--from` still completes as a path (#486).
+    #[test]
+    fn plugin_new_completes_its_folder_then_an_example() {
+        let mut ed = Editor::new(Config::default());
+        let (dir, _) = crate::cmdline::file_query("", &ed.workspace.start());
+        ed.cmd_lists.dirs.insert(dir, vec![("tools".into(), true), ("notes.md".into(), false)]);
+        let text = |ed: &Editor| ed.prompt.as_ref().map(|p| p.text()).unwrap_or_default();
+        let cands = |ed: &Editor| -> Vec<(String, String)> {
+            ed.cmdline_completion()
+                .map(|c| c.cands.into_iter().map(|c| (c.label, c.hint)).collect())
+                .unwrap_or_default()
+        };
+        feed(&mut ed, ":plugin-new to<tab>");
+        assert_eq!(text(&ed), "plugin-new tools/", "the folder completes as a path");
+        feed(&mut ed, "x <tab>");
+        assert_eq!(text(&ed), "plugin-new tools/x --from ", "then its one flag");
+        let examples: Vec<(String, String)> = crate::plugin::examples::EXAMPLES
+            .iter()
+            .map(|e| (e.name.to_string(), e.idea.to_string()))
+            .collect();
+        assert_eq!(examples.len(), 10);
+        assert_eq!(cands(&ed), examples, "the ten, in the README's order, each with its idea");
+        feed(&mut ed, "wo");
+        assert_eq!(
+            cands(&ed).iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+            ["word-tally"],
+            "a prefix narrows"
+        );
+        feed(&mut ed, "<tab>");
+        assert_eq!(text(&ed), "plugin-new tools/x --from word-tally ");
+        assert!(cands(&ed).is_empty(), "nothing comes after the example");
     }
 
     /// In normal mode j/k treat a folded doc-comment block as one line (stepping over it without unfolding).

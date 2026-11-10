@@ -48,7 +48,8 @@ tarae plugin test                # its tests, then its wasm built and loaded as 
 
 Or start from one of the [examples](../plugin-sdk/examples), each a whole plugin with one idea: `tarae plugin example`
 lists them, `tarae plugin example <name>` prints one, and `tarae plugin new my-plugin --from <name>` starts a crate
-from it. `:plugin-new <dir> [--from <name>]` does the same from inside tarae, in the project.
+from it. `:plugin-new <dir> [--from <name>]` does the same from inside tarae, in the project — `tab` after `--from`
+lists the examples, each with its idea.
 
 A complete plugin (the template, with only its `:words`):
 

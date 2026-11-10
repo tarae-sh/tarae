@@ -27,6 +27,8 @@ pub enum Arg {
     Lang,
     /// A git branch (local or remote).
     Branch,
+    /// `:plugin-new`: a folder, then `--from` and an example's name (`plugin::examples::EXAMPLES`).
+    Plugin,
 }
 
 pub struct TypedCmd {
@@ -124,7 +126,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["plugin-permissions"], Arg::None, "What each plugin may do beyond the buffer"),
     c(&["plugin-revoke"], Arg::None, "Take back a plugin's permissions: :plugin-revoke <plugin>"),
     c(&["plugin-approve"], Arg::None, "A plugin's approval card again: :plugin-approve <plugin>"),
-    c(&["plugin-new"], Arg::File, "Start a plugin crate: :plugin-new <dir> [--from <example>]"),
+    c(&["plugin-new"], Arg::Plugin, "Start a plugin crate: :plugin-new <dir> [--from <example>]"),
     c(&["plugin-install"], Arg::File, "Install a plugin build, on a card: :plugin-install <wasm>"),
     c(&["lsp-stop"], Arg::None, "Stop this file's language server"),
     c(&["format", "fmt"], Arg::None, "Format the file (language server)"),
@@ -322,6 +324,12 @@ fn rank(query: &str, items: Vec<Cand>, keep_order_when_empty: bool) -> Vec<Cand>
     scored.into_iter().map(|t| t.4).collect()
 }
 
+/// Which argument the last word of input text (after `:`, its command name typed) is: 0 = the first.
+pub fn arg_index(text: &str) -> usize {
+    let token = text.rsplit(char::is_whitespace).next().unwrap_or_default();
+    text.split_whitespace().count().saturating_sub(1 + usize::from(!token.is_empty()))
+}
+
 /// Input text (after `:`) → candidates.
 pub fn complete(text: &str, cwd: &Path, lists: &Lists) -> Completion {
     // Command name
@@ -369,11 +377,11 @@ pub fn complete(text: &str, cwd: &Path, lists: &Lists) -> Completion {
     // The word being completed = after the last space (rsplit — NBSP·U+3000 are multi-byte)
     let token = text.rsplit(char::is_whitespace).next().unwrap_or_default();
     let token_start = text.len() - token.len();
-    let arg_index = args.split_whitespace().count() - usize::from(!token.is_empty());
+    let arg_index = arg_index(text);
     let mut cut = false;
     let (cands, loading) = match cmd.arg {
         Arg::None => (Vec::new(), false),
-        Arg::File => {
+        Arg::File | Arg::Plugin if cmd.arg == Arg::File || arg_index == 0 => {
             let (dir, prefix) = file_query(token, cwd);
             cut = lists.cut.contains(&dir);
             match lists.dirs.get(&dir) {
@@ -486,6 +494,30 @@ pub fn complete(text: &str, cwd: &Path, lists: &Lists) -> Completion {
                 })
                 .collect();
             (rank(token, items, false), false)
+        }
+        // `:plugin-new <dir> --from <example>` — the examples `:plugin-new` checks against, in the README's order
+        Arg::Plugin if arg_index == 1 => {
+            let from = Cand {
+                insert: "--from".into(),
+                label: "--from".into(),
+                hint: "start from an example".into(),
+                hits: Vec::new(),
+                dir: false,
+            };
+            (rank(token, vec![from], true), false)
+        }
+        Arg::Plugin if arg_index == 2 && args.split_whitespace().nth(1) == Some("--from") => {
+            let items = crate::plugin::examples::EXAMPLES
+                .iter()
+                .map(|e| Cand {
+                    insert: e.name.to_string(),
+                    label: e.name.to_string(),
+                    hint: e.idea.to_string(),
+                    hits: Vec::new(),
+                    dir: false,
+                })
+                .collect();
+            (rank(token, items, true), false)
         }
         _ => (Vec::new(), false),
     };

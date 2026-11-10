@@ -23,7 +23,7 @@
 
 mod cli;
 mod events;
-mod examples;
+pub(crate) mod examples;
 mod install;
 mod io;
 pub(crate) mod keys;
