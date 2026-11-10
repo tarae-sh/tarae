@@ -7138,6 +7138,11 @@ fn print_lit_painted(
     painted: &[(std::ops::Range<usize>, crossterm::style::Color)],
 ) -> io::Result<()> {
     let kept = if t == crate::cut::drawn(text) { t.len() } else { t.len().saturating_sub('…'.len_utf8()) };
+    // (the hits and paints are bytes of `text`, read in `t`, it as drawn — #491: a `\r\n` one byte there, an escape
+    // `�`'s three)
+    let at = |b| crate::cut::drawn_at(text, b);
+    let hits: Vec<(usize, usize)> = hits.iter().map(|h| (at(h.0), at(h.1))).collect();
+    let painted: Vec<_> = painted.iter().map(|(r, c)| (at(r.start)..at(r.end), *c)).collect();
     let mut cuts: Vec<usize> = [0, kept].into_iter().chain(hits.iter().flat_map(|h| [h.0, h.1])).collect();
     cuts.extend(painted.iter().flat_map(|p| [p.0.start, p.0.end]));
     cuts.retain(|&c| c <= kept && t.is_char_boundary(c));
@@ -25810,6 +25815,51 @@ mod tests {
         let (shown, cells) = lit_cells((cut, long), &[(0, 3)], &[]);
         assert_eq!(shown, cut);
         assert_eq!(&cells[..4], &[(ink, ground), (ink, ground), (ink, ground), (ink, D)]);
+    }
+
+    /// #491: a hit and a paint after a `\r\n` — drawn one byte — light the characters they fall on, cut or not; past
+    /// the cut, nothing.
+    #[test]
+    fn a_hit_after_a_line_end_lights_its_own_characters() {
+        // (`b` at byte 3, `hit` at 4..7, `more` at 12..16)
+        let text = "a\r\nbhit and more";
+        let t = crate::cut::fit_ellipsis(text, 8);
+        assert_eq!(t, "a bhit …");
+        lit_after_a_control_character(text, &t, 3..4);
+    }
+
+    /// #491: a hit and a paint after an escape — drawn `�`, three bytes — light the characters they fall on, cut or not;
+    /// past the cut, nothing.
+    #[test]
+    fn a_hit_after_an_escape_lights_its_own_characters() {
+        // (`b` at byte 2, `hit` at 4..7, `more` at 12..16)
+        let text = "a b\x1bhit and more";
+        let t = crate::cut::fit_ellipsis(text, 9);
+        assert_eq!(t, "a b\u{fffd}hit …");
+        lit_after_a_control_character(text, &t, 2..3);
+    }
+
+    /// `text`, a control character after its `b` (painted at `b`) and `hit and more` after it, shown as `t` (cut) and
+    /// whole: `hit` and `more` searched — each row as vt100 shows it, `a bhit …` and `a bhit and more` (vt100 leaves a
+    /// `�` out, an invalid byte's mark — `perform.rs`).
+    fn lit_after_a_control_character(text: &str, t: &str, b: std::ops::Range<usize>) {
+        use crossterm::style::Color;
+        use vt100::Color::{Default as D, Rgb};
+        let (ink, ground, name) = (Rgb(1, 1, 1), Rgb(9, 9, 9), Rgb(200, 10, 10));
+        let red = Color::Rgb { r: 200, g: 10, b: 10 };
+        let (shown, cells) = lit_cells((t, text), &[(4, 7), (12, 16)], &[(b, red)]);
+        assert_eq!(shown, "a bhit …");
+        assert_eq!(&cells[..3], &[(ink, D), (ink, D), (name, D)], "`b` painted: {cells:?}");
+        assert_eq!(&cells[3..6], &[(ink, ground); 3], "`hit` lit: {cells:?}");
+        assert_eq!(&cells[6..8], &[(ink, D); 2], "past it, `more` cut off: {cells:?}");
+        // (whole, the same)
+        let whole = crate::cut::drawn(text);
+        let (_, cells) = lit_cells((&whole, text), &[(12, 16)], &[]);
+        assert_eq!(
+            &cells[10..15],
+            &[(ink, D), (ink, ground), (ink, ground), (ink, ground), (ink, ground)],
+            "`more` lit: {cells:?}"
+        );
     }
 
     /// #488: a card's yes keeps its word on its bottom line however narrow, every answer a whole pair, in order.

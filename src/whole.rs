@@ -481,8 +481,11 @@ impl Fit {
             // (nothing left to draw: no cut to see)
             return Fit::plain(shown);
         };
-        let from = was.from.min(kept.len());
-        let (lead, tail) = (text.get(from..was.from).unwrap_or(""), text.get(was.to..).unwrap_or(""));
+        // (where it was cut is bytes of its text, `kept` of what's drawn — a `\r\n` one byte there, an escape three:
+        // each read in its own, the lead and tail taken from its text, as its whole is, #491)
+        let from = crate::cut::drawn_at(&self.text, was.from).min(kept.len());
+        let lead = self.text.get(crate::cut::drawn_from(&self.text, from)..was.from).unwrap_or("");
+        let tail = self.text.get(was.to..).unwrap_or("");
         let whole = format!("{lead}{}{tail}", was.whole);
         let pieces = was.pieces.iter().map(|(r, s)| (r.start + lead.len()..r.end + lead.len(), *s)).collect();
         Fit { cut: Some(Of { from, to: shown.len(), whole, pieces, key: was.key }), text: shown }

@@ -2369,6 +2369,53 @@ fn a_cut_cut_again_into_its_lead_is_placed_from_its_new_cut() {
     );
 }
 
+/// The cuts `cut` places, printed at column 10 of the status line: each one's cells and its whole.
+fn placed_at_ten(cut: &Fit) -> Vec<((usize, usize, usize), String)> {
+    begin();
+    at(On::Status, cut, (10, 0), Style::default(), (0, 80));
+    PLACED.take().into_iter().map(|(spot, w, _)| (spot, w.text)).collect()
+}
+
+/// #491: a cut cut again where a `\r\n` leads it — one byte drawn, where it was cut read in what's drawn: placed at this
+/// cut's `…` with the lead's cut part, or from where it was cut with the tail its text had.
+#[test]
+fn a_cut_cut_again_after_a_line_end_says_its_whole() {
+    let again = super::fit("a whole name", 6).lead("x\r\ny ").fit(4);
+    assert_eq!(again.shown(), "x y…");
+    assert_eq!(
+        placed_at_ten(&again),
+        vec![((0, 13, 14), " a whole name".to_string())],
+        "at its `…`, the space in"
+    );
+    let again = super::fit("a whole name", 6).lead("x\r\n").then(" tail\r\nend").fit(12);
+    assert_eq!(again.shown(), "x a who… ta…");
+    assert_eq!(
+        placed_at_ten(&again),
+        vec![((0, 12, 22), "a whole name tail\r\nend".to_string())],
+        "from its cut, its tail as its text had it"
+    );
+}
+
+/// #491: a cut cut again where an escape leads it — `�` drawn, three bytes for one: placed at this cut's `…` with the
+/// lead's cut part, or from where it was cut with the tail its text had.
+#[test]
+fn a_cut_cut_again_after_an_escape_says_its_whole() {
+    let again = super::fit("a whole name", 6).lead("y\x1b z ").fit(4);
+    assert_eq!(again.shown(), "y\u{fffd} …");
+    assert_eq!(
+        placed_at_ten(&again),
+        vec![((0, 13, 14), "z a whole name".to_string())],
+        "at its `…`, `z ` in"
+    );
+    let again = super::fit("a whole name", 6).lead("x").then(" \x1btail end").fit(12);
+    assert_eq!(again.shown(), "xa who… \u{fffd}ta…");
+    assert_eq!(
+        placed_at_ten(&again),
+        vec![((0, 11, 22), "a whole name \x1btail end".to_string())],
+        "from its cut, its tail as its text had it"
+    );
+}
+
 /// A cut on a floating frame's line is seen only where that frame is the topmost drawn (U2's fourth review: `On::Frame`
 /// matched any floating surface): a card's title cut on its frame (its first row's cut carried there — it was dropped),
 /// the prompt's frame drawn over it: no card; another card's frame over it (the same surface — which frame is topmost

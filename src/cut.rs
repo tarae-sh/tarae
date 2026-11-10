@@ -57,12 +57,46 @@ pub fn drawn(s: &str) -> Cow<'_, str> {
     // (a control character is a character of its own — `\r\n` the one pair)
     let mut out = String::with_capacity(s.len());
     for g in s.graphemes(true) {
-        match g.chars().next() {
-            Some(c) if c.is_control() => out.push(if c.is_whitespace() { ' ' } else { '\u{fffd}' }),
-            _ => out.push_str(g),
+        match stand_in(g) {
+            Some(c) => out.push(c),
+            None => out.push_str(g),
         }
     }
     Cow::Owned(out)
+}
+
+/// What `drawn` draws for a character (a grapheme cluster) that's a control character — None for the rest, drawn as
+/// they are.
+fn stand_in(g: &str) -> Option<char> {
+    let c = g.chars().next().filter(|c| c.is_control())?;
+    Some(if c.is_whitespace() { ' ' } else { '\u{fffd}' })
+}
+
+/// Byte `at` of `s` as a byte of `drawn(s)` — an offset taken on the text (a search's hit, a painted word, where it
+/// was cut) read in what's drawn of it (#491: a `\r\n` is one byte there, another control character `�`'s three).
+/// Between a `\r\n`'s two: after its space; past the end: the end.
+pub fn drawn_at(s: &str, at: usize) -> usize {
+    let head = s.get(..s.floor_char_boundary(at)).unwrap_or(s);
+    if !head.chars().any(char::is_control) {
+        return head.len();
+    }
+    head.graphemes(true).map(|g| stand_in(g).map_or(g.len(), char::len_utf8)).sum()
+}
+
+/// The byte of `s` that `drawn(s)`'s byte `at` is drawn from — `drawn_at` the other way: inside a character, its
+/// start; past the end, the end.
+pub fn drawn_from(s: &str, at: usize) -> usize {
+    if !s.chars().any(char::is_control) {
+        return s.floor_char_boundary(at);
+    }
+    let mut d = 0;
+    for (i, g) in s.grapheme_indices(true) {
+        d += stand_in(g).map_or(g.len(), char::len_utf8);
+        if d > at {
+            return i;
+        }
+    }
+    s.len()
 }
 
 /// The bytes of `s`'s start that fit in `width` cells: whole characters (grapheme clusters), each in the cells
@@ -141,10 +175,22 @@ pub fn fit_place(s: &str, width: usize) -> String {
 /// the rest follow the `…`; nothing left, none.
 pub fn fit_place_marked(s: &str, marks: &[u32], width: usize) -> (String, Vec<u32>) {
     let cut = fit_place(s, width);
+    let d = drawn(s);
+    // (the marks read in what's drawn: a `\r\n` is one character there, #491)
+    let marks: Vec<u32> = match &d {
+        Cow::Borrowed(_) => marks.to_vec(),
+        Cow::Owned(d) => {
+            let at = |m: u32| s.char_indices().nth(m as usize).map_or(s.len(), |(b, _)| b);
+            let mut on: Vec<u32> =
+                marks.iter().map(|&m| slice(d, ..drawn_at(s, at(m))).chars().count() as u32).collect();
+            on.dedup();
+            on
+        }
+    };
     let marks = match cut.strip_prefix('…') {
-        _ if cut == drawn(s) => marks.to_vec(),
+        _ if cut == d => marks,
         Some(rest) => {
-            let gone = (s.chars().count() - rest.chars().count()) as u32;
+            let gone = (d.chars().count() - rest.chars().count()) as u32;
             marks.iter().filter(|&&m| m >= gone).map(|&m| m - gone + 1).collect()
         }
         None => Vec::new(),
@@ -448,6 +494,23 @@ pub(crate) mod tests {
         assert_eq!(fit("1\u{fe0f}\u{20e3}", 1), "");
     }
 
+    /// #491: a byte of a text read in what's drawn of it and back — a `\r\n` one byte there, an escape `�`'s three,
+    /// every byte after them moved along; between a `\r\n`'s two, after its space; past the end, the end.
+    #[test]
+    fn an_offset_is_read_in_the_drawn_text_and_back() {
+        let s = "a\r\nb\x1bc";
+        assert_eq!(drawn(s), "a b\u{fffd}c");
+        let to: Vec<usize> = (0..=7).map(|b| drawn_at(s, b)).collect();
+        assert_eq!(to, [0, 1, 2, 2, 3, 6, 7, 7]);
+        let back: Vec<usize> = (0..=8).map(|b| drawn_from(s, b)).collect();
+        assert_eq!(back, [0, 1, 3, 4, 4, 4, 5, 6, 6], "inside the `�`: the escape");
+        assert_eq!(
+            (drawn_at("a—b", 9), drawn_at("a—b", 2), drawn_from("a—b", 2)),
+            (5, 1, 1),
+            "none: as it is"
+        );
+    }
+
     /// `slice` at boundaries is the slice; off one, a test fails at once — and a release build snaps both ends to the
     /// boundary before them, past the end to the end, never backwards.
     #[test]
@@ -507,6 +570,12 @@ pub(crate) mod tests {
         assert_eq!(folded.0, "…/infra");
         assert_eq!(marked(folded), "/i", "the `/` and `i` kept, `x` and the first `/` cut off");
         assert_eq!(fit_place_marked(p, &[0, 8], 0), (String::new(), Vec::new()));
+        // (#491: a `\r\n` before them is one character drawn — the marks after it on their own characters still)
+        let p = "/x\r\nZ/infra";
+        assert_eq!(marked(fit_place_marked(p, &[1, 4, 6], 20)), "xZi");
+        let folded = fit_place_marked(p, &[1, 4, 6], 7);
+        assert_eq!(folded.0, "…/infra");
+        assert_eq!(marked(folded), "i");
     }
 
     #[test]
