@@ -965,6 +965,22 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
 - **Release builds on macOS signed with the hardened runtime** (with binary releases): then no other program of the
   user's can attach a debugger to tarae and run code as it. Claude's commands already can't (step 7: Seatbelt keeps the task port to a run's
   own processes, 2026-10-10).
+- **The plugin index** (user, 2026-11-10; the plugin strategy's step 6): a git repository as the index,
+  `tarae-sh/tarae-plugins`, one file a plugin a version (its source repository and commit, the wasm's sha256, the
+  permissions it asks for), taken by pull request — no server. The index's CI builds each wasm from the pinned commit
+  and records its hash, so a binary can't differ from its source. Installing is today's `plugin-install` card (the
+  permissions, the source, the hash); a new version that asks for more is a new card saying what changed; nothing is
+  installed or updated unasked. When: with API 1.0 and multi-version dispatch, before outside authors are invited —
+  after the three-plugin trial and F3.
+- **Distribution through Homebrew** (user, 2026-11-10): at the first release, tarae's own tap,
+  `tarae-sh/homebrew-tap` (`brew install tarae-sh/tap/tarae`) — no stars needed, and it can carry the signed build
+  (the hardened-runtime item above). homebrew/core later, once its bar is met (docs.brew.sh, read 2026-11-10: from
+  the owner 225 stars, 90 forks or 90 watchers — from someone else 75, 30, 30; the repository 30 days old; a stable,
+  immutable release tag; a DFSG licence; built from source on their macOS and Linux CI; no self-update). On
+  2026-11-10 tarae had 3 stars and no release tag, and `tarae` was free as a formula and a cask: the first gate is the
+  release ([§9](#9-stabilization-before-release)), not the stars. The tap stays after core — two reasons to check at
+  the release: a core bottle carries no signature of ours (and the Keychain may ask again after an upgrade); brew on
+  Linux installs without root, so it can't put the AppArmor profile in place (`packaging/apparmor`).
 - **A memory comparison with other editors** (Helix, Neovim with an AI plugin, Zed, VS Code). Method agreed
   2026-10-03: the same scenario; the editor alone and its whole process tree; measured numbers only; a one-off
   script.
