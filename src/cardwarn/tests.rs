@@ -570,8 +570,20 @@ fn a_cards_warning_leads_with_what_it_does_and_folds_the_how_to() {
         screen.screen().rows(0, 120).collect::<Vec<String>>().join("\n")
     };
     let card = shown(&mut ed);
-    let flat = card.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(flat.contains("▲ It removes") && flat.contains("and everything in it (bash pack)"), "{card}");
+    // The card's inside, its rows joined with every space gone: the lead whole wherever the folder's length (the
+    // temp folder's, the machine's) wraps it — at a space or inside a word
+    let tight = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let rows: Vec<&str> = card.lines().collect();
+    let top = rows.iter().position(|r| r.contains("╭─ Claude wants to run")).expect(&card);
+    let inside: String = rows[top + 1..]
+        .iter()
+        .take_while(|r| !r.contains('╰'))
+        .filter_map(|r| {
+            let (a, b) = (r.find('│')?, r.rfind('│')?);
+            (a < b).then(|| tight(&r[a + '│'.len_utf8()..b]))
+        })
+        .collect();
+    assert!(inside.contains(&tight(&lead)), "the lead whole:\n{card}");
     assert!(!card.contains("mktemp") && !card.contains("checked form"), "the how-to folded:\n{card}");
     assert!(card.lines().any(|r| r.contains("╰") && r.contains("v see")), "{card}");
     // `C-q v`: the card's whole text, the how-to in it
