@@ -25210,24 +25210,43 @@ fn diagnostic_lines(
     out
 }
 
-/// Message text → spans: `code` (backticks dropped) colored as code of `lang`, the rest in `base`.
-fn message_spans(text: &str, base: Style, lang: Option<&str>, editor: &Editor) -> Vec<crate::markdown::Span> {
-    use crate::markdown::{Line, Span};
-    let t = &editor.theme;
-    let raw = t.try_get("markup.raw.inline").or_else(|| t.try_get("markup.raw")).unwrap_or_default();
-    let mut out = Vec::new();
+/// A short text's `code` spans, the one rule of a message and a description (the hover's, a `:` completion's hint):
+/// its text with the backticks dropped, and the byte ranges of that text that were between them. A backtick with no
+/// partner stays as typed.
+fn code_spans(text: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let (mut plain, mut code) = (String::with_capacity(text.len()), Vec::new());
     let mut rest = text;
     while let Some(open) = rest.find('`') {
         let Some(len) = crate::cut::slice(rest, open + 1..).find('`') else { break };
-        if open > 0 {
-            out.push(Span {
-                cut: None,
-                hint: false,
-                text: crate::cut::slice(rest, ..open).to_string(),
-                style: base,
-            });
+        plain.push_str(crate::cut::slice(rest, ..open));
+        let start = plain.len();
+        plain.push_str(crate::cut::slice(rest, open + 1..open + 1 + len));
+        code.push(start..plain.len());
+        rest = crate::cut::slice(rest, open + 1 + len + 1..);
+    }
+    plain.push_str(rest);
+    (plain, code)
+}
+
+/// The theme's inline code (`markup.raw.inline`, else `markup.raw`).
+fn inline_code(t: &crate::theme::Theme) -> Style {
+    t.try_get("markup.raw.inline").or_else(|| t.try_get("markup.raw")).unwrap_or_default()
+}
+
+/// Message text → spans: `code` (backticks dropped, `code_spans`) colored as code of `lang`, the rest in `base`.
+fn message_spans(text: &str, base: Style, lang: Option<&str>, editor: &Editor) -> Vec<crate::markdown::Span> {
+    use crate::markdown::{Line, Span};
+    let t = &editor.theme;
+    let raw = inline_code(t);
+    let (plain, code) = code_spans(text);
+    let mut out = Vec::new();
+    let mut at = 0;
+    for r in code {
+        if r.start > at {
+            let text = crate::cut::slice(&plain, at..r.start).to_string();
+            out.push(Span { cut: None, hint: false, text, style: base });
         }
-        let code = crate::cut::slice(rest, open + 1..open + 1 + len);
+        let code = crate::cut::slice(&plain, r.clone());
         // Inline-code color underneath, syntax colors on top (unparsed bits still read as code)
         match crate::markdown::code_lines(code, lang, t).into_iter().next() {
             Some(Line::Code(spans)) => {
@@ -25235,12 +25254,40 @@ fn message_spans(text: &str, base: Style, lang: Option<&str>, editor: &Editor) -
             }
             _ => out.push(Span { cut: None, hint: false, text: code.to_string(), style: raw }),
         }
-        rest = crate::cut::slice(rest, open + 1 + len + 1..);
+        at = r.end;
     }
-    if !rest.is_empty() {
-        out.push(Span { cut: None, hint: false, text: rest.to_string(), style: base });
+    if at < plain.len() {
+        out.push(Span {
+            cut: None,
+            hint: false,
+            text: crate::cut::slice(&plain, at..).to_string(),
+            style: base,
+        });
     }
     out
+}
+
+/// `text` (a prefix of what `code` was found in) printed, `code`'s ranges in `code_st`, the rest in `plain`.
+fn print_code_spans(
+    out: &mut impl Write,
+    text: &str,
+    code: &[std::ops::Range<usize>],
+    (plain, code_st): (Style, Style),
+) -> io::Result<()> {
+    let mut at = 0;
+    for r in code {
+        let (start, end) = (r.start.min(text.len()), r.end.min(text.len()));
+        if start >= end {
+            continue;
+        }
+        apply(out, plain)?;
+        queue!(out, Print(crate::cut::slice(text, at..start)))?;
+        apply(out, code_st)?;
+        queue!(out, Print(crate::cut::slice(text, start..end)))?;
+        at = end;
+    }
+    apply(out, plain)?;
+    queue!(out, Print(crate::cut::slice(text, at..)))
 }
 
 /// `rustc E0308` — who reported it and its code, if the server says.
@@ -25429,8 +25476,12 @@ fn draw_prompt(
     let first = p.menu_first(cands.len(), rows);
     let visible = first..first + rows;
     let label_w = visible.clone().map(|i| cands[i].label.width()).max().unwrap_or(0).min(LABEL_MAX);
-    let hint_w = visible.clone().map(|i| cands[i].hint.width()).max().unwrap_or(0).min(HINT_MAX);
-    let menu_w = if rows > 0 { label_w + if hint_w > 0 { 3 + hint_w } else { 0 } } else { 0 };
+    // (a hint's `code` drawn as code, its backticks dropped — the hover's way, `code_spans`)
+    let hints: Vec<_> = visible.clone().map(|i| code_spans(&cands[i].hint)).collect();
+    let hint_w = hints.iter().map(|h| h.0.width()).max().unwrap_or(0).min(HINT_MAX);
+    // (a scrollbar stands in the card's padding: a cell of air between it and the longest row)
+    let gap = usize::from(cands.len() > rows);
+    let menu_w = if rows > 0 { label_w + if hint_w > 0 { 3 + hint_w } else { 0 } + gap } else { 0 };
     let text = p.text();
     // (a cell each side of it, its padding inside)
     let room = aw.saturating_sub(2 + 4).max(1);
@@ -25449,7 +25500,7 @@ fn draw_prompt(
     let indent = col.min(inner.saturating_sub(menu_w));
     // (narrower than the menu wants — a 50-column screen: the hints end at the card's padding, cut, not past
     // its edge into the next row's first cell)
-    let hint_w = hint_w.min(inner.saturating_sub(indent + label_w + 3));
+    let hint_w = hint_w.min(inner.saturating_sub(indent + label_w + 3 + gap));
     let width = inner + 4;
     let h = rows + usize::from(rows > 0) + 1 + 2 * pad;
     let y0 = (lay.status_y as usize).saturating_sub(h);
@@ -25458,6 +25509,7 @@ fn draw_prompt(
     let selected = selected_row(ui, editor, card);
     let matched = Style { fg: ui.accent.fg, bold: true, ..Style::default() };
     let dir_fg = t.try_get("ui.text.directory").and_then(|s| s.fg).or(ui.accent.fg);
+    let code_fg = inline_code(t).fg.or(ui.virt.fg);
     card_edge(out, card, x0, y0, width)?;
     let thumb = scroll_thumb(rows.max(1), cands.len().max(1), first);
     let mut y = y0 + pad;
@@ -25486,11 +25538,28 @@ fn draw_prompt(
         queue!(out, Spaces(label_w - label.width()))?;
         let mut used = indent + 2 + label_w;
         if hint_w > 0 {
-            let hnt = crate::whole::fit(&cand.hint, hint_w);
+            let (hint, code) = &hints[row];
             let plain = Style { fg: ui.virt.fg, ..base_st };
+            let code_st = Style { fg: code_fg, ..base_st };
+            // (its whole on the card in the same colours)
+            let mut pieces = Vec::new();
+            let mut at = 0;
+            for r in code {
+                pieces.extend([(at..r.start, plain), (r.clone(), code_st)]);
+                at = r.end;
+            }
+            pieces.push((at..hint.len(), plain));
+            let hnt = crate::whole::fit(hint, hint_w).painted(pieces);
             crate::whole::cut_at(editor, on, (x0 + used + 3, y), &hnt, plain, screen, None);
-            apply(out, Style { fg: ui.virt.fg, ..base_st })?;
-            queue!(out, Print("   "), Print(hnt.shown()), Spaces(hint_w - hnt.width()))?;
+            apply(out, plain)?;
+            queue!(out, Print("   "))?;
+            print_code_spans(out, hnt.uncut(), code, (plain, code_st))?;
+            apply(out, plain)?;
+            queue!(
+                out,
+                Print(crate::cut::slice(hnt.shown(), hnt.uncut().len()..)),
+                Spaces(hint_w - hnt.width())
+            )?;
             used += 3 + hint_w;
         }
         apply(out, base_st)?;
@@ -27083,6 +27152,70 @@ mod tests {
             assert!(first.trim().is_empty(), "row {y} begins with {first:?}:\n{s}");
         }
         assert!(s.lines().any(|l| l.contains("reload") && l.contains('…')), "the hint cut, said so:\n{s}");
+    }
+
+    /// `:plugin-new x --from ` typed and drawn on a `w`×34 screen: the editor and the screen as the terminal shows it.
+    fn plugin_from_drawn(w: u16) -> (Editor, vt100::Parser) {
+        // (crossterm drops every color under NO_COLOR, which tarae's test runner sets)
+        crossterm::style::force_color_output(true);
+        let mut ed = Editor::new(crate::config::Config::default());
+        for c in ":plugin-new x --from ".chars() {
+            ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
+        }
+        let mut bytes = Vec::new();
+        render(&mut ed, &mut bytes, w, 34).unwrap();
+        let mut p = vt100::Parser::new(34, w, 0);
+        p.process(&bytes);
+        (ed, p)
+    }
+
+    /// A `:` completion's hint draws its `code` as code, as the hover does (`code_spans`): the backticks dropped, the
+    /// code in the theme's inline code, the rest as a hint (#492: `:plugin-new --from`'s `` `read` pattern``).
+    #[test]
+    fn a_completions_hint_draws_its_code_as_code() {
+        assert_eq!(
+            code_spans("a `read` pattern"),
+            ("a read pattern".to_string(), vec![std::ops::Range { start: 2, end: 6 }])
+        );
+        assert_eq!(
+            code_spans("one ` alone"),
+            ("one ` alone".to_string(), vec![]),
+            "a backtick with no partner stays"
+        );
+        let (ed, p) = plugin_from_drawn(120);
+        let s = p.screen().contents();
+        assert!(!s.contains('`'), "no backtick drawn:\n{s}");
+        let (y, line) =
+            s.lines().enumerate().find(|(_, l)| l.contains("read-notes")).expect("read-notes listed");
+        let x =
+            |needle: &str| unicode_width::UnicodeWidthStr::width(&line[..line.find(needle).unwrap()]) as u16;
+        let fg = |x: u16| vt_color(p.screen().cell(y as u16, x).unwrap().fgcolor());
+        assert!(line.contains("under a read pattern"), "{line}");
+        assert_eq!(fg(x("read pattern")), inline_code(&ed.theme).fg, "`read` as code:\n{s}");
+        assert_eq!(fg(x("pattern")), fg(x("under")), "the rest as a hint");
+        assert_ne!(fg(x("pattern")), fg(x("read pattern")));
+    }
+
+    /// A scrollbar stands in the menu's padding with a cell of air before it: no row of the menu — the longest hint's
+    /// neither — ends against it; on a narrow screen the hints are cut with `…` before that cell (#492).
+    #[test]
+    fn a_completions_menu_leaves_a_cell_before_its_scrollbar() {
+        for w in [120, 48] {
+            let (ed, p) = plugin_from_drawn(w);
+            let s = p.screen().contents();
+            let (x0, _, width, _) = ed.screen.prompt_card.get().expect("the prompt's card");
+            let cell =
+                |y: usize, x: usize| p.screen().cell(y as u16, x as u16).map(|c| c.contents()).unwrap();
+            let thumb_x = x0 + width - 2;
+            let rows: Vec<usize> = ed.screen.prompt_rows.borrow().iter().map(|r| r.0).collect();
+            assert!(rows.iter().any(|&y| cell(y, thumb_x) == THUMB), "a scrollbar at {w}:\n{s}");
+            for y in rows {
+                assert_eq!(cell(y, thumb_x - 1), " ", "row {y} at {w}: a cell before the scrollbar:\n{s}");
+            }
+            if w == 48 {
+                assert!(s.lines().any(|l| l.contains("read-notes") && l.contains('…')), "the hint cut:\n{s}");
+            }
+        }
     }
 
     /// An API session's chat says so on its last row — `api`, before anything is reported, and still there when

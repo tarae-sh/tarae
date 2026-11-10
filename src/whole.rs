@@ -421,6 +421,14 @@ impl Fit {
         self
     }
 
+    /// Its whole in these colours, where it's cut (`Of.pieces`: byte ranges of the whole, all of it covered).
+    pub fn painted(mut self, pieces: Vec<(std::ops::Range<usize>, Style)>) -> Fit {
+        if let Some(of) = &mut self.cut {
+            of.pieces = pieces;
+        }
+        self
+    }
+
     /// `tail` after it.
     pub fn then(mut self, tail: &str) -> Fit {
         self.text.push_str(tail);
