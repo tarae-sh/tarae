@@ -4189,10 +4189,24 @@ pub fn repeats(line: &str, denied: &[Denial], root: &Path) -> Option<String> {
 
 /// The names every project keeps, whatever its languages: tarae's project config (its trusted settings and
 /// steps), direnv's, Claude's, the CI's and VS Code's settings and tasks, `.tarae.local.toml` (read as the
-/// user's own config, its preflight steps run unsandboxed: `config::personal`) and `.git`. The ecosystems'
-/// own — `build.rs`, `package.json`, `pom.xml` … — are their packs' (`packs::protect`).
-const CORE_NAMES: &[&str] =
-    &[".tarae.toml", ".envrc", ".claude", ".github", ".vscode", ".tarae.local.toml", ".git"];
+/// user's own config, its preflight steps run unsandboxed: `config::personal`), `.git`; JetBrains' `.idea`
+/// (`.vscode`'s counterpart: its startup tasks and run configurations run when the project opens), Claude
+/// Code's project servers (`.mcp.json`, started by a `claude` the user runs there) and `.gitmodules` (where
+/// `git submodule update` fetches from: a run could point a submodule at a repository of its choosing; its
+/// `update = !command` git takes only from `.git/config` since 2.24.1) — srt's list has these three. The
+/// ecosystems' own — `build.rs`, `package.json`, `pom.xml` … — are their packs' (`packs::protect`).
+const CORE_NAMES: &[&str] = &[
+    ".tarae.toml",
+    ".envrc",
+    ".claude",
+    ".github",
+    ".vscode",
+    ".tarae.local.toml",
+    ".git",
+    ".idea",
+    ".mcp.json",
+    ".gitmodules",
+];
 
 /// What Claude's runs never write in the project, wherever the name sits in it (a crate's `build.rs`, a
 /// folder's `.cargo`) — what runs later outside the sandbox (the user's builds, `:preflight`, the terminal,
@@ -12151,6 +12165,14 @@ mod tests {
             ".github/workflows/ci.yml",
             ".claude/settings.json",
             ".vscode/tasks.json",
+            ".idea/workspace.xml",
+            ".mcp.json",
+            ".gitmodules",
+            "web/.npmrc",
+            ".yarnrc",
+            ".yarnrc.yml",
+            "web/.yarn/releases/yarn-4.5.0.cjs",
+            "web/.pnpmfile.cjs",
             ".git",
             ".git/hooks/pre-commit",
             ".git/modules/target/hooks/pre-commit",
@@ -12178,6 +12200,9 @@ mod tests {
             "target/package/a-0.1.0/Cargo.toml",
             "node_modules/a/package.json",
             "web/node_modules/a/package.json",
+            // (yarn install's own: its Plug'n'Play loader and its packages, as `node_modules`)
+            ".pnp.cjs",
+            ".yarn/cache/a.zip",
             "gradle/libs.versions.toml",
             "src/main/java/org/gradle/Api.java",
             "wrapper/x",
@@ -12225,8 +12250,9 @@ mod tests {
     }
 
     /// The protected names (card model P1, now the packs'): every pack's `protect` with the core's — today's
-    /// names (what `llm.review-ask` held, `.tarae.local.toml` and `.git`) and the Java pack's, nothing more or
-    /// less; the core holds none of an ecosystem's.
+    /// names (what `llm.review-ask` held, `.tarae.local.toml` and `.git`), the Java pack's, and what makes
+    /// something run later that srt's list or the JavaScript tools have (key writes A: a run's `.npmrc` sets
+    /// the shell the user's own `npm run` starts), nothing more or less; the core holds none of an ecosystem's.
     #[test]
     fn the_protected_names_are_the_packs_and_the_cores() {
         let mut names: Vec<String> = protected_names().map(str::to_string).collect();
@@ -12248,6 +12274,16 @@ mod tests {
             ".git",
             "__pycache__",
         ];
+        let runs_later = [
+            ".npmrc",
+            ".yarnrc",
+            ".yarnrc.yml",
+            ".yarn/releases",
+            ".pnpmfile.cjs",
+            ".idea",
+            ".mcp.json",
+            ".gitmodules",
+        ];
         let java = [
             "build.gradle",
             "build.gradle.kts",
@@ -12261,12 +12297,13 @@ mod tests {
             "mvnw",
             ".mvn",
         ];
-        let mut want: Vec<String> = today.iter().chain(&java).map(|s| s.to_string()).collect();
+        let mut want: Vec<String> =
+            today.iter().chain(&runs_later).chain(&java).map(|s| s.to_string()).collect();
         names.sort();
         want.sort();
         assert_eq!(names, want);
         for ecosystem in
-            ["build.rs", "Cargo.toml", ".cargo", "package.json", "Makefile", "justfile", "pom.xml"]
+            ["build.rs", "Cargo.toml", ".cargo", "package.json", ".npmrc", "Makefile", "justfile", "pom.xml"]
         {
             assert!(!CORE_NAMES.contains(&ecosystem), "{ecosystem}: the core's");
         }
@@ -12332,7 +12369,7 @@ mod tests {
         // Every protected name said, the packs' and the core's
         assert!(protected_names().all(|n| r.contains(&format!(" {n},"))), "{r}");
         assert!(
-            r.contains(".tarae.local.toml, .git, anywhere in it (your edits change those)")
+            r.contains(".tarae.local.toml, .git, .idea, .mcp.json, .gitmodules, anywhere in it (your edits change those)")
                 && r.contains(
                     "(not cargo's caches — its crates and git checkouts — while the network is closed)"
                 ),
@@ -15107,8 +15144,21 @@ mod tests {
         }
         let t = profile_path(&crate::scratch::Scratch::new("sb-sealed").into_path());
         let root = t.join("project");
+        // (key writes A: what the user's own yarn, pnpm, JetBrains IDE, claude and git start — `.npmrc` is hidden as a
+        // key already, so it'd prove nothing here)
+        let runs_later = [
+            ".yarnrc",
+            ".yarnrc.yml",
+            ".yarn/releases/yarn-4.5.0.cjs",
+            ".pnpmfile.cjs",
+            ".idea/workspace.xml",
+            ".mcp.json",
+            ".gitmodules",
+        ];
         for (f, text) in
             [("Cargo.toml", "[package]\n"), (".git/HEAD", "ref\n"), ("sub/build.rs", "fn main() {}\n")]
+                .into_iter()
+                .chain(runs_later.map(|f| (f, "kept\n")))
         {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), text).unwrap();
@@ -15136,6 +15186,102 @@ mod tests {
             return std::fs::remove_dir_all(&t).unwrap_or_default();
         }
         assert!(confine.closed.is_empty(), "no folder closed: {:?}", confine.closed);
+        // (each sealed as the manifests are — written, appended to, moved, removed, linked, written through a symlink
+        // — and `.git/HEAD` beside them, a file in a sealed folder before key writes A; what's on disk after each step
+        // is seen from outside the run; every rule a name breaks is said, every name's, with its log. First, so a seal
+        // left writable fails here)
+        let mut broken = Vec::new();
+        for (f, bytes) in runs_later.map(|f| (f, "kept\n")).into_iter().chain([(".git/HEAD", "ref\n")]) {
+            use std::os::unix::fs::MetadataExt as _;
+            let m = std::fs::metadata(root.join(f)).unwrap();
+            let (dev, ino) = (m.dev(), m.ino());
+            // A second name's kind: a hard link shares the file's device and inode
+            let kind = |name: &str| match std::fs::symlink_metadata(root.join(name)) {
+                Err(_) => "absent".to_string(),
+                Ok(s) if s.file_type().is_symlink() => {
+                    format!("a symlink to {:?}", std::fs::read_link(root.join(name)).unwrap_or_default())
+                }
+                Ok(s) if (s.dev(), s.ino()) == (dev, ino) => format!("a HARD LINK, nlink {}", s.nlink()),
+                Ok(s) => format!(
+                    "{}, ino {}, nlink {}, bytes {:?}",
+                    if s.is_dir() { "a folder" } else { "a copy" },
+                    s.ino(),
+                    s.nlink(),
+                    std::fs::read_to_string(root.join(name)).unwrap_or_default()
+                ),
+            };
+            let seen = || {
+                let file = match std::fs::metadata(root.join(f)) {
+                    Ok(m) => format!(
+                        "ino {} (was {ino}), nlink {}, bytes {:?}",
+                        m.ino(),
+                        m.nlink(),
+                        std::fs::read_to_string(root.join(f)).unwrap_or_default()
+                    ),
+                    Err(e) => format!("GONE ({e})"),
+                };
+                let names = ["moved", "linked", "symlinked"].map(|n| format!("{n} {}", kind(n))).join("; ");
+                format!("{f}: {file}; {names}")
+            };
+            // (the symlink planted from outside too, so the write through it is tried whether or not a run may make
+            // one — `ln -sf` says which)
+            let mut log = String::new();
+            for script in [
+                format!("echo x > {f}; echo x >> {f}; mv {f} moved"),
+                format!("rm -f {f}; ln {f} linked"),
+                format!("ln -sf {f} symlinked; echo x > symlinked; echo x >> symlinked"),
+                "rm -rf .idea .yarn".to_string(),
+            ] {
+                if script.starts_with("ln -s") {
+                    std::os::unix::fs::symlink(f, root.join("symlinked")).unwrap();
+                }
+                let (_, out, err) = sh_confined(&c, &root, &format!("{script}; echo \"exit $?\""));
+                let said = format!("{} {}", out.trim(), err.trim().replace('\n', " | "));
+                log.push_str(&format!("{script}\n    said: {said}\n    after: {}\n", seen()));
+            }
+            let mut broke = Vec::new();
+            // The seal's point: the file the user's own tool later runs is the one that was there — its inode and
+            // its bytes, after writes to it and through a symlink to it
+            let m = std::fs::metadata(root.join(f));
+            let now = std::fs::read_to_string(root.join(f)).unwrap_or_default();
+            if !m.as_ref().is_ok_and(|m| m.ino() == ino) || now != bytes {
+                broke.push("replaced or changed".to_string());
+            }
+            // No second name shares its inode: a hard link outside the seal's mount would be a writable way to the
+            // same file. `ln` makes only hard links, EXDEV across the seal — no `linked` of any kind
+            if let Some(n) = m.as_ref().ok().map(|m| m.nlink()).filter(|n| *n != 1) {
+                broke.push(format!("nlink {n}: a second name for it"));
+            }
+            if std::fs::symlink_metadata(root.join("linked")).is_ok() {
+                broke.push("linked exists".to_string());
+            }
+            // A copy only out of a sealed folder (`.idea`'s, `.yarn/releases`, `.git`): the rename crosses the folder's
+            // own mount, EXDEV, so mv copies and its unlink is refused — a file of its own holding what a run reads
+            // anyway. At the root the name is its own mount point: EBUSY, nothing copied
+            if let Ok(s) = std::fs::symlink_metadata(root.join("moved")) {
+                if (s.dev(), s.ino()) == (dev, ino) {
+                    broke.push("moved shares the original's inode".to_string());
+                } else if !s.is_file() {
+                    broke.push("moved isn't a file".to_string());
+                }
+                if !f.contains('/') {
+                    broke.push("moved at the root (the name its own mount point: never copied)".to_string());
+                }
+            }
+            // A symlink to it is a new name the root may take: harmless as the writes through it are refused —
+            // tried above, the bytes unchanged
+            let s = std::fs::symlink_metadata(root.join("symlinked"));
+            if !s.is_ok_and(|s| s.file_type().is_symlink()) {
+                broke.push("symlinked isn't a symlink".to_string());
+            }
+            if !broke.is_empty() {
+                broken.push(format!("{f}: {}\n{log}", broke.join("; ")));
+            }
+            for name in ["moved", "linked", "symlinked"] {
+                std::fs::remove_file(root.join(name)).ok();
+            }
+        }
+        assert!(broken.is_empty(), "{}", broken.join("\n"));
         for (refused, file) in [
             ("echo planted > Cargo.toml", "Cargo.toml"),
             ("chmod 777 Cargo.toml", "Cargo.toml"),

@@ -132,8 +132,10 @@ Not kept:
 A file that runs or configures a build *without you reading it* is a way out of the sandbox: the next build you
 run, outside it, runs it. So these names are never made, changed, moved, removed or hard-linked by a run, anywhere
 in the project, in any case: `.git`, `.tarae.toml`, `.tarae.local.toml`, `.envrc`, `.github`, `.claude`, `.vscode`,
-and every language pack's `protect` list (`build.rs`, `Cargo.toml`, `.cargo`, `Makefile`, `package.json`,
-`pom.xml`, `gradlew`, `__pycache__` …), plus `llm.sandbox-protect`. Below a tool's output folder (`target/`,
+`.idea`, `.mcp.json`, `.gitmodules`, and every language pack's `protect` list (`build.rs`, `Cargo.toml`, `.cargo`,
+`Makefile`, `package.json`, `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.yarn/releases`, `.pnpmfile.cjs`, `pom.xml`, `gradlew`, `__pycache__`
+…), plus `llm.sandbox-protect`. `.npmrc` is named like a key too: a run neither reads it nor, by this, changes it —
+its `script-shell` would run in your own `npm run`. Below a tool's output folder (`target/`,
 `node_modules/`, `.venv/`) they're output and written as usual.
 
 Kept:

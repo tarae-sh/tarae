@@ -474,8 +474,10 @@ fn code_a_run_changed_below_tools_output_is_named() {
 
 /// The protected names a run made where none was — what Landlock can't refuse: a manifest in a new folder,
 /// a `.cargo` folder in `src/`, an ignored `.envrc` (a tree hasn't it; the ignored entries before and after
-/// have) — not one below `target/` (a tool's output), not a file of another name, not a change to a file
-/// that was there, and not what the editor wrote meanwhile (Claude's reviewed Edit).
+/// have), a new `.npmrc`, `.mcp.json` and yarn release (key writes A: what the user's own npm, claude and yarn
+/// start) — not one
+/// below `target/` (a tool's output), not a file of another name, not a change to a file that was there, and
+/// not what the editor wrote meanwhile (Claude's reviewed Edit).
 #[test]
 fn protected_names_a_run_made_are_found() {
     let (_s, dir) = repo("protected");
@@ -485,6 +487,10 @@ fn protected_names_a_run_made_are_found() {
         ("sub/Cargo.toml", "[package]\n"),
         ("src/.cargo/config.toml", "[build]\n"),
         (".envrc", "export X=1\n"),
+        ("web/.npmrc", "script-shell=./planted\n"),
+        (".mcp.json", "{}\n"),
+        (".yarn/releases/yarn-4.5.0.cjs", "planted\n"),
+        (".pnp.cjs", "installed\n"),
         ("target/pkg/Cargo.toml", "[package]\n"),
         ("src/lib.rs", "fn f() {}\n"),
         ("src/a.txt", "one\nchanged\n"),
@@ -495,7 +501,17 @@ fn protected_names_a_run_made_are_found() {
     }
     before.wrote.push(dir.join("edited/build.rs"));
     let found = paths(&before.since().unwrap().protected);
-    assert_eq!(found, [".envrc", "src/.cargo/config.toml", "sub/Cargo.toml"]);
+    assert_eq!(
+        found,
+        [
+            ".envrc",
+            ".mcp.json",
+            ".yarn/releases/yarn-4.5.0.cjs",
+            "src/.cargo/config.toml",
+            "sub/Cargo.toml",
+            "web/.npmrc"
+        ]
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

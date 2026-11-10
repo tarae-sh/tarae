@@ -1,8 +1,22 @@
 # JavaScript (and JSX): TypeScript's language server (the typescript pack's); every script in package.json.
 
-# What runs later outside Claude's sandbox, in every project (`packs::protect`): the scripts and lifecycle
-# hooks npm runs (`postinstall`…), and the dependencies a build fetches
-protect = ["package.json"]
+# What runs later outside Claude's sandbox, in every project (`packs::protect`), each read by the user's own npm,
+# yarn or pnpm when they next install or run a script:
+protect = [
+    # the scripts and lifecycle hooks npm runs (`postinstall`…), and the dependencies a build fetches
+    "package.json",
+    # npm's project settings: `script-shell` is the shell every script runs in, the registry where packages come from
+    ".npmrc",
+    # yarn 1's settings (`yarn-path` runs that file in yarn's place) and yarn 2 on's (`yarnPath`, alike)
+    ".yarnrc",
+    ".yarnrc.yml",
+    # the yarn `yarnPath` names, by `yarn set version`'s place: the file that runs in yarn's place. (Not
+    # `.pnp.cjs`, though yarn runs it too: it's `yarn install`'s own output, as `node_modules` is, which a run's
+    # install writes by design — protected, every Plug'n'Play project's install would be refused in a run)
+    ".yarn/releases",
+    # pnpm's hooks, run at every install (`readPackage`, `afterAllResolved`)
+    ".pnpmfile.cjs",
+]
 # What npm installs
 outputs = ["node_modules"]
 # What a first `npm install` makes beside package.json: its packages, and the lock file it writes in place (an

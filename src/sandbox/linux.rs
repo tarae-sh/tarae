@@ -3548,6 +3548,9 @@ mod tests {
     /// For real (the user's decision A, 2026-10-05): in a folder holding a protected name a run may remove a
     /// folder it emptied — `rm -rf target`, and cargo's own `cargo clean` — but `Cargo.toml`, `package.json`
     /// and `.git` stay as they are: not written, truncated, removed, renamed over or away; no new file there.
+    /// So do what the user's own yarn, pnpm, JetBrains IDE, claude and git start (key writes A), and no new
+    /// `.npmrc` is made there — but in a folder holding none it is (Landlock only grants: the snapshot finds it
+    /// after the run, `protected_names_a_run_made_are_found`).
     #[test]
     fn a_run_removes_folders_beside_protected_names_and_nothing_protected() {
         let Some(_) = kernel_abi("a_run_removes_folders_beside_protected_names_and_nothing_protected") else {
@@ -3558,6 +3561,19 @@ mod tests {
         let manifest = "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n";
         std::fs::write(s.root.join("Cargo.toml"), manifest).unwrap();
         std::fs::write(s.root.join("package.json"), "{}\n").unwrap();
+        let runs_later = [
+            ".yarnrc",
+            ".yarnrc.yml",
+            ".yarn/releases/yarn-4.5.0.cjs",
+            ".pnpmfile.cjs",
+            ".idea/workspace.xml",
+            ".mcp.json",
+            ".gitmodules",
+        ];
+        for f in runs_later {
+            std::fs::create_dir_all(s.root.join(f).parent().unwrap()).unwrap();
+            std::fs::write(s.root.join(f), "kept\n").unwrap();
+        }
         for f in ["target/debug/x", "sub/target/y", "build/z"] {
             std::fs::create_dir_all(s.root.join(f).parent().unwrap()).unwrap();
             std::fs::write(s.root.join(f), "o").unwrap();
@@ -3578,6 +3594,17 @@ mod tests {
             t remove-git 'rm -rf "$R/.git"'
             t new-file-at-root 'printf x > "$R/new.txt"'
             t new-build-rs-at-root 'printf "fn main() {}\n" > "$R/build.rs"'
+            t new-npmrc-at-root 'printf "script-shell=x\n" > "$R/.npmrc"'
+            t new-npmrc-in-a-folder-with-none 'printf "script-shell=x\n" > "$R/src/.npmrc"'
+            for f in .yarnrc .yarnrc.yml .yarn/releases/yarn-4.5.0.cjs .pnpmfile.cjs .idea/workspace.xml \
+                .mcp.json .gitmodules; do
+                t "write-$f" "printf x > '$R/$f'"
+                t "append-$f" "printf x >> '$R/$f'"
+                t "remove-$f" "rm -f '$R/$f'"
+                t "rename-$f" "mv '$R/$f' '$R/src/moved'"
+                t "link-$f" "ln '$R/$f' '$R/src/linked'"
+            done
+            t remove-idea 'rm -rf "$R/.idea"'
         "#;
         let mut cmd = crate::sandbox::command(Some(&p), "sh", &["-c".into(), script.into()]);
         cmd.env("R", &s.root).env_remove("CARGO_TARGET_DIR");
@@ -3585,7 +3612,7 @@ mod tests {
         let mut out = String::new();
         io::Read::read_to_string(&mut spawned.stdout.unwrap(), &mut out).unwrap();
         crate::spawn::wait(spawned.pid).unwrap();
-        let got: Vec<&str> = out.lines().collect();
+        let got: Vec<String> = out.lines().map(str::to_string).collect();
         let cargo = match std::process::Command::new("cargo").arg("--version").output() {
             Ok(o) if o.status.success() => "cargo-clean ok",
             _ => "cargo-clean no",
@@ -3604,8 +3631,18 @@ mod tests {
             "remove-git no",
             "new-file-at-root no",
             "new-build-rs-at-root no",
+            "new-npmrc-at-root no",
+            "new-npmrc-in-a-folder-with-none ok",
         ];
+        let mut want: Vec<String> = want.iter().map(|w| w.to_string()).collect();
+        for f in runs_later {
+            want.extend(["write", "append", "remove", "rename", "link"].map(|op| format!("{op}-{f} no")));
+        }
+        want.push("remove-idea no".into());
         assert_eq!(got, want);
+        for f in runs_later {
+            assert_eq!(std::fs::read_to_string(s.root.join(f)).unwrap(), "kept\n", "{f}");
+        }
         assert!(!s.root.join("target").exists() && !s.root.join("build").exists(), "removed");
         assert_eq!(std::fs::read_to_string(s.root.join("Cargo.toml")).unwrap(), manifest);
         assert_eq!(std::fs::read_to_string(s.root.join("package.json")).unwrap(), "{}\n");

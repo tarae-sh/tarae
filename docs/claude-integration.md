@@ -1229,11 +1229,14 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
 - It can write in the project, except the paths in `llm.sandbox-protect` and what runs later outside the
   sandbox or sets how things run, wherever it sits in the project and in any case. Every language pack lists
   its own (`protect` in its `pack.toml`), and every pack's apply in every project, whatever its languages (a
-  Rust project can hold a `pom.xml`): Rust's `build.rs`, `Cargo.toml` and `.cargo`; npm's `package.json`;
+  Rust project can hold a `pom.xml`): Rust's `build.rs`, `Cargo.toml` and `.cargo`; JavaScript's `package.json`,
+  `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.yarn/releases` and `.pnpmfile.cjs` (the shell npm's scripts run in,
+  the file yarn runs in its own place, pnpm's install hooks);
   make's `Makefile` and `GNUmakefile`, and just's `justfile` and `.justfile`; Java's `build.gradle(.kts)`,
   `settings.gradle(.kts)`, `gradle.properties`, `gradlew`, `gradle/wrapper`, `buildSrc`, `pom.xml`, `mvnw` and
   `.mvn` (your builds run them, and jdtls when it imports the project). tarae adds `.git`, `.tarae.toml`,
-  `.tarae.local.toml`, `.envrc`, `.github`, `.claude` and `.vscode`. Nothing a project or your config sets
+  `.tarae.local.toml`, `.envrc`, `.github`, `.claude`, `.vscode`, `.idea`, `.mcp.json` and `.gitmodules`.
+  Nothing a project or your config sets
   takes one out. A command can't make, change, move, remove or hard-link them; Claude is told which write was
   kept and to change it with Edit, which you review. Inside `target/`, `node_modules/`, `.venv/` and
   `__pycache__/` (the language packs' `outputs`) those names are tools' output (cmake's `Makefile`s, each
