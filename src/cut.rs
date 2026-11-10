@@ -4,9 +4,11 @@
 // What draws slices text with `cut::slice` (#470: a slice off a character's boundary panicked the main thread)
 #![cfg_attr(not(test), deny(clippy::string_slice))]
 
+use std::borrow::Cow;
 use std::ops::{Bound, RangeBounds};
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// `s[range]` for what draws: an end off a character's boundary (or past the end) fails a test or a simulation at
 /// once, and in a release build snaps to the boundary before it — a character drawn more or less, never the session
@@ -44,30 +46,58 @@ fn snapped(s: &str, from: usize, to: usize) -> std::ops::Range<usize> {
     s.floor_char_boundary(from).min(to)..to
 }
 
+/// `s` as a cut shows it, each character in the cells `width()` gives it. A control character — which a terminal
+/// acts on: a tab to its next stop, a line's end down a row, an escape eating what follows — is one cell (#478): a
+/// space for a tab or a line's end (a row's lines one paragraph, as `fit_in_hand` and the chat's document join them;
+/// a row has no tab stops of its own), `�` for the rest (as the code view draws one). A `\r\n` is one space.
+pub fn drawn(s: &str) -> Cow<'_, str> {
+    if !s.chars().any(char::is_control) {
+        return Cow::Borrowed(s);
+    }
+    // (a control character is a character of its own — `\r\n` the one pair)
+    let mut out = String::with_capacity(s.len());
+    for g in s.graphemes(true) {
+        match g.chars().next() {
+            Some(c) if c.is_control() => out.push(if c.is_whitespace() { ' ' } else { '\u{fffd}' }),
+            _ => out.push_str(g),
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// The bytes of `s`'s start that fit in `width` cells: whole characters (grapheme clusters), each in the cells
+/// `width()` gives it — a control character one (`drawn`), an emoji's sequence two — so a cut is never wider than its
+/// room by the measure that lays it out (#478: a tab or a line's end was no cell here and one to `width()`).
+fn fit_len(s: &str, width: usize) -> usize {
+    // (ASCII up to the byte after the room, no `\r` — `\r\n` is one cell — a cell a byte, and a boundary there)
+    let head = &s.as_bytes()[..s.len().min(width.saturating_add(1))];
+    if head.is_ascii() && !head.contains(&b'\r') {
+        return s.len().min(width);
+    }
+    let mut w = 0;
+    for (i, g) in s.grapheme_indices(true) {
+        w += g.width();
+        if w > width {
+            return i;
+        }
+    }
+    s.len()
+}
+
 /// The start of `s` that fits in `width` cells — bare: for code and output lines.
 pub fn fit(s: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut w = 0;
-    for ch in s.chars() {
-        let cw = ch.width().unwrap_or(0);
-        if w + cw > width {
-            break;
-        }
-        w += cw;
-        out.push(ch);
-    }
-    out
+    drawn(slice(s, ..fit_len(s, width))).into_owned()
 }
 
 /// Truncate to width, ending with '…' if cut — nothing when there's no room at all (the `…` is a cell too).
 pub fn fit_ellipsis(s: &str, width: usize) -> String {
     if s.width() <= width {
-        return s.to_string();
+        return drawn(s).into_owned();
     }
     if width == 0 {
         return String::new();
     }
-    let mut out = fit(s, width.saturating_sub(1));
+    let mut out = fit(s, width - 1);
     out.push('…');
     out
 }
@@ -76,22 +106,20 @@ pub fn fit_ellipsis(s: &str, width: usize) -> String {
 /// lone `…` would still take a cell).
 pub fn fit_left(s: &str, width: usize) -> String {
     if s.width() <= width {
-        return s.to_string();
+        return drawn(s).into_owned();
     }
     if width == 0 {
         return String::new();
     }
-    let mut w = 1;
-    let mut tail: Vec<char> = Vec::new();
-    for ch in s.chars().rev() {
-        let cw = ch.width().unwrap_or(0);
-        if w + cw > width {
+    let (mut w, mut from) = (1, s.len());
+    for (i, g) in s.grapheme_indices(true).rev() {
+        w += g.width();
+        if w > width {
             break;
         }
-        w += cw;
-        tail.push(ch);
+        from = i;
     }
-    std::iter::once('…').chain(tail.into_iter().rev()).collect()
+    format!("…{}", drawn(slice(s, from..)))
 }
 
 /// A place (a folder's path) that doesn't fit, folded from its start at a folder's boundary where one is left —
@@ -114,7 +142,7 @@ pub fn fit_place(s: &str, width: usize) -> String {
 pub fn fit_place_marked(s: &str, marks: &[u32], width: usize) -> (String, Vec<u32>) {
     let cut = fit_place(s, width);
     let marks = match cut.strip_prefix('…') {
-        _ if cut == s => marks.to_vec(),
+        _ if cut == drawn(s) => marks.to_vec(),
         Some(rest) => {
             let gone = (s.chars().count() - rest.chars().count()) as u32;
             marks.iter().filter(|&&m| m >= gone).map(|&m| m - gone + 1).collect()
@@ -169,13 +197,15 @@ pub fn fit_in_hand_at(s: &str, width: usize) -> Vec<(usize, Wrapped)> {
         let mut space = !rows.is_empty();
         let mut rest = line;
         while !rest.is_empty() {
-            // (the start that fits; past it, back to the row's last space — a word isn't cut while one is there)
-            let fits = fit(rest, width).len().max(rest.chars().next().map_or(0, char::len_utf8));
+            // (the start that fits, a character at least; past it, back to the row's last space — a word isn't cut
+            // while one is there)
+            let first = |s: &str| s.graphemes(true).next().map_or(0, str::len);
+            let fits = fit_len(rest, width).max(first(rest));
             if fits == rest.len() {
                 rows.push((at, Wrapped { text: rest.to_string(), space }));
                 break;
             }
-            let next = fits + slice(rest, fits..).chars().next().map_or(0, char::len_utf8);
+            let next = fits + first(slice(rest, fits..));
             // (at the first of a run of spaces: the row ends on a word, the rest of the run starts the next — the
             // text again, whatever the width; a space is one byte, so past it is a boundary)
             let word = slice(rest, ..next).rfind(' ').map(|sp| slice(rest, ..sp).trim_end_matches(' ').len());
@@ -330,6 +360,92 @@ pub(crate) mod tests {
                 assert_eq!(fit_in_hand(&s, width, false, true), plain, "{s:?} at {width}");
             }
         }
+    }
+
+    /// Texts to cut, the same every run: pieces whose cells a sum of their chars' misses — control characters (a tab,
+    /// line ends, an escape, a NUL, DEL, NEL), emoji sequences (a heart with its presentation, a keycap, a family, a
+    /// skin tone, a flag), a text presentation — beside wide, half-width and combining characters and paths, a third
+    /// of them then mutated (`mutate::text`).
+    fn cut_inputs(n: usize) -> Vec<String> {
+        const PIECES: &[&str] = &[
+            "one",
+            "two words",
+            "—",
+            "中文字",
+            "실패",
+            "ﾊﾝ",
+            "e\u{301}",
+            "\t",
+            "\n",
+            "\r\n",
+            "\r",
+            "\x1b[31m",
+            "\0",
+            "\x7f",
+            "\u{85}",
+            "❤\u{fe0f}",
+            "1\u{fe0f}\u{20e3}",
+            "👨\u{200d}👩\u{200d}👧",
+            "👍🏽",
+            "🇰🇷",
+            "⌚\u{fe0e}",
+            "\u{3000}",
+            "src/editor/",
+            "/",
+            "abcdefghijkl",
+            " ",
+        ];
+        let mut rng = crate::mutate::Rng(0x478_2026_1110);
+        (0..n)
+            .map(|_| {
+                let mut s: String = (0..1 + rng.below(10)).map(|_| *rng.pick(PIECES)).collect();
+                if rng.below(3) == 0 {
+                    crate::mutate::text(&mut rng, &mut s, PIECES);
+                }
+                s
+            })
+            .collect()
+    }
+
+    /// #478's property, over a few thousand texts at every width: a cut is never wider than its room by `width()` —
+    /// `fit`, `fit_ellipsis`, `fit_left`, `fit_place` and `fit_in_hand`'s folded row — and it draws as it measures, no
+    /// control character left in it; `drawn` keeps a text's measure.
+    #[test]
+    fn a_cut_is_never_wider_than_its_room() {
+        type Cut = fn(&str, usize) -> String;
+        let cuts: [(&str, Cut); 6] = [
+            ("fit", fit),
+            ("fit_ellipsis", fit_ellipsis),
+            ("fit_left", fit_left),
+            ("fit_place", fit_place),
+            ("fit_in_hand", |s, w| fit_in_hand(s, w, false, false).remove(0).text),
+            ("fit_in_hand keep_end", |s, w| fit_in_hand(s, w, true, false).remove(0).text),
+        ];
+        for s in cut_inputs(2000) {
+            for width in WIDTHS {
+                for (name, cut) in cuts {
+                    let c = cut(&s, width);
+                    // (a folded row takes a cell at least)
+                    let room = if name.starts_with("fit_in_hand") { width.max(1) } else { width };
+                    assert!(c.width() <= room, "{name}({s:?}, {width}) = {c:?}: {} cells", c.width());
+                    assert!(!c.chars().any(char::is_control), "{name}({s:?}, {width}) = {c:?}");
+                }
+            }
+            assert_eq!(drawn(&s).width(), s.width(), "{s:?} drawn {:?}", drawn(&s));
+        }
+    }
+
+    /// A control character is a cell to the measure and to the cut alike, drawn as one: a tab or a line's end a space,
+    /// `\r\n` one, the rest `�` — and an emoji's sequence is two cells, cut whole or not at all.
+    #[test]
+    fn a_control_character_is_one_cell_drawn_as_one() {
+        assert_eq!(drawn("a\tb\r\nc\nd\x1be"), "a b c d\u{fffd}e");
+        assert_eq!(("a\tb".width(), fit("a\tb", 2), fit("a\tb", 3)), (3, "a ".into(), "a b".into()));
+        assert_eq!(fit_ellipsis("one\ntwo", 7), "one two");
+        assert_eq!(fit_ellipsis("one\ntwo", 6), "one t…");
+        assert_eq!(fit_left("one\ttwo", 5), "… two");
+        assert_eq!((fit("❤\u{fe0f}x", 1), fit("❤\u{fe0f}x", 2)), (String::new(), "❤\u{fe0f}".into()));
+        assert_eq!(fit("1\u{fe0f}\u{20e3}", 1), "");
     }
 
     /// `slice` at boundaries is the slice; off one, a test fails at once — and a release build snaps both ends to the

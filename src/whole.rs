@@ -471,17 +471,18 @@ impl Fit {
     /// after it (its tail), so the card says all the cut cells stood for (U2's third review: a lead cut into kept the old
     /// cut's start, inside the new `…`, and was placed nowhere).
     fn again(&self, shown: String) -> Fit {
-        if shown == self.text {
-            return self.clone();
+        // (its text as the cut draws it: a tab or a line's end a space — not cut for that)
+        let text = crate::cut::drawn(&self.text);
+        if shown == text {
+            return Fit { text: shown, cut: self.cut.clone() };
         }
         let Some(was) = &self.cut else { return of(shown, &self.text) };
-        let Some(kept) = shown.strip_suffix('…').filter(|k| self.text.starts_with(k)) else {
+        let Some(kept) = shown.strip_suffix('…').filter(|k| text.starts_with(k)) else {
             // (nothing left to draw: no cut to see)
             return Fit::plain(shown);
         };
         let from = was.from.min(kept.len());
-        let (lead, tail) =
-            (self.text.get(from..was.from).unwrap_or(""), self.text.get(was.to..).unwrap_or(""));
+        let (lead, tail) = (text.get(from..was.from).unwrap_or(""), text.get(was.to..).unwrap_or(""));
         let whole = format!("{lead}{}{tail}", was.whole);
         let pieces = was.pieces.iter().map(|(r, s)| (r.start + lead.len()..r.end + lead.len(), *s)).collect();
         Fit { cut: Some(Of { from, to: shown.len(), whole, pieces, key: was.key }), text: shown }
@@ -535,9 +536,10 @@ pub fn fit_own(text: &str, width: usize) -> String {
     crate::cut::fit_ellipsis(text, width)
 }
 
-/// `shown`, a cut of `whole` made another way (a list row's middle) — or `whole` itself, not cut.
+/// `shown`, a cut of `whole` made another way (a list row's middle) — or `whole` itself, not cut: all of it drawn, a
+/// tab or a line's end a space (`cut::drawn`).
 pub(crate) fn of(shown: String, whole: &str) -> Fit {
-    let cut = (shown != whole && !shown.is_empty()).then(|| Of {
+    let cut = (shown != crate::cut::drawn(whole) && !shown.is_empty()).then(|| Of {
         from: 0,
         to: shown.len(),
         whole: whole.into(),

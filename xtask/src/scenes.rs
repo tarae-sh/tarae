@@ -7842,6 +7842,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "home-docs",
     "readlast",
     "cuthand",
+    "cutlines",
     "cutcode",
     "chatnotes",
     "startone",
@@ -8019,6 +8020,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "home-docs" => turn.home_docs()?,
             "readlast" => turn.read_last()?,
             "cuthand" => turn.cut_hand()?,
+            "cutlines" => turn.cut_lines()?,
             "cutcode" => turn.cut_code()?,
             "chatnotes" => turn.chat_notes()?,
             "startone" | "startthree" | "startlong" | "startthreewake" => {
@@ -9191,6 +9193,28 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
                 json!({"type": "tool_use", "id": id, "name": format!("mcp__tarae__{name}"), "input": args});
             self.line(json!({"type": "assistant", "message": {"id": format!("mc{n}"), "content": [tool]}}))?;
             let result = json!({"type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": said}]});
+            self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
+        }
+        self.words("That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #478's turn: targets of several lines, tabs in them — a run's command (its words joined), a search's pattern and
+    /// a git's words (as said) — each a tool row cut to one row, then a few words and the turn's end.
+    fn cut_lines(&mut self) -> io::Result<()> {
+        let calls = [
+            ("run", json!({"command": "for f in data/*.tsv; do\n\tcut -f2 \"$f\" | sort | uniq -c\ndone"})),
+            ("search", json!({"pattern": "Seoul\tKorea\n\\w+\tKorea", "multiline": true, "path": "data"})),
+            ("git", json!({"args": ["log", "--format=%h\t%s", "--grep=one\ntwo"]})),
+        ];
+        self.words("I counted the second column of each file.")?;
+        self.text("\n\n")?;
+        for (n, (name, input)) in calls.into_iter().enumerate() {
+            let id = format!("c{n}");
+            let tool =
+                json!({"type": "tool_use", "id": id, "name": format!("mcp__tarae__{name}"), "input": input});
+            self.line(json!({"type": "assistant", "message": {"id": format!("mc{n}"), "content": [tool]}}))?;
+            let result = json!({"type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": "exit 0"}]});
             self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
         }
         self.words("That is all.")?;

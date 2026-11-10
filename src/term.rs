@@ -2573,10 +2573,13 @@ fn slot_header(
     // As wide as they come; too wide, the ones behind shorten first, then the one in front
     let badge_w = |t: &crate::chrome::Tab| badge_glyph(t, editor, ui).map_or(0, |(g, _)| 1 + g.width());
     let labels = |behind: usize, ahead: usize| -> Vec<Fit> {
-        // (a task's command has its own card — `run_card`)
+        // (a task's command has its own card — `run_card`; of several lines, its first and `…`, as its row says it)
         let cut = |t: &crate::chrome::Tab, n: usize| match n {
             0 => Fit::default(),
-            _ if t.slot == crate::sizes::Slot::Task => crate::whole::fit_own(&t.label, n).into(),
+            _ if t.slot == crate::sizes::Slot::Task => {
+                let row = crate::cut::fit_in_hand(&t.label, usize::MAX, false, false).remove(0).text;
+                crate::whole::fit_own(&row, n).into()
+            }
             _ => crate::whole::fit(&t.label, n),
         };
         tabs.iter().map(|t| cut(t, if Some(t.slot) == front { ahead } else { behind })).collect()
@@ -7134,7 +7137,7 @@ fn print_lit_painted(
     hits: &[(usize, usize)],
     painted: &[(std::ops::Range<usize>, crossterm::style::Color)],
 ) -> io::Result<()> {
-    let kept = if t == text { t.len() } else { t.len().saturating_sub('…'.len_utf8()) };
+    let kept = if t == crate::cut::drawn(text) { t.len() } else { t.len().saturating_sub('…'.len_utf8()) };
     let mut cuts: Vec<usize> = [0, kept].into_iter().chain(hits.iter().flat_map(|h| [h.0, h.1])).collect();
     cuts.extend(painted.iter().flat_map(|p| [p.0.start, p.0.end]));
     cuts.retain(|&c| c <= kept && t.is_char_boundary(c));
@@ -21764,8 +21767,6 @@ fn trail_row_at(
     let (mut row, mark) = trail_spans(look, ran, knot, w, slim, st);
     let mut tail = 0;
     if stamped {
-        // (a control character is no cell to `cut::fit` and one to `width`: a target of several lines measures wider
-        // than its room)
         let used: usize = row.iter().map(|s| s.text.width()).sum();
         row.push(sp(" ".repeat(end.saturating_sub(stamps_w + used)), st.faint));
         row.extend(stamps.iter().cloned());
