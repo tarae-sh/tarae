@@ -10,6 +10,7 @@
 //! question, while the transcript's cursor is where it was asked, saying the place it was asked of. The underlines
 //! (step 5b): the project changing (`total` defined or not, the files' listing moved) while a batch is asked or in
 //! flight — a name is kept as found only as the stand-in finds it for the files as they are, never an answer from before.
+//! Once all's quiet (#389's locals): no map stale or behind its buffer, the answer's locals underlined.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -23,8 +24,9 @@ use crate::key::{Code, Key};
 
 const NAME: &str = "a_name_in_the_chat_is_asked_only_where_it_stands";
 
-/// (16: a hover asked, the cursor put elsewhere, then its answer lands — never shown)
-const SEEDS: &[u64] = &[0, 1, 2, 3, 4, 5, 16];
+/// (16: a hover asked, the cursor put elsewhere, then its answer lands — never shown; 99: the file edited while a map's
+/// search is under way, that search landing last — behind its buffer)
+const SEEDS: &[u64] = &[0, 1, 2, 3, 4, 5, 16, 99];
 
 const INPUTS: usize = 60;
 
@@ -54,6 +56,8 @@ struct World {
     named: Vec<u64>,
     /// Whether the project defines `total` now (the stand-in finds it by name).
     defined: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The frames drawn as of the last input that may leave a map behind its buffer or stale (an edit, a key's question).
+    owed: Option<u64>,
 }
 
 fn run(choices: Choices) -> Vec<String> {
@@ -63,6 +67,7 @@ fn run(choices: Choices) -> Vec<String> {
     let world = RefCell::new(World { defined, ..World::default() });
     let check = |ed: &Editor| held(ed, id, &mut world.borrow_mut());
     sim.walk(&mut ed, INPUTS, |sim, ed| step(sim, ed, id, &mut world.borrow_mut()), check, print);
+    sim.at_end(|| settled(&ed, &world.borrow()));
     let trace = sim.trace().to_vec();
     drop(sim);
     drop(ed);
@@ -156,7 +161,16 @@ fn step(sim: &mut Sim, ed: &mut Editor, file: crate::document::DocId, w: &mut Wo
             };
             d.apply(&tx);
             w.added = !w.added;
-            format!("a line {} at the file's top", if w.added { "added" } else { "taken" })
+            w.owed = Some(ed.frames);
+            let said = format!("a line {} at the file's top", if w.added { "added" } else { "taken" });
+            // (or as a key typed there does: its event ends starting the parse, then its frame — a map's search
+            // waiting for the parse, or under way already, which this edit marks nothing of)
+            if c.below(2) == 0 {
+                return said;
+            }
+            ed.schedule_parses();
+            crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+            format!("{said}, its key's frame")
         }
         2 => {
             let at = *c.pick(AT);
@@ -167,11 +181,14 @@ fn step(sim: &mut Sim, ed: &mut Editor, file: crate::document::DocId, w: &mut Wo
             d.set_selection(crate::selection::Selection::point(k + 1));
             format!("the cursor on {at}")
         }
+        // (a line moved since the map: said, every map marked stale)
         3 => {
+            w.owed = Some(ed.frames);
             keys(ed, "gd");
             "gd".into()
         }
         4 => {
+            w.owed = Some(ed.frames);
             keys(ed, " k");
             "space k".into()
         }
@@ -259,6 +276,28 @@ fn held(ed: &Editor, file: crate::document::DocId, w: &mut World) -> Result<(), 
                     "a card in the chat ({card:.80}) for the newest question {last:?}, the cursor at {head:?}"
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Once all's quiet, a frame drawn since the last input that may leave a map behind (the scenario's keys draw none of
+/// their own): no map stale or behind its buffer — a search that landed behind asked the frame that makes it again —,
+/// the answer's locals underlined as before the file was edited.
+fn settled(ed: &Editor, w: &World) -> Result<(), String> {
+    if w.owed == Some(ed.frames) {
+        return Ok(());
+    }
+    for (i, stale, behind) in crate::chatlink::maps(ed) {
+        if stale || behind {
+            let how = if stale { "stale" } else { "behind its buffer" };
+            return Err(format!("message {i}'s map {how} once all's quiet"));
+        }
+    }
+    let c = ed.workspace.claude.chat.as_ref().ok_or("no chat")?;
+    for word in ["total", "a"] {
+        if !crate::chatlink::name_underlined(c, Some(1), &std::sync::Arc::from(word)) {
+            return Err(format!("`{word}`, a local, not underlined once all's quiet"));
         }
     }
     Ok(())

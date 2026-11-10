@@ -23237,11 +23237,7 @@ fn underline_refs<'a>(
         .collect();
     let names: Vec<std::ops::Range<usize>> = (r.names.iter())
         .filter(|n| !refs.iter().any(|(b, _)| b.start < n.bytes.end && n.bytes.start < b.end))
-        .filter(|n| match msg.map(|i| crate::chatlink::local_underlined(c, i, &n.word)) {
-            Some(Some(true)) => true,
-            Some(None) => false,
-            _ => c.links.underlined(&n.word),
-        })
+        .filter(|n| crate::chatlink::name_underlined(c, msg, &n.word))
         .map(|n| n.bytes.clone())
         .collect();
     if refs.is_empty() && ids.is_empty() && names.is_empty() {

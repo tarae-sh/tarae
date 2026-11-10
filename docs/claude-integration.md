@@ -608,7 +608,8 @@ there. Where the name stands decides what's asked, exact first:
   of those defines it, in the files its turn read (those whose text holds the name, 16 at most). One: asked there,
   underlined. Several: the one whose function holds a line the answer cites or its turn changed, where exactly one's
   does; else `gd` lists them, grouped by file, and the hover shows nothing. A top-level item is no local; a language
-  with no `locals.scm` skips this.
+  with no `locals.scm` skips this. An answer's underlines wait for this the first time; typing in a file beside the
+  chat leaves them as they were while it's looked at again.
 - **Any other name written as code** — backticked in prose, or in a block that quotes no file (Claude's own
   proposal): asked by name of the project's language servers (`workspace/symbol`, the exact name, never a close
   one; a qualified `Thread::length` the ones in `Thread` first). One definition: `gd` goes there, and the other keys

@@ -180,7 +180,11 @@ pub struct Map {
     locals: HashMap<Arc<str>, Vec<Spot>>,
     /// The open buffers it read, at their versions then — one edited since, it's made again after the next frame.
     versions: Vec<(PathBuf, u64)>,
-    /// The files parsed for its locals (the tests' check that a file read without the name isn't).
+    /// A buffer it read edited since (or a key found a line moved): being made again, and read as it is until the new
+    /// one lands — the answer's names drawn as they were, a key asking at its places (nearest still beats by name; a
+    /// line that moved is said, `ask`, and the new map comes within the same wait).
+    stale: bool,
+    /// The files whose locals it read (the tests' check that a file read without the name isn't).
     #[cfg(test)]
     parsed: Vec<PathBuf>,
 }
@@ -264,6 +268,37 @@ pub struct Links {
     later: Vec<Arc<str>>,
     /// The servers' count when none could be asked by name: nothing asked again until it changes.
     none_at: Option<usize>,
+    /// Each file's locals as last parsed, for the maps' searches (in the one under way's hands meanwhile).
+    defs: Defs,
+    /// Since when a search has waited for an open buffer's parse (`after_frame`).
+    parse_wait: Option<std::time::Instant>,
+}
+
+/// How long a search waits for an open buffer's parse under way, to read its tree, before parsing the file itself.
+const PARSE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The local definitions of the files the maps' searches parsed (`syntax::local_defs`), each at the text it was parsed
+/// of: a file is parsed once for every answer that reads it, and again only once it changes. Cleared with the maps'
+/// `generation`.
+#[derive(Debug, Default)]
+struct Defs {
+    files: HashMap<PathBuf, (Stamp, FileDefs)>,
+    /// The files parsed, in order (the tests' check that a file is parsed once).
+    #[cfg(test)]
+    parses: Vec<PathBuf>,
+}
+
+/// A file's local definitions (None: its language has no `locals.scm`).
+type FileDefs = Option<Arc<Vec<crate::syntax::LocalDef>>>;
+
+/// A file's lines as read (None: not read — named like a key, too big, gone).
+type Lines = Option<Arc<Vec<String>>>;
+
+/// Which text of a file was read: an open buffer's at its version, else the disk's by its modified time and length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stamp {
+    Open(DocId, u64),
+    Disk(std::time::SystemTime, u64),
 }
 
 /// A name of the underlines' batch asked by name: its question's number, the servers yet to answer, whether one found
@@ -548,6 +583,7 @@ pub fn after_frame(ed: &mut Editor) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if c.links.listing != listing || c.links.generation == 0 {
         c.links.maps.clear();
+        crate::event::drop_later(std::mem::take(&mut c.links.defs));
         (c.links.listing, c.links.generation, c.links.asking) = (listing, generation(), false);
         // (what the names came to, asked again for the files as they are — an answer in flight lands on nothing)
         (c.links.words, c.links.batch, c.links.later) = Default::default();
@@ -559,18 +595,22 @@ pub fn after_frame(ed: &mut Editor) {
     if c.links.asking {
         return;
     }
-    // (a buffer a map read edited since: made again — its lines may have moved)
-    let edited = |(p, v): &(PathBuf, u64)| docs.by_path(p).is_some_and(|d| d.version() != *v);
-    c.links.maps.retain(|_, mp| !mp.versions.iter().any(edited));
+    // (a buffer a map read edited since: made again — its lines may have moved —, read as it is meanwhile)
+    for mp in c.links.maps.values_mut().filter(|mp| !mp.stale) {
+        mp.stale = behind(docs, mp);
+    }
     let laid = ed.screen.chat_laid.borrow();
     let writing = c.state == crate::chat::State::Writing;
     let mut want = Vec::new();
+    let mut wake = false;
     for i in laid.iter().filter_map(|(of, _)| if let Of::Msg(i) = of { Some(*i) } else { None }) {
         let Some(m) = c.msgs.get(i).filter(|m| matches!(m.role, Role::User | Role::Assistant)) else {
             continue;
         };
         let key = key_of(m);
-        if (writing && i + 1 == c.msgs.len()) || c.links.maps.get(&i).is_some_and(|mp| mp.key == key) {
+        if (writing && i + 1 == c.msgs.len())
+            || c.links.maps.get(&i).is_some_and(|mp| mp.key == key && !mp.stale)
+        {
             continue;
         }
         let parts = parts(&crate::chat::displayed(&m.text));
@@ -592,94 +632,183 @@ pub fn after_frame(ed: &mut Editor) {
         let files = !places.is_empty() || !turned.changed.is_empty() || !turned.read.is_empty();
         match (files && (!places.is_empty() || !words.is_empty()), answered) {
             (_, false) => {}
+            // (its names drawn held this frame: one known by name asks the frame that shows it — `drawn` asks the
+            // others by name)
             (false, true) => {
+                let was = drawn(c, i);
                 c.links.maps.insert(i, Map { key, ..Map::default() });
-                want_names(c, i);
+                wake |= drawn(c, i) != was;
             }
             (true, true) => want.push(Want { msg: i, key, parts, places, words, turned }),
         }
     }
     drop(laid);
+    if wake {
+        // (run inside the frame, it asks the next by an event: an empty job's landing draws)
+        ed.events.jobs().spawn(|| |_: &mut Editor| {});
+    }
     if want.is_empty() {
+        c.links.parse_wait = None;
         return ask_names(ed);
     }
-    c.links.asking = true;
-    let generation = c.links.generation;
     let paths: Vec<&PathBuf> = (want.iter())
         .flat_map(|w| {
             let changed = w.turned.changed.iter().map(|c| &c.0);
             w.places.iter().map(|p| &p.4).chain(changed).chain(&w.turned.read)
         })
         .collect();
-    let open: HashMap<PathBuf, (ropey::Rope, u64)> = (paths.iter())
-        .filter_map(|p| ed.docs.by_path(p).map(|d| ((*p).clone(), (d.text.clone(), d.version()))))
+    // (an open buffer whose locals aren't kept at its version, its parse under way: waited for — its tree, the query
+    // alone, beats parsing it whole on the worker (term.rs: 357 ms) —, the stale maps drawn meanwhile; `PARSE_WAIT` at
+    // most, then parsed there)
+    let parsing = paths.iter().filter_map(|p| Some((*p, docs.by_path(p)?))).any(|(p, d)| {
+        let kept = c.links.defs.files.get(p).is_some_and(|f| f.0 == Stamp::Open(d.id, d.version()));
+        !kept && d.syntax.as_ref().is_some_and(|s| s.in_flight)
+    });
+    let now = crate::clock::now();
+    if parsing && now.saturating_duration_since(*c.links.parse_wait.get_or_insert(now)) < PARSE_WAIT {
+        return ask_names(ed);
+    }
+    (c.links.parse_wait, c.links.asking) = (None, true);
+    let generation = c.links.generation;
+    let defs = std::mem::take(&mut c.links.defs);
+    let open: HashMap<PathBuf, Open> = (paths.iter())
+        .filter_map(|p| {
+            let d = docs.by_path(p)?;
+            // (its tree only where it's of this text: no edit since its parse started, none under way)
+            let s = d.syntax.as_ref().filter(|s| !s.dirty && !s.in_flight);
+            let tree = s.and_then(|s| Some((s.tree.clone()?, s.lang.clone())));
+            Some(((*p).clone(), Open { text: d.text.clone(), version: d.version(), id: d.id, tree }))
+        })
         .collect();
     ed.events.jobs().spawn(move || {
-        let mut files = Files { open, read: HashMap::new(), root, used: Vec::new() };
+        let mut files = Files::new(open, root, defs);
         let maps: Vec<(usize, Map)> = want.into_iter().map(|w| (w.msg, map_of(&w, &mut files))).collect();
-        move |ed: &mut Editor| landed(ed, generation, maps)
+        let defs = files.defs;
+        move |ed: &mut Editor| landed(ed, generation, maps, defs)
     });
     ask_names(ed);
 }
 
-/// Message `i`'s names written as code, its map just made: those that aren't locals of its files wanted by name, as the
-/// frame that held them back would have (`local_underlined`, `Links::underlined`).
-fn want_names(c: &Chat, i: usize) {
-    let Some(laid) = c.msgs.get(i).map(|m| m.cache.borrow()) else { return };
-    for n in laid.iter().flat_map(|l| l.rows.iter()).flat_map(|r| &r.names) {
-        if local_underlined(c, i, &n.word) != Some(true) {
-            c.links.underlined(&n.word);
-        }
-    }
+/// Whether a buffer `mp` read was edited since.
+fn behind(docs: &crate::docpaths::Docs, mp: &Map) -> bool {
+    mp.versions.iter().any(|(p, v)| docs.by_path(p).is_some_and(|d| d.version() != *v))
 }
 
-/// A search's maps: kept when they're for the files as they are (another `listing` since: dropped, asked again), their
-/// messages' names not locals asked by name. A frame only where a local came to be underlined (else one for the next
-/// search, when one waits).
-fn landed(ed: &mut Editor, generation: u64, maps: Vec<(usize, Map)>) {
-    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
-    if c.links.generation != generation {
-        return;
-    }
-    c.links.asking = false;
-    let locals = maps.iter().any(|(_, m)| !m.locals.is_empty());
-    let landed: Vec<usize> = maps.iter().map(|m| m.0).collect();
+/// A search's maps and the files' locals it parsed: kept when they're for the files as they are (another `listing`
+/// since: dropped, asked again), their messages' names not locals asked by name (`drawn`'s second pass, through
+/// `Links::underlined`). A frame where a message's names draw otherwise than they did — a local underlined, a held
+/// answer's names known by name now, a stale map's local gone —, and where a map landed behind its buffer: an edit made
+/// while it was searched marked nothing (`after_frame` waits on `asking`), so that frame marks it and makes it again.
+fn landed(ed: &mut Editor, generation: u64, maps: Vec<(usize, Map)>, defs: Defs) {
+    let docs = &ed.docs;
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.links.generation == generation) else {
+        return crate::event::drop_later((maps, defs));
+    };
+    (c.links.asking, c.links.defs) = (false, defs);
+    let late = maps.iter().any(|(_, mp)| behind(docs, mp));
+    let before: Vec<(usize, Vec<bool>)> = maps.iter().map(|(i, _)| (*i, drawn(c, *i))).collect();
     c.links.maps.extend(maps);
-    for i in landed {
-        want_names(c, i);
-    }
+    let changed = before.iter().any(|(i, was)| drawn(c, *i) != *was);
     ask_names(ed);
-    ed.unchanged = !locals;
+    ed.unchanged = !changed && !late;
 }
 
-/// The files a search reads: an open buffer's text, else the disk's — never a file named like a key, nor a huge one.
+/// Whether each name written as code in message `i`, as laid out, draws underlined (`name_underlined`).
+fn drawn(c: &Chat, i: usize) -> Vec<bool> {
+    let Some(laid) = c.msgs.get(i).map(|m| m.cache.borrow()) else { return Vec::new() };
+    let names = laid.iter().flat_map(|l| l.rows.iter()).flat_map(|r| &r.names);
+    names.map(|n| name_underlined(c, Some(i), &n.word)).collect()
+}
+
+/// Whether `word`, a name written as code in message `msg`, draws underlined: a local its map has; held while an
+/// answer's map isn't made yet; else by name (`Links::underlined`, which asks it after the frame when it isn't known).
+pub fn name_underlined(c: &Chat, msg: Option<usize>, word: &Arc<str>) -> bool {
+    match msg.map(|i| local_underlined(c, i, word)) {
+        Some(Some(true)) => true,
+        Some(None) => false,
+        _ => c.links.underlined(word),
+    }
+}
+
+/// An open buffer a search reads: its text, version and id, and its syntax tree with its language where the tree is of
+/// that text.
+struct Open {
+    text: ropey::Rope,
+    version: u64,
+    id: DocId,
+    tree: Option<(tree_sitter::Tree, Arc<crate::syntax::LangData>)>,
+}
+
+/// The files a search reads: an open buffer's text, else the disk's — never a file named like a key, nor a huge one —,
+/// each with the text's stamp; and their locals, parsed once a text (`Defs`).
 struct Files {
-    open: HashMap<PathBuf, (ropey::Rope, u64)>,
-    read: HashMap<PathBuf, Option<Arc<Vec<String>>>>,
+    open: HashMap<PathBuf, Open>,
+    read: HashMap<PathBuf, (Lines, Option<Stamp>)>,
     root: PathBuf,
     /// The open buffers the message being mapped read, at their versions.
     used: Vec<(PathBuf, u64)>,
+    defs: Defs,
 }
 
 impl Files {
-    fn lines(&mut self, path: &Path) -> Option<Arc<Vec<String>>> {
-        if let Some((_, v)) = self.open.get(path)
+    fn new(open: HashMap<PathBuf, Open>, root: PathBuf, defs: Defs) -> Files {
+        Files { open, read: HashMap::new(), root, used: Vec::new(), defs }
+    }
+
+    fn lines(&mut self, path: &Path) -> Lines {
+        if let Some(o) = self.open.get(path)
             && !self.used.iter().any(|u| u.0 == path)
         {
-            self.used.push((path.to_path_buf(), *v));
+            self.used.push((path.to_path_buf(), o.version));
         }
         if let Some(l) = self.read.get(path) {
-            return l.clone();
+            return l.0.clone();
         }
-        let text = match self.open.get(path) {
-            Some((rope, _)) => Some(rope.to_string()),
-            None if crate::sandbox::key_named(&self.root, path) => None,
-            None if std::fs::metadata(path).is_ok_and(|m| m.len() > FILE_MAX) => None,
-            None => std::fs::read_to_string(path).ok(),
+        // (the disk's stamp taken before its text: a change between the two parses it again next time, never the reverse)
+        let disk = || {
+            let m = std::fs::metadata(path).ok()?;
+            Some((m.len(), m.modified().ok()))
+        };
+        let (text, stamp) = match self.open.get(path) {
+            Some(o) => (Some(o.text.to_string()), Some(Stamp::Open(o.id, o.version))),
+            None if crate::sandbox::key_named(&self.root, path) => (None, None),
+            None => match disk() {
+                Some((len, _)) if len > FILE_MAX => (None, None),
+                stat => {
+                    let stamp = stat.and_then(|(len, at)| Some(Stamp::Disk(at?, len)));
+                    (std::fs::read_to_string(path).ok(), stamp)
+                }
+            },
         };
         let lines = text.map(|t| Arc::new(t.lines().map(|l| l.trim_end_matches('\r').to_string()).collect()));
-        self.read.insert(path.to_path_buf(), lines.clone());
+        self.read.insert(path.to_path_buf(), (lines.clone(), stamp));
         lines
+    }
+
+    /// `path`'s local definitions (`syntax::local_defs`) of its text as read (`lines`): parsed once a text — an open
+    /// buffer's tree of it queried instead. None: its language isn't known or loaded, or has no `locals.scm`.
+    fn defs(&mut self, path: &Path, lines: &[String]) -> FileDefs {
+        let stamp = self.read.get(path).and_then(|r| r.1);
+        if let Some((at, defs)) = self.defs.files.get(path)
+            && Some(*at) == stamp
+        {
+            return defs.clone();
+        }
+        let defs = match self.open.get(path).and_then(|o| Some((&o.text, o.tree.as_ref()?))) {
+            Some((text, (tree, lang))) => crate::syntax::local_defs_in(lang, tree, &text.to_string()),
+            None => {
+                let spec = crate::syntax::detect(path)?;
+                let lang = crate::syntax::Loader::global().load(spec).ok()?;
+                #[cfg(test)]
+                self.defs.parses.push(path.to_path_buf());
+                crate::syntax::local_defs(&lang, &lines.join("\n"))
+            }
+        };
+        let defs = defs.map(Arc::new);
+        if let Some(stamp) = stamp {
+            self.defs.files.insert(path.to_path_buf(), (stamp, defs.clone()));
+        }
+        defs
     }
 }
 
@@ -718,6 +847,7 @@ fn map_of(w: &Want, files: &mut Files) -> Map {
         near,
         locals,
         versions: std::mem::take(&mut files.used),
+        stale: false,
         #[cfg(test)]
         parsed: _parsed,
     }
@@ -730,7 +860,8 @@ type Def = (Spot, Vec<Range<usize>>);
 /// nearest ring first, the first that holds one deciding: the answer's own files — those it cites, its blocks quote
 /// (`quoted`) and its turn changed, `OWN_MAX` at most —, then those its turn only read whose text holds the name
 /// (`READ_MAX`). Several in a ring: the one whose scope holds a line the answer cites or its turn changed, where exactly
-/// one's does (`settle`). A language with no `locals.scm` adds none. And the files parsed.
+/// one's does (`settle`). A language with no `locals.scm` adds none. Each file parsed once a text (`Files::defs`). And
+/// the files whose locals it read.
 fn locals_of(
     w: &Want,
     quoted: &[Option<Quoted>],
@@ -766,15 +897,13 @@ fn locals_of(
                 continue;
             }
             looked += 1;
-            let Some(spec) = crate::syntax::detect(path) else { continue };
-            let Ok(lang) = crate::syntax::Loader::global().load(spec) else { continue };
-            let Some(defs) = crate::syntax::local_defs(&lang, &lines.join("\n")) else { continue };
+            let Some(defs) = files.defs(path, &lines) else { continue };
             parsed.push(path.clone());
-            for d in defs {
+            for d in defs.iter() {
                 let Some(word) = left.iter().find(|w| ***w == *d.name) else { continue };
                 let text = lines.get(d.line).cloned().unwrap_or_default();
-                let spot = Spot { path: path.clone(), line: d.line, col: d.col, word: d.name, text };
-                found.entry(word.clone()).or_default().push((spot, d.scopes));
+                let spot = Spot { path: path.clone(), line: d.line, col: d.col, word: d.name.clone(), text };
+                found.entry(word.clone()).or_default().push((spot, d.scopes.clone()));
             }
         }
         left.retain(|w| !found.contains_key(w));
@@ -787,19 +916,31 @@ fn locals_of(
 /// `focus` wins where exactly one's does — its scope the widest around it that holds no other of them (an `i` in three
 /// functions: each its function's) —, else all of them.
 fn settle(defs: Vec<Def>, focus: &[(&Path, Range<usize>)]) -> Vec<Spot> {
+    if defs.len() < 2 {
+        return defs.into_iter().map(|d| d.0).collect();
+    }
+    // (each file's definitions' lines in order: how many a scope holds by two searches — an `ed` that's a parameter in
+    // a thousand functions isn't a million comparisons)
+    let mut lines: HashMap<&Path, Vec<usize>> = HashMap::new();
+    for (s, _) in &defs {
+        lines.entry(s.path.as_path()).or_default().push(s.line);
+    }
+    lines.values_mut().for_each(|l| crate::sorting::sort(l));
+    let count = |p: &Path, sc: &Range<usize>| {
+        let l = lines.get(p).map_or(&[][..], |l| &l[..]);
+        l.partition_point(|&x| x < sc.end) - l.partition_point(|&x| x < sc.start)
+    };
+    // (a scope holds its own definition: another's there too when it holds two)
     let territory = |k: usize| {
         let (s, scopes) = &defs[k];
-        let other = |sc: &Range<usize>| {
-            (defs.iter().enumerate()).any(|(j, (o, _))| j != k && o.path == s.path && sc.contains(&o.line))
-        };
-        scopes.iter().take_while(|sc| !other(sc)).last().cloned()
+        scopes.iter().take_while(|sc| count(&s.path, sc) < 2).last().cloned()
     };
     let held = |k: usize| {
         territory(k).is_some_and(|t| {
             (focus.iter()).any(|(p, r)| *p == defs[k].0.path && r.start < t.end && t.start < r.end)
         })
     };
-    let picked: Vec<usize> = (0..defs.len()).filter(|&k| defs.len() > 1 && held(k)).collect();
+    let picked: Vec<usize> = (0..defs.len()).filter(|&k| held(k)).collect();
     match picked.as_slice() {
         &[k] => vec![defs[k].0.clone()],
         _ => defs.into_iter().map(|d| d.0).collect(),
@@ -962,6 +1103,8 @@ fn target_at(ed: &Editor, head: usize) -> Result<Target, String> {
     let text_of = |l: usize| d.text.line(l).to_string().trim_end_matches(['\n', '\r']).to_string();
     let here = text_of(line);
     let at = head - d.text.line_to_byte(line);
+    // (a stale map too, while its file's edit is mapped again: its place still beats asking by name — a line that moved
+    // is said as it's asked, `ask`)
     let map = c.links.maps.get(&i).filter(|mp| mp.key == key_of(m));
     // A cited place: the file at its line
     let cites = cited(&here);
@@ -1102,8 +1245,9 @@ fn target_at(ed: &Editor, head: usize) -> Result<Target, String> {
     }
 }
 
-/// Whether message `i`'s `word` is a local its files define (`Map.locals`, for the message as it is): underlined. None:
-/// an answer whose map isn't made yet — nothing underlined nor asked by name until it is (a local is never asked).
+/// Whether message `i`'s `word` is a local its files define (`Map.locals`, for the message as it is — a stale map too,
+/// until the one being made lands: its names never blink as a file beside the chat is typed in): underlined. None: an
+/// answer whose map isn't made yet — nothing underlined nor asked by name until it is (a local is never asked).
 pub fn local_underlined(c: &Chat, i: usize, word: &str) -> Option<bool> {
     let m = c.msgs.get(i)?;
     match c.links.maps.get(&i).filter(|mp| mp.key == key_of(m)) {
@@ -1224,9 +1368,10 @@ fn ask(ed: &mut Editor, spot: Spot, goto: Option<Goto>) {
     }
     let now = doc.text.get_line(spot.line).map(|l| l.to_string());
     if now.as_deref().map(|l| l.trim_end_matches(['\n', '\r'])) != Some(spot.text.as_str()) {
-        // (read again after the next frame: a second press finds it where it is now, if it's still there)
+        // (read again after the next frame: a second press finds it where it is now, if it's still there — the maps
+        // drawn as they are meanwhile)
         if let Some(c) = ed.workspace.claude.chat.as_mut() {
-            c.links.maps.clear();
+            c.links.maps.values_mut().for_each(|mp| mp.stale = true);
         }
         return ed
             .set_status(format!("{shown} changed since — `{}` isn't where the answer has it", spot.word));
@@ -1788,6 +1933,16 @@ pub(crate) fn underlines(ed: &Editor) -> Option<(u64, Vec<(String, bool)>)> {
     let mut words: Vec<(String, bool)> = l.words.iter().map(|(w, &f)| (w.to_string(), f)).collect();
     crate::sorting::by_key(&mut words, |w| w.0.clone());
     Some((l.listing, words))
+}
+
+/// The front chat's maps, each message's: whether it's stale, and whether a buffer it read was edited since (the
+/// simulation's check).
+#[cfg(test)]
+pub(crate) fn maps(ed: &Editor) -> Vec<(usize, bool, bool)> {
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return Vec::new() };
+    let mut out: Vec<_> = c.links.maps.iter().map(|(i, mp)| (*i, mp.stale, behind(&ed.docs, mp))).collect();
+    out.sort_unstable();
+    out
 }
 
 /// The front chat's question by name in flight or waiting: its number, the name, its container, and what it asks.

@@ -317,16 +317,12 @@ fn the_chat_says_why_a_name_isnt_asked() {
     let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
     assert_eq!(toasts, ["src/main.rs changed since — `helper` isn't where the answer has it"]);
     // …mapped again after the frame: where it is now
-    until(&mut ed, "mapped again", |ed| {
-        ed.workspace.claude.chat.as_ref().unwrap().links.maps.contains_key(&1)
-    });
+    until(&mut ed, "mapped again", |ed| last_map(ed).is_some());
     assert_eq!(spot(&ed).line, 5, "a line further down");
     // The quoted line gone from the file: said so
     let at = ed.doc().text.line_to_byte(5) + "    let total = ".len();
     edit(&mut ed, at, "x");
-    until(&mut ed, "mapped again", |ed| {
-        ed.workspace.claude.chat.as_ref().unwrap().links.maps.contains_key(&1)
-    });
+    until(&mut ed, "mapped again", |ed| last_map(ed).is_some());
     later(
         &mut ed,
         "gd",
@@ -834,7 +830,8 @@ fn row(verb: &'static str, path: PathBuf, id: &str) -> Msg {
 fn last_map(ed: &Editor) -> Option<Map> {
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     let i = c.msgs.len() - 1;
-    c.links.maps.get(&i).filter(|mp| !c.links.asking && mp.key == key_of(&c.msgs[i])).cloned()
+    let fresh = |mp: &&Map| !c.links.asking && !mp.stale && mp.key == key_of(&c.msgs[i]);
+    c.links.maps.get(&i).filter(fresh).cloned()
 }
 
 /// #389's locals: a name the answer writes as code, with no line cited, that's a local of a file its turn changed — a
@@ -954,8 +951,10 @@ fn a_shadowed_local_is_listed_never_picked() {
 
 /// The locals pass's cost on the map's worker (#389's review): an answer citing tarae's 8 largest files, its names
 /// (`ed`, `i`, `text`) in every one's text — ring 1 parsing all 8 —, then with `self` too, in every file's text and
-/// never a local, so ring 2 parses the 16 next largest the turn read. Files read cold each run (the map's own reads
-/// would have read the cited ones first), the best of 5; numbers for `cargo perf`.
+/// never a local, so ring 2 parses the 16 next largest the turn read; and the first answer mapped again, its largest
+/// file edited in a buffer: that one parsed, the other 7's locals kept (`Defs`) — then its buffer's tree queried.
+/// Files read cold each run (the map's own reads would have read the cited ones first), the best of 5; numbers for
+/// `cargo perf`.
 #[test]
 fn perf_locals_of_an_answer_citing_the_largest_files() {
     if crate::test_results::unoptimized("chatlink::tests::perf_locals_of_an_answer_citing_the_largest_files")
@@ -984,8 +983,7 @@ fn perf_locals_of_an_answer_citing_the_largest_files() {
     let best = |w: &Want, parsed: usize| {
         let mut best = f64::MAX;
         for _ in 0..5 {
-            let mut files =
-                Files { open: HashMap::new(), read: HashMap::new(), root: root.clone(), used: Vec::new() };
+            let mut files = Files::new(HashMap::new(), root.clone(), Defs::default());
             let t = std::time::Instant::now();
             let (locals, p) = locals_of(w, &[], &mut files);
             best = best.min(t.elapsed().as_secs_f64() * 1000.0);
@@ -996,15 +994,71 @@ fn perf_locals_of_an_answer_citing_the_largest_files() {
     };
     let ring1 = best(&want(&["ed", "i", "text"]), OWN_MAX);
     let ring2 = best(&want(&["ed", "i", "text", "self"]), OWN_MAX + READ_MAX);
+    // (what `Defs` keeps of both rings' 24 files: the heap each holds, the map's slots too)
+    let mut files = Files::new(HashMap::new(), root.clone(), Defs::default());
+    locals_of(&want(&["ed", "i", "text", "self"]), &[], &mut files);
+    let kept = &files.defs.files;
+    let slot = std::mem::size_of::<(PathBuf, (Stamp, FileDefs))>();
+    let (mut bytes, mut defs) = (kept.capacity() * slot, 0);
+    for (path, (_, d)) in kept {
+        bytes += path.capacity();
+        for d in d.iter().flat_map(|d| d.iter()) {
+            defs += 1;
+            let scopes = d.scopes.capacity() * std::mem::size_of::<std::ops::Range<usize>>();
+            bytes += std::mem::size_of::<crate::syntax::LocalDef>() + d.name.capacity() + scopes;
+        }
+    }
+    eprintln!("(`Defs` after both rings: {} files, {defs} definitions, {} KB)", kept.len(), bytes / 1024);
+    // (the same answer again, its largest file edited in a buffer: that one parsed, the others' locals as they were)
+    let w = want(&["ed", "i", "text"]);
+    let mut edited = ropey::Rope::from_str(&std::fs::read_to_string(&own[0]).unwrap());
+    edited.insert(0, "// x\n");
+    let lang = crate::syntax::Loader::global().load(crate::syntax::detect(&own[0]).unwrap()).unwrap();
+    let tree = crate::syntax::Syntax::parsed(lang.clone(), &edited).tree.unwrap();
+    // (its buffer's tree handed over, as when its parse has landed: the query alone)
+    let remade = |tree: Option<&tree_sitter::Tree>| {
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let mut files = Files::new(HashMap::new(), root.clone(), Defs::default());
+            locals_of(&w, &[], &mut files);
+            let mut defs = files.defs;
+            defs.parses.clear();
+            let open = Open {
+                text: edited.clone(),
+                version: 1,
+                id: 1,
+                tree: tree.map(|t| (t.clone(), lang.clone())),
+            };
+            let mut files = Files::new(HashMap::from([(own[0].clone(), open)]), root.clone(), defs);
+            let t = std::time::Instant::now();
+            let (locals, p) = locals_of(&w, &[], &mut files);
+            best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+            let parsed = if tree.is_some() { &[][..] } else { &own[..1] };
+            assert_eq!(
+                (p.len(), &files.defs.parses[..]),
+                (OWN_MAX, parsed),
+                "at most the edited file parsed"
+            );
+            assert!(locals.contains_key("ed"), "found");
+        }
+        best
+    };
+    let (remake, remake_tree) = (remade(None), remade(Some(&tree)));
     let lines: usize = paths.iter().map(|p| std::fs::read_to_string(p).unwrap().lines().count()).sum();
-    for (name, v, budget) in
-        [("locals_of_8_files_ms", ring1, 2000), ("locals_of_8_and_16_files_ms", ring2, 4000)]
-    {
+    for (name, v, budget) in [
+        ("locals_of_8_files_ms", ring1, 2000),
+        ("locals_of_8_and_16_files_ms", ring2, 4000),
+        ("locals_of_8_files_one_edited_ms", remake, 500),
+        ("locals_of_8_files_one_edited_tree_ms", remake_tree, 500),
+    ] {
         let line = format!("PERF {name} {v:.1} budget={budget} noise=10\n");
         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
     }
     let own_lines: usize = own.iter().map(|p| std::fs::read_to_string(p).unwrap().lines().count()).sum();
-    eprintln!("(ring 1: {own_lines} lines; both rings: {lines} lines)");
+    let edited_lines = edited.len_lines();
+    eprintln!(
+        "(ring 1: {own_lines} lines; both rings: {lines} lines; the edited file: {edited_lines} lines)"
+    );
 }
 
 /// `ed` with the transcript's cursor on the first match of `pattern`.
@@ -1052,6 +1106,250 @@ fn a_local_of_a_file_the_turn_only_read_is_found_after_the_answers_own() {
     m.changed();
     until(&mut ed, "mapped again", |ed| last_map(ed).is_some());
     assert_eq!(last_map(&ed).unwrap().parsed, [root.join("src/lib.rs")], "ring 2 not parsed");
+}
+
+/// Jobs handled until `done`, a frame drawn after an event only where the main loop would (`frame_due`): the words
+/// underlined in each frame drawn.
+fn screens_until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) -> Vec<Vec<String>> {
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    let mut out = Vec::new();
+    while !done(ed) {
+        assert!(std::time::Instant::now() < end, "{what}");
+        if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+            ed.unchanged = false;
+            ed.handle_event(ev);
+            let unchanged = std::mem::take(&mut ed.unchanged);
+            if ed.frame_due(unchanged) {
+                out.push(underlined(ed));
+            }
+        }
+    }
+    out
+}
+
+/// `change` to the open buffer of the project's `path`.
+fn change_in(ed: &mut Editor, path: &str, ch: crate::transaction::Change) {
+    let p = ed.workspace.root.join(path);
+    let d = ed.docs.iter_mut().find(|d| d.path.as_deref() == Some(p.as_path())).unwrap();
+    d.apply(&crate::transaction::Transaction::new(vec![ch]));
+}
+
+/// The underlines' batch answered: `found` its names that come to a definition in `path` (line 0), the others none.
+fn answer_underlines(ed: &mut Editor, path: &str, found: &[&str]) {
+    let file = ed.workspace.root.join(path);
+    for (cid, id, word) in underlines_asked(ed) {
+        let at: &[(&str, u32, u32, &str)] = match found.contains(&word.as_str()) {
+            true => &[(word.as_str(), 0, 3, "")],
+            false => &[],
+        };
+        ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, at) }));
+    }
+}
+
+/// An edit beside the chat never takes an answer's underlines away: with the file it cites open, typed in, every frame
+/// until its map is made again has the same names underlined — its local's and the one known by name — the stale map
+/// read meanwhile; the new one found the local where it is now.
+#[test]
+fn an_edit_beside_the_chat_keeps_the_answers_underlines_until_its_map_is_made_again() {
+    let answer = "`counts` is what src/lib.rs:2 returns, and `count_words` holds it.";
+    let files = [("src/lib.rs", LOCALS)];
+    let (_s, mut ed, _) =
+        setup_turn("chatlink-locals-stale", true, answer, &files, &["src/lib.rs"], |_| Vec::new());
+    answer_underlines(&mut ed, "src/lib.rs", &["count_words"]);
+    let want = underlined(&mut ed);
+    assert!(want.iter().any(|w| w == "counts") && want.iter().any(|w| w == "count_words"), "{want:?}");
+    let line = |ed: &Editor| last_map(ed).and_then(|m| m.locals.get("counts").map(|s| s[0].line));
+    for typed in 0..3 {
+        change_in(&mut ed, "src/lib.rs", crate::transaction::Change::insert(0, "// x\n"));
+        // (a key's frame, which sends the map to be made again, then another while it's made — typing on)
+        let mut screens = vec![underlined(&mut ed), underlined(&mut ed)];
+        assert!(last_map(&ed).is_none(), "being made again");
+        screens.extend(screens_until(&mut ed, "made again", |ed| last_map(ed).is_some()));
+        for (k, s) in screens.iter().enumerate() {
+            assert_eq!(s, &want, "edit {typed}, frame {k}: the names as they were");
+        }
+        assert_eq!(line(&ed), Some(2 + typed), "found where it is now");
+    }
+}
+
+/// An answer's map made again with no locals (its names known by name): the frame on screen once it lands has them
+/// underlined, as every frame while it was made did.
+#[test]
+fn a_map_made_again_with_no_locals_leaves_its_names_underlined() {
+    let answer = "`count_words` is in src/lib.rs:1.";
+    let files = [("src/lib.rs", LOCALS)];
+    let (_s, mut ed, _) =
+        setup_turn("chatlink-locals-none", true, answer, &files, &["src/lib.rs"], |_| Vec::new());
+    assert!(last_map(&ed).unwrap().locals.is_empty(), "no locals");
+    answer_underlines(&mut ed, "src/lib.rs", &["count_words"]);
+    let want = underlined(&mut ed);
+    assert!(want.iter().any(|w| w == "count_words"), "{want:?}");
+    change_in(&mut ed, "src/lib.rs", crate::transaction::Change::insert(0, "// x\n"));
+    let mut screens = vec![underlined(&mut ed), underlined(&mut ed)];
+    screens.extend(screens_until(&mut ed, "made again", |ed| last_map(ed).is_some()));
+    assert_eq!(screens.last(), Some(&want), "on screen once it lands");
+    assert!(screens.iter().all(|s| *s == want), "every frame: {screens:?}");
+}
+
+/// An answer never mapped still waits: its names held plain until its map lands (a local is never asked by name), then
+/// drawn — a frame for them even with no local, where they're known by name already.
+#[test]
+fn an_answer_never_mapped_holds_its_names_until_its_map_lands() {
+    let answer = "`count_words` is in src/lib.rs:1.";
+    let files = [("src/lib.rs", LOCALS)];
+    let (_s, mut ed, _) =
+        setup_turn("chatlink-locals-held", true, answer, &files, &["src/lib.rs"], |_| Vec::new());
+    answer_underlines(&mut ed, "src/lib.rs", &["count_words"]);
+    let count = |s: &[String]| s.iter().filter(|w| *w == "count_words").count();
+    assert_eq!(count(&underlined(&mut ed)), 1);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(Msg::new(Role::Assistant, "Again `count_words`, src/lib.rs:1.", ""));
+    let first = underlined(&mut ed);
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().links.maps.contains_key(&2), "not mapped yet");
+    assert_eq!(count(&first), 1, "the new answer's name held: {first:?}");
+    let screens = screens_until(&mut ed, "its map", |ed| last_map(ed).is_some());
+    assert!(last_map(&ed).unwrap().locals.is_empty(), "no locals");
+    let last = screens.last().expect("a frame once it lands");
+    assert_eq!(count(last), 2, "both answers' names on screen: {screens:?}");
+}
+
+/// A file is parsed once for every answer that reads it, and a map made again parses only the file edited: two answers
+/// citing an open file and one on disk parse each once; an edit to the open one parses it alone, the disk file's locals
+/// kept.
+#[test]
+fn a_file_is_parsed_once_and_again_only_once_edited() {
+    let first = "`counts` at src/lib.rs:2 and src/other.rs:1.";
+    let files = [("src/lib.rs", LOCALS), ("src/other.rs", "fn other(counts: u32) -> u32 {\n    counts\n}\n")];
+    let answer = "`counts` again, src/other.rs:1 and src/lib.rs:2.";
+    let rows = |_: &Path| vec![Msg::new(Role::Assistant, first, "")];
+    let (_s, mut ed, _) = setup_turn("chatlink-locals-once", true, answer, &files, &["src/lib.rs"], rows);
+    until(&mut ed, "both mapped", |ed| {
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        !c.links.asking && c.links.maps.contains_key(&1) && c.links.maps.contains_key(&2)
+    });
+    let (lib, other) = (ed.workspace.root.join("src/lib.rs"), ed.workspace.root.join("src/other.rs"));
+    let parses = |ed: &mut Editor| {
+        let mut p = std::mem::take(&mut ed.workspace.claude.chat.as_mut().unwrap().links.defs.parses);
+        crate::sorting::by_key(&mut p, |p| p.clone());
+        p
+    };
+    assert_eq!(parses(&mut ed), [lib.clone(), other], "each once, for both answers");
+    change_in(&mut ed, "src/lib.rs", crate::transaction::Change::insert(0, "// x\n"));
+    frame(&mut ed);
+    until(&mut ed, "made again", |ed| last_map(ed).is_some());
+    assert_eq!(parses(&mut ed), [lib], "the edited file alone, once for both");
+}
+
+/// A project whose answer names a local of `src/lib.rs`, an edit of its turn, the file shown beside the chat (its trees
+/// kept and parsed) and parsed, the keys back in the chat, no parse counted yet — the folder, the editor, the file.
+fn beside(name: &str) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    let edit = |root: &Path| vec![row("edit", root.join("src/lib.rs"), "e1")];
+    let files = [("src/lib.rs", LOCALS)];
+    let (s, mut ed, _) = setup_turn(name, true, "`counts` holds it.", &files, &["src/lib.rs"], edit);
+    let lib = ed.workspace.root.join("src/lib.rs");
+    ed.open(&lib).unwrap();
+    ed.workspace.set_at(crate::workspace::Here::Chat);
+    ed.schedule_parses();
+    let parsed = |ed: &Editor| {
+        let s = ed.docs.by_path(&lib).and_then(|d| d.syntax.as_ref());
+        s.is_some_and(|s| s.tree.is_some() && !s.dirty && !s.in_flight)
+    };
+    until(&mut ed, "its tree", parsed);
+    std::mem::take(&mut ed.workspace.claude.chat.as_mut().unwrap().links.defs.parses);
+    (s, ed, lib)
+}
+
+/// A map made again reads an open buffer's own tree, the query alone: its parse under way after the edit is waited for
+/// (no search started meanwhile, the stale map drawn), then its tree handed over — nothing parsed again, the local found
+/// where it is now.
+#[test]
+fn a_map_made_again_queries_the_open_buffers_tree() {
+    let (_s, mut ed, lib) = beside("chatlink-locals-tree");
+    let syn = |ed: &Editor| {
+        ed.docs
+            .by_path(&lib)
+            .and_then(|d| d.syntax.as_ref())
+            .map(|s| (s.tree.is_some(), s.dirty, s.in_flight))
+    };
+    let want = underlined(&mut ed);
+    change_in(&mut ed, "src/lib.rs", crate::transaction::Change::insert(0, "// x\n"));
+    // (as the edit's event ends: its parse starts)
+    ed.schedule_parses();
+    let parsing = |ed: &Editor| syn(ed).is_some_and(|s| s.2);
+    assert!(parsing(&ed), "its parse under way");
+    assert_eq!(underlined(&mut ed), want, "the stale map drawn");
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().links.asking, "waiting for its tree");
+    // (frames only where the main loop draws them: the parse's landing draws the one that starts the search)
+    screens_until(&mut ed, "made again", |ed| last_map(ed).is_some());
+    assert!(!parsing(&ed));
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.links.defs.parses.is_empty(), "its tree queried, never parsed: {:?}", c.links.defs.parses);
+    assert_eq!(last_map(&ed).unwrap().locals.get("counts").map(|s| s[0].line), Some(2));
+}
+
+/// The wait for an open buffer's parse is bounded: its parse held under way past `PARSE_WAIT`, the next frame starts
+/// the search, which parses the file itself.
+#[test]
+fn a_map_made_again_waits_for_a_parse_only_so_long() {
+    let (_s, mut ed, lib) = beside("chatlink-locals-wait");
+    change_in(&mut ed, "src/lib.rs", crate::transaction::Change::insert(0, "// x\n"));
+    // (its parse under way, held: none lands)
+    let d = ed.docs.iter_mut().find(|d| d.path.as_deref() == Some(lib.as_path())).unwrap();
+    d.syntax.as_mut().unwrap().in_flight = true;
+    let asking = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().links.asking;
+    frame(&mut ed);
+    assert!(!asking(&ed), "waiting for its tree");
+    crate::clock::advance(PARSE_WAIT);
+    frame(&mut ed);
+    assert!(asking(&ed), "the wait over: searched");
+    until(&mut ed, "made again", |ed| last_map(ed).is_some());
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert_eq!(c.links.defs.parses, [lib], "parsed on the worker");
+    assert_eq!(last_map(&ed).unwrap().locals.get("counts").map(|s| s[0].line), Some(2));
+}
+
+/// A map that lands behind its buffer — a second edit made while the first's search was under way, which marked
+/// nothing — asks its own frame, which makes it again: with no more input, the map ends at the buffer's version.
+#[test]
+fn a_map_landing_behind_its_buffer_asks_its_own_frame() {
+    let answer = "`counts` is what src/lib.rs:2 returns.";
+    let files = [("src/lib.rs", LOCALS)];
+    let (_s, mut ed, _) =
+        setup_turn("chatlink-locals-behind", true, answer, &files, &["src/lib.rs"], |_| Vec::new());
+    let lib = ed.workspace.root.join("src/lib.rs");
+    let asking = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().links.asking;
+    change_in(&mut ed, "src/lib.rs", crate::transaction::Change::insert(0, "// x\n"));
+    frame(&mut ed);
+    assert!(asking(&ed), "the first edit's search under way");
+    change_in(&mut ed, "src/lib.rs", crate::transaction::Change::insert(0, "// y\n"));
+    frame(&mut ed);
+    assert!(asking(&ed), "the second edit's frame left it to that search");
+    let now = |ed: &Editor| ed.docs.by_path(&lib).map(|d| (lib.clone(), d.version()));
+    let fresh = |ed: &Editor| last_map(ed).is_some_and(|m| now(ed).is_some_and(|v| m.versions == [v]));
+    screens_until(&mut ed, "made again at the buffer's version", fresh);
+    assert_eq!(last_map(&ed).unwrap().locals.get("counts").map(|s| s[0].line), Some(3), "where it is now");
+}
+
+/// An answer with no files (no cite, no quote, no tool call), its name known by name already: held plain in the frame
+/// that first draws it, then given its empty map — which asks the frame that shows the name.
+#[test]
+fn an_answer_with_no_files_shows_its_known_names_once_mapped() {
+    let answer = "`count_words` is in src/lib.rs:1.";
+    let files = [("src/lib.rs", LOCALS)];
+    let (_s, mut ed, _) =
+        setup_turn("chatlink-locals-nofiles", true, answer, &files, &["src/lib.rs"], |_| Vec::new());
+    answer_underlines(&mut ed, "src/lib.rs", &["count_words"]);
+    let count = |s: &[String]| s.iter().filter(|w| *w == "count_words").count();
+    assert_eq!(count(&underlined(&mut ed)), 1);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(Msg::new(Role::Assistant, "Again `count_words`.", ""));
+    let first = underlined(&mut ed);
+    assert_eq!(count(&first), 1, "the new answer's name held: {first:?}");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.links.maps.get(&2).is_some_and(|m| m.locals.is_empty()), "mapped empty by that frame");
+    let drawn = ed.frames;
+    let screens = screens_until(&mut ed, "the frame it asks", |ed| ed.frames > drawn);
+    assert_eq!(screens.last().map(|s| count(s)), Some(2), "both answers' names on screen: {screens:?}");
 }
 
 /// A local's file edited since the answer: found where it is now; its definition gone, asked by name as ever — and said.

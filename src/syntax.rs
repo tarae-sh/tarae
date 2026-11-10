@@ -453,10 +453,15 @@ pub(crate) struct LocalDef {
 /// with its scopes; one only the file's own scope holds is no local (a top-level item, an import). Parsed here: a
 /// worker's. None: the language has no `locals.scm`.
 pub(crate) fn local_defs(lang: &LangData, text: &str) -> Option<Vec<LocalDef>> {
-    let l = lang.locals.as_ref()?;
+    lang.locals.as_ref()?;
     let mut parser = Parser::new();
     parser.set_language(&lang.language).ok()?;
-    let tree = parser.parse(text, None)?;
+    local_defs_in(lang, &parser.parse(text, None)?, text)
+}
+
+/// `local_defs` of `tree`, `text`'s own (an open buffer's, at its version): the query alone — a worker's still.
+pub(crate) fn local_defs_in(lang: &LangData, tree: &Tree, text: &str) -> Option<Vec<LocalDef>> {
+    let l = lang.locals.as_ref()?;
     let root = tree.root_node();
     let mut cursor = QueryCursor::new();
     let mut caps = cursor.captures(&l.query, root, text.as_bytes());
