@@ -1,15 +1,20 @@
 //! The full video's take and its dry run (V3, main's `.sb/full-video-v3-brief.md`).
 //!
-//! - `cargo xtask record take --out DIR --cwd FOLDER [--size 166x32] [--config FILE] [--tarae BIN]` — the take, with
-//!   its surroundings (`surroundings`) in a home made new for it under `/tmp` (`/tmp/tarae-take-<uid>-<n>`, 0700): a copy
-//!   of your tarae config (`FILE`, else `$XDG_CONFIG_HOME/tarae/config.toml` or `~/.config/tarae/config.toml`) with
-//!   `llm.cost = false`, `llm.auto-cards = "off"` and `workspace.worktrees` outside the home (`TAKE_WORKTREES`, made
-//!   where it isn't, refused where it holds anything), the rest of that folder (themes, plugins) linked beside it; a
-//!   state home of its own (nothing of yours listed: no recent files, no sessions, and a UI socket's path well under `sun_path`); git's name and mail the
-//!   stand-ins (`GIT_NAME`, `GIT_MAIL`) by `GIT_CONFIG_GLOBAL` and the author and committer variables — the floor
-//!   every run of tarae's sandbox keeps (`src/sandbox/runenv.rs`), so tarae's git, `:sh` and Claude's runs all commit
-//!   as them. `FOLDER` (the take's `~/Workspace/halil`) is made where it isn't, refused where it holds anything. Your
-//!   files are read, never written. Its claude is your config's: run it only as the take, never in a test.
+//! - `cargo xtask record take --out DIR --cwd FOLDER --tarae BIN [--size 166x32] [--config FILE]` — the take (`BIN`
+//!   by its path, never a name `PATH` answers: `tarae_bin`), with its surroundings (`surroundings`) in a home made
+//!   new for it under `/tmp` (`/tmp/tarae-take-<uid>-<n>`, 0700): a copy of your tarae config (`FILE`, else
+//!   `$XDG_CONFIG_HOME/tarae/config.toml` or `~/.config/tarae/config.toml`) with `llm.cost = false`,
+//!   `llm.auto-cards = "off"` and `workspace.worktrees` outside the home (`TAKE_WORKTREES`, made where it isn't,
+//!   refused where it holds anything), the rest of that folder (themes, plugins) linked beside it; a state and a data
+//!   home of its own (`homes_of_its_own`: nothing of yours listed — no recent files, no sessions, no grammar you
+//!   downloaded — and a UI socket's path well under `sun_path`); its tarae's `--version` said first; git's name and
+//!   mail the stand-ins (`GIT_NAME`, `GIT_MAIL`) by `GIT_CONFIG_GLOBAL` and the author and committer variables — the
+//!   floor every run of tarae's sandbox keeps (`src/sandbox/runenv.rs`), so tarae's git, `:sh` and Claude's runs all
+//!   commit as them; your Rust toolchain cloned outside the home (`toolchain.rs`, `TAKE_RUST`: made where it isn't,
+//!   refused where it holds anything) as its `RUSTUP_HOME` and `CARGO_HOME`, rustup's proxies first on its `PATH`,
+//!   your `~/.cargo/bin` last, `RUSTUP_AUTO_INSTALL=0`. `FOLDER` (the take's `/Users/Shared/halil`) is made where it
+//!   isn't, refused where it holds anything. Your files are read, never written. Its claude is your config's: run it
+//!   only as the take, never in a test.
 //! - `cargo xtask record dry [OUT]` — V3's dry run (default `target/rec/record-dry`, made new): the take's motions end
 //!   to end at the take's size by the hands (`hands.rs`), on a scene's tarae with the stand-in Claude (`scenes::live`,
 //!   `nine`: the real one refused, #247) and the same surroundings; each step and its answer in `dry.txt`, the take in
@@ -23,6 +28,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::hands::{self, code};
+use super::toolchain;
 use super::{Outer, Spec, check, parse_size, record};
 use crate::scenes::{self, docshots::Bg};
 use crate::{Result, root, shot};
@@ -39,7 +45,7 @@ pub(crate) const TAKE_WORKTREES: &str = "/Users/Shared/halil-checkouts";
 pub(crate) const GIT_NAME: &str = "halil dev";
 pub(crate) const GIT_MAIL: &str = "dev@halil.invalid";
 
-const USAGE: &str = "usage: cargo xtask record take --out DIR --cwd FOLDER [--size 166x32] [--config FILE] [--tarae BIN] | record dry [OUT]";
+const USAGE: &str = "usage: cargo xtask record take --out DIR --cwd FOLDER --tarae BIN [--size 166x32] [--config FILE] | record dry [OUT]";
 
 /// The take's surroundings in `home` (a folder of the take's own): tarae's config there — `config` (your config's
 /// text; None: none) with `llm.cost = false`, `llm.auto-cards = "off"` and, given one, `workspace.worktrees =
@@ -116,10 +122,14 @@ pub(crate) fn surroundings(
 }
 
 /// What `cargo run` (`cargo xtask`) sets for the program it runs, never your shell: left out of a take's tarae, whose
-/// runs would carry them into the take's own builds (and its preflight says each).
-fn cargo_runs_own(name: &std::ffi::OsStr) -> bool {
+/// runs would carry them into the take's own builds (and its preflight says each). rustup's proxy's own too: its
+/// `RUSTUP_TOOLCHAIN` is tarae's pinned one (measured: set for the program `cargo run` runs), which the take's
+/// project doesn't pin and its cloned rustup doesn't hold.
+pub(super) fn cargo_runs_own(name: &std::ffi::OsStr) -> bool {
     let n = name.to_string_lossy();
     n == "CARGO"
+        || n == "RUSTUP_TOOLCHAIN"
+        || n == "RUSTUP_TOOLCHAIN_SOURCE"
         || n.starts_with("CARGO_PKG_")
         || n.starts_with("CARGO_MANIFEST_")
         || matches!(
@@ -145,8 +155,7 @@ fn your_config_dir() -> Option<PathBuf> {
 
 /// `record take …` (the module's doc).
 pub(super) fn take(args: &[String]) -> Result<()> {
-    let (mut out, mut cwd, mut size, mut config, mut bin) =
-        (None, None, TAKE_SIZE, None, PathBuf::from("tarae"));
+    let (mut out, mut cwd, mut size, mut config, mut bin) = (None, None, TAKE_SIZE, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} wants a value — {USAGE}"));
@@ -155,15 +164,30 @@ pub(super) fn take(args: &[String]) -> Result<()> {
             "--cwd" => cwd = Some(PathBuf::from(value()?)),
             "--size" => size = parse_size(value()?)?,
             "--config" => config = Some(PathBuf::from(value()?)),
-            "--tarae" => bin = PathBuf::from(value()?),
+            "--tarae" => bin = Some(PathBuf::from(value()?)),
             other => return Err(format!("{other}: {USAGE}")),
         }
     }
     let out = out.ok_or_else(|| format!("--out DIR: where the take goes — {USAGE}"))?;
-    let cwd = cwd.ok_or_else(|| format!("--cwd FOLDER: the take's folder (~/Workspace/halil) — {USAGE}"))?;
+    let cwd =
+        cwd.ok_or_else(|| format!("--cwd FOLDER: the take's folder (/Users/Shared/halil) — {USAGE}"))?;
+    let bin = tarae_bin(bin.as_deref())?;
+    // (the build it is, said before anything is made: the runbook's "check once it's up" compares it with main's tip)
+    let version =
+        Command::new(&bin).arg("--version").output().map_err(|e| format!("{}: {e}", bin.display()))?;
+    if !version.status.success() {
+        return Err(format!(
+            "{} --version: {}",
+            bin.display(),
+            String::from_utf8_lossy(&version.stderr).trim()
+        ));
+    }
+    eprintln!("record take: {} — {}", String::from_utf8_lossy(&version.stdout).trim(), bin.display());
     folder_for_a_take(&cwd)?;
     let worktrees = Path::new(TAKE_WORKTREES);
     folder_for_a_take(worktrees)?;
+    eprintln!("record take: your Rust toolchain cloned into {} …", toolchain::TAKE_RUST);
+    let rust = toolchain::clone(&toolchain::Yours::here()?, Path::new(toolchain::TAKE_RUST))?;
     let config = config.or_else(|| your_config_dir().map(|d| d.join("config.toml")));
     let text = match &config {
         Some(f) => match std::fs::read_to_string(f) {
@@ -176,9 +200,10 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     let home = hands::fresh_folder(Path::new("/tmp"), "tarae-take")?;
     let linked = config.as_deref().and_then(Path::parent);
     let mut env = surroundings(&home, text.as_deref(), linked, Some(worktrees))?;
+    let own = homes_of_its_own(&home)?;
     let state = home.join("state");
-    std::fs::DirBuilder::new().mode(0o700).create(&state).map_err(|e| format!("{}: {e}", state.display()))?;
-    env.push(("XDG_STATE_HOME", state.clone().into()));
+    env.extend(own);
+    env.extend(rust.env);
     let mut cmd = Command::new(&bin);
     cmd.envs(env.iter().map(|(k, v)| (k, v)));
     // (a Claude Code session's marker, where the take is started from one: its claude is the take's own)
@@ -186,8 +211,13 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     without_cargo_runs(&mut cmd);
     eprintln!(
         "record take: its home {} — your config copied with llm.cost = false, auto-cards off and the checkouts in \
-         {TAKE_WORKTREES}, git as {GIT_NAME} <{GIT_MAIL}>, a state of its own; tarae in {}",
+         {TAKE_WORKTREES}, git as {GIT_NAME} <{GIT_MAIL}>, a state and data home of its own, Rust's {} and registry cloned into \
+         {} in {}{}; tarae in {}",
         home.display(),
+        rust.toolchain,
+        toolchain::TAKE_RUST,
+        crate::cut::run_duration(rust.took),
+        if rust.proxies.is_empty() { "" } else { " (rustup's proxies first on PATH)" },
         cwd.display()
     );
     let outer = Outer::stdio()?;
@@ -206,8 +236,40 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The take's state and data homes, new in `home` (0700, empty): no recent files, sessions or trust of yours, and no
+/// grammar you downloaded (`$XDG_DATA_HOME/tarae/grammars`) — a release build embeds only the core grammars, so the
+/// first `.rs` file raises the Rust grammar's card, as a first user meets it (the design session, 2026-11-11). The
+/// variables that give them.
+pub(crate) fn homes_of_its_own(home: &Path) -> Result<Vec<(&'static str, OsString)>> {
+    let mut env = Vec::new();
+    for (var, name) in [("XDG_STATE_HOME", "state"), ("XDG_DATA_HOME", "data")] {
+        let at = home.join(name);
+        std::fs::DirBuilder::new().mode(0o700).create(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+        env.push((var, at.into_os_string()));
+    }
+    Ok(env)
+}
+
+/// The tarae a take runs: `--tarae BIN`, a path to an executable file (made absolute: tarae starts in the take's
+/// folder) — never a bare name, which `PATH` would answer with whatever tarae is installed there (your
+/// `~/.cargo/bin/tarae` may be weeks old).
+pub(crate) fn tarae_bin(given: Option<&Path>) -> Result<PathBuf> {
+    let say = "--tarae BIN: the tarae the take runs, by its path — the release build of main's tip, as a first user \
+               gets it (`cargo build --release --bin tarae`: target/release/tarae), never one found on PATH";
+    let p = given.ok_or_else(|| format!("{say} — {USAGE}"))?;
+    if p.components().count() < 2 {
+        return Err(format!("{}: a name, not a path — {say}", p.display()));
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let m = std::fs::metadata(p).map_err(|e| format!("{}: {e} — {say}", p.display()))?;
+    if !m.is_file() || m.permissions().mode() & 0o111 == 0 {
+        return Err(format!("{}: not a program — {say}", p.display()));
+    }
+    std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()))
+}
+
 /// The take's folder: made where it isn't; refused where it holds anything (a take starts from an empty one).
-fn folder_for_a_take(cwd: &Path) -> Result<()> {
+pub(super) fn folder_for_a_take(cwd: &Path) -> Result<()> {
     match std::fs::read_dir(cwd) {
         Ok(mut d) => match d.next() {
             None => Ok(()),
