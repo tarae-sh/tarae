@@ -1,7 +1,39 @@
-//! `cargo xtask rain OUT.wav --len 12m [--kind soft|leaves|heavy] [--seed N]` — the full video's bed: rain, made from
-//! noise as the brush is (`.sb/full-video-rain-brief.md`; showcase's "The rain is made, not found", 2026-11-11).
-//! Stereo, 48 kHz, 16 bits, as long as asked — no loop, nothing to seam —, written a block at a time, never held
-//! whole; the same seed, the same bytes. Three layers, each made apart for the left and the right:
+//! `cargo xtask rain OUT.wav --len 12m [--kind forest|forest-sparse|forest-sparse-pat|forest-thick|soft|leaves|heavy]
+//! [--seed N]` — the full video's bed: rain, made from noise as the brush is (`.sb/full-video-rain-brief.md`;
+//! showcase's "The rain is made, not found", and round 3's forest drizzle, `.sb/full-video-rain-round3.md`, 2026-11-11,
+//! with round 4's fewer near drops and round 5's drop a bubble, `.sb/full-video-rain-round5.md`). Stereo, 48 kHz, 16
+//! bits, as long as asked — no loop, nothing to seam —, written a block at a time, never held whole; the same seed,
+//! the same bytes.
+//!
+//! **`forest`**, the default ("숲속 가랑비"), is a drizzle heard from inside a forest, in depth — each distance
+//! quieter than the one before. Every drop is the bubble it traps (`bubble`, van den Doel's model): a sine at 3 / r
+//! that rings a few milliseconds, dying as e^(−d·t) and sliding up as it dies, its amplitude as r^1.5 — a bigger
+//! drop lower and louder —, eased in so nothing clicks. A tone and not a tap: round 4's dull bursts of noise were "a
+//! keyboard".
+//!
+//! - **Near drops**, the ones you count: `Measure::pat_rate` a second (about 2.5; round 3's 7.5 came at a typist's
+//!   pace and "barely sounded like rain"), at `LEAVES` places that stay where they are (`surfaces`), each with its
+//!   own size of bubble (`NEAR_R`: 3.7 kHz down to 1.4 kHz); each strike's bubble a little apart (`STRIKE_R`), and a
+//!   third ring again, a smaller bubble 10–40 ms later (`rings`, `drop_of`). Their loudest 5 ms about 19 dB over the
+//!   hush at the median (`NEAR_DB`; round 4's 24).
+//! - **Mid drops**: `Measure::mid_rate` a second (4.5), tiny bubbles (`MID_R`) each of its own size, `Measure::mid_db`
+//!   under round 4's near pats (24–30 dB: about half sink into the hush, texture), less wide. Round 3's 19 a second,
+//!   8–10 dB under, all stood out: with its near pats, 20 drops a second over the hush; round 4's `forest` about 5.5
+//!   (`standing_out`).
+//! - **Drips**: `Measure::drip_rate` a second (0.3–1), big bubbles (`DRIP_R`: 1 kHz down to 500 Hz), from `SPOTS`
+//!   places to the sides; some heard twice, the drop and then its fall 60–120 ms later.
+//! - **The far hush**: the wash and the fine drops below, darker, at `HUSH_LUFS` in the file (`hush_gain`), where
+//!   round 3 had it — faint, not gone: single drops on silence sound like clicks in a void. The forest's gain is
+//!   fixed, round 3's (`FOREST_GAIN_DB`): fewer drops over the same hush measure quieter, the cut sets the level.
+//!
+//! The drizzle thickens and thins in how many drops fall (`Density`): by up to about a third over twenty to forty
+//! seconds. A drop is a tone (`a_drop_is_a_tone`: 10–90 % of its energy within 0.4 octaves), slides up
+//! (`a_drop_slides_up`), doesn't click (`a_drop_doesnt_click`) and a place isn't a note (`a_place_isnt_a_note`).
+//! **`forest-sparse`** has fewer near and mid drops still (`SPARSE` of them: 1.5 and 2.7 a second);
+//! **`forest-sparse-pat`** is it with a faint pat under each near drop (round 4's burst, `PAT_UNDER_DB` under the
+//! bubble: the drop landing on something); **`forest-thick`** falls half again as thick (`THICK`).
+//!
+//! The round-2 kinds (`soft`, `leaves`, `heavy`) are three layers, each made apart for the left and the right:
 //!
 //! - **The wash**, the far rain: pink noise between `Measure::wash_low` and 9 kHz, easing above 2.5 kHz, its level a
 //!   slow random walk (`Walk`) the same on both sides — a decibel or two over ten to twenty-five seconds, no period.
@@ -16,7 +48,7 @@
 //!   in, with a soft top of noise under 2 kHz (~5 ms), placed wide — dull, never a key (`a_near_drop_isnt_a_key`).
 //!
 //! Nothing under 120 Hz (a high-pass on the whole: a phone doesn't play it); no thunder, wind or birds (each an event
-//! a viewer reads as meaning something). Brought to about `LOUDNESS` by its own first `CALIBRATE_S` seconds, a soft
+//! a viewer reads as meaning something). Brought to about `Kind::loudness` by its own first `CALIBRATE_S` seconds, a soft
 //! knee keeping it under `CEILING` (the cut sets the level).
 //!
 //! `cargo xtask rain samples [DIR]` (`target/rain/`): each kind's `SAMPLE_S` seconds as WAV and as a viewer gets it
@@ -31,8 +63,9 @@ use std::time::Instant;
 use crate::Result;
 use crate::sound::{self, RATE};
 
-const USAGE: &str = "usage: cargo xtask rain OUT.wav --len 12m [--kind soft|leaves|heavy] [--seed N] | rain samples \
-                     [DIR] | rain figures FILE.wav …";
+const USAGE: &str = "usage: cargo xtask rain OUT.wav --len 12m [--kind \
+                     forest|forest-sparse|forest-sparse-pat|forest-thick|soft|leaves|heavy] [--seed N] | rain samples [DIR] | rain \
+                     figures FILE.wav …";
 
 /// The file's own ceiling (−6 dBFS): 6 dB left for the cut, which sets the level.
 const CEILING: f32 = 0.5;
@@ -40,19 +73,26 @@ const CEILING: f32 = 0.5;
 const KNEE: f32 = 0.35;
 /// Each kind's loudness before the cut levels it (LUFS, the two sides' power summed as BS.1770 does).
 const LOUDNESS: f32 = -27.0;
+/// The forest isn't brought to a loudness: its gain is round 3's (seed 1's, to −30 LUFS), its far hush where round 3
+/// had it in the file (`HUSH_LUFS`, alone). Fewer drops over the same hush measure quieter; the cut sets the level.
+const FOREST_GAIN_DB: f32 = -21.7;
+const HUSH_LUFS: f32 = -44.0;
 /// The level is found on the file's own first seconds, as made.
 const CALIBRATE_S: u32 = 8;
 /// Made a block at a time, a second each.
 const BLOCK: usize = RATE as usize;
 /// Made and dropped first, so its filters and its walk have settled when the file starts.
 const PREROLL: usize = RATE as usize / 2;
-/// What a drop leaves past its block: room for the longest (a near drop's 60 ms with its far side's delay).
+/// What a drop leaves past its block: room for the longest (a drip's fall, up to 120 ms after its block's last drip,
+/// and its bubble's 220 ms to −60 dB, a 6.9 mm one's, with its far side's delay).
 /// (A fine drop leaves nothing: its envelope runs in the sample loop.)
-const RING: usize = BLOCK + RATE as usize / 4;
+const RING: usize = BLOCK + RATE as usize / 2;
 /// The walk steps every 10 ms, its gain eased between.
 const CONTROL: u32 = RATE / 100;
 /// The samples the user hears: each kind alone this long.
 const SAMPLE_S: u32 = 25;
+/// Their seed: its density walk near the middle over their 25 s (×0.93–×1.06; seed 1's sat at ×0.80–×0.99).
+const SEED: u64 = 38;
 const R: f64 = RATE as f64;
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -73,7 +113,7 @@ pub fn run(args: &[String]) -> Result<()> {
 }
 
 fn make(out: &str, args: &[String]) -> Result<()> {
-    let (mut frames, mut kind, mut seed) = (None, Kind::Leaves, 1u64);
+    let (mut frames, mut kind, mut seed) = (None, Kind::Forest, 1u64);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("rain: {a} needs a value\n{USAGE}"));
@@ -133,6 +173,14 @@ fn frames_of(s: &str) -> Result<u64> {
 /// The same layers at different measures, for the user's ears.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
+    /// Round 3: a drizzle heard from inside a forest — "숲속 가랑비"; round 4's fewer near drops, round 5's bubbles.
+    Forest,
+    /// The forest with fewer near drops still (`SPARSE`): how often a near one falls is the ears' choice.
+    Sparse,
+    /// `forest-sparse` with a faint pat under each near drop (`PAT_UNDER_DB`): the drop landing on something.
+    SparsePat,
+    /// The forest, half again as thick (`THICK`): how much rain is the ears' choice.
+    Thick,
     /// Wash-led, a fine steady rain.
     Soft,
     /// More patter, and the near drops: "비오는 자연의 소리".
@@ -141,9 +189,16 @@ enum Kind {
     Heavy,
 }
 
-const KINDS: [Kind; 3] = [Kind::Soft, Kind::Leaves, Kind::Heavy];
+const KINDS: [Kind; 7] =
+    [Kind::Forest, Kind::Sparse, Kind::SparsePat, Kind::Thick, Kind::Soft, Kind::Leaves, Kind::Heavy];
+
+/// How much thicker `forest-thick` falls.
+const THICK: f64 = 1.5;
+/// `forest-sparse`'s near and mid drops against `forest`'s (the drips as they are).
+const SPARSE: f64 = 0.6;
 
 /// A kind's measures. The levels are each layer's own, before the whole is brought to `LOUDNESS`.
+#[derive(Clone, Copy)]
 struct Measure {
     wash: f64,
     /// Fine drops a second, on each side.
@@ -161,11 +216,24 @@ struct Measure {
     /// Near drops a second, both sides together.
     near_rate: f64,
     near: f64,
+    /// The forest's near drops a second, both sides together, as the density stands at 1.
+    pat_rate: f64,
+    /// Mid drops a second, and how far under round 4's near pats (dB, at random).
+    mid_rate: f64,
+    mid_db: [f64; 2],
+    /// A pat under each near drop, this far under its bubble (dB), or none.
+    under_db: Option<f64>,
+    /// Drips a second (each heard twice, `DRIP_PAIR` of them).
+    drip_rate: f64,
 }
 
 impl Kind {
     fn name(self) -> &'static str {
         match self {
+            Kind::Forest => "forest",
+            Kind::Sparse => "forest-sparse",
+            Kind::SparsePat => "forest-sparse-pat",
+            Kind::Thick => "forest-thick",
             Kind::Soft => "soft",
             Kind::Leaves => "leaves",
             Kind::Heavy => "heavy",
@@ -173,14 +241,51 @@ impl Kind {
     }
 
     fn parse(s: &str) -> Result<Kind> {
-        KINDS
-            .into_iter()
-            .find(|k| k.name() == s)
-            .ok_or_else(|| format!("rain: no kind {s:?} (soft, leaves, heavy)"))
+        KINDS.into_iter().find(|k| k.name() == s).ok_or_else(|| {
+            format!("rain: no kind {s:?} (forest, forest-sparse, forest-sparse-pat, forest-thick, soft, leaves, heavy)")
+        })
+    }
+
+    /// Its file's loudness before the cut levels it (LUFS); none for the forest, whose gain is fixed
+    /// (`FOREST_GAIN_DB`).
+    fn loudness(self) -> Option<f32> {
+        match self.measure().pat_rate > 0.0 {
+            true => None,
+            false => Some(LOUDNESS),
+        }
     }
 
     fn measure(self) -> Measure {
+        // (the far hush's level is set by `hush_gain`; the round-2 kinds' near drops are the forest's drips)
+        // (round 3's 7.5 near pats a second, a typist's pace under a video of typing: "so often it barely sounds
+        // like rain")
+        let forest = Measure {
+            wash: 1.0,
+            wash_low: 250.0,
+            low_mids: 0.0,
+            top: -8.0,
+            fine_rate: 12_000.0,
+            fine: 0.05,
+            pat_rate: 2.5,
+            // (at 15–25 a second and 8–10 dB under the near ones, every mid pat stood out: round 3's 20 drops a
+            // second over the hush; 24–30 under, about half sink into it, texture)
+            mid_rate: 4.5,
+            mid_db: [24.0, 30.0],
+            drip_rate: 0.5,
+            ..NO_PATS
+        };
         match self {
+            Kind::Forest => forest,
+            Kind::Sparse => {
+                Measure { pat_rate: forest.pat_rate * SPARSE, mid_rate: forest.mid_rate * SPARSE, ..forest }
+            }
+            Kind::SparsePat => Measure { under_db: Some(PAT_UNDER_DB), ..Kind::Sparse.measure() },
+            Kind::Thick => Measure {
+                pat_rate: forest.pat_rate * THICK,
+                mid_rate: forest.mid_rate * THICK,
+                drip_rate: forest.drip_rate * THICK,
+                ..forest
+            },
             Kind::Soft => Measure {
                 wash: 1.0,
                 wash_low: 300.0,
@@ -192,6 +297,7 @@ impl Kind {
                 clear: 0.54,
                 near_rate: 0.0,
                 near: 0.0,
+                ..NO_PATS
             },
             Kind::Leaves => Measure {
                 wash: 0.7,
@@ -204,6 +310,7 @@ impl Kind {
                 clear: 0.58,
                 near_rate: 2.5,
                 near: 2.2,
+                ..NO_PATS
             },
             Kind::Heavy => Measure {
                 wash: 1.0,
@@ -216,10 +323,30 @@ impl Kind {
                 clear: 0.83,
                 near_rate: 3.0,
                 near: 2.5,
+                ..NO_PATS
             },
         }
     }
 }
+
+/// The round-2 kinds' rest: no pats.
+const NO_PATS: Measure = Measure {
+    wash: 0.0,
+    fine_rate: 0.0,
+    fine: 0.0,
+    wash_low: 0.0,
+    low_mids: 0.0,
+    top: 0.0,
+    clear_rate: 0.0,
+    clear: 0.0,
+    near_rate: 0.0,
+    near: 0.0,
+    pat_rate: 0.0,
+    mid_rate: 0.0,
+    mid_db: [0.0; 2],
+    under_db: None,
+    drip_rate: 0.0,
+};
 
 /// Which layers sound: all, but in the tests and the figures of each alone.
 #[derive(Clone, Copy)]
@@ -228,10 +355,16 @@ struct Layers {
     fine: bool,
     clear: bool,
     near: bool,
+    /// The forest's near drops (and the pats under them, where there are), and its mid ones.
+    pats: bool,
+    mids: bool,
+    drips: bool,
 }
 
-const ALL: Layers = Layers { wash: true, fine: true, clear: true, near: true };
-const NONE: Layers = Layers { wash: false, fine: false, clear: false, near: false };
+const ALL: Layers =
+    Layers { wash: true, fine: true, clear: true, near: true, pats: true, mids: true, drips: true };
+const NONE: Layers =
+    Layers { wash: false, fine: false, clear: false, near: false, pats: false, mids: false, drips: false };
 
 // ── Its own small random source and filters ──────────────────────────────────────────────────────────────────
 
@@ -591,6 +724,374 @@ fn near_drop(what: &mut Rng, ring: &mut [Vec<f64>; 2], start: u64, level: f64) {
     }
 }
 
+// ── The forest's drops: bubbles ──────────────────────────────────────────────────────────────────────────────
+//
+// (round 4's drop, a short dull burst of noise, was "a keyboard": noise that starts and stops is a tap, whatever its
+// colour. What the ear takes for a water drop is the bubble it traps — van den Doel's model of liquid sounds.)
+
+/// The bubbles' radii (m), smallest to largest: a near drop's place's (3.7 kHz down to 1.4 kHz), a mid drop's, tiny
+/// (5 to 3 kHz), and a drip's place's (1 kHz down to 500 Hz).
+const NEAR_R: [f64; 2] = [0.0008, 0.0022];
+const MID_R: [f64; 2] = [0.0006, 0.0010];
+const DRIP_R: [f64; 2] = [0.003, 0.006];
+/// Each strike's bubble against its place's (up to ±15 %): never twice one pitch — a fixed pitch is a xylophone.
+const STRIKE_R: f64 = 0.15;
+/// How far a bubble's pitch rises as it dies: f₀ · (1 + `BUBBLE_RISE` · d · t), about a tenth by a third of its
+/// amplitude.
+const BUBBLE_RISE: f64 = 0.1;
+/// A bubble's onset from zero (s): nothing clicks — its first 0.3 ms under 2 % of its energy
+/// (`a_drop_doesnt_click`), which the model's 0.3–0.5 ms kept for the larger bubbles alone…
+const BUBBLE_ONSET_S: [f64; 2] = [0.0003, 0.0005];
+/// …so at least this many of its own time constants (1/d) too: the smallest ease in as gently (at 0.4, a 0.6 mm
+/// bubble's first 0.3 ms held 2.35 %; at 0.6, the most is 0.9 %).
+const BUBBLE_ONSET_TAU: f64 = 0.6;
+/// The bubble the near drops' level is read on: 1.5 mm, 2 kHz.
+const BUBBLE_REF_R: f64 = 0.0015;
+/// The share of near drops that ring again (a second, smaller bubble — the stutter much of what sounds wet), of those
+/// the share that ring a third time, how long after the bubble before (s) and how much smaller (its radius ×).
+const STUTTER: f64 = 1.0 / 3.0;
+const STUTTER_THIRD: f64 = 1.0 / 3.0;
+const STUTTER_S: [f64; 2] = [0.010, 0.040];
+const STUTTER_R: [f64; 2] = [0.55, 0.8];
+/// A near drop's loudest 5 ms on its louder side, a 1.5 mm bubble's, against round 4's near pats' (dB): a tone stands
+/// out more than a noise of the same peak. (At −6 the median near drop stood 16 dB over the hush, the smaller ones
+/// quieter by their size: −3 puts it at about 19, 5 dB under round 4's 24.)
+const NEAR_DB: f64 = -3.0;
+/// The pat under a near drop, in the sample that has one (`Kind::SparsePat`): round 4's burst, under the bubble (dB).
+const PAT_UNDER_DB: f64 = 12.0;
+
+/// A pat's leaf, from the smallest to the largest: its pitch (Hz) and its length (s). Each a little apart from its
+/// size's (±10 %, ±15 %).
+const PAT_PITCH: [f64; 2] = [3_000.0, 800.0];
+const PAT_LEN_S: [f64; 2] = [0.008, 0.025];
+/// A pat's onset (s), whatever its leaf: eased in, never instant.
+const PAT_ATTACK_S: [f64; 2] = [0.0014, 0.0024];
+/// What a drop's level is read by: its loudest 5 ms.
+const PAT_WINDOW: usize = RATE as usize / 200;
+/// The low-pass over a pat (Hz, fourth order): dull.
+const NEAR_TOP: f64 = 2_500.0;
+/// The places near drops fall at, and the places drips fall from: a place's fixed surfaces.
+const LEAVES: usize = 16;
+const SPOTS: usize = 4;
+/// A near drop under its place's loudest (dB, at random): each strike a little apart.
+const NEAR_SPREAD_DB: f64 = 3.0;
+/// How wide the mid drops are placed against the near ones.
+const MID_WIDTH: f64 = 0.6;
+/// A drip against a near drop's loudest (dB, round 4's, so down with them by `NEAR_DB`); the share of drips whose
+/// fall is heard after them, how long after (s) and how much under (dB).
+/// (at −1–+2, at their length, they were nearly as loud as all the pats together)
+const DRIP_DB: [f64; 2] = [-5.0, -2.0];
+const DRIP_PAIR: f64 = 0.4;
+const DRIP_FALL_S: [f64; 2] = [0.06, 0.12];
+const DRIP_FALL_DB: [f64; 2] = [2.0, 5.0];
+/// A near pat's leaf, from the smallest to the largest: each band-pass section's Q and its ring's share of the
+/// energy — round 4's short dull burst with a hint of pitch, now only the faint pat under a drop (`PAT_UNDER_DB`).
+const NEAR_Q: [f64; 2] = [0.45, 0.6];
+const NEAR_TONE: [f64; 2] = [0.06, 0.1];
+
+/// What a pat on a leaf sounds like (round 4's near pat; now the faint pat under a near drop, where there is one).
+#[derive(Clone, Copy)]
+struct Leaf {
+    pitch: f64,
+    len_s: f64,
+    q: f64,
+    /// The share of its energy its ring has.
+    tone: f64,
+}
+
+impl Leaf {
+    /// A leaf of a size at random: a bigger one lower, longer and ringing more; broad and barely ringing (`NEAR_Q`,
+    /// `NEAR_TONE`).
+    fn near(what: &mut Rng) -> Leaf {
+        let size = what.f();
+        let along = |[a, b]: [f64; 2]| a + (b - a) * size;
+        Leaf {
+            pitch: (PAT_PITCH[0] * (PAT_PITCH[1] / PAT_PITCH[0]).powf(size) * what.range(0.9, 1.1))
+                .clamp(PAT_PITCH[1], PAT_PITCH[0]),
+            len_s: (along(PAT_LEN_S) * what.range(0.85, 1.15)).clamp(PAT_LEN_S[0], PAT_LEN_S[1]),
+            q: along(NEAR_Q) * what.range(0.85, 1.15),
+            tone: along(NEAR_TONE) * what.range(0.85, 1.15),
+        }
+    }
+}
+
+/// A place drops fall at: where (−1 left, 1 right), the size of the bubble a drop there traps (m, its radius) and the
+/// leaf it lands on.
+#[derive(Clone, Copy)]
+struct Place {
+    pan: f64,
+    r: f64,
+    leaf: Leaf,
+}
+
+/// The place's surfaces for `seed`: the `LEAVES` places the near drops fall at, spread across the stereo picture (one
+/// to each of as many equal parts, somewhere in its middle), and the `SPOTS` places drips fall from, to the sides.
+/// Each keeps its own size of bubble: the near ones one to each of as many equal parts of `NEAR_R` (by pitch), the
+/// drips' anywhere in `DRIP_R`. (The places and leaves round 4's, the sizes from a stream of their own.)
+fn surfaces(seed: u64) -> (Vec<Place>, Vec<Place>) {
+    let mut what = Rng::new(seed, 18);
+    let mut size = Rng::new(seed, 24);
+    let spread = |what: &mut Rng, i: usize, n: usize, wide: f64| {
+        -wide + 2.0 * wide * (i as f64 + what.range(0.2, 0.8)) / n as f64
+    };
+    let between = |[a, b]: [f64; 2], u: f64| a * (b / a).powf(u);
+    let mut places: Vec<Place> = (0..LEAVES)
+        .map(|i| {
+            let pan = spread(&mut what, i, LEAVES, 0.95);
+            let r = between(NEAR_R, (i as f64 + size.range(0.2, 0.8)) / LEAVES as f64);
+            Place { pan, r, leaf: Leaf::near(&mut what) }
+        })
+        .collect();
+    // (their order shuffled, so a leaf's size doesn't follow its place; then the bubbles', so neither does a drop's)
+    for i in (1..places.len()).rev() {
+        let j = (what.f() * (i + 1) as f64) as usize % (i + 1);
+        let (a, b) = (places[i].pan, places[j].pan);
+        (places[i].pan, places[j].pan) = (b, a);
+    }
+    for i in (1..places.len()).rev() {
+        let j = (size.f() * (i + 1) as f64) as usize % (i + 1);
+        let (a, b) = (places[i].r, places[j].r);
+        (places[i].r, places[j].r) = (b, a);
+    }
+    // (out to the sides, one side then the other: in the middle, a drip's low pitch was nearly the same in both ears —
+    // its layer's left and right correlated 0.69)
+    let spots = (0..SPOTS)
+        .map(|i| {
+            let pan = if i % 2 == 0 { -1.0 } else { 1.0 } * what.range(0.5, 0.95);
+            Place { pan, r: between(DRIP_R, size.f()), leaf: Leaf::near(&mut what) }
+        })
+        .collect();
+    (places, spots)
+}
+
+/// A bubble of radius `r` (m): its pitch as it starts (Hz) and how fast it dies (e^(−d·t), d a second).
+fn bubble_pitch(r: f64) -> f64 {
+    3.0 / r
+}
+
+fn bubble_decay(r: f64) -> f64 {
+    0.13 / r + 0.0072 * r.powf(-1.5)
+}
+
+/// One bubble of radius `r`, alone: a sine at `bubble_pitch` from zero over `onset` (s, raised-cosine), dying as
+/// e^(−d·t) and rising in pitch as it dies (`BUBBLE_RISE`), till −60 dB; its amplitude (r / `BUBBLE_REF_R`)^1.5 — a
+/// bigger drop lower and louder.
+fn bubble(r: f64, onset: f64) -> Vec<f64> {
+    let (f0, d) = (bubble_pitch(r), bubble_decay(r));
+    let a = (r / BUBBLE_REF_R).powf(1.5);
+    let onset = onset.max(BUBBLE_ONSET_TAU / d) * R;
+    let len = (onset + 6.9 / d * R).ceil() as usize;
+    let mut phase = 0.0f64;
+    (0..len)
+        .map(|k| {
+            let (n, t) = (k as f64, k as f64 / R);
+            let ease = if n < onset { 0.5 - 0.5 * (std::f64::consts::PI * n / onset).cos() } else { 1.0 };
+            let x = a * ease * (-d * t).exp() * phase.sin();
+            phase += std::f64::consts::TAU * f0 * (1.0 + BUBBLE_RISE * d * t) / R;
+            x
+        })
+        .collect()
+}
+
+/// How many bubbles a near drop rings: once, or again (`STUTTER`), or a third time (`STUTTER_THIRD` of those).
+fn rings(what: &mut Rng) -> usize {
+    match what.f() {
+        u if u < STUTTER * STUTTER_THIRD => 3,
+        u if u < STUTTER => 2,
+        _ => 1,
+    }
+}
+
+/// One drop where bubbles of radius `r` form: its bubble a little apart from the place's (`STRIKE_R`), and `rings`
+/// in all, each next one smaller — higher and, as its size has it, quieter — `STUTTER_S` after the one before.
+fn drop_of(what: &mut Rng, r: f64, rings: usize) -> Vec<f64> {
+    let mut r = r * what.range(1.0 - STRIKE_R, 1.0 + STRIKE_R);
+    let (mut x, mut at) = (Vec::new(), 0usize);
+    for i in 0..rings {
+        if i > 0 {
+            at += (what.range(STUTTER_S[0], STUTTER_S[1]) * R).round() as usize;
+            r *= what.range(STUTTER_R[0], STUTTER_R[1]);
+        }
+        let b = bubble(r, what.range(BUBBLE_ONSET_S[0], BUBBLE_ONSET_S[1]));
+        x.resize(x.len().max(at + b.len()), 0.0);
+        for (k, v) in b.iter().enumerate() {
+            x[at + k] += v;
+        }
+    }
+    x
+}
+
+/// The gain that puts a near drop's loudest 5 ms, a `BUBBLE_REF_R` bubble's, at `NEAR_DB`: others louder or quieter
+/// by their size.
+fn near_gain() -> f64 {
+    let mid = (BUBBLE_ONSET_S[0] + BUBBLE_ONSET_S[1]) / 2.0;
+    10f64.powf(NEAR_DB / 20.0) / loudest(&bubble(BUBBLE_REF_R, mid), PAT_WINDOW)
+}
+
+/// A fourth-order Butterworth low-pass: two sections.
+fn low_pass(f: f64) -> [Biquad; 2] {
+    [Biquad::new(Shape::LowPass, f, 0.541, 0.0), Biquad::new(Shape::LowPass, f, 1.307, 0.0)]
+}
+
+/// One strike on `leaf` as it comes, alone and at no level yet: noise eased in over 1.4–2.4 ms and dying over the
+/// leaf's length (e⁻² by its end, its last fifth faded out), rung through the leaf — two band-pass sections at its
+/// pitch, a little resonance — and under its low-pass: dull. With it the leaf's own ring, a damped tone at its pitch
+/// (`Leaf::tone` of the energy): noise alone peaked ~10 dB over its loudest 5 ms. Struck again, a leaf sounds like
+/// itself: its pitch ±3 %, its length ±8 %.
+fn pat_made(what: &mut Rng, leaf: &Leaf) -> Vec<f64> {
+    let f = leaf.pitch * what.range(0.97, 1.03);
+    let len = leaf.len_s * what.range(0.92, 1.08) * R;
+    let (q, tone) = (leaf.q, leaf.tone);
+    let attack = what.range(PAT_ATTACK_S[0], PAT_ATTACK_S[1]) * R;
+    // (e⁻³ by its end, the shortest leaves held 90 % of their energy in 2.7 ms: a tick)
+    let (tau, fade) = (len / 2.0, 0.8 * len);
+    let mut dull = low_pass(NEAR_TOP);
+    let [t0, t1] = low_pass(NEAR_TOP);
+    let mut leaf = [Biquad::new(Shape::BandPass, f, q, 0.0), Biquad::new(Shape::BandPass, f, q, 0.0), t0, t1];
+    let phase = what.range(0.0, std::f64::consts::TAU);
+    let ease = |x: f64| 0.5 - 0.5 * (std::f64::consts::PI * x).cos();
+    // (its envelope's length, and 5 ms for the leaf to ring out)
+    let (mut noise, mut ring) = (Vec::new(), Vec::new());
+    for k in 0..(len + 0.005 * R) as usize {
+        let t = k as f64;
+        let env = match t {
+            t if t < attack => ease(t / attack),
+            t if t < len => (-(t - attack) / tau).exp() * ease(((len - t) / (len - fade)).min(1.0)),
+            _ => 0.0,
+        };
+        let n = if env > 0.0 { what.gauss() * env } else { 0.0 };
+        noise.push(through(&mut leaf, n));
+        ring.push(through(&mut dull, (phase + std::f64::consts::TAU * f * t / R).sin() * env));
+    }
+    let energy = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let (a, b) = ((1.0 - tone).sqrt() / energy(&noise), tone.sqrt() / energy(&ring));
+    noise.iter().zip(&ring).map(|(n, t)| n * a + t * b).collect()
+}
+
+/// The least time (ms) that may hold 90 % of a pat's energy, and the least onset (ms): over the tests' 3 and 1.
+const PAT_SPAN_MS: f64 = 3.2;
+const PAT_ONSET_MS: f64 = 1.1;
+
+/// Whether a strike as it came is a pat: its energy not bunched into a tick, its onset not instant.
+fn is_a_pat(x: &[f64]) -> bool {
+    span90(x) >= PAT_SPAN_MS && onset(x) >= PAT_ONSET_MS
+}
+
+/// One strike on `leaf` (`pat_made`), made again while it isn't a pat: noise at the leaf's pitch beats against its
+/// ring, and about once in a hundred strikes the two add up in one short burst (2.6 ms, each alone 4.3 and 5.2) or
+/// a noise peak comes early. (After 64 tries, the last — never seen.)
+fn pat_alone(what: &mut Rng, leaf: &Leaf) -> Vec<f64> {
+    let mut x = pat_made(what, leaf);
+    for _ in 0..64 {
+        if is_a_pat(&x) {
+            break;
+        }
+        x = pat_made(what, leaf);
+    }
+    x
+}
+
+/// A drop's onset (ms): from where its envelope (0.5 ms RMS) first reaches a tenth of its peak to its peak.
+fn onset(x: &[f64]) -> f64 {
+    let w = RATE as usize / 2_000;
+    let (mut sum, mut env) = (0.0f64, Vec::with_capacity(x.len()));
+    for (i, v) in x.iter().enumerate() {
+        sum += v * v;
+        if i >= w {
+            sum -= x[i - w] * x[i - w];
+        }
+        env.push(sum.max(0.0));
+    }
+    let (peak_at, peak) =
+        env.iter().enumerate().fold((0, 0.0), |b, (i, e)| if *e > b.1 { (i, *e) } else { b });
+    // (a tenth of its amplitude: a hundredth of its power)
+    let from = env.iter().position(|e| *e >= 0.01 * peak).unwrap_or(0);
+    (peak_at - from) as f64 * 1_000.0 / R
+}
+
+/// The RMS of `x`'s loudest `w` samples in a row.
+fn loudest(x: &[f64], w: usize) -> f64 {
+    let (mut sum, mut most) = (0.0f64, 0.0f64);
+    for (i, v) in x.iter().enumerate() {
+        sum += v * v;
+        if i >= w {
+            sum -= x[i - w] * x[i - w];
+        }
+        most = most.max(sum);
+    }
+    (most / w.min(x.len()).max(1) as f64).sqrt()
+}
+
+/// A pat's place, −1 (left) to 1 (right), from `u` in [0, 1): spread wide, more to the sides than the middle.
+fn wide(u: f64) -> f64 {
+    let p = 2.0 * u - 1.0;
+    p.signum() * p.abs().powf(0.6)
+}
+
+/// One strike `x` into the ring at `start`, at `pan` (constant power), the quieter side up to 0.6 ms late, its
+/// loudest 5 ms on its louder side at `level` — heard where it falls.
+fn place(ring: &mut [Vec<f64>; 2], start: u64, x: &[f64], level: f64, pan: f64) {
+    place_as(ring, start, x, level / loudest(x, PAT_WINDOW), pan);
+}
+
+/// As `place`, but `x` times `a` on its louder side, whatever its level.
+fn place_as(ring: &mut [Vec<f64>; 2], start: u64, x: &[f64], a: f64, pan: f64) {
+    let theta = (pan + 1.0) * std::f64::consts::FRAC_PI_4;
+    let gain = [theta.cos(), theta.sin()];
+    let near = usize::from(pan > 0.0);
+    let far = gain[1 - near] / gain[near];
+    let late = (pan.abs() * 0.0006 * R).round() as u64;
+    for (k, v) in x.iter().enumerate() {
+        let k = k as u64;
+        ring[near][ring_at(start + k)] += v * a;
+        ring[1 - near][ring_at(start + k + late)] += v * a * far;
+    }
+}
+
+/// How thick the drizzle falls: a factor on the drops' rates, an Ornstein–Uhlenbeck walk stepped once a block (a
+/// second), smoothed twice — thicker or thinner by up to about a third over twenty to forty seconds, no period.
+struct Density {
+    rng: Rng,
+    x: f64,
+    y: [f64; 2],
+}
+
+impl Density {
+    /// How long it takes to drift back (s), and its smoothing (s).
+    const BACK_S: f64 = 20.0;
+    const SMOOTH_S: f64 = 6.0;
+    /// The most it thickens (×1.3) or thins (÷1.3), as a logarithm.
+    const MOST: f64 = 0.262;
+
+    /// From the middle, so a file starts at the drizzle's own measure (from a draw, seed 1's sat at ×0.77 for the
+    /// whole of its sample).
+    fn new(rng: Rng) -> Density {
+        Density { rng, x: 0.0, y: [0.0; 2] }
+    }
+
+    /// Its factor after one more second.
+    fn step(&mut self) -> f64 {
+        let dt = 1.0;
+        self.x += -self.x * dt / Density::BACK_S + (2.0 * dt / Density::BACK_S).sqrt() * self.rng.gauss();
+        // (smoothed once, a second's step was up to 0.1 of the rate)
+        self.y[0] += (self.x - self.y[0]) * dt / Density::SMOOTH_S;
+        self.y[1] += (self.y[0] - self.y[1]) * dt / Density::SMOOTH_S;
+        (Density::MOST * (1.5 * self.y[1]).tanh()).exp()
+    }
+}
+
+/// The far hush's gain: the wash and the fine drops, read on the same seed's first seconds as made, brought to
+/// `HUSH_LUFS` in the file at the forest's gain — round 3's far "쏴", whatever drops fall over it.
+fn hush_gain(kind: Kind, seed: u64) -> f64 {
+    let secs = 4;
+    let mut rain = Rain::with(kind.measure(), seed, Layers { wash: true, fine: true, ..NONE }, 1.0, true);
+    let (mut l, mut r) = (vec![0.0f32; secs * BLOCK], vec![0.0f32; secs * BLOCK]);
+    for (l, r) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
+        rain.block(l, r);
+    }
+    f64::from(10f32.powf((HUSH_LUFS - FOREST_GAIN_DB - stereo_lufs(&l, &r)) / 20.0))
+}
+
 /// The rain as made, before its level: a block at a time.
 struct Rain {
     m: Measure,
@@ -604,14 +1105,44 @@ struct Rain {
     clear_what: [Rng; 2],
     near: Arrivals,
     near_what: Rng,
+    /// The places the near drops fall at, and the places drips fall from.
+    places: Vec<Place>,
+    spots: Vec<Place>,
+    /// The pats under the near drops' own draws: the drops the same with them or without.
+    under_what: Rng,
+    /// `near_gain`, made once.
+    near_gain: f64,
+    near_pats: Arrivals,
+    mid_pats: Arrivals,
+    drips: Arrivals,
+    pat_what: Rng,
+    /// The near drops' own draws: the mid drops and the drips the same whatever their rate.
+    leaf_what: Rng,
+    density: Density,
+    /// The density held at 1 (while `hush_gain` reads the pats).
+    steady: bool,
+    /// The far hush's gain on the wash and the fine drops (`hush_gain`); 1 without pats.
+    hush: f64,
+    /// Made since the pre-roll: near drops, mid drops, drips (one heard twice, once).
+    counts: [u64; 3],
+    /// The density's least and most since the pre-roll.
+    densities: [f64; 2],
     ring: [Vec<f64>; 2],
     floor: [[Biquad; 2]; 2],
 }
 
 impl Rain {
     fn new(kind: Kind, seed: u64, on: Layers) -> Rain {
-        let m = kind.measure();
+        let hush = match kind.measure().pat_rate > 0.0 {
+            true => hush_gain(kind, seed),
+            false => 1.0,
+        };
+        Rain::with(kind.measure(), seed, on, hush, false)
+    }
+
+    fn with(m: Measure, seed: u64, on: Layers, hush: f64, steady: bool) -> Rain {
         let s = |stream| Rng::new(seed, stream);
+        let (places, spots) = surfaces(seed);
         let mut rain = Rain {
             wash: [Wash::new(&m, s(1)), Wash::new(&m, s(2))],
             walk: Walk::new(s(3)),
@@ -623,6 +1154,20 @@ impl Rain {
             clear_what: [s(6), s(7)],
             near: Arrivals::new(s(8), m.near_rate),
             near_what: s(9),
+            places,
+            spots,
+            under_what: s(23),
+            near_gain: near_gain(),
+            near_pats: Arrivals::new(s(16), m.pat_rate),
+            mid_pats: Arrivals::new(s(19), m.mid_rate),
+            drips: Arrivals::new(s(20), m.drip_rate),
+            pat_what: s(17),
+            leaf_what: s(22),
+            density: Density::new(s(21)),
+            steady,
+            hush,
+            counts: [0; 3],
+            densities: [f64::INFINITY, 0.0],
             ring: [vec![0.0; RING], vec![0.0; RING]],
             floor: [high_pass(120.0), high_pass(120.0)],
             m,
@@ -631,6 +1176,7 @@ impl Rain {
         };
         let mut skip = vec![0.0f32; PREROLL];
         rain.block(&mut skip.clone(), &mut skip);
+        (rain.counts, rain.densities) = ([0; 3], [f64::INFINITY, 0.0]);
         rain
     }
 
@@ -656,6 +1202,65 @@ impl Rain {
                 near_drop(&mut self.near_what, &mut self.ring, at, self.m.near);
             }
         }
+        // (the drizzle thickens and thins in how many drops fall, a step a block)
+        let d = if self.steady { 1.0 } else { self.density.step() };
+        self.densities = [self.densities[0].min(d), self.densities[1].max(d)];
+        self.near_pats.rate = self.m.pat_rate * d;
+        self.mid_pats.rate = self.m.mid_rate * d;
+        self.drips.rate = self.m.drip_rate * d;
+        let db = |db: f64| 10f64.powf(db / 20.0);
+        // (each kind of drop drawn whether it sounds or not, so the others are the same with it or without)
+        // (near: at the place's own size of bubble, each strike a little apart)
+        while let Some(at) = self.near_pats.take(until) {
+            let w = &mut self.leaf_what;
+            let at_place = self.places[(w.f() * LEAVES as f64) as usize % LEAVES];
+            let level = db(-w.range(0.0, NEAR_SPREAD_DB));
+            let n = rings(w);
+            let x = drop_of(w, at_place.r, n);
+            let a = level * swell * self.near_gain;
+            if self.on.pats {
+                place_as(&mut self.ring, at, &x, a, at_place.pan);
+            }
+            if let Some(under) = self.m.under_db {
+                let pat = pat_alone(&mut self.under_what, &at_place.leaf);
+                if self.on.pats {
+                    let level = loudest(&x, PAT_WINDOW) * a * db(-under);
+                    place(&mut self.ring, at, &pat, level, at_place.pan);
+                }
+            }
+            self.counts[0] += 1;
+        }
+        // (mid: further, so quieter and less wide, tiny bubbles, each of its own size)
+        while let Some(at) = self.mid_pats.take(until) {
+            let w = &mut self.pat_what;
+            let pan = MID_WIDTH * wide(w.f());
+            let r = MID_R[0] * (MID_R[1] / MID_R[0]).powf(w.f());
+            let level = db(-w.range(self.m.mid_db[0], self.m.mid_db[1]));
+            let x = bubble(r, w.range(BUBBLE_ONSET_S[0], BUBBLE_ONSET_S[1]));
+            if self.on.mids {
+                place(&mut self.ring, at, &x, level * swell, pan);
+            }
+            self.counts[1] += 1;
+        }
+        while let Some(at) = self.drips.take(until) {
+            let w = &mut self.pat_what;
+            let spot = self.spots[(w.f() * SPOTS as f64) as usize % SPOTS];
+            let level = db(NEAR_DB + w.range(DRIP_DB[0], DRIP_DB[1]));
+            let x = drop_of(w, spot.r, 1);
+            if self.on.drips {
+                place(&mut self.ring, at, &x, level * swell, spot.pan);
+            }
+            self.counts[2] += 1;
+            // (some heard twice: the drop, then its fall — one drip)
+            if w.f() < DRIP_PAIR {
+                let after = (w.range(DRIP_FALL_S[0], DRIP_FALL_S[1]) * R).round() as u64;
+                let level = level * db(-w.range(DRIP_FALL_DB[0], DRIP_FALL_DB[1]));
+                let x = drop_of(w, spot.r, 1);
+                if self.on.drips {
+                    place(&mut self.ring, at + after, &x, level * swell, spot.pan);
+                }
+            }
+        }
         for (i, (l, r)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
             let at = ring_at(self.at + i as u64);
             let swell = self.walk.gain();
@@ -663,10 +1268,10 @@ impl Rain {
             for (side, out) in out.iter_mut().enumerate() {
                 let mut x = std::mem::take(&mut self.ring[side][at]);
                 if self.on.wash {
-                    x += self.wash[side].next() * swell * self.m.wash;
+                    x += self.wash[side].next() * swell * self.m.wash * self.hush;
                 }
                 if self.on.fine {
-                    x += self.fine[side].next(self.at + i as u64) * swell * self.m.fine;
+                    x += self.fine[side].next(self.at + i as u64) * swell * self.m.fine * self.hush;
                 }
                 *out = through(&mut self.floor[side], x) as f32;
             }
@@ -697,17 +1302,22 @@ struct Made {
     /// Samples (both sides) the knee bent.
     kneed: u64,
     peak: f32,
+    /// Near drops, mid drops and drips made; the density's least and most.
+    counts: [u64; 3],
+    densities: [f64; 2],
 }
 
-/// The gain that brings the whole of `kind` to `LOUDNESS`, from its own first `CALIBRATE_S` seconds.
+/// The gain that brings the whole of `kind` to its loudness (`Kind::loudness`), from its own first `CALIBRATE_S`
+/// seconds; the forest's, fixed.
 fn gain(kind: Kind, seed: u64) -> f32 {
+    let Some(loudness) = kind.loudness() else { return 10f32.powf(FOREST_GAIN_DB / 20.0) };
     let n = (CALIBRATE_S * RATE) as usize;
     let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
     let mut rain = Rain::new(kind, seed, ALL);
     for (l, r) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
         rain.block(l, r);
     }
-    10f32.powf((LOUDNESS - stereo_lufs(&l, &r)) / 20.0)
+    10f32.powf((loudness - stereo_lufs(&l, &r)) / 20.0)
 }
 
 /// `frames` of `kind` (its `on` layers at the whole's level), a block at a time to `each`.
@@ -734,7 +1344,7 @@ fn made(
         each(&l[..n], &r[..n])?;
         left -= n as u64;
     }
-    Ok(Made { gain_db: 20.0 * gain.log10(), kneed, peak })
+    Ok(Made { gain_db: 20.0 * gain.log10(), kneed, peak, counts: rain.counts, densities: rain.densities })
 }
 
 /// `frames` of `kind` held whole (the samples, the figures, the tests).
@@ -1077,12 +1687,96 @@ fn table(cols: &[(&str, &Figures)]) -> String {
     s
 }
 
+/// The shortest time (ms) that holds 90 % of a drop's energy: under ~3 ms it's a tick, over it a pat.
+fn span90(x: &[f64]) -> f64 {
+    let mut cum = vec![0.0f64; x.len() + 1];
+    for (i, v) in x.iter().enumerate() {
+        cum[i + 1] = cum[i] + v * v;
+    }
+    let need = 0.9 * cum[x.len()];
+    let (mut j, mut best) = (0, usize::MAX);
+    for i in 0..x.len() {
+        while j < x.len() && cum[j] - cum[i] < need {
+            j += 1;
+        }
+        if cum[j] - cum[i] < need {
+            break;
+        }
+        best = best.min(j - i);
+    }
+    best as f64 * 1_000.0 / R
+}
+
+/// The events in `l` and `r` over a bed of `bed` (its mean power on a side): each a 5 ms window (a millisecond apart)
+/// on its louder side, the loudest within 10 ms either side and at least `least` dB over the bed — its dB over it. A
+/// drop heard as one, where it falls.
+fn events(l: &[f32], r: &[f32], bed: f64, least: f64) -> Vec<f64> {
+    let (hop, w) = (RATE as usize / 1_000, PAT_WINDOW);
+    let cum = |x: &[f32]| {
+        let mut c = vec![0.0f64; x.len() + 1];
+        for (i, v) in x.iter().enumerate() {
+            c[i + 1] = c[i] + f64::from(*v).powi(2);
+        }
+        c
+    };
+    let (cl, cr) = (cum(l), cum(r));
+    let p: Vec<f64> = (0..l.len().saturating_sub(w) / hop)
+        .map(|k| (cl[k * hop + w] - cl[k * hop]).max(cr[k * hop + w] - cr[k * hop]) / w as f64)
+        .collect();
+    let floor = bed * 10f64.powf(least / 10.0);
+    (0..p.len())
+        .filter(|&k| {
+            p[k] >= floor
+                && p[k.saturating_sub(10)..k].iter().all(|q| *q < p[k])
+                && p[k + 1..(k + 11).min(p.len())].iter().all(|q| *q <= p[k])
+        })
+        .map(|k| 10.0 * (p[k] / bed).log10())
+        .collect()
+}
+
+/// The mean power of a side (the two sides').
+fn power(l: &[f32], r: &[f32]) -> f64 {
+    l.iter().chain(r).map(|x| f64::from(*x).powi(2)).sum::<f64>() / (l.len() + r.len()) as f64
+}
+
+/// The `q`th quantile of `xs` (sorted here).
+fn quantile(xs: &mut [f64], q: f64) -> f64 {
+    xs.sort_by(f64::total_cmp);
+    match xs.len() {
+        0 => f64::NAN,
+        n => xs[((n - 1) as f64 * q).round() as usize],
+    }
+}
+
+/// How wide a drop's spectrum is: the octaves between where 10 % of its energy lies under and where 90 % does. A
+/// resonance, a "tok", is narrow (under an octave); a dull burst is wide.
+fn octaves80(x: &[f64]) -> f64 {
+    let (mut re, mut im) = (vec![0.0f64; FFT], vec![0.0f64; FFT]);
+    let n = x.len().min(FFT);
+    re[..n].copy_from_slice(&x[..n]);
+    fft(&mut re, &mut im);
+    let p: Vec<f64> = (0..FFT / 2).map(|k| re[k] * re[k] + im[k] * im[k]).collect();
+    let all: f64 = p.iter().sum();
+    let (mut cum, mut lo, mut hi) = (0.0, 0, 0);
+    for (k, v) in p.iter().enumerate() {
+        cum += v;
+        if cum < 0.1 * all {
+            lo = k + 1;
+        }
+        if cum < 0.9 * all {
+            hi = k + 1;
+        }
+    }
+    (hi.max(1) as f64 / lo.max(1) as f64).log2()
+}
+
 /// The share of `x`'s energy over `f` (a fourth-order high-pass).
-fn share_over(x: &[f32], f: f64) -> f64 {
+#[cfg(test)]
+fn share_over<T: Copy + Into<f64>>(x: &[T], f: f64) -> f64 {
     let mut hp = high_pass(f);
     let (mut over, mut all) = (0.0f64, 0.0f64);
     for &v in x {
-        let v = f64::from(v);
+        let v: f64 = v.into();
         let h = through(&mut hp, v);
         (over, all) = (over + h * h, all + v * v);
     }
@@ -1095,12 +1789,14 @@ fn samples(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let ffmpeg = crate::video::ffmpeg().ok_or("rain samples: no ffmpeg")?;
     let frames = u64::from(SAMPLE_S * RATE);
-    let seed = 1;
+    let seed = SEED;
     let mut report = format!(
         "The full video's rain — each kind's {SAMPLE_S} s, seed {seed}: the WAV as made and its AAC (128 kb/s, \
          decoded back) side by side.\n\n"
     );
-    for kind in KINDS {
+    // (round 5: the sparse drizzle's drop a bubble, alone and with a faint pat under each near one — how much of the
+    // drop is water the ears' choice; round 4's kept beside them, `rain-forest-sparse-r4.mp4`)
+    for kind in [Kind::Sparse, Kind::SparsePat] {
         let name = kind.name();
         let wav = dir.join(format!("rain-{name}.wav"));
         let mp4 = dir.join(format!("rain-{name}.mp4"));
@@ -1110,7 +1806,7 @@ fn samples(dir: &Path) -> Result<()> {
         let made = write(&mut w, kind, seed, frames)?;
         w.flush().map_err(|e| e.to_string())?;
         let took = started.elapsed().as_secs_f64();
-        encode(&ffmpeg, &format!("rain · {name}"), &wav, SAMPLE_S, &mp4)?;
+        encode(&ffmpeg, &format!("rain · {}", name.replace('-', " ")), &wav, SAMPLE_S, &mp4)?;
         for (from, png, filter) in [
             (&wav, format!("rain-{name}.png"), "[0:a]showspectrumpic=s=1600x600:legend=1:scale=log"),
             (&mp4, format!("rain-{name}-aac.png"), "[0:a]showspectrumpic=s=1600x600:legend=1:scale=log"),
@@ -1126,45 +1822,20 @@ fn samples(dir: &Path) -> Result<()> {
         }
         let (l, r) = read_wav(&wav)?;
         let (al, ar) = decoded(&ffmpeg, &mp4)?;
-        let alone = |on: Layers| render(kind, seed, frames, on).map(|(l, r, _)| (l, r));
-        let (wl, wr) = alone(Layers { wash: true, ..NONE })?;
-        let (fl, fr) = alone(Layers { fine: true, ..NONE })?;
-        let (cl, cr) = alone(Layers { clear: true, ..NONE })?;
-        let drops = |l: &[f32], r: &[f32]| {
-            format!(
-                "{:.1} (kurtosis {:.1} at 4 kHz, {:.1} at 8 kHz; crest {:.1} dB over 6 kHz, {:.1} in the 3 kHz \
-                 octave)",
-                stereo_lufs(l, r),
-                kurtosis_at(l, r, 4_000.0),
-                kurtosis_at(l, r, 8_000.0),
-                crest_db(l, r, high_pass(6_000.0)),
-                crest_db(l, r, octave(3_000.0)),
-            )
-        };
-        let near = match kind.measure().near_rate > 0.0 {
-            true => {
-                let (nl, nr) = alone(Layers { near: true, ..NONE })?;
-                let tp =
-                    sound::true_peaks(&nl).into_iter().chain(sound::true_peaks(&nr)).fold(0.0f32, f32::max);
-                format!(
-                    "near drops {:.1} (true peak {:.1} dBTP, {:.2} % of its energy over 3 kHz)",
-                    stereo_lufs(&nl, &nr),
-                    20.0 * tp.log10(),
-                    100.0 * share_over(&[nl, nr].concat(), 3_000.0),
-                )
-            }
-            false => "no near drops".into(),
-        };
+        let tp = sound::true_peaks(&l).into_iter().chain(sound::true_peaks(&r)).fold(0.0f32, f32::max);
         report.push_str(&format!(
-            "{name}: gain {:+.1} dB to about {LOUDNESS} LUFS · {} samples past the knee · peak {:.1} dBFS · made in \
-             {took:.1} s\n  each layer alone (LUFS): wash {:.1} · fine drops {} · clear drops {}\n  {near}\n",
+            "{name}: gain {:+.1} dB {} · {} samples past the knee · peak {:.1} dBFS, true peak {:.1} dBTP · made \
+             in {took:.1} s\n",
             made.gain_db,
+            match kind.loudness() {
+                Some(l) => format!("to about {l} LUFS"),
+                None => format!("(round 3's, the far hush at {HUSH_LUFS} LUFS alone)"),
+            },
             made.kneed,
             20.0 * made.peak.log10(),
-            stereo_lufs(&wl, &wr),
-            drops(&fl, &fr),
-            drops(&cl, &cr),
+            20.0 * tp.log10(),
         ));
+        report.push_str(&heard_one_by_one(kind, seed, frames, &l, &r)?);
         report.push_str(&table(&[("WAV", &figures(&l, &r)), ("AAC 128k", &figures(&al, &ar))]));
         report.push('\n');
     }
@@ -1172,6 +1843,209 @@ fn samples(dir: &Path) -> Result<()> {
     std::fs::write(&txt, &report).map_err(|e| format!("{}: {e}", txt.display()))?;
     print!("{report}");
     Ok(())
+}
+
+/// The drops that stand out in `kind`'s `frames`, over its far hush `hl`, `hr`: in the drops alone (the pats and the
+/// drips), each 5 ms whose power reaches the hush's — the whole there 3 dB or more over the hush. (Counted in the
+/// whole, the hush's own swells count too: seed 38's makes 3.8 a second.)
+fn standing_out(kind: Kind, seed: u64, frames: u64, hl: &[f32], hr: &[f32]) -> Result<usize> {
+    let (l, r, _) = render(kind, seed, frames, Layers { pats: true, mids: true, drips: true, ..NONE })?;
+    Ok(events(&l, &r, power(hl, hr), 0.0).len())
+}
+
+/// The forest's depth, for the report: how many of each distance fell, how loud each is and how far under the far
+/// hush lies, the drops heard over it, the hush itself, and each kind of drop alone against the no-key rules.
+fn heard_one_by_one(kind: Kind, seed: u64, frames: u64, l: &[f32], r: &[f32]) -> Result<String> {
+    let secs = frames as f64 / R;
+    let (hl, hr, _) = render(kind, seed, frames, Layers { wash: true, fine: true, ..NONE })?;
+    let (pl, pr, made) = render(kind, seed, frames, Layers { pats: true, ..NONE })?;
+    let (ml, mr, _) = render(kind, seed, frames, Layers { mids: true, ..NONE })?;
+    let (dl, dr, _) = render(kind, seed, frames, Layers { drips: true, ..NONE })?;
+    let [n, m, d] = made.counts;
+    let (lp, lh) = (stereo_lufs(&pl, &pr), stereo_lufs(&hl, &hr));
+    let hush = power(&hl, &hr);
+    let mut alone = events(&pl, &pr, hush, 0.0);
+    let whole = events(l, r, hush, 3.0).len();
+    let standing = standing_out(kind, seed, frames, &hl, &hr)?;
+    let swells = events(&hl, &hr, hush, 3.0).len();
+    let short: Vec<f32> = {
+        let (a, b) = (sound::short_term(&hl, 3.0, 1.0), sound::short_term(&hr, 3.0, 1.0));
+        let p = |x: f32| 10f64.powf(f64::from(x) / 10.0);
+        let mut s: Vec<f32> =
+            a.iter().zip(&b).map(|(a, b)| (10.0 * (p(*a) + p(*b)).log10()) as f32).collect();
+        s.sort_by(f32::total_cmp);
+        s
+    };
+    let mut s = format!(
+        "  near drops {n} ({:.1} a second, at {LEAVES} places) · mid drops {m} ({:.1} a second) · drips {d} ({:.2} \
+         a second, from {SPOTS} places) · the density from ×{:.2} to ×{:.2}\n  loudness alone (LUFS): the near \
+         drops{} {lp:.1} · the mid drops {:.1} · the drips {:.1} · the far hush {lh:.1}, {:.1} dB under the near \
+         drops\n  {} events in the near drops alone ({:.1} a second), their loudest 5 ms over the hush: 10 % {:.1} · \
+         median {:.1} · 90 % {:.1} · most {:.1} dB\n  drops that stand out — the drops alone at the hush's power or \
+         more, each lifting the whole 3 dB over it: {standing} ({:.1} a second) · in the whole, {whole} events 3 dB \
+         or more over the hush ({:.1} a second), the hush alone {swells} of its own swells ({:.1} a second)\n  the \
+         hush alone: kurtosis {:.2} at 1 kHz, {:.2} at 4 kHz, {:.2} at 8 kHz · 3 s loudness {:.1} / {:.1} / {:.1}\n",
+        n as f64 / secs,
+        m as f64 / secs,
+        d as f64 / secs,
+        made.densities[0],
+        made.densities[1],
+        if kind.measure().under_db.is_some() { " and their pats" } else { "" },
+        stereo_lufs(&ml, &mr),
+        stereo_lufs(&dl, &dr),
+        lp - lh,
+        alone.len(),
+        alone.len() as f64 / secs,
+        quantile(&mut alone, 0.1),
+        quantile(&mut alone, 0.5),
+        quantile(&mut alone, 0.9),
+        quantile(&mut alone, 1.0),
+        standing as f64 / secs,
+        whole as f64 / secs,
+        swells as f64 / secs,
+        kurtosis_at(&hl, &hr, 1_000.0),
+        kurtosis_at(&hl, &hr, 4_000.0),
+        kurtosis_at(&hl, &hr, 8_000.0),
+        short.first().copied().unwrap_or(f32::NAN),
+        short.get(short.len() / 2).copied().unwrap_or(f32::NAN),
+        short.last().copied().unwrap_or(f32::NAN),
+    );
+    s.push_str(
+        "  one alone, 1,000 of each, 10 % / median / 90 %: its spectrum's width (octaves holding 10–90 % of its \
+         energy) · how far its second half is centred over its first · its first 0.3 ms's share of its energy (and \
+         the most) · two strikes of one place apart in pitch · its pitch\n",
+    );
+    for (name, kind) in [("near drops", Depth::Near), ("mid drops", Depth::Mid), ("drips", Depth::Drip)] {
+        let all = one_by_one(kind, seed, 1_000);
+        let three = |f: fn(&Alone) -> f64, scale: f64| {
+            let mut v: Vec<f64> = all.iter().map(|a| f(a) * scale).collect();
+            let q = |v: &mut [f64], at| quantile(v, at);
+            (q(&mut v, 0.1), q(&mut v, 0.5), q(&mut v, 0.9), q(&mut v, 1.0))
+        };
+        let (w, sl, cl, ap, hz) = (
+            three(|a| a.width, 1.0),
+            three(|a| a.slide, 100.0),
+            three(|a| a.click, 100.0),
+            three(|a| a.apart, 100.0),
+            three(|a| a.pitch, 1.0),
+        );
+        s.push_str(&format!(
+            "    {name}: {:.2} / {:.2} / {:.2} oct · +{:.1} / +{:.1} / +{:.1} % · {:.2} / {:.2} / {:.2} % (most \
+             {:.2}) · {:.1} / {:.1} / {:.1} % · {:.0} / {:.0} / {:.0} Hz\n",
+            w.0, w.1, w.2, sl.0, sl.1, sl.2, cl.0, cl.1, cl.2, cl.3, ap.0, ap.1, ap.2, hz.0, hz.1, hz.2,
+        ));
+    }
+    Ok(s)
+}
+
+/// The forest's kinds of drop, by how far they fall, read one at a time.
+#[derive(Clone, Copy, PartialEq)]
+enum Depth {
+    Near,
+    Mid,
+    Drip,
+}
+
+/// One drop alone, as the tests and the report read it.
+struct Alone {
+    /// Octaves holding 10–90 % of its energy.
+    width: f64,
+    /// How far its second half (by energy) is centred over its first, a share.
+    slide: f64,
+    /// Its first 0.3 ms's share of its energy.
+    click: f64,
+    /// It and another strike of its place apart in pitch, a share (each one bubble: the place's, not its stutter);
+    /// a mid drop, which has no place, and the next.
+    apart: f64,
+    /// Its pitch (Hz).
+    pitch: f64,
+}
+
+/// `n` drops of `kind` alone, as they're made for `seed`: the near ones at each place in turn, ringing as they come,
+/// the mid ones each its own, the drips from each spot in turn.
+fn one_by_one(kind: Depth, seed: u64, n: usize) -> Vec<Alone> {
+    let (places, spots) = surfaces(seed);
+    let mut what = Rng::new(seed, 99);
+    let onset = |what: &mut Rng| what.range(BUBBLE_ONSET_S[0], BUBBLE_ONSET_S[1]);
+    (0..n)
+        .map(|i| {
+            let (x, a, b) = match kind {
+                Depth::Near => {
+                    let r = places[i % LEAVES].r;
+                    let rings = rings(&mut what);
+                    (drop_of(&mut what, r, rings), drop_of(&mut what, r, 1), drop_of(&mut what, r, 1))
+                }
+                Depth::Mid => {
+                    // (each of its own size: two mid drops apart)
+                    let mut mid = || {
+                        let r = MID_R[0] * (MID_R[1] / MID_R[0]).powf(what.f());
+                        bubble(r, onset(&mut what))
+                    };
+                    let (x, y) = (mid(), mid());
+                    (x.clone(), x, y)
+                }
+                Depth::Drip => {
+                    let r = spots[i % SPOTS].r;
+                    (drop_of(&mut what, r, 1), drop_of(&mut what, r, 1), drop_of(&mut what, r, 1))
+                }
+            };
+            let (first, second) = halves(&x);
+            Alone {
+                width: octaves80(&x),
+                slide: second / first - 1.0,
+                click: click(&x),
+                apart: (pitch(&a) / pitch(&b) - 1.0).abs(),
+                pitch: pitch(&x),
+            }
+        })
+        .collect()
+}
+
+/// `x`'s periods between its upward zero crossings (each to a fraction of a sample): where each falls, its pitch
+/// (Hz) and its energy.
+fn periods(x: &[f64]) -> Vec<(f64, f64, f64)> {
+    let ups: Vec<f64> = (1..x.len())
+        .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+        .map(|i| i as f64 - 1.0 + x[i - 1] / (x[i - 1] - x[i]))
+        .collect();
+    ups.windows(2)
+        .map(|w| {
+            let e: f64 = x[w[0].ceil() as usize..w[1].ceil() as usize].iter().map(|v| v * v).sum();
+            ((w[0] + w[1]) / 2.0, R / (w[1] - w[0]), e)
+        })
+        .collect()
+}
+
+/// The pitch of a tone, its periods weighted by their energy (Hz).
+fn pitch(x: &[f64]) -> f64 {
+    let p = periods(x);
+    p.iter().map(|q| q.1 * q.2).sum::<f64>() / p.iter().map(|q| q.2).sum::<f64>()
+}
+
+/// The pitch of a tone's first half of its energy and of its second (Hz).
+fn halves(x: &[f64]) -> (f64, f64) {
+    let all: f64 = x.iter().map(|v| v * v).sum();
+    let (mut cum, mut mid) = (0.0, x.len());
+    for (i, v) in x.iter().enumerate() {
+        cum += v * v;
+        if cum >= all / 2.0 {
+            mid = i;
+            break;
+        }
+    }
+    let (mut a, mut b) = ([0.0f64; 2], [0.0f64; 2]);
+    for (at, f, e) in periods(x) {
+        let h = if at < mid as f64 { &mut a } else { &mut b };
+        (h[0], h[1]) = (h[0] + f * e, h[1] + e);
+    }
+    (a[0] / a[1], b[0] / b[1])
+}
+
+/// The share of a drop's energy in its first 0.3 ms, from its first sample: a click is energy at once.
+fn click(x: &[f64]) -> f64 {
+    let all: f64 = x.iter().map(|v| v * v).sum();
+    let n = (0.0003 * R).round() as usize;
+    x[..n.min(x.len())].iter().map(|v| v * v).sum::<f64>() / all
 }
 
 /// A sample as a viewer gets it: `words` on a still, `wav` as AAC at 128 kb/s, the picture cut to the sound's `secs`
@@ -1238,10 +2112,12 @@ fn decoded(ffmpeg: &Path, mp4: &Path) -> Result<(Vec<f32>, Vec<f32>)> {
 
 /// A plain still that names the kind: its words in a small pixel face, ink on meok's ground (a PPM, 1280×720).
 fn picture(words: &str) -> Vec<u8> {
-    let (w, h, scale) = (1280usize, 720usize, 9usize);
+    let (w, h) = (1280usize, 720usize);
     let (ground, ink) = ([15u8, 20, 25], [214u8, 208, 194]);
     let mut px: Vec<[u8; 3]> = vec![ground; w * h];
     let n = words.chars().count();
+    // (9 pixels a dot, smaller for words that wouldn't fit with a margin)
+    let scale = (w * 9 / 10 / (n * 6).max(1)).clamp(1, 9);
     let (x0, y0) = ((w - (n * 6 - 1) * scale) / 2, (h - 8 * scale) / 2);
     for (ci, c) in words.chars().enumerate() {
         for (row, bits) in glyph(c).iter().enumerate() {
@@ -1276,6 +2152,10 @@ fn glyph(c: char) -> [u8; 8] {
         't' => [0b01000, 0b01000, 0b11100, 0b01000, 0b01000, 0b01001, 0b00110, 0],
         'v' => [0, 0, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100, 0],
         'y' => [0, 0, 0b10001, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+        'c' => [0, 0, 0b01110, 0b10000, 0b10000, 0b10001, 0b01110, 0],
+        'k' => [0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0],
+        'p' => [0, 0, 0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111, 0],
         '·' => [0, 0, 0, 0, 0b00100, 0, 0, 0],
         _ => [0; 8],
     }
@@ -1306,6 +2186,7 @@ mod tests {
         assert!(a[44..] != c[44..], "another seed");
         assert_eq!(a.len() as u64, 44 + frames * 4);
         assert_eq!(u32::from_le_bytes([a[40], a[41], a[42], a[43]]) as u64, frames * 4);
+        assert!(wav(Kind::Forest, 1, frames) == wav(Kind::Forest, 1, frames), "the forest, the same seed");
         assert_eq!(frames_of("12m").unwrap(), 12 * 60 * u64::from(RATE));
         assert_eq!(frames_of("1m30s").unwrap(), 90 * u64::from(RATE));
         assert_eq!(frames_of("500ms").unwrap(), u64::from(RATE) / 2);
@@ -1332,10 +2213,10 @@ mod tests {
         }
     }
 
-    /// Wide: the two sides made apart, their correlation low.
+    /// Wide: the two sides made apart, their correlation low (the forest's in its own test).
     #[test]
     fn left_and_right_are_apart() {
-        for kind in KINDS {
+        for kind in round_2() {
             let (l, r) = secs(kind, ALL, 4);
             let f = figures(&l, &r);
             assert!(f.corr.abs() < 0.1, "{kind:?}: {:.3}", f.corr);
@@ -1357,16 +2238,29 @@ mod tests {
             assert!(b[1] < -15.0, "little at 125 Hz — {say}");
             assert!(b[8] < -15.0, "little at 16 kHz — {say}");
             for (i, c) in CENTRES.iter().enumerate().take(8).skip(3) {
-                assert!(b[i] > -14.0, "its body at {c} Hz — {say}");
+                // (the forest is dull by design — its pats under 2.5 kHz, its "쏴" small —: its 4 and 8 kHz far under
+                // the pats' body, but still there)
+                let least = match (kind.measure().pat_rate > 0.0, i) {
+                    (true, 6) => -22.0,
+                    (true, 7) => -30.0,
+                    _ => -14.0,
+                };
+                assert!(b[i] > least, "its body at {c} Hz — {say}");
             }
             let top = b[6].max(b[7]);
             assert!(top - b[4] < 6.0, "not hiss: the top no more than 6 dB over 1 kHz — {say}");
-            low_mids.push(b[2]);
+            low_mids.push((kind, b[2]));
         }
+        let at = |k| low_mids.iter().find(|m| m.0 == k).unwrap().1;
         assert!(
-            low_mids[2] > low_mids[0] + 3.0,
+            at(Kind::Heavy) > at(Kind::Soft) + 3.0,
             "the downpour fuller at 250 Hz than the soft: {low_mids:.1?}"
         );
+    }
+
+    /// The round-2 kinds (the forest's are its own tests: a sparse sound has a high crest and kurtosis by nature).
+    fn round_2() -> impl Iterator<Item = Kind> {
+        KINDS.into_iter().filter(|k| k.measure().pat_rate == 0.0)
     }
 
     /// It isn't hiss and it isn't crackle: the wash alone grainless (kurtosis near plain noise's 3), the whole
@@ -1377,7 +2271,7 @@ mod tests {
         let (l, r) = secs(Kind::Leaves, Layers { wash: true, ..NONE }, 4);
         let wash = kurtosis_at(&l, &r, 4_000.0);
         assert!((2.7..3.3).contains(&wash), "the wash alone at 4 kHz: {wash:.2}");
-        for kind in KINDS {
+        for kind in round_2() {
             let (l, r) = secs(kind, ALL, 4);
             let at = |c| kurtosis_at(&l, &r, c);
             assert!(at(4_000.0) > 3.4, "{kind:?}'s whole at 4 kHz: {:.2}", at(4_000.0));
@@ -1397,6 +2291,9 @@ mod tests {
                 let k = kurtosis_at(&l, &r, c);
                 assert!(k < 4.5, "{kind:?}'s fine drops at {c} Hz: {k:.2}");
             }
+            if kind.measure().clear_rate == 0.0 {
+                continue;
+            }
             let (l, r) = secs(kind, Layers { clear: true, ..NONE }, 4);
             let k = kurtosis_at(&l, &r, 4_000.0);
             assert!(k > 6.0, "{kind:?}'s clear drops at 4 kHz: {k:.2}");
@@ -1408,7 +2305,7 @@ mod tests {
     /// tick about 5 dB under a key's click with the bed at the keys' level.
     #[test]
     fn no_drop_is_a_key() {
-        for kind in KINDS {
+        for kind in round_2() {
             let (l, r) = secs(kind, ALL, 8);
             let (top, mid) = (crest_db(&l, &r, high_pass(6_000.0)), crest_db(&l, &r, octave(3_000.0)));
             let peak = 20.0 * l.iter().chain(&r).fold(0.0f32, |p, x| p.max(x.abs())).log10();
@@ -1449,6 +2346,210 @@ mod tests {
         let (picture, sound) = (of("video"), of("audio"));
         assert!((picture - sound).abs() < 0.1, "the picture {picture} s, the sound {sound} s");
         assert!(!mp4.with_extension("ppm").exists(), "the still left behind");
+    }
+
+    /// The drops at each distance, 400 alone as they're made (the near ones at each place in turn, ringing once,
+    /// twice or three times as they come).
+    fn drops() -> [(Depth, Vec<Alone>); 3] {
+        [Depth::Near, Depth::Mid, Depth::Drip].map(|d| (d, one_by_one(d, 1, 400)))
+    }
+
+    fn name(d: Depth) -> &'static str {
+        match d {
+            Depth::Near => "near drop",
+            Depth::Mid => "mid drop",
+            Depth::Drip => "drip",
+        }
+    }
+
+    /// A drop is a tone, not a tap: one alone holds 10–90 % of its energy within 0.4 octaves at the median (round
+    /// 3's ringing pats 0.48, round 4's bursts 1.35 — "a keyboard").
+    #[test]
+    fn a_drop_is_a_tone() {
+        for (d, all) in drops() {
+            let mut w: Vec<f64> = all.iter().map(|a| a.width).collect();
+            let median = quantile(&mut w, 0.5);
+            assert!(median < 0.4, "a {} {median:.2} octaves wide at the median", name(d));
+        }
+    }
+
+    /// It slides up as it dies: every one's second half of its energy centred at least 2 % above its first.
+    #[test]
+    fn a_drop_slides_up() {
+        for (d, all) in drops() {
+            for (i, a) in all.iter().enumerate() {
+                assert!(
+                    a.slide >= 0.02,
+                    "{} {i}: its second half {:+.1} % on its first",
+                    name(d),
+                    a.slide * 100.0
+                );
+            }
+        }
+    }
+
+    /// It doesn't click: every one's first 0.3 ms holds under 2 % of its energy.
+    #[test]
+    fn a_drop_doesnt_click() {
+        for (d, all) in drops() {
+            for (i, a) in all.iter().enumerate() {
+                assert!(a.click < 0.02, "{} {i}: {:.2} % in its first 0.3 ms", name(d), a.click * 100.0);
+            }
+        }
+    }
+
+    /// A place isn't a note: two strikes of one apart in pitch by more than 2 % at the median — a fixed pitch is a
+    /// xylophone. And the pitches the model gives (3 / r, risen 5 % by its energy's middle): near drops 1.2–4.7 kHz,
+    /// mid ones 3–5.5, drips 430–1,300 Hz (each place's ±15 %).
+    #[test]
+    fn a_place_isnt_a_note() {
+        for (d, all) in drops() {
+            let mut apart: Vec<f64> = all.iter().map(|a| a.apart).collect();
+            let median = quantile(&mut apart, 0.5);
+            assert!(median > 0.02, "two strikes of a {}'s place {:.1} % apart", name(d), median * 100.0);
+            let range = match d {
+                Depth::Near => 1_200.0..=4_700.0,
+                Depth::Mid => 3_000.0..=5_500.0,
+                Depth::Drip => 430.0..=1_300.0,
+            };
+            if d != Depth::Near {
+                // (a near drop's stutter rings higher, so its pitch with it is checked on the place's alone below)
+                for a in &all {
+                    assert!(range.contains(&a.pitch), "a {} at {:.0} Hz", name(d), a.pitch);
+                }
+            }
+        }
+        let (places, _) = surfaces(1);
+        let mut what = Rng::new(1, 5);
+        for p in &places {
+            let f = pitch(&drop_of(&mut what, p.r, 1));
+            assert!((1_200.0..=4_700.0).contains(&f), "a near drop at {f:.0} Hz");
+        }
+    }
+
+    /// The places stay where they are: sixteen, each its own place across the picture and its own size of bubble,
+    /// across `NEAR_R`; their leaves round 4's; four places drips fall from, to the sides, their bubbles in `DRIP_R`;
+    /// the same for a seed.
+    #[test]
+    fn the_near_drops_fall_at_places_that_stay() {
+        let (places, spots) = surfaces(1);
+        assert_eq!((places.len(), spots.len()), (LEAVES, SPOTS));
+        let mut pans: Vec<f64> = places.iter().map(|l| l.pan).collect();
+        pans.sort_by(f64::total_cmp);
+        assert!(pans.windows(2).all(|p| p[1] - p[0] > 0.02), "each its own place: {pans:.2?}");
+        assert!(pans[0] < -0.8 && pans[LEAVES - 1] > 0.8, "across the picture: {pans:.2?}");
+        let mut rs: Vec<f64> = places.iter().map(|p| p.r).collect();
+        rs.sort_by(f64::total_cmp);
+        assert!(rs.windows(2).all(|r| r[1] / r[0] > 1.02), "each its own size: {rs:.5?}");
+        assert!(rs[0] < 0.00085 && rs[LEAVES - 1] > 0.0021, "across NEAR_R: {rs:.5?}");
+        for p in &places {
+            assert!((800.0..=3_000.0).contains(&p.leaf.pitch) && (0.008..=0.025).contains(&p.leaf.len_s));
+        }
+        for s in &spots {
+            assert!(s.pan.abs() >= 0.5 && (DRIP_R[0]..=DRIP_R[1]).contains(&s.r));
+        }
+        let again = surfaces(1).0;
+        assert!(again.iter().zip(&places).all(|(a, b)| a.r == b.r && a.pan == b.pan));
+    }
+
+    /// Depth, over the samples' 25 s: few drops stand out — lifting the whole 3 dB or more over the far hush, from
+    /// whichever layer (`standing_out`): 4–6.5 a second in `forest`, 2.5–3.5 in `forest-sparse` (round 3's 20) —, the
+    /// near drops 2–3 a second (1–2), drips 0.3–1; the far hush alone where round 3 had it in the file, `HUSH_LUFS`
+    /// (±1) — faint, not gone. The pat under each near drop changes neither the drops nor how many stand out.
+    #[test]
+    fn the_forest_has_depth() {
+        let frames = u64::from(SAMPLE_S * RATE);
+        let a_second = |n: usize| n as f64 / f64::from(SAMPLE_S);
+        for (kind, near, out) in [
+            (Kind::Forest, 2.0..=3.0, 4.0..=6.5),
+            (Kind::Sparse, 1.0..=2.0, 2.5..=3.5),
+            (Kind::SparsePat, 1.0..=2.0, 2.5..=3.5),
+        ] {
+            let made = render(kind, SEED, frames, Layers { pats: true, drips: true, ..NONE }).unwrap().2;
+            let (hl, hr, _) = render(kind, SEED, frames, Layers { wash: true, fine: true, ..NONE }).unwrap();
+            let [n, _, d] = made.counts.map(|c| a_second(c as usize));
+            assert!(near.contains(&n), "{kind:?}: {n:.1} near drops a second");
+            assert!((0.3..=1.0).contains(&d), "{kind:?}: {d:.2} drips a second");
+            let standing = a_second(standing_out(kind, SEED, frames, &hl, &hr).unwrap());
+            assert!(out.contains(&standing), "{kind:?}: {standing:.1} drops a second stand out");
+            let hush = stereo_lufs(&hl, &hr);
+            assert!((hush - HUSH_LUFS).abs() <= 1.0, "{kind:?}: the far hush at {hush:.1} LUFS");
+        }
+    }
+
+    /// The bubble alone and with a pat under it are the same drops: with the pats left out, the same bytes; the pat
+    /// `PAT_UNDER_DB` under its bubble, so its own loudness well under the drops'.
+    #[test]
+    fn the_pat_under_a_drop_is_faint_and_changes_nothing_else() {
+        let frames = u64::from(6 * RATE);
+        let rest = Layers { pats: false, ..ALL };
+        let (a, b) = (
+            render(Kind::Sparse, 1, frames, rest).unwrap(),
+            render(Kind::SparsePat, 1, frames, rest).unwrap(),
+        );
+        assert!(a.0 == b.0 && a.1 == b.1, "the rest the same with the pats or without");
+        let near = Layers { pats: true, ..NONE };
+        let (bl, br, _) = render(Kind::Sparse, 1, frames, near).unwrap();
+        let (pl, pr, _) = render(Kind::SparsePat, 1, frames, near).unwrap();
+        let pat: (Vec<f32>, Vec<f32>) = (
+            pl.iter().zip(&bl).map(|(p, b)| p - b).collect(),
+            pr.iter().zip(&br).map(|(p, b)| p - b).collect(),
+        );
+        let under = stereo_lufs(&bl, &br) - stereo_lufs(&pat.0, &pat.1);
+        assert!((8.0..=16.0).contains(&under), "the pats {under:.1} LU under the bubbles");
+    }
+
+    /// The drizzle thickens and thins in how many drops fall: over ten minutes by up to about a third either way and
+    /// never more, slowly, and back and forth — a swing every twenty to forty seconds or so.
+    #[test]
+    fn the_drizzle_thickens_and_thins() {
+        let mut d = Density::new(Rng::new(1, 21));
+        let f: Vec<f64> = (0..600).map(|_| d.step()).collect();
+        let (least, most) =
+            (f.iter().copied().fold(f64::INFINITY, f64::min), f.iter().copied().fold(0.0, f64::max));
+        assert!(least <= 0.85 && most >= 1.18, "from ×{least:.2} to ×{most:.2}");
+        assert!(least >= 1.0 / 1.31 && most <= 1.31, "from ×{least:.2} to ×{most:.2}");
+        // (slow: still much the same ten seconds on, a minute on not)
+        let lagged = |lag: usize| {
+            let g: Vec<f64> = f.iter().map(|x| x.ln()).collect();
+            let m = g.iter().sum::<f64>() / g.len() as f64;
+            let var: f64 = g.iter().map(|x| (x - m).powi(2)).sum();
+            g.iter().zip(&g[lag..]).map(|(a, b)| (a - m) * (b - m)).sum::<f64>() / var
+        };
+        let (ten, minute) = (lagged(10), lagged(60));
+        assert!(ten > 0.6 && minute < 0.4, "its autocorrelation {ten:.2} at 10 s, {minute:.2} at 60 s");
+        let swings = f.windows(2).filter(|w| (w[0] - 1.0) * (w[1] - 1.0) < 0.0).count();
+        assert!((8..=60).contains(&swings), "{swings} crossings in ten minutes");
+    }
+
+    /// The far hush alone is steady and near plain noise: kurtosis near 3, its 3 s loudness within about ±1.5 LU.
+    #[test]
+    fn the_far_hush_is_steady_and_plain() {
+        let (l, r) = secs(Kind::Forest, Layers { wash: true, fine: true, ..NONE }, 12);
+        for c in [1_000.0, 4_000.0, 8_000.0] {
+            let k = kurtosis_at(&l, &r, c);
+            assert!((2.7..3.6).contains(&k), "the hush at {c} Hz: {k:.2}");
+        }
+        let short = sound::short_term(&l, 3.0, 1.0);
+        let (lo, hi) = (
+            short.iter().copied().fold(f32::INFINITY, f32::min),
+            short.iter().copied().fold(f32::MIN, f32::max),
+        );
+        assert!(hi - lo <= 3.0, "its 3 s loudness from {lo:.1} to {hi:.1}");
+    }
+
+    /// The forest is wide, whole in mono and has no period: left and right mostly apart (a drop at one place reaches
+    /// both ears, so not as apart as noise made for each side: under 0.3), the mono sum losing little, the envelope's
+    /// autocorrelation past 50 ms low.
+    #[test]
+    fn the_forest_is_wide_whole_and_without_a_period() {
+        for kind in [Kind::Forest, Kind::Sparse, Kind::Thick] {
+            let (l, r) = secs(kind, ALL, 12);
+            let f = figures(&l, &r);
+            assert!(f.corr.abs() < 0.3, "{kind:?}: correlation {:.3}", f.corr);
+            assert!(f.mono_db > -0.5, "{kind:?}: the mono sum {:+.2} dB", f.mono_db);
+            assert!(f.period.0 < 0.2, "{kind:?}: {:.3} at {:.0} ms", f.period.0, f.period.1);
+        }
     }
 
     /// A near drop isn't a key: dull, nearly all its energy under 3 kHz.
