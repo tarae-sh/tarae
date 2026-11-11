@@ -18,7 +18,7 @@ use crate::Result;
 use crate::shot;
 
 /// The pause after a key sent whole, as a shot's.
-const AFTER_KEY: Duration = Duration::from_millis(350);
+pub(super) const AFTER_KEY: Duration = Duration::from_millis(350);
 
 /// One step of a key script.
 #[derive(Debug, Clone, PartialEq)]

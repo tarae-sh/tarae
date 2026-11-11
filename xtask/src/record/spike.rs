@@ -124,6 +124,8 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         keys: keys::of_keys(SPIKE_KEYS)?,
         quit_after_keys: true,
         ui: Some(live.state.clone()),
+        cwd: None,
+        hands: None,
     };
     let taken = record(spec, cmd)?;
     said.push(taken.said(&dir));
@@ -240,6 +242,8 @@ fn still_at(
         keys: keys::of_keys(keys)?,
         quit_after_keys: true,
         ui: None,
+        cwd: None,
+        hands: None,
     };
     record(spec, cmd)?;
     // (the quit's esc: the script's last record but its `:q!`)
@@ -450,6 +454,8 @@ fn bench_recorded(bin: &Path, me: &Path, size: (u16, u16), dir: &Path) -> Result
         keys: Vec::new(),
         quit_after_keys: false,
         ui: Some(live.state.clone()),
+        cwd: None,
+        hands: None,
     };
     let mut d = Driver::on(File::from(master), size)?;
     let t0 = Instant::now();

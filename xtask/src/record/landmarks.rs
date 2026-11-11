@@ -11,7 +11,10 @@
 //! - `review-opened` — the `review` event's `began` (its kind).
 //! - `front` — the workspace in front changed (`front` in a snapshot asked after a `keys` or `session` event; no event
 //!   says it).
-//! - A bring landing: no event says it (its toast does, in words) — not a landmark yet (the report says what it'd take).
+//! - `bring` — the `bring` event (motion's, 3dfd1088): a bring ended — `how` it did (`landed`, `preflight-failed`,
+//!   `conflict`, `declined`), the workspace's `name`, its `base`, and what came with it (`tip`, `commits`, `conflicts`,
+//!   `preflight`).
+//! - `mark` — the driver's note at that moment (`record mark`, `hands.rs`), not tarae's: written by the worker.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -23,6 +26,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::Log;
+use super::hands::Hub;
 use crate::shot;
 
 /// How often a socket not bound yet (tarae starting) is looked for again.
@@ -30,7 +34,7 @@ const LOOK_AGAIN: Duration = Duration::from_millis(20);
 
 /// The watcher: connected to `sock` once it's there (until the take ends, `stopped`), every line it's told handed to
 /// the worker — and after the ones a landmark needs a snapshot for (`wants_state`), that snapshot's part (`part`).
-pub(super) fn watch(sock: &Path, tx: &Sender<Log>, stopped: &AtomicBool) {
+pub(super) fn watch(sock: &Path, tx: &Sender<Log>, stopped: &AtomicBool, hub: &Hub) {
     let stream = loop {
         match shot::ui_connect(sock) {
             Ok(s) => break s,
@@ -54,6 +58,7 @@ pub(super) fn watch(sock: &Path, tx: &Sender<Log>, stopped: &AtomicBool) {
         let Ok(ev) = serde_json::from_str::<Value>(&line) else { continue };
         let at = Instant::now();
         let wants = wants_state(&ev);
+        hub.told(at, &ev);
         if tx.send(Log::Told(at, ev)).is_err() {
             return;
         }
@@ -144,6 +149,16 @@ impl Landmarks {
                     ms,
                     json!({ "what": "run-started", "id": id, "run": ev["what"], "step": ev["step"] }),
                 ));
+            }
+            "bring" => {
+                let mut v = json!({ "what": "bring", "session": ev["session"], "name": ev["name"],
+                                    "base": ev["base"], "how": ev["how"] });
+                for k in ["tip", "commits", "conflicts", "preflight"] {
+                    if !ev[k].is_null() {
+                        v[k] = ev[k].clone();
+                    }
+                }
+                out.push((ms, v));
             }
             "review" if ev["what"] == "began" => {
                 out.push((

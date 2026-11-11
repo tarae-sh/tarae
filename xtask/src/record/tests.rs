@@ -61,7 +61,7 @@ fn sh(script: &str) -> Command {
 }
 
 fn spec(out: PathBuf, size: (u16, u16), outer: Option<Outer>, keys: Vec<Step>) -> Spec {
-    Spec { size, out, outer, keys, quit_after_keys: false, ui: None }
+    Spec { size, out, outer, keys, quit_after_keys: false, ui: None, cwd: None, hands: None }
 }
 
 /// A terminal of `cols`×`rows` for a take to be shown in: the test's end, and the take's.

@@ -2,7 +2,8 @@
 //! `.sb/full-video-plan.md`): where a scene's take drives a scripted tarae (`scenes --record`), this keeps a take of
 //! whatever happens in a terminal — you at the keys, a key script, or both.
 //!
-//! - `record [--size 120x34] --out DIR [--keys FILE] [--state DIR] [--headless] -- COMMAND …` runs the command in a
+//! - `record [--size 120x34] --out DIR [--cwd DIR] [--keys FILE] [--state DIR] [--headless] -- COMMAND …` runs the
+//!   command (in `--cwd`, else where `cargo xtask` runs) in a
 //!   terminal of its own of exactly that size, shown in the terminal it's started from, and keeps a take in `DIR`. A
 //!   pass-through: the command's bytes reach your terminal untouched, and what your terminal sends — your keys and its
 //!   answers to tarae's questions (the background's colour, the keyboard protocol, the mouse) — reaches the command.
@@ -10,7 +11,13 @@
 //!   resize later changes nothing inside. `--keys` plays a key script into it beside whatever you type (`keys.rs`);
 //!   `--state` is the state home whose `tarae/ui/<pid>.sock` gives the landmarks (default `XDG_STATE_HOME`, else
 //!   `~/.local/state`); `--headless` takes it with no terminal shown (nothing answers tarae's questions: its theme from
-//!   `TARAE_BACKGROUND`).
+//!   `TARAE_BACKGROUND`). While it runs, the driver's hands reach it by a way in of its own (`hands.rs`): a socket in a
+//!   folder made new for the take, said as it starts and named in `DIR/way-in`, gone when it ends.
+//! - `record type --to WHERE [--send] WORDS`, `record key [--to WHERE] KEY …`, `record wait WHAT`, `record state`,
+//!   `record mark WORDS` — the hands, through that way in (`hands.rs`).
+//! - `record take --out DIR --cwd FOLDER …` — the full video's take with its surroundings (a copy of your config with
+//!   `llm.cost = false`, git's stand-in name and mail, a state home of its own); `record dry [OUT]` — V3's dry run of
+//!   its motions on the stand-in Claude (`take.rs`).
 //! - `record draw DIR [--bg dark|light] [--title T]` — the take replayed into its screens at their times and made the
 //!   wide video, unedited (`video::make`): `DIR/take.mp4` and `DIR/sheet.png`.
 //! - `record still DIR OUT.png [--at S]` — one screen of the take (at `S` seconds; by default its start, once it has
@@ -28,7 +35,9 @@
 //! - `keys.bin` — the input, the same records, `whose` 1 the terminal (your keys and its answers) or 2 the key script.
 //! - `events.jsonl` — what tarae's UI state socket said (`{"watch":[]}`), `{"ms":…,"event":{…}}` a line, and the
 //!   part of a snapshot asked after some of them (`{"ms":…,"state":{front, workspaces, cards}}`).
-//! - `landmarks.jsonl` — the cut's landmarks drawn from those (`landmarks.rs`), `{"ms":…,"what":…,…}` a line.
+//! - `landmarks.jsonl` — the cut's landmarks drawn from those (`landmarks.rs`), `{"ms":…,"what":…,…}` a line, and the
+//!   driver's marks (`record mark`).
+//! - `way-in` — the way in's socket while the take runs (removed as it ends).
 //!
 //! The logs are written by a worker: the pass-through hands each chunk on and goes back to reading, so recording never
 //! makes tarae's frames or your keys wait on a disk.
@@ -51,9 +60,11 @@ use crate::video;
 use crate::{Result, root};
 
 mod check;
+mod hands;
 mod keys;
 mod landmarks;
 mod spike;
+mod take;
 #[cfg(test)]
 mod tests;
 
@@ -65,8 +76,9 @@ pub(crate) const SCREEN: u8 = 0;
 pub(crate) const TERMINAL: u8 = 1;
 pub(crate) const SCRIPT: u8 = 2;
 
-const USAGE: &str = "usage: cargo xtask record [--size 120x34] --out DIR [--keys FILE] [--state DIR] [--headless] -- \
-                     COMMAND … | record draw DIR [--bg dark|light] [--title T] | record still DIR OUT.png [--at S] | \
+const USAGE: &str = "usage: cargo xtask record [--size 120x34] --out DIR [--cwd DIR] [--keys FILE] [--state DIR] \
+                     [--headless] -- COMMAND … | record type|key|wait|state|mark … (the hands) | record take --out DIR --cwd \
+                     FOLDER [--size 166x32] [--config FILE] [--tarae BIN] | record dry [OUT] | record draw DIR [--bg dark|light] [--title T] | record still DIR OUT.png [--at S] | \
                      record check DIR | record spike [OUT] | record sizes [OUT]";
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -76,12 +88,16 @@ pub fn run(args: &[String]) -> Result<()> {
         Some("still") => return still_cmd(&args[1..]),
         Some("spike") => return spike::run(&args[1..]),
         Some("sizes") => return spike::sizes(&args[1..]),
+        Some(v @ ("type" | "key" | "wait" | "state" | "mark")) => return hands::client(v, &args[1..]),
+        Some("take") => return take::take(&args[1..]),
+        Some("dry") => return take::dry(&args[1..]),
         _ => {}
     }
     let at = args.iter().position(|a| a == "--").ok_or(USAGE)?;
     let (opts, command) = (&args[..at], &args[at + 1..]);
     let program = command.first().ok_or(USAGE)?;
-    let (mut size, mut out, mut keys, mut state, mut headless) = (SIZE, None, None, None, false);
+    let (mut size, mut out, mut keys, mut state, mut headless, mut cwd) =
+        (SIZE, None, None, None, false, None);
     let mut it = opts.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} wants a value — {USAGE}"));
@@ -90,6 +106,7 @@ pub fn run(args: &[String]) -> Result<()> {
             "--out" => out = Some(PathBuf::from(value()?)),
             "--keys" => keys = Some(PathBuf::from(value()?)),
             "--state" => state = Some(PathBuf::from(value()?)),
+            "--cwd" => cwd = Some(PathBuf::from(value()?)),
             "--headless" => headless = true,
             other => return Err(format!("{other}: {USAGE}")),
         }
@@ -106,7 +123,17 @@ pub fn run(args: &[String]) -> Result<()> {
     let ui = state.or_else(state_home);
     let mut cmd = Command::new(program);
     cmd.args(&command[1..]);
-    let taken = record(Spec { size, out: out.clone(), outer, keys, quit_after_keys: false, ui }, cmd)?;
+    let spec = Spec {
+        size,
+        out: out.clone(),
+        outer,
+        keys,
+        quit_after_keys: false,
+        ui,
+        cwd,
+        hands: Some(out.clone()),
+    };
+    let taken = record(spec, cmd)?;
     eprintln!("{}", taken.said(&out));
     Ok(())
 }
@@ -148,7 +175,8 @@ impl Outer {
 
 /// What a take is: its size (columns, rows), where it's kept, the terminal it's shown in (None: headless), the key
 /// script played into it, whether tarae is quit when the script ends (`:q!`, as a shot quits it — else the take runs
-/// until the command ends), and the state home whose socket gives the landmarks (None: none watched).
+/// until the command ends), the state home whose socket gives the landmarks (None: none watched), the folder the
+/// command starts in (None: this one), and where the hands' way in is made (None: no way in).
 pub(crate) struct Spec {
     pub(crate) size: (u16, u16),
     pub(crate) out: PathBuf,
@@ -156,6 +184,8 @@ pub(crate) struct Spec {
     pub(crate) keys: Vec<keys::Step>,
     pub(crate) quit_after_keys: bool,
     pub(crate) ui: Option<PathBuf>,
+    pub(crate) cwd: Option<PathBuf>,
+    pub(crate) hands: Option<PathBuf>,
 }
 
 /// A take kept: how long (ms), how it ended, its bytes (screen, keys), the socket's lines and the landmarks drawn from
@@ -169,6 +199,8 @@ pub(crate) struct Taken {
     pub(crate) events: u64,
     pub(crate) landmarks: u64,
     pub(crate) missed: Vec<String>,
+    /// Whether a UI socket was watched for it.
+    pub(crate) watched: bool,
 }
 
 impl Taken {
@@ -186,6 +218,10 @@ impl Taken {
         for m in &self.missed {
             s += &format!("\nrecord: missed — {m}");
         }
+        if self.watched && self.events == 0 {
+            s += "\nrecord: no landmarks — tarae's UI socket was never reached (events.jsonl says why, if it was \
+                  refused): --state names the state home tarae binds it under";
+        }
         s
     }
 }
@@ -201,6 +237,7 @@ enum Log {
     Key(Instant, u8, Vec<u8>),
     Told(Instant, Value),
     State(Instant, Value),
+    Mark(Instant, String),
     End,
 }
 
@@ -266,7 +303,44 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         })?;
         fits(there, spec.size)?;
     }
+    if let Some(d) = &spec.cwd {
+        if !d.is_dir() {
+            return Err(format!("--cwd {}: not a folder", d.display()));
+        }
+        cmd.current_dir(d);
+    }
+    if let Some(state) = &spec.ui {
+        // (tarae binds a longer path from its folder, and record's watcher reaches it so — another tool may not)
+        let sock = state.join("tarae/ui/9999999.sock");
+        if sock.as_os_str().len() >= hands::SUN_PATH {
+            eprintln!(
+                "record: tarae's UI socket will be at {}/tarae/ui/<pid>.sock, up to {} bytes — sun_path holds {} with \
+                 its end: record reaches it from its folder, as tarae binds it, but a shorter --state (or \
+                 XDG_STATE_HOME) is safer for any other tool",
+                state.display(),
+                sock.as_os_str().len(),
+                hands::SUN_PATH
+            );
+        }
+    }
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let way_in = match &spec.hands {
+        Some(base) => {
+            let w = hands::WayIn::open(base)?;
+            let p = out.join(hands::WAY_IN);
+            std::fs::write(&p, format!("{}\n", w.sock.display()))
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+            eprintln!(
+                "record: the way in — {}={} (0700, yours only; `cargo xtask record state --via {}`), gone when the \
+                 take ends",
+                hands::ENV,
+                w.sock.display(),
+                out.display()
+            );
+            Some(w)
+        }
+        None => None,
+    };
     let file = |name: &str| {
         let p = out.join(name);
         File::create(&p).map(BufWriter::new).map_err(|e| format!("{}: {e}", p.display()))
@@ -389,15 +463,38 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         }
     };
     let stopped = Arc::new(AtomicBool::new(false));
-    let watcher = match &spec.ui {
-        Some(state) => {
-            let sock = state.join("tarae/ui").join(format!("{pid}.sock"));
-            let (tx, stopped) = (tx.clone(), stopped.clone());
+    let hub = Arc::new(hands::Hub::default());
+    let ui_sock = spec.ui.as_ref().map(|state| state.join("tarae/ui").join(format!("{pid}.sock")));
+    let watcher = match &ui_sock {
+        Some(sock) => {
+            let (tx, stopped, hub, sock) = (tx.clone(), stopped.clone(), hub.clone(), sock.clone());
             Some(
                 std::thread::Builder::new()
                     .name("record-landmarks".into())
-                    .spawn(move || landmarks::watch(&sock, &tx, &stopped))
+                    .spawn(move || landmarks::watch(&sock, &tx, &stopped, &hub))
                     .map_err(|e| format!("the landmarks' watcher: {e}"))?,
+            )
+        }
+        None => None,
+    };
+    let serving = match &way_in {
+        Some(w) => {
+            let listener = w.listener.try_clone().map_err(|e| format!("the way in: {e}"))?;
+            let stop = stop_r.try_clone().map_err(|e| format!("pipe: {e}"))?;
+            let ctx = Arc::new(hands::Ctx {
+                to: master.try_clone().map_err(|e| format!("pty: {e}"))?,
+                tx: tx.clone(),
+                seen: seen.clone(),
+                hub: hub.clone(),
+                ui: ui_sock.clone(),
+                started,
+                typing: Mutex::new(()),
+            });
+            Some(
+                std::thread::Builder::new()
+                    .name("record-way-in".into())
+                    .spawn(move || hands::serve(&listener, &stop, &ctx))
+                    .map_err(|e| format!("the way in: {e}"))?,
             )
         }
         None => None,
@@ -407,9 +504,17 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
     let status = child.wait().map_err(|e| format!("the command: {e}"))?;
     let _ = screen.join();
     stopped.store(true, Ordering::Relaxed);
+    hub.end();
     let _ = (&File::from(stop_w)).write_all(b"x");
     if let Some(t) = input {
         let _ = t.join();
+    }
+    if let Some(t) = serving {
+        let _ = t.join();
+    }
+    if let Some(w) = way_in {
+        let _ = std::fs::remove_file(out.join(hands::WAY_IN));
+        drop(w);
     }
     let missed = script.map(|t| t.join().unwrap_or_default()).unwrap_or_default();
     if let Some(t) = watcher {
@@ -426,6 +531,7 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         events: counts.2,
         landmarks: counts.3,
         missed,
+        watched: spec.ui.is_some(),
     };
     let command: Vec<String> = std::iter::once(cmd.get_program())
         .chain(cmd.get_args())
@@ -433,7 +539,8 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         .collect();
     let about = json!({
         "v": 1, "size": [cols, rows], "command": command, "started_unix_ms": wall as u64, "ms": ms,
-        "exit": taken.exit, "shown": spec.outer.is_some(), "screen_bytes": taken.screen_bytes,
+        "exit": taken.exit, "shown": spec.outer.is_some(),
+        "cwd": spec.cwd.as_ref().map(|d| d.display().to_string()), "screen_bytes": taken.screen_bytes,
         "key_bytes": taken.key_bytes, "events": taken.events, "landmarks": taken.landmarks, "missed": taken.missed,
     });
     let p = out.join("take.json");
@@ -489,6 +596,12 @@ fn worker(
                     writeln!(f.landmarks, "{}", landmarks::line(mark)).map_err(said)?;
                     landmarks += 1;
                 }
+            }
+            Log::Mark(at, words) => {
+                let ms = us(at) / 1000;
+                writeln!(f.landmarks, "{}", landmarks::line((ms, json!({ "what": "mark", "said": words }))))
+                    .map_err(said)?;
+                landmarks += 1;
             }
             Log::State(at, state) => {
                 let ms = us(at) / 1000;

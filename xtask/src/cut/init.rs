@@ -11,7 +11,8 @@
 //! - a turn: sped so what's left of it takes at most `TURN_MAX` on screen, never under `TURN_MIN`×;
 //! - the rest: `DEFAULT`×, the file's `default`;
 //! - a chapter where the take starts and wherever the workspace in front changes, titled with its name (to fill in).
-//!   A bring landing has no landmark (tarae says it only in a toast's words), so none is placed for it;
+//!   A bring's end (`bring N`) and the driver's marks (`mark "WORDS"`, `mark N`) are landmarks to place one at by hand;
+//!   none is placed for them by rule;
 //! - the opening: where it ends the take's last `ENDS_FOR` from `ENDS_BEFORE` before its end, the card's words left
 //!   empty — the cut refuses them so until they're written.
 //!

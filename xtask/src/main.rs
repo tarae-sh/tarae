@@ -56,11 +56,14 @@
 //!   [`buildprune`]).
 //! - `homepage [<out-dir>]` — the homepage hero scene ("Three Claudes, one repository") recorded in both themes
 //!   (`hero-meok.json`, `hero-hanji.json`), first-frame PNGs, and 6-beat contact sheets (see [`homepage`]).
-//! - `record [--size 120x34] --out DIR [--keys FILE] [--headless] -- COMMAND …` — a live tarae recorded in a terminal
+//! - `record [--size 120x34] --out DIR [--cwd DIR] [--keys FILE] [--headless] -- COMMAND …` — a live tarae recorded in a
+//!   terminal
 //!   of its own of exactly that size, shown in yours (a pass-through): its screen's and keys' bytes with their times and
 //!   tarae's own state as landmarks; `record draw DIR` the take as the wide video, unedited; `record still DIR OUT.png`
 //!   one screen of it as the video draws it; `record check DIR` every place it shows your name, home, a mail address
-//!   or an amount of money; `record spike [OUT]` the full video's V0 take and measures (see [`record`]).
+//!   or an amount of money; `record spike [OUT]` the full video's V0 take and measures; the driver's hands on a take
+//!   running (`record type|key|wait|state|mark`), the full video's take with its surroundings (`record take`) and V3's
+//!   dry run (`record dry`) (see [`record`]).
 //! - `cut FILE` — a take made a video by the edit list beside it (spans at a speed or left out, chapters, captions, zooms,
 //!   a hook), honest about time: `<folder>/<stem>/cut.mp4`, its sheet and `chapters.txt`; `cut init TAKE` a first edit
 //!   list by rule (see [`cut`]).
