@@ -4,6 +4,6 @@
 # TAG          QuickJS-ng's release tag (github.com/quickjs-ng/quickjs)
 # SOURCE       the sha256 of codeload.github.com's tarball of TAG — fetch checks it, and build again before use
 # IMAGE        wasi-sdk's image by digest (wasi-sdk 25, clang 19.1.5): never a moving tag
-TAG=v0.10.1
-SOURCE=4e917eea3bb6051a0551fdd3aac45199ff705fa08920c15b824a08c5fbb032e4
+TAG=v0.18.0
+SOURCE=28bcd89aa3683fd2a946537e5ce3f11cc46b5cbf3383c7561aaef3df5ff9f1dd
 IMAGE=ghcr.io/webassembly/wasi-sdk@sha256:fdebde86990902087ecc470bf993ffec4d646e8fbd2e68c290a44120437622d0

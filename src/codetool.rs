@@ -38,7 +38,8 @@ pub const ENGINE_DEV: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/target/quickj
 /// What one program may use.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Interrupt-handler calls, each about 10,000 bytecode operations (or a stretch of a regex's matching).
+    /// Interrupt-handler calls, each 10,000 of a program's loop turns and branches (or a stretch of a regex's
+    /// matching).
     pub steps: u32,
     /// The engine's linear memory (the engine's own heap limit, 48 MB, comes first: an `out of memory` the program
     /// can see).
@@ -58,10 +59,10 @@ pub const CALLS: u32 = 64;
 /// The bytes of what a program printed the engine keeps (`glue.c`'s `PRINTED_MAX`); past it, only counted.
 const PRINTED_MAX: usize = 1 << 20;
 
-/// The fuel a step of bytecode costs, for a loop of up to 20 statements a turn (`tests::measure`: 1.5×10⁸ an
-/// empty loop's, 2.2×10⁹ arithmetic's, 3.0×10¹⁰ twenty statements', 1.5×10¹¹ a hundred's — it grows with the
-/// straight-line code between two jumps, which a program chooses).
-pub const FUEL_A_STEP: u64 = 30_000_000_000;
+/// The fuel a step of bytecode costs, for a loop of up to 20 statements a turn (`tests::measure`, QuickJS-ng
+/// v0.18.0: 1.6×10⁸ an empty loop's, 2.5×10⁹ arithmetic's, 3.4×10¹⁰ twenty statements', 1.7×10¹¹ a hundred's —
+/// it grows with the straight-line code between two jumps, which a program chooses).
+pub const FUEL_A_STEP: u64 = 34_000_000_000;
 
 /// Limits of `steps`, the fuel above them: twice what that many steps of bytecode cost (`FUEL_A_STEP`), so a
 /// JavaScript loop meets the step limit first.
@@ -76,13 +77,13 @@ pub const fn limits(steps: u32) -> Limits {
 }
 
 /// The limits every program runs under, for the design session (`.sb/codemode-s1a-report.md` §2).
-/// - `steps`: ten times the 20,000-line triage's 17 — 1.7 million loop turns or branches.
-/// - `fuel`: above the steps (`limits`), 1.0×10¹³. Where the steps see nothing (string building, `indexOf` over
-///   megabytes) that is 450–740 s at worst under the JIT and 1.6–2.5 h under the interpreter: **over the line** (10 s, 60 s);
-///   the options are the report's, not built before the user decides.
+/// - `steps`: ten times the 20,000-line triage's 18 (QuickJS-ng v0.18.0) — 1.8 million loop turns or branches.
+/// - `fuel`: above the steps (`limits`), 1.2×10¹³. Where the steps see nothing (`JSON.parse`, string building,
+///   `indexOf` over megabytes) that is about 710 s at worst under the JIT and 3.8 h under the interpreter: **over the
+///   line** (10 s, 60 s); the last net is the host-set flag (the user's yes, 2026-11-11), built after the re-pin.
 /// - `jit`: machine code only on an arch whose JIT has been fuzzed on QuickJS against the interpreter (S1's call 5:
 ///   until then the interpreter — x86-64 today).
-pub const LIMITS: Limits = limits(170);
+pub const LIMITS: Limits = limits(180);
 
 /// The engine: its module compiled once, the exports the host calls.
 pub struct Engine {
@@ -231,6 +232,8 @@ pub struct Program {
     asked: u32,
     /// The fuel it started with.
     fuel: u64,
+    /// Its step limit, for the words when it's met.
+    steps: u32,
 }
 
 /// Why a step stopped short of a reply.
@@ -254,7 +257,14 @@ impl Program {
             Ok(i) => i,
             Err(t) => return Next::Ended(Ended::failed(stopped(Stop::Trap(t)))),
         };
-        let mut p = Program { inst, fns: engine.fns, out: BTreeSet::new(), asked: 0, fuel: limits.fuel };
+        let mut p = Program {
+            inst,
+            fns: engine.fns,
+            out: BTreeSet::new(),
+            asked: 0,
+            fuel: limits.fuel,
+            steps: limits.steps,
+        };
         let reply = (|| {
             if let Some(init) = engine.init {
                 p.inst.call(init, &[])?;
@@ -340,7 +350,7 @@ impl Program {
                 let result = match word {
                     // (no `done` key: it returned `undefined`, which JSON leaves out)
                     "done" => Ok(body.get_mut("done").map(Value::take)),
-                    _ if body["stopped"] == "steps" => Err(step_limit(steps)),
+                    _ if body["stopped"] == "steps" => Err(step_limit(self.steps)),
                     _ => {
                         let e = body["error"].as_str().unwrap_or("an error it didn't say").to_string();
                         let hint = src.filter(|_| body["syntax"] == true).and_then(annotation);
@@ -392,21 +402,21 @@ impl Program {
     }
 }
 
-/// The words for a program the step limit ended.
-fn step_limit(steps: u32) -> String {
-    format!(
-        "the program ran {steps} steps, the limit of one program (a step is 10,000 of its loop turns and branches)"
-    )
+/// What every limit's words end with: the way out.
+const REMEDY: &str = "do less in one program, or split it";
+
+/// The words for a program the step limit ended: the limit itself, and the way out.
+fn step_limit(limit: u32) -> String {
+    format!("stopped at the limit of {limit} steps (a step is 10,000 loop turns and branches): {REMEDY}")
 }
 
 /// The words for a step that trapped or broke the protocol: the instance is dropped with it.
 fn stopped(s: Stop) -> String {
     match s {
-        Stop::Trap(Trap::OutOfFuel) => {
-            "the program ran out of fuel, the limit of one program's work (what its steps don't count too: strings, \
-             JSON, sorting)"
-                .into()
-        }
+        Stop::Trap(Trap::OutOfFuel) => format!(
+            "stopped at the limit of one program's fuel (its work, the steps' and what they don't count: strings, \
+             JSON, sorting): {REMEDY}"
+        ),
         Stop::Trap(t) => format!("the engine stopped: {t}"),
         Stop::Engine(why) => format!("the engine {why}"),
     }

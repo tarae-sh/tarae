@@ -14,8 +14,9 @@
 // "steps" (the program's so far), "syntax":true when the program didn't compile, and, when the step limit ended
 // it, "stopped":"steps".
 //
-// A step is a call of QuickJS's interrupt handler: every 10,000 bytecode ops (JS_INTERRUPT_COUNTER_INIT), and
-// every so many steps of the regex engine (lre_poll_timeout). The same count on every machine and under the JIT
+// A step is a call of QuickJS's interrupt handler: every 10,000 of a program's loop turns and branches (the
+// handler's counter, JS_INTERRUPT_COUNTER_INIT, is spent at every jump), and every so many steps of the regex
+// engine (lre_poll_timeout). The same count on every machine and under the JIT
 // or the interpreter: the limit of one program is work, not seconds. Past it the handler interrupts, and goes
 // on interrupting whatever JS runs after (a `toJSON` of the result too) — QuickJS's "interrupted" can't be
 // caught.
@@ -42,7 +43,7 @@ static uint32_t steps, max_steps;
 static int stopped, syntax;
 static uint8_t *reply;
 
-static int interrupt(JSRuntime *r, void *opaque) {
+static int interrupt(JSContext *c, void *opaque) {
     if (!stopped && ++steps > max_steps)
         stopped = 1;
     return stopped;
@@ -235,8 +236,9 @@ static void fresh(void) {
     rt = JS_NewRuntime();
     JS_SetMemoryLimit(rt, MEMORY_LIMIT);
     JS_SetInterruptHandler(rt, interrupt, NULL);
-    // QuickJS-ng turns the stack check off on wasi (`update_stack_limit`); put it back, within the module's 1 MB
-    // shadow stack (linked first: past it is below address 0, a trap), so deep recursion is a RangeError
+    // QuickJS-ng leaves the stack check off here (`update_stack_limit`: no limit while the stack's top is below its
+    // size, as the module's 1 MB stack linked first is); put it back, within that shadow stack (past it is below
+    // address 0, a trap), so deep recursion is an error the program sees
     rt->stack_size = STACK_LIMIT;
     rt->stack_top = js_get_stack_pointer();
     rt->stack_limit = rt->stack_top - STACK_LIMIT;

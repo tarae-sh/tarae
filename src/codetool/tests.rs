@@ -146,7 +146,11 @@ fn the_fuel_and_the_step_limit_end_a_program_with_their_words() {
     let e = stand_in();
     for jit in [true, false] {
         let fuel = error(Program::start(&e, "!", Limits { jit, ..SMALL }));
-        assert!(fuel.starts_with("the program ran out of fuel, the limit of one program's work"), "{fuel}");
+        assert_eq!(
+            fuel,
+            "stopped at the limit of one program's fuel (its work, the steps' and what they don't count: strings, \
+             JSON, sorting): do less in one program, or split it"
+        );
     }
     let (p, _) = calls(Program::start(
         &e,
@@ -154,15 +158,20 @@ fn the_fuel_and_the_step_limit_end_a_program_with_their_words() {
         SMALL,
     ));
     assert!(
-        error(p.answer(0, &json!(1))).contains("out of fuel"),
+        error(p.answer(0, &json!(1))).contains("of one program's fuel"),
         "the fuel is the whole program's, resumes too"
     );
     let steps = r#"error
 {"error":"InternalError: interrupted","stopped":"steps","steps":20001,"printed":"before\n","printed_bytes":7}"#;
-    let end = ended(Program::start(&e, steps, SMALL));
+    let end = ended(Program::start(&e, steps, Limits { steps: 20_000, ..SMALL }));
+    // the words say the limit (the program's own count is one past it), and the way out
     assert_eq!(
         end.result,
-        Err("the program ran 20001 steps, the limit of one program (a step is 10,000 of its loop turns and branches)".into())
+        Err(
+            "stopped at the limit of 20000 steps (a step is 10,000 loop turns and branches): do less in one \
+             program, or split it"
+                .into()
+        )
     );
     assert_eq!((end.printed.as_str(), end.steps), ("before\n", 20001));
 }
@@ -377,6 +386,17 @@ fn the_real_engine_runs_a_program_and_its_calls() {
         "TypeError: eval is not supported",
     ];
     assert_eq!(evals.result, Ok(Some(json!(refused))), "nothing a program makes becomes code");
+    // nor is anything loaded: no module loader is set, so a dynamic import (async since v0.18.0) rejects
+    let import = ok(&e, "try { await import('x'); return 'loaded' } catch (x) { return String(x) }");
+    let said = import
+        .result
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    assert!(said.contains("Error") && said != "loaded", "{:?}", import.result);
 }
 
 #[test]
@@ -386,8 +406,13 @@ fn the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean() {
         let end = ok(&e, src);
         (end.result.unwrap_err(), end.steps, end.printed)
     };
-    let words = "the program ran 171 steps, the limit of one program (a step is 10,000 of its loop turns and branches)";
-    assert_eq!(limit("print('before'); for (;;) {}"), (words.into(), 171, "before\n".into()));
+    let words = format!(
+        "stopped at the limit of {} steps (a step is 10,000 loop turns and branches): do less in one program, or \
+         split it",
+        LIMITS.steps
+    );
+    let words = words.as_str();
+    assert_eq!(limit("print('before'); for (;;) {}"), (words.into(), LIMITS.steps + 1, "before\n".into()));
     // the limit can't be caught, nor waited out
     assert_eq!(limit("for (;;) { try { for (;;) {} } catch (x) {} }").0, words);
     assert_eq!(limit("await tool('x'); for (;;) {}").0, words, "the steps are the whole program's");
@@ -399,7 +424,7 @@ fn the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean() {
     assert_eq!(cycle, "the result can't be turned into JSON");
     // memory
     let big = limit("const s = 'x'.repeat(1 << 30); return s.length;").0;
-    assert!(big.starts_with("RangeError: invalid string length"), "{big}");
+    assert!(big.starts_with("RangeError: string too long"), "{big}");
     let grow = limit("const a = []; for (;;) a.push('x'.repeat(1 << 20) + a.length);").0;
     assert!(grow.starts_with("InternalError: out of memory"), "{grow}");
     assert_eq!(
@@ -554,24 +579,30 @@ fn measure() {
             assert_eq!(end.steps, 6, "{what}: the step limit ended it");
             a_step = a_step.max(per_step);
         }
-        println!(" fuel a second where the steps see nothing (on 1e10 fuel):");
+        // (a case the steps see — QuickJS-ng ≥ 0.16.2 polls in some Array methods — is said, and left out of
+        // the slowest rate: its steps bound it)
+        println!(
+            " fuel a second in C-heavy work (on 1e10 fuel; the slowest taken where the steps see nothing):"
+        );
         for (what, src) in heavy {
             let (end, rate, _) = time(what, src, on(10_000_000_000));
-            assert_eq!(end.steps, 0, "{what}: the steps saw it");
-            slowest[k] = slowest[k].min(rate);
+            match end.steps {
+                0 => slowest[k] = slowest[k].min(rate),
+                n => println!("    (the steps see it: {n} steps on 1e10 fuel)"),
+            }
         }
     }
     println!(
-        "== for a step limit S: fuel F = 2 × S × {a_step:.2e} (the costliest step above); the longest a program"
+        "== for a step limit S: fuel F = limits(S) = 2 × S × FUEL_A_STEP ({FUEL_A_STEP:.2e}; the costliest step \
+         above {a_step:.2e}); the longest a program runs on F where the steps see nothing (the slowest rate above)"
     );
-    println!("   runs on F where the steps see nothing (the slowest rate above)");
     for (what, s) in [
         ("3× the task", 3 * task),
         ("10× the task", 10 * task),
         ("100×", 100 * task),
         ("1,000×", 1000 * task),
     ] {
-        let f = 2.0 * s as f64 * a_step;
+        let f = limits(s).fuel as f64;
         println!(
             "  {what}: S = {s}, F = {f:.2e}: {:.1} s under the JIT, {:.1} s under the interpreter",
             f / slowest[0],
