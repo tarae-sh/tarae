@@ -52,6 +52,8 @@
 //! file = "beds/one.mp3"                   # any file ffmpeg reads, from this file's folder (or a whole path)
 //! loop = ["0:08.2", "1:52"]               # where it repeats, the track's own times marked by ear (else it
 //!                                         # fades where it runs out and the next bed begins)
+//! gain = 4                                # a made bed (the rain): dB on the file as made, its level its own —
+//!                                         # not levelled, no swing; left out: levelled under the keys ([sound])
 //!
 //! [sound]                                 # the mix by distance (LU; each left out: its constant, `sound.rs`)
 //! under = 0                               # the bed under the keys' own loudness where they may sound
@@ -538,14 +540,20 @@ pub(crate) struct Zoom {
 }
 
 /// A music bed: from chapter `chapter` (its index) on, its `file` as the edit list says it, repeating between `looped`'s
-/// two times in the track (ms) where it's given; the file's line.
+/// two times in the track (ms) where it's given; at `gain` (dB on the file as made) from its fade in to its fade out
+/// where that's given — a made bed, its level its own —, else levelled; the file's line.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bed {
     pub(crate) chapter: usize,
     pub(crate) file: String,
     pub(crate) looped: Option<(u64, u64)>,
+    pub(crate) gain: Option<f32>,
     pub(crate) line: usize,
 }
+
+/// A made bed's gain, dB on its file as made: from this to `GAIN_MOST_DB`.
+pub(crate) const GAIN_LEAST_DB: f64 = -40.0;
+pub(crate) const GAIN_MOST_DB: f64 = 24.0;
 
 /// A loop's shortest (ms): a seam every few seconds is no bed.
 pub(crate) const LOOP_MIN: u64 = 2_000;
@@ -892,7 +900,7 @@ impl Cut {
 
         let mut beds: Vec<Bed> = Vec::new();
         for e in list("music")? {
-            e.keys(&["chapter", "file", "loop"])?;
+            e.keys(&["chapter", "file", "loop", "gain"])?;
             let n = match e.t.get("chapter") {
                 Some(toml::Value::Integer(n)) if *n >= 1 && (*n as usize) <= chapters.len() => *n as usize,
                 Some(_) if chapters.is_empty() => {
@@ -954,7 +962,21 @@ impl Cut {
                     return Err(e.err("loop", "music: loop = [\"0:08.2\", \"1:52\"], its start and end"));
                 }
             };
-            beds.push(Bed { chapter: n - 1, file, looped, line: e.line });
+            let gain = match e.t.get("gain") {
+                None => None,
+                Some(v) => match number(v) {
+                    Some(g) if (GAIN_LEAST_DB..=GAIN_MOST_DB).contains(&g) => Some(g as f32),
+                    _ => {
+                        return Err(e.err(
+                            "gain",
+                            format!(
+                                "music: gain = dB on the file as made (0: as it is), {GAIN_LEAST_DB} to {GAIN_MOST_DB}"
+                            ),
+                        ));
+                    }
+                },
+            };
+            beds.push(Bed { chapter: n - 1, file, looped, gain, line: e.line });
         }
         let mut mix = sound::Mix::default();
         match top.get("sound") {

@@ -695,6 +695,24 @@ fn reach<T>(target: f32, at: f32, made: impl Fn(f32) -> (T, f32)) -> (T, f32) {
 /// sees the peak coming) — never a peak past the ceiling, never a step in the gain. Its largest reduction (dB, positive)
 /// and the sample it's at.
 pub(crate) fn limit(x: &mut [f32], peaks: &[f32], ceiling: f32) -> (f32, usize) {
+    most(&limit_sides(&mut [x], peaks, ceiling))
+}
+
+/// The largest reduction of a limiter's `gains` (dB, positive) and the sample it's at.
+pub(crate) fn most(gains: &[f32]) -> (f32, usize) {
+    let (mut least, mut at) = (1.0f32, 0);
+    for (i, &g) in gains.iter().enumerate() {
+        if g < least {
+            (least, at) = (g, i);
+        }
+    }
+    (-20.0 * least.log10(), at)
+}
+
+/// `limit` on a track's sides at once (the cut's left and right): one gain at each sample for every side, from
+/// `peaks` — the larger side's true peak there (`true_peaks_of`) —, so the image never leans. Its gains, one a
+/// sample. One side: `limit`.
+pub(crate) fn limit_sides(sides: &mut [&mut [f32]], peaks: &[f32], ceiling: f32) -> Vec<f32> {
     const ATTACK_S: f32 = 0.002;
     const RELEASE_S: f32 = 0.060;
     let per = |s: f32| 1.0 - (-1.0 / (s * RATE as f32)).exp();
@@ -710,14 +728,55 @@ pub(crate) fn limit(x: &mut [f32], peaks: &[f32], ceiling: f32) -> (f32, usize) 
         g = n.min(g + (1.0 - g) * attack);
         *n = g;
     }
-    let (mut least, mut at) = (1.0f32, 0);
-    for (i, (v, g)) in x.iter_mut().zip(gains).enumerate() {
-        *v *= g;
-        if g < least {
-            (least, at) = (g, i);
-        }
+    for x in sides.iter_mut() {
+        x.iter_mut().zip(&gains).for_each(|(v, g)| *v *= g);
     }
-    (-20.0 * least.log10(), at)
+    gains
+}
+
+/// The true peak at each sample of a track's sides: the larger side's (`true_peaks` of each).
+pub(crate) fn true_peaks_of(sides: &[&[f32]]) -> Vec<f32> {
+    let mut each = sides.iter().map(|x| true_peaks(x));
+    let first = each.next().unwrap_or_default();
+    each.fold(first, |mut m, p| {
+        m.iter_mut().zip(p).for_each(|(m, p)| *m = m.max(p));
+        m
+    })
+}
+
+/// A track's true peak (dBTP): its larger side's.
+pub(crate) fn true_peak_db(sides: &[&[f32]]) -> f32 {
+    20.0 * true_peaks_of(sides).into_iter().fold(0.0f32, f32::max).log10()
+}
+
+/// The two sides' loudness together (LUFS): each side's mean square, as `lufs` gates it, summed (the rain's
+/// figures and the cut's, one way for both).
+pub(crate) fn stereo_lufs(l: &[f32], r: &[f32]) -> f32 {
+    let power = |lufs: f32| 10f64.powf((f64::from(lufs) + 0.691) / 10.0);
+    (-0.691 + 10.0 * (power(lufs(l)) + power(lufs(r))).log10()) as f32
+}
+
+/// `short_term` over both sides: each window's two mean squares summed, as BS.1770 sums channels.
+pub(crate) fn stereo_short_term(l: &[f32], r: &[f32], window_s: f32, step_s: f32) -> Vec<f32> {
+    let power = |lufs: f32| 10f64.powf((f64::from(lufs) + 0.691) / 10.0);
+    (short_term(l, window_s, step_s).into_iter().zip(short_term(r, window_s, step_s)))
+        .map(|(a, b)| (-0.691 + 10.0 * (power(a) + power(b)).log10()) as f32)
+        .collect()
+}
+
+/// The left and right's correlation over the whole (1: the same, as mono; 0: unrelated; −1: opposed); 1 where one
+/// side is silent throughout and the other too.
+pub(crate) fn correlation(l: &[f32], r: &[f32]) -> f32 {
+    let (mut lr, mut ll, mut rr) = (0.0f64, 0.0f64, 0.0f64);
+    for (a, b) in l.iter().zip(r) {
+        let (a, b) = (f64::from(*a), f64::from(*b));
+        (lr, ll, rr) = (lr + a * b, ll + a * a, rr + b * b);
+    }
+    match ll * rr {
+        0.0 if ll == rr => 1.0,
+        0.0 => 0.0,
+        p => (lr / p.sqrt()) as f32,
+    }
 }
 
 /// The true peak at each sample of `x`: the largest of it, its neighbours and the three points a quarter apart on
@@ -887,22 +946,31 @@ pub(crate) fn brush() -> Vec<f32> {
 
 /// 16-bit PCM, mono.
 pub(crate) fn wav(path: &Path, samples: &[f32]) -> Result<()> {
-    let data = samples.len() as u32 * 2;
+    wav_sides(path, &[samples])
+}
+
+/// 16-bit PCM, a channel a side (each as long as the first), interleaved: one side, `wav`.
+pub(crate) fn wav_sides(path: &Path, sides: &[&[f32]]) -> Result<()> {
+    let (n, ch) = (sides.first().map_or(0, |s| s.len()), sides.len() as u16);
+    let data = n as u32 * 2 * u32::from(ch);
     let mut b: Vec<u8> = Vec::with_capacity(44 + data as usize);
     b.extend_from_slice(b"RIFF");
     b.extend_from_slice(&(36 + data).to_le_bytes());
     b.extend_from_slice(b"WAVEfmt ");
     b.extend_from_slice(&16u32.to_le_bytes());
     b.extend_from_slice(&1u16.to_le_bytes());
-    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&ch.to_le_bytes());
     b.extend_from_slice(&RATE.to_le_bytes());
-    b.extend_from_slice(&(RATE * 2).to_le_bytes());
-    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&(RATE * 2 * u32::from(ch)).to_le_bytes());
+    b.extend_from_slice(&(2 * ch).to_le_bytes());
     b.extend_from_slice(&16u16.to_le_bytes());
     b.extend_from_slice(b"data");
     b.extend_from_slice(&data.to_le_bytes());
-    for s in samples {
-        b.extend_from_slice(&((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes());
+    for i in 0..n {
+        for s in sides {
+            let s = s.get(i).copied().unwrap_or(0.0);
+            b.extend_from_slice(&((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes());
+        }
     }
     std::fs::write(path, b).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -1116,5 +1184,95 @@ mod tests {
         assert_eq!(now, before, "the limiter changed a sample at volume 30");
         let peak = now.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         assert!(peak < synth::KNEE / 2.0, "the paragraph peaks at {peak}, within 6 dB of the knee");
+    }
+
+    /// The cut's limiter (V2b): one gain at every sample for both sides, from the larger side's true peak — a loud
+    /// left turns the quiet right down with it, by as much —; the track's true peak is its larger side's.
+    #[test]
+    fn the_limiter_takes_the_same_gain_from_both_sides_and_the_true_peak_is_the_larger_sides() {
+        let n = RATE as usize;
+        let sine =
+            |hz: f32, a: f32, i: usize| a * (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin();
+        let l0: Vec<f32> =
+            (0..n).map(|i| sine(1_000.0, if (n / 3..n / 2).contains(&i) { 0.95 } else { 0.1 }, i)).collect();
+        let r0: Vec<f32> = (0..n).map(|i| sine(300.0, 0.2, i)).collect();
+        let peaks = true_peaks_of(&[&l0, &r0]);
+        let (pl, pr) = (true_peaks(&l0), true_peaks(&r0));
+        assert!((0..n).all(|i| peaks[i] == pl[i].max(pr[i])), "the larger side's at each sample");
+        let before = true_peak_db(&[&l0, &r0]);
+        assert_eq!(before, true_peak_db(&[&l0]).max(true_peak_db(&[&r0])));
+        assert!(true_peak_db(&[&l0]) > true_peak_db(&[&r0]) + 6.0, "the left the larger");
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        let ceiling = 10f32.powf(-6.0 / 20.0);
+        let gains = limit_sides(&mut [&mut l, &mut r], &peaks, ceiling);
+        for i in 0..n {
+            for (x, y) in [(l0[i], l[i]), (r0[i], r[i])] {
+                assert!((y - x * gains[i]).abs() < 1e-7, "at {i}: {y} from {x}, the gain {}", gains[i]);
+            }
+        }
+        let (most, at) = most(&gains);
+        assert!(most > 3.0 && (n / 3..n / 2).contains(&at), "{most:.2} dB at {at}");
+        assert!(
+            r[n * 5 / 12].abs() <= r0[n * 5 / 12].abs() && gains[n * 5 / 12] < 0.7,
+            "the right turned down too"
+        );
+        assert!(true_peak_db(&[&l, &r]) <= -6.0 + 0.05, "{:.2} dBTP", true_peak_db(&[&l, &r]));
+    }
+
+    /// The cut's figures over both sides (V2b): the correlation is 1 for the same on both, −1 for opposed, near 0 for
+    /// unrelated; a window's loudness over both is its two powers summed — the same on both 3 dB over one, a silent
+    /// side adding nothing.
+    #[test]
+    fn the_sides_correlation_and_loudness_are_both_sides() {
+        let n = RATE as usize * 4;
+        let x: Vec<f32> =
+            (0..n).map(|i| 0.3 * (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin()).collect();
+        let y: Vec<f32> =
+            (0..n).map(|i| 0.3 * (std::f32::consts::TAU * 1_013.0 * i as f32 / RATE as f32).sin()).collect();
+        let minus: Vec<f32> = x.iter().map(|v| -v).collect();
+        let silent = vec![0.0f32; n];
+        assert!((correlation(&x, &x) - 1.0).abs() < 1e-6 && (correlation(&x, &minus) + 1.0).abs() < 1e-6);
+        assert!(correlation(&x, &y).abs() < 0.01, "{}", correlation(&x, &y));
+        assert_eq!((correlation(&x, &silent), correlation(&silent, &silent)), (0.0, 1.0));
+        let (one, both, half) = (
+            short_term(&x, 3.0, 1.0),
+            stereo_short_term(&x, &x, 3.0, 1.0),
+            stereo_short_term(&x, &silent, 3.0, 1.0),
+        );
+        for i in 0..one.len() {
+            assert!(
+                (both[i] - one[i] - 10.0 * 2f32.log10()).abs() < 1e-3 && (half[i] - one[i]).abs() < 1e-3,
+                "{i}"
+            );
+        }
+        assert!((stereo_lufs(&x, &x) - lufs(&x) - 10.0 * 2f32.log10()).abs() < 1e-3);
+    }
+
+    /// A Short's sound is the bytes it was before the cut's sound went stereo (V2b): keys of each kind, a stamp, the
+    /// brush and a bed (a made tone), mastered, limited and written as its WAV — FNV-1a over the file, taken from the
+    /// code as it was. On macOS only: the floats' `sin`, `exp` and `powf` are the platform's libm, and its figure is this
+    /// Mac's (`:preflight` runs it at every landing).
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_shorts_sound_is_byte_for_byte_what_it_was() {
+        let ms = Duration::from_millis;
+        let mut heard: Vec<(Duration, Heard)> =
+            (0..40).map(|i| (ms(500 + i * 110), Heard::Key(['a', ' ', '\r'][(i % 3) as usize]))).collect();
+        heard.push((ms(6_000), Heard::Stamp));
+        let music: Vec<f32> = (0..RATE as usize * 12)
+            .map(|n| {
+                let t = n as f32 / RATE as f32;
+                0.3 * (std::f32::consts::TAU * 196.0 * t).sin() * (0.6 + 0.4 * (t * 1.7).sin())
+            })
+            .collect();
+        let t = track(&heard, Duration::from_secs(10), Some(ms(8_000)), SHORT_CEILING_DB, Some(&music));
+        let dir = tarae_testkit::scratch::Scratch::new("xtask-short-bytes");
+        let at = dir.join("short.wav");
+        wav(&at, &t.samples).unwrap();
+        let bytes = std::fs::read(&at).unwrap();
+        let fnv = bytes
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3));
+        assert_eq!((bytes.len(), fnv), (960_044, 2_814_364_272_007_694_777), "a Short's WAV changed");
     }
 }

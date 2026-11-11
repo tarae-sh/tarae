@@ -742,6 +742,52 @@ pub(crate) fn decoded(ffmpeg: &Path, music: &Path, upto: Duration) -> Result<Vec
     Ok(out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 
+/// `music`'s first `upto` with its two sides, left and right, at `sound::RATE` (the cut's beds): a mono file both sides
+/// alike, a stereo one as it is, more channels brought to two by ffmpeg. Decoded to a float WAV, its header read for
+/// the channels.
+pub(crate) fn decoded_sides(ffmpeg: &Path, music: &Path, upto: Duration) -> Result<[Vec<f32>; 2]> {
+    let out = Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(music)
+        .args(["-t", &format!("{:.3}", upto.as_secs_f64()), "-map", "0:a:0", "-map_metadata", "-1"])
+        .args(["-af", "aformat=channel_layouts=mono|stereo", "-ar"])
+        .arg(sound::RATE.to_string())
+        .args(["-c:a", "pcm_f32le", "-f", "wav", "-"])
+        .output()
+        .map_err(|e| format!("{}: {e}", ffmpeg.display()))?;
+    let none =
+        || format!("{}: no sound decoded — {}", music.display(), String::from_utf8_lossy(&out.stderr).trim());
+    if !out.status.success() {
+        return Err(none());
+    }
+    let (channels, data) = wav_float(&out.stdout).ok_or_else(none)?;
+    let x: Vec<f32> = data.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+    match channels {
+        1 if !x.is_empty() => Ok([x.clone(), x]),
+        2 if x.len() >= 2 => {
+            let (l, r) = x.as_chunks::<2>().0.iter().map(|s| (s[0], s[1])).unzip();
+            Ok([l, r])
+        }
+        _ => Err(none()),
+    }
+}
+
+/// A WAV's channel count and its samples' bytes (all after its `data` chunk's head — a pipe's WAV says no length).
+fn wav_float(b: &[u8]) -> Option<(u16, &[u8])> {
+    let (mut at, mut channels) = (12, None);
+    (b.get(..4)? == b"RIFF" && b.get(8..12)? == b"WAVE").then_some(())?;
+    while let Some(head) = b.get(at..at + 8) {
+        let size = u32::from_le_bytes(head[4..8].try_into().ok()?) as usize;
+        match &head[..4] {
+            b"fmt " => channels = Some(u16::from_le_bytes(b.get(at + 10..at + 12)?.try_into().ok()?)),
+            b"data" => return Some((channels?, &b[at + 8..])),
+            _ => {}
+        }
+        at += 8 + size + size % 2;
+    }
+    None
+}
+
 /// The MP4's sound as a player hears it: ffmpeg's `ebur128` over its AAC — its summary's integrated loudness and true
 /// peak.
 pub(crate) fn loudness(ffmpeg: &Path, mp4: &Path) -> std::result::Result<(f32, f32), String> {
@@ -2951,5 +2997,27 @@ mod tests {
         let read: Vec<_> = aims.iter().map(|a| (a.beat, a.spec.as_str(), a.deep, a.planned.next)).collect();
         assert_eq!(read, [(0, "card:asks", false, Some(300)), (1, "code:1-1", true, Some(450))]);
         assert_eq!(missed, ["@zoom:code:1-1 at 0.1 s: a beat reads one thing (card:asks) — left out"]);
+    }
+
+    /// A bed read for the cut (V2b): a stereo file's left and right each on its own side, a mono one both sides alike —
+    /// ffmpeg's decode of `sound::wav_sides`' files, made in the test. Skipped without ffmpeg.
+    #[test]
+    fn a_beds_sides_are_read_apart_and_a_mono_files_alike() {
+        let Some(ffmpeg) = ffmpeg() else { return };
+        let dir = tarae_testkit::scratch::Scratch::new("xtask-bed-sides");
+        let n = sound::RATE as usize / 2;
+        let wave = |k: usize, a: f32| -> Vec<f32> {
+            (0..n).map(|i| a * ((i * k % 97) as f32 / 97.0 - 0.5)).collect()
+        };
+        let (l, r) = (wave(3, 0.8), wave(7, 0.4));
+        let (st, mono) = (dir.join("st.wav"), dir.join("mono.wav"));
+        sound::wav_sides(&st, &[&l, &r]).unwrap();
+        sound::wav(&mono, &l).unwrap();
+        let near =
+            |a: &[f32], b: &[f32]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        let [a, b] = decoded_sides(&ffmpeg, &st, Duration::from_secs(10)).unwrap();
+        assert!(near(&a, &l) && near(&b, &r), "the left and right as written: {} {}", a.len(), b.len());
+        let [a, b] = decoded_sides(&ffmpeg, &mono, Duration::from_secs(10)).unwrap();
+        assert!(near(&a, &l) && a == b, "a mono file both sides alike, as it is");
     }
 }

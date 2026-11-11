@@ -8,8 +8,14 @@
 //!   stamp's own), and **the brush** on the end card, as in the Shorts, and again with the intro's swing (the end card's
 //!   as mastered, laid there too: the two bookends sound alike) — all mastered as a Short's keys are
 //!   (`sound::track`: brought toward `sound::SHORT_LUFS`, the limiter taking at most `LIMIT_MOST_DB` from a click).
+//! - **Stereo** (V2b, `.sb/full-video-v2b-brief.md`): a bed's left on the left and its right on the right (a mono file
+//!   both sides alike, `video::decoded_sides`); tarae's own sounds in the centre, the same on both; loudness over both
+//!   sides (`sound::stereo_lufs`), one limiter gain for both (`sound::limit_sides`), the true peak the larger side's;
+//!   the WAV and the AAC stereo. The Shorts stay mono, their bytes as they were.
 //! - **Beds** (`[[music]]`): each from its chapter on, its file's leading silence left out (`sound::sounds_from`), each
-//!   at one loudness (`BED_REF_LUFS`) before the level below; crossed into the next over that chapter's card (or
+//!   at one loudness (`BED_REF_LUFS`) before the level below — but a **made bed** (`gain`, the rain): its level made
+//!   into it, at that gain on its file from its fade in to its fade out, never levelled nor swung (`laid`), `cut.txt`
+//!   setting its loudest moment against the quietest key's peak (`made_said`); crossed into the next over that chapter's card (or
 //!   `CROSS_US` round a chapter with no card), equal power; repeating between its loop's two marks with a `SEAM_MS`
 //!   seam; where it runs out with no loop, faded over `CROSS_US` to its end and the next begun under it; the first in
 //!   under the intro's last `BED_UNDER_INTRO_US` (from chapter 1; else over `sound::BED_IN_S` at its chapter), leading
@@ -399,26 +405,171 @@ pub(crate) fn mixed(keys: &[f32], beds: &[f32], d: &[f32], lead_db: f32, depth_d
     (keys.iter().zip(beds).zip(d)).map(|((x, b), d)| x + b * ((lead_db - d * depth_db) * k).exp()).collect()
 }
 
-// ── The track ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
-/// One bed's file read: its samples (mono at `RATE`), where its sound starts, its loop in samples.
-struct Track {
-    samples: Vec<f32>,
-    from: usize,
-    looped: Option<(usize, usize)>,
+/// One bed's file read: its two sides at `RATE` (a mono file's alike), where its sound starts, its loop in samples.
+pub(crate) struct Track {
+    pub(crate) sides: [Vec<f32>; 2],
+    pub(crate) from: usize,
+    pub(crate) looped: Option<(usize, usize)>,
 }
 
-/// The levels a track came to: the keys alone (LUFS, their gain in dB, the most the limiter took from them), the bed
-/// alone where it leads and where it lies under (LUFS), the whole (LUFS, dBTP) and what the limiter took from it (most,
-/// when in s, how long more than `sound::TOUCHED_DB`).
+/// The beds laid on the video, each side: those levelled (each brought to `BED_REF_LUFS` alone, both sides; their
+/// level then follows the picture's speed, `mixed`) and the made ones, at their own gain (`Bed::gain`) as laid. A kind
+/// no bed is: empty.
+#[derive(Debug, Default)]
+pub(crate) struct Laid {
+    pub(crate) levelled: [Vec<f32>; 2],
+    pub(crate) made: [Vec<f32>; 2],
+}
+
+/// A made bed as laid, alone: its loudness (LUFS, both sides), its loudest moment — its true peak (dBTP, the larger
+/// side's) — and where (µs in the video).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Made {
+    pub(crate) bed: usize,
+    pub(crate) lufs: f32,
+    pub(crate) peak: f32,
+    pub(crate) at: u64,
+}
+
+/// `placed` beds laid onto `len` samples a side from their `tracks`, each its left on the left and its right on the
+/// right: a bed with a gain (`gains[j]`, dB) at it, as laid, said (`Made`); one without brought to `BED_REF_LUFS` over
+/// its span, both sides.
+pub(crate) fn laid(
+    placed: &[Placed],
+    tracks: &[Track],
+    gains: &[Option<f32>],
+    len: usize,
+) -> (Laid, Vec<Made>) {
+    let (mut out, mut made) = (Laid::default(), Vec::new());
+    for ((p, t), gain) in placed.iter().zip(tracks).zip(gains) {
+        let g = gain.map_or(1.0, |db| 10f32.powf(db / 20.0));
+        let mut one = [vec![0.0f32; len], vec![0.0f32; len]];
+        one.iter_mut().zip(&t.sides).for_each(|(y, x)| lay(p, x, t.looped, g, y));
+        let (a, b) = (samples(p.start).min(len), samples(p.fade_out.1).min(len));
+        let l = sound::stereo_lufs(&one[0][a..b], &one[1][a..b]);
+        let (into, g) = match gain {
+            Some(_) => {
+                let peaks = sound::true_peaks_of(&[&one[0][a..b], &one[1][a..b]]);
+                let (i, peak) = (peaks.iter().enumerate())
+                    .fold((0, 0.0f32), |m, (i, &p)| if p > m.1 { (i, p) } else { m });
+                made.push(Made { bed: p.bed, lufs: l, peak: 20.0 * peak.log10(), at: micros(a + i) });
+                (&mut out.made, 1.0)
+            }
+            None => {
+                (&mut out.levelled, if l.is_finite() { 10f32.powf((BED_REF_LUFS - l) / 20.0) } else { 1.0 })
+            }
+        };
+        for (y, x) in into.iter_mut().zip(&one) {
+            if y.is_empty() {
+                *y = vec![0.0; len];
+            }
+            y.iter_mut().zip(x).for_each(|(y, x)| *y += x * g);
+        }
+    }
+    (out, made)
+}
+
+/// The cut's two sides: `keys` (tarae's own sounds, mono) in the centre — the same on both —, each side's levelled beds
+/// through `mixed` (`lead_db`, `depth_db`, `d`), its made ones as laid.
+pub(crate) fn sides(keys: &[f32], laid: &Laid, d: &[f32], lead_db: f32, depth_db: f32) -> [Vec<f32>; 2] {
+    std::array::from_fn(|c| {
+        let mut y = match laid.levelled[c].is_empty() {
+            true => keys.to_vec(),
+            false => mixed(keys, &laid.levelled[c], d, lead_db, depth_db),
+        };
+        if !laid.made[c].is_empty() {
+            y.iter_mut().zip(&laid.made[c]).for_each(|(y, m)| *y += m);
+        }
+        y
+    })
+}
+
+/// A mono track's loudness heard in the centre of two sides (LUFS): the same on both, its power twice (`stereo_lufs`).
+pub(crate) fn centred(lufs: f32) -> f32 {
+    lufs + 10.0 * 2f32.log10()
+}
+
+/// A key's peak is looked for this long from where it's heard (µs): its click, not the next key's.
+const KEY_PEAK_US: u64 = 30_000;
+/// A made bed's loudest moment nearer the quietest key's peak than this (dB) is said in a line of its own.
+pub(crate) const NEAR_KEY_DB: f32 = 6.0;
+
+/// Each key where it's heard (`at`, µs) with its peak (dBTP) in `keys` (the track at `RATE`) over `KEY_PEAK_US`.
+pub(crate) fn key_peaks(keys: &[f32], at: impl Iterator<Item = u64>) -> Vec<(u64, f32)> {
+    at.map(|us| {
+        let a = samples(us).min(keys.len());
+        let b = (a + samples(KEY_PEAK_US)).min(keys.len());
+        (us, 20.0 * sound::true_peaks(&keys[a..b]).into_iter().fold(0.0f32, f32::max).log10())
+    })
+    .collect()
+}
+
+/// What `cut.txt` says of a made bed at `gain` (`m`, as laid) against the keys' peaks (where each is heard, µs, and its
+/// peak, dBTP): its loudness and peak, its loudest moment against the quietest key's peak, the keys' quietest and
+/// loudest — and, in a line of its own, a loudest moment within `NEAR_KEY_DB` of that key. Said, not refused: the ears
+/// decide.
+pub(crate) fn made_said(
+    gain: f32,
+    m: &Made,
+    keys: &[(u64, f32)],
+    time: impl Fn(u64) -> String,
+) -> Vec<String> {
+    let mut out = vec![format!(
+        "    at its own gain, {gain:+.1} dB on the file as made (not levelled, no swing): {:.1} LUFS, {:.1} dBTP as laid, \
+         alone",
+        m.lufs, m.peak
+    )];
+    let heard = || keys.iter().filter(|k| k.1.is_finite());
+    let quiet = heard().min_by(|a, b| a.1.total_cmp(&b.1));
+    let loud = heard().max_by(|a, b| a.1.total_cmp(&b.1));
+    let (Some(&(when, quiet)), Some(&(_, loud))) = (quiet, loud) else {
+        out.push(format!(
+            "    its loudest moment {:.1} dBTP at {}; no key heard to set it against",
+            m.peak,
+            time(m.at)
+        ));
+        return out;
+    };
+    let apart = quiet - m.peak;
+    let mut sorted: Vec<f32> = heard().map(|k| k.1).collect();
+    sorted.sort_by(f32::total_cmp);
+    let median = sorted[sorted.len() / 2];
+    out.push(format!(
+        "    its loudest moment {:.1} dBTP at {}: {:.1} dB {} the quietest key's peak ({quiet:.1} dBTP, at {}); the keys' \
+         peaks {quiet:.1} to {loud:.1} dBTP, their median {median:.1} ({} keys, as laid)",
+        m.peak,
+        time(m.at),
+        apart.abs(),
+        if apart >= 0.0 { "under" } else { "over" },
+        time(when),
+        keys.len()
+    ));
+    if apart < NEAR_KEY_DB {
+        out.push(format!(
+            "  bed {}'s loudest moment comes within {NEAR_KEY_DB} dB of the quietest key's peak ({apart:.1} dB): a drop may \
+             be heard as high as a key — for the ears to decide",
+            m.bed + 1
+        ));
+    }
+    out
+}
+
+// ── The track ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The levels a track came to: the keys alone (LUFS in the centre, their gain in dB, the most the limiter took from
+/// them) and each key's peak (dBTP, as laid), the levelled beds alone where they lead and where they lie under (LUFS),
+/// the whole (LUFS, dBTP, its sides' correlation) and what the limiter took from it (most, when in s, how long more
+/// than `sound::TOUCHED_DB`).
 struct Levels {
     keys: f32,
     keys_gain: f32,
     keys_limited: f32,
+    key_peaks: Vec<(u64, f32)>,
     lead: f32,
     under: f32,
     whole: f32,
     true_peak: f32,
+    correlation: f32,
     limited: (f32, f32, f32),
 }
 
@@ -434,6 +585,7 @@ pub(crate) fn make(
     (ffmpeg, swing_skip): (&Path, u64),
     wav: &Path,
 ) -> Result<Vec<String>> {
+    let started = std::time::Instant::now();
     let cut = prog.cut;
     let heard = sounds(prog, keys, marks);
     let length = Duration::from_micros(prog.total);
@@ -454,19 +606,20 @@ pub(crate) fn make(
         let start = if j == 0 { first_in(prog, bed.chapter).0 } else { crossing(prog, bed.chapter).0 };
         let upto = Duration::from_micros(end - start) + Duration::from_secs(10);
         let upto = bed.looped.map_or(upto, |(_, b)| upto.min(Duration::from_millis(b + 1_000)));
-        let s = video::decoded(ffmpeg, &path, upto)
+        let sides = video::decoded_sides(ffmpeg, &path, upto)
             .map_err(|e| format!("{}:{}: music: {e}", cut.file, bed.line))?;
-        let from = sound::sounds_from(&s);
+        let from = sound::sounds_from(&sides[0]).min(sound::sounds_from(&sides[1]));
+        let n = sides[0].len();
         let looped = bed.looped.map(|(a, b)| (samples(a * 1000), samples(b * 1000)));
         if let Some((_, b)) = looped {
             let seam = samples(SEAM_MS * 1000);
-            if b + seam > s.len() {
+            if b + seam > n {
                 return Err(format!(
                     "{}:{}: music: its loop ends at {:.1} s, past the track's end ({:.1} s)",
                     cut.file,
                     bed.line,
                     b as f64 / f64::from(RATE),
-                    s.len().saturating_sub(seam) as f64 / f64::from(RATE)
+                    n.saturating_sub(seam) as f64 / f64::from(RATE)
                 ));
             }
             if b <= from {
@@ -479,19 +632,13 @@ pub(crate) fn make(
                 ));
             }
         }
-        tracks.push(Track { samples: s, from, looped });
+        tracks.push(Track { sides, from, looped });
     }
-    let (placed, ran) = layout(prog, &tracks.iter().map(|t| (t.samples.len(), t.from)).collect::<Vec<_>>());
-    let mut beds = vec![0.0f32; len];
-    for (p, t) in placed.iter().zip(&tracks) {
-        let mut one = vec![0.0f32; len];
-        lay(p, &t.samples, t.looped, 1.0, &mut one);
-        let (a, b) = (samples(p.start).min(len), samples(p.fade_out.1).min(len));
-        let l = sound::lufs(&one[a..b]);
-        let g = if l.is_finite() { 10f32.powf((BED_REF_LUFS - l) / 20.0) } else { 1.0 };
-        beds.iter_mut().zip(&one).for_each(|(y, x)| *y += x * g);
-    }
+    let (placed, ran) = layout(prog, &tracks.iter().map(|t| (t.sides[0].len(), t.from)).collect::<Vec<_>>());
+    let gains: Vec<Option<f32>> = cut.beds.iter().map(|b| b.gain).collect();
+    let (beds, made_beds) = laid(&placed, &tracks, &gains, len);
     drop(tracks);
+    let levelled = !beds.levelled[0].is_empty();
     let real = realtime(prog);
     let share = real.iter().map(|(a, b)| b - a).sum::<u64>() as f64 / prog.total.max(1) as f64;
     let d = under(&real, len);
@@ -499,58 +646,77 @@ pub(crate) fn make(
     // (the ceiling moved until the AAC's true peak is under its aim, as a Short's)
     let brush = heard.brush.map(Duration::from_micros);
     let brush_len = sound::brush().len();
-    let made = |ceiling: f32| -> (Vec<f32>, Levels) {
+    let key_at: Vec<u64> = (heard.list.iter())
+        .filter(|h| matches!(h.1, Heard::Key(_)))
+        .map(|h| h.0.as_micros() as u64)
+        .collect();
+    let made = |ceiling: f32| -> ([Vec<f32>; 2], Levels) {
         let mut keys = sound::track(&heard.list, length, brush, ceiling, None);
         if let (Some(b), Some(i)) = (heard.brush, heard.intro) {
             let skip = samples(swing_skip).min(brush_len);
             intro_brush(&mut keys.samples, samples(b) + skip, samples(i), brush_len - skip);
         }
-        let loud = Some(keys.lufs).filter(|l| l.is_finite()).unwrap_or(sound::SHORT_LUFS);
+        // (the keys in the centre, both sides: the bed's distance from them over both, as its own is)
+        let loud = centred(Some(keys.lufs).filter(|l| l.is_finite()).unwrap_or(sound::SHORT_LUFS));
         let (x, depth) = bed_gains(loud, cut.mix);
-        let mut y = match cut.beds.is_empty() {
-            true => keys.samples.clone(),
-            false => mixed(&keys.samples, &beds, &d, x, depth),
-        };
-        let before = y.clone();
+        let key_peaks = key_peaks(&keys.samples, key_at.iter().copied());
+        let [mut l, mut r] = sides(&keys.samples, &beds, &d, x, depth);
+        let keys_gain = keys.gain;
+        let keys_limited = keys.limited.keys;
+        drop(keys);
         let c = 10f32.powf(ceiling / 20.0);
-        let (most, at) = sound::limit(&mut y, &sound::true_peaks(&before), c);
+        let peaks = sound::true_peaks_of(&[&l, &r]);
+        let gains = sound::limit_sides(&mut [&mut l, &mut r], &peaks, c);
+        drop(peaks);
+        let (most, at) = sound::most(&gains);
         let floor = 10f32.powf(-sound::TOUCHED_DB / 20.0);
-        let touched =
-            (before.iter().zip(&y)).filter(|(m, y)| m.abs() > 1e-6 && y.abs() < m.abs() * floor).count();
-        // (the bed alone where it leads and where it lies under)
+        let touched = (gains.iter().zip(l.iter().zip(&r)))
+            .filter(|(g, (a, b))| **g < floor && a.abs().max(b.abs()) > 1e-6 * **g)
+            .count();
+        drop(gains);
+        // (the levelled beds alone where they lead and where they lie under)
         let alone = |want: f32| -> f32 {
+            if !levelled {
+                return f32::NEG_INFINITY;
+            }
             let k = std::f32::consts::LN_10 / 20.0;
-            let picked: Vec<f32> = (beds.iter().zip(&d))
-                .filter(|(_, d)| (**d - want).abs() < 1e-6)
-                .map(|(b, dd)| b * ((x - dd * depth) * k).exp())
-                .collect();
-            sound::lufs(&picked)
+            let [a, b] = std::array::from_fn(|c| {
+                (beds.levelled[c].iter().zip(&d))
+                    .filter(|(_, d)| (**d - want).abs() < 1e-6)
+                    .map(|(b, dd)| b * ((x - dd * depth) * k).exp())
+                    .collect::<Vec<f32>>()
+            });
+            sound::stereo_lufs(&a, &b)
         };
         let levels = Levels {
-            keys: keys.lufs,
-            keys_gain: keys.gain,
-            keys_limited: keys.limited.keys,
+            keys: loud,
+            keys_gain,
+            keys_limited,
+            key_peaks,
             lead: alone(0.0),
             under: alone(1.0),
-            whole: sound::lufs(&y),
-            true_peak: 20.0 * sound::true_peaks(&y).into_iter().fold(0.0f32, f32::max).log10(),
+            whole: sound::stereo_lufs(&l, &r),
+            true_peak: sound::true_peak_db(&[&l, &r]),
+            correlation: sound::correlation(&l, &r),
             limited: (most, at as f32 / RATE as f32, touched as f32 / RATE as f32),
         };
-        (y, levels)
+        ([l, r], levels)
     };
+    // (each try's sound written and its AAC measured; only the last held — the one kept made again where it isn't)
     type Tried = (f32, std::result::Result<f32, String>);
-    let (mut ceilings, mut tries): (Vec<Tried>, Vec<(Vec<f32>, Levels)>) = (Vec::new(), Vec::new());
+    let mut ceilings: Vec<Tried> = Vec::new();
     let mut ceiling = sound::SHORT_CEILING_DB;
     let measured = |c: &[Tried]| -> Vec<(f32, f32)> {
         c.iter().filter_map(|(c, p)| Some((*c, *p.as_ref().ok()?))).collect()
     };
+    let mut last;
     loop {
         let (y, levels) = made(ceiling);
-        sound::wav(wav, &y)?;
+        sound::wav_sides(wav, &[&y[0], &y[1]])?;
         let peak = video::aac_peak(ffmpeg, wav);
         let failed = peak.is_err();
         ceilings.push((ceiling, peak));
-        tries.push((y, levels));
+        last = (y, levels);
         match video::next_ceiling(&measured(&ceilings)) {
             Some(next) if !failed && ceilings.len() < video::AAC_TRIES => ceiling = next,
             _ => break,
@@ -558,12 +724,15 @@ pub(crate) fn make(
     }
     let pick = video::best_ceiling(&measured(&ceilings))
         .and_then(|c| ceilings.iter().position(|t| t.0 == c))
-        .unwrap_or(tries.len() - 1);
-    if pick != tries.len() - 1 {
-        sound::wav(wav, &tries[pick].0)?;
+        .unwrap_or(ceilings.len() - 1);
+    let again = pick != ceilings.len() - 1;
+    if again {
+        drop(last);
+        last = made(ceilings[pick].0);
+        sound::wav_sides(wav, &[&last.0[0], &last.0[1]])?;
     }
-    let (y, lv) = tries.swap_remove(pick);
-    drop(tries);
+    let ([yl, yr], lv) = last;
+    let took = started.elapsed();
 
     // (what it made, said)
     let s = |us: u64| video_time(us);
@@ -584,14 +753,14 @@ pub(crate) fn make(
     ));
     let db = |x: f32| if x.is_finite() { format!("{x:.1}") } else { "—".into() };
     said.push(format!(
-        "  the keys alone {} LUFS (gain {:+.1} dB, the limiter taking at most {:.1} dB from a click)",
+        "  the keys alone {} LUFS in the centre (gain {:+.1} dB, the limiter taking at most {:.1} dB from a click)",
         db(lv.keys),
         lv.keys_gain,
         lv.keys_limited
     ));
-    if !cut.beds.is_empty() {
+    if levelled {
         said.push(format!(
-            "  the bed alone: {} LUFS where it leads (sped spans, the cards), {} LUFS under the keys (spans at {}× or \
+            "  the levelled beds alone: {} LUFS where it leads (sped spans, the cards), {} LUFS under the keys (spans at {}× or \
              slower, where it ends: {:.0} % of the video) — a swing of {} dB, eased {:.1} s each way; the mix {} LU under \
              the keys, {} over that{}",
             db(lv.lead),
@@ -606,17 +775,18 @@ pub(crate) fn make(
         ));
     }
     said.push(format!(
-        "  the whole: {} LUFS integrated, {} dBTP (the WAV); the limiter took at most {:.1} dB (at {:.1} s), more than \
-         {} dB for {:.2} s",
+        "  the whole: {} LUFS integrated, {} dBTP (the WAV, stereo; its sides' correlation {:+.2}); the limiter took at \
+         most {:.1} dB (at {:.1} s), more than {} dB for {:.2} s",
         db(lv.whole),
         db(lv.true_peak),
+        lv.correlation,
         lv.limited.0,
         lv.limited.1,
         sound::TOUCHED_DB,
         lv.limited.2
     ));
     // (the quietest and the loudest three seconds, by BS.1770's short-term loudness)
-    let windows = sound::short_term(&y, WINDOW_S, STEP_S);
+    let windows = sound::stereo_short_term(&yl, &yr, WINDOW_S, STEP_S);
     let at = |i: usize| {
         let a = (i as f32 * STEP_S * 1e6) as u64;
         format!("{}–{}", s(a), s(a + (WINDOW_S * 1e6) as u64))
@@ -644,20 +814,26 @@ pub(crate) fn make(
         })
         .collect();
     said.push(format!("  the limiter's ceiling → the AAC's true peak (dBTP): {}", tried.join(", ")));
+    said.push(format!(
+        "  the sound made in {:.1} s: {} tries{}",
+        took.as_secs_f64(),
+        ceilings.len(),
+        if again { ", the one kept made again" } else { "" }
+    ));
     // (each chapter's loudness: from its start — the first from 0:00 — to the next's)
     let starts: Vec<u64> =
         (0..cut.chapters.len()).map(|i| if i == 0 { 0 } else { prog.chapter_at(i) }).collect();
     for (i, c) in cut.chapters.iter().enumerate() {
         let (a, b) =
             (samples(starts[i]).min(len), samples(starts.get(i + 1).copied().unwrap_or(prog.total)).min(len));
-        let tp = 20.0 * sound::true_peaks(&y[a..b]).into_iter().fold(0.0f32, f32::max).log10();
+        let tp = sound::true_peak_db(&[&yl[a..b], &yr[a..b]]);
         said.push(format!(
             "  chapter {} “{}” {}–{}: {} LUFS, {} dBTP",
             i + 1,
             c.title,
             s(starts[i]),
             s(starts.get(i + 1).copied().unwrap_or(prog.total)),
-            db(sound::lufs(&y[a..b])),
+            db(sound::stereo_lufs(&yl[a..b], &yr[a..b])),
             db(tp)
         ));
     }
@@ -684,6 +860,9 @@ pub(crate) fn make(
             );
         }
         said.push(line);
+        if let (Some(gain), Some(m)) = (bed.gain, made_beds.iter().find(|m| m.bed == p.bed)) {
+            said.extend(made_said(gain, m, &lv.key_peaks, s));
+        }
     }
     said.extend(ran.into_iter().map(|r| format!("  {r}")));
     Ok(said)

@@ -6,7 +6,8 @@ use serde_json::json;
 use super::draw::{label, lost_zooms, wide_window};
 use super::init::{Facts, rules, stills, ticking, written};
 use super::sound::{
-    BED_REF_LUFS, Mix, Where, bed_gains, heard_at, lay, layout, mixed, realtime, sounds, under,
+    BED_REF_LUFS, Made, Mix, NEAR_KEY_DB, Placed, Track, Where, bed_gains, heard_at, laid, lay, layout,
+    made_said, mixed, realtime, sides, sounds, under,
 };
 use super::*;
 use crate::camera::Region;
@@ -1019,6 +1020,235 @@ fn the_bed_lies_at_the_lists_distances_from_the_keys_by_the_samples() {
     let e = cut(&(CUT.to_string() + "\n[sound]\nover = -1\n")).unwrap_err();
     assert!(e.starts_with("cut.toml:") && e.contains("sound: over"), "{e}");
     assert!(cut(&(CUT.to_string() + "\n[sound]\nswing = 6\n")).is_err());
+}
+
+fn tone(hz: f32, secs: f64) -> Vec<f32> {
+    let n = (secs * f64::from(RATE)) as usize;
+    (0..n).map(|i| 0.5 * (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin()).collect()
+}
+
+fn rms_at(y: &[f32], us: u64) -> f32 {
+    let s = &y[sample_at(us)..sample_at(us + 50_000)];
+    (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+}
+
+/// V2b: the cut is stereo. Bed 1 sounds only on the left, bed 2 only on the right: each arrives on its own side and
+/// nothing of it on the other — levelled or at its own gain —; a key, in the centre, is the same on both.
+#[test]
+fn a_beds_left_and_right_arrive_on_their_own_sides_and_a_key_on_both_alike() {
+    let c = cut(&bedded()).unwrap();
+    let p = Program::new(&c);
+    let len = sample_at(p.total);
+    let (placed, _) = layout(&p, &[(sample_at(60_000_000), 0), (sample_at(60_000_000), 0)]);
+    let silent = vec![0.0f32; sample_at(60_000_000)];
+    let tracks = [
+        Track { sides: [tone(440.0, 60.0), silent.clone()], from: 0, looped: None },
+        Track { sides: [silent, tone(660.0, 60.0)], from: 0, looped: None },
+    ];
+    let mut keys = vec![0.0f32; len];
+    for k in (0..len).step_by(sample_at(130_000)) {
+        keys[k..(k + 200).min(len)].iter_mut().for_each(|x| *x = 0.3);
+    }
+    let card = p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap();
+    let d = under(&realtime(&p), len);
+    for gains in [[Some(0.0), Some(-3.0)], [None, None]] {
+        let (beds, _) = laid(&placed, &tracks, &gains, len);
+        let ([l, r], mine) = (sides(&keys, &beds, &d, -10.0, 6.0), gains[0].is_some());
+        let ([bl, br], other) = match mine {
+            true => (&beds.made, &beds.levelled),
+            false => (&beds.levelled, &beds.made),
+        };
+        assert!(other.iter().all(Vec::is_empty), "{gains:?}: all one kind");
+        // (bed 1 alone before chapter 2's card: on the left only; bed 2 alone after it: on the right only)
+        let (one, two) =
+            (sample_at(5_000_000)..sample_at(card.at), sample_at(card.at + card.len)..sample_at(p.total));
+        assert!(
+            br[one.clone()].iter().all(|x| *x == 0.0) && bl[two.clone()].iter().all(|x| *x == 0.0),
+            "{gains:?}"
+        );
+        assert!(
+            rms_at(bl, 5_000_000) > 0.01 && rms_at(br, card.at + card.len) > 0.01,
+            "{gains:?}: each heard"
+        );
+        // (what's left over each side's beds as mixed is the keys, the same on both)
+        let [ml, mr] = sides(&vec![0.0; len], &beds, &d, -10.0, 6.0);
+        assert!(
+            mr[one].iter().all(|x| *x == 0.0) && ml[two].iter().all(|x| *x == 0.0),
+            "{gains:?}: as mixed"
+        );
+        for n in (0..len).step_by(97) {
+            let (kl, kr) = (l[n] - ml[n], r[n] - mr[n]);
+            assert!(
+                (kl - keys[n]).abs() < 1e-6 && (kr - keys[n]).abs() < 1e-6,
+                "{gains:?} at {n}: {kl} {kr}"
+            );
+        }
+    }
+}
+
+/// A bed with `gain` plays at it, its level its own: before, in and after a 1× span the same by the samples, and its
+/// file's level times its gain (not brought to `BED_REF_LUFS`); without it, V2's fall under the keys and rise after.
+#[test]
+fn a_made_bed_keeps_its_level_through_a_1x_span_and_a_levelled_one_swings() {
+    let made = bedded().replace("file = \"a.wav\"\n", "file = \"a.wav\"\ngain = -6\n");
+    for (list, gain) in [(made, Some(-6.0f32)), (bedded(), None)] {
+        let c = cut(&list).unwrap();
+        assert_eq!((c.beds[0].gain, c.beds[1].gain), (gain, None));
+        let p = Program::new(&c);
+        let len = sample_at(p.total);
+        let (placed, _) = layout(&p, &[(sample_at(60_000_000), 0), (sample_at(60_000_000), 0)]);
+        let both = || [tone(440.0, 60.0), tone(440.0, 60.0)];
+        let tracks =
+            [Track { sides: both(), from: 0, looped: None }, Track { sides: both(), from: 0, looped: None }];
+        let gains: Vec<Option<f32>> = c.beds.iter().map(|b| b.gain).collect();
+        let (beds, _) = laid(&placed, &tracks, &gains, len);
+        let real = realtime(&p);
+        let (a, b) = real[0];
+        assert!(placed[0].fade_in.1 < a - 800_000 && placed[0].fade_out.0 > b + 800_000, "{:?}", placed[0]);
+        let (lead, depth) = bed_gains(-20.0, Mix::default());
+        let [l, r] = sides(&vec![0.0; len], &beds, &under(&real, len), lead, depth);
+        let db = |us: u64| 20.0 * rms_at(&l, us).log10();
+        let (before, inside, after) = (db(a - 800_000), db((a + b) / 2), db(b + 800_000));
+        assert_eq!(l, r, "the same file on both sides");
+        match gain {
+            Some(g) => {
+                let file = 20.0 * (0.5f32 / 2f32.sqrt()).log10();
+                for (at, got) in [("before", before), ("in", inside), ("after", after)] {
+                    assert!(
+                        (got - (file + g)).abs() < 0.01,
+                        "{at} the span: {got:.3} dB, not {:.3}",
+                        file + g
+                    );
+                }
+            }
+            None => {
+                assert!((before - after).abs() < 0.01, "before {before:.2}, after {after:.2}");
+                assert!((before - inside - depth).abs() < 0.05, "under the keys by {:.2}", before - inside);
+            }
+        }
+    }
+    for bad in ["gain = \"loud\"", "gain = 30", "gain = -41"] {
+        let e =
+            cut(&bedded().replace("file = \"a.wav\"\n", &format!("file = \"a.wav\"\n{bad}\n"))).unwrap_err();
+        assert!(e.starts_with("cut.toml:") && e.contains("music: gain"), "{bad}: {e}");
+    }
+}
+
+/// By hand (V2b): a ten-minute cut's sound at the build's opt-level, each step timed — once a cut: a stereo bed written
+/// and read back as ffmpeg decodes one, laid at its gain, the swing's curve; each ceiling try: the keys' track (a key
+/// every 0.3 s over half the video), their peaks, the two sides, their true peaks and limiter, the figures, the WAV and
+/// its AAC; once after: the 3 s windows. Then the most memory held.
+#[test]
+#[ignore = "by hand: a ten-minute cut's sound, timed"]
+fn ten_minutes_of_the_cuts_sound_timed() {
+    use std::time::Instant;
+    let total: u64 = 600_000_000;
+    let len = sample_at(total);
+    let (all, mut t) = (Instant::now(), Instant::now());
+    let mut lap = |what: &str| {
+        eprintln!("{what:>44}: {:6.1} s", t.elapsed().as_secs_f64());
+        t = Instant::now();
+    };
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-ten-minutes");
+    let mut seed = 1u32;
+    let mut noise = |n: usize| -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1u32 << 24) as f32 * 0.2 - 0.1
+            })
+            .collect()
+    };
+    let n = sample_at(total + 10_000_000);
+    let (bl, br) = (noise(n), noise(n));
+    let bed = dir.join("bed.wav");
+    crate::sound::wav_sides(&bed, &[&bl, &br]).unwrap();
+    drop((bl, br));
+    lap("(once) a stereo bed written, 610 s");
+    let sides_read = match crate::video::ffmpeg() {
+        Some(f) => crate::video::decoded_sides(&f, &bed, Duration::from_micros(total + 10_000_000)).unwrap(),
+        None => [noise(n), noise(n)],
+    };
+    lap("(once) read back, both sides");
+    let placed = Placed {
+        bed: 0,
+        start: 0,
+        from: 0,
+        fade_in: (0, 500_000),
+        fade_out: (total - 3_000_000, total),
+        seams: Vec::new(),
+        ran_out: None,
+    };
+    let (beds, made) =
+        laid(&[placed], &[Track { sides: sides_read, from: 0, looped: None }], &[Some(4.0)], len);
+    assert_eq!(made.len(), 1);
+    lap("(once) laid at its gain, its peak found");
+    let d = under(&[(0, total / 2)], len);
+    lap("(once) the swing's curve");
+    let ms = Duration::from_millis;
+    let heard: Vec<(Duration, Heard)> = (0..1_000).map(|i| (ms(i * 300), Heard::Key('a'))).collect();
+    let keys = crate::sound::track(&heard, Duration::from_micros(total), Some(ms(595_000)), -2.0, None);
+    lap("(a try) the keys' track");
+    let peaks = super::sound::key_peaks(&keys.samples, heard.iter().map(|h| h.0.as_micros() as u64));
+    assert_eq!(peaks.len(), 1_000);
+    lap("(a try) each key's peak");
+    let [mut l, mut r] = sides(&keys.samples, &beds, &d, 0.0, 6.0);
+    drop(keys);
+    lap("(a try) the two sides");
+    let tp = crate::sound::true_peaks_of(&[&l, &r]);
+    lap("(a try) their true peaks");
+    let gains = crate::sound::limit_sides(&mut [&mut l, &mut r], &tp, 10f32.powf(-2.0 / 20.0));
+    drop((tp, gains));
+    lap("(a try) the limiter");
+    let _ = crate::sound::stereo_lufs(&l, &r);
+    lap("(a try) the whole's loudness");
+    let _ = crate::sound::true_peak_db(&[&l, &r]);
+    lap("(a try) the whole's true peak");
+    let _ = crate::sound::correlation(&l, &r);
+    lap("(a try) the correlation");
+    let wav = dir.join("cut.wav");
+    crate::sound::wav_sides(&wav, &[&l, &r]).unwrap();
+    lap("(a try) the WAV");
+    if let Some(f) = crate::video::ffmpeg() {
+        let _ = crate::video::aac_peak(&f, &wav);
+        lap("(a try) its AAC's true peak");
+    }
+    let _ = crate::sound::stereo_short_term(&l, &r, 3.0, 1.0);
+    lap("(after) the 3 s windows");
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: getrusage fills the struct it's given.
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+    let k = if cfg!(target_os = "macos") { 1 } else { 1024 };
+    eprintln!(
+        "{:>44}: {:6.1} s, at most {} MB held",
+        "all",
+        all.elapsed().as_secs_f64(),
+        u.ru_maxrss as u64 * k / (1024 * 1024)
+    );
+}
+
+/// A made bed's lines: its loudest moment against the quietest key's peak, the keys' quietest and loudest — and a line
+/// of its own when that moment comes within `NEAR_KEY_DB` of the quietest key.
+#[test]
+fn a_made_beds_loudest_moment_near_a_key_is_said_in_a_line_of_its_own() {
+    let m = |peak: f32| Made { bed: 0, lufs: -40.0, peak, at: 12_300_000 };
+    let keys = [(1_000_000, -9.0), (2_000_000, -4.5), (3_400_000, -12.0), (5_000_000, -3.0)];
+    let said = made_said(4.0, &m(-18.5), &keys, video_time);
+    assert_eq!(said.len(), 2, "{said:#?}");
+    assert!(said[0].contains("+4.0 dB on the file as made") && said[0].contains("-18.5 dBTP"), "{}", said[0]);
+    assert!(
+        said[1].contains("6.5 dB under the quietest key's peak (-12.0 dBTP, at 0:03.4)")
+            && said[1].contains("-12.0 to -3.0 dBTP, their median -4.5 (4 keys")
+            && said[1].contains("0:12.3"),
+        "{}",
+        said[1]
+    );
+    let near = made_said(4.0, &m(-12.0 - NEAR_KEY_DB + 0.5), &keys, video_time);
+    assert!(near.len() == 3 && near[2].contains("bed 1's loudest moment comes within 6 dB"), "{near:#?}");
+    let over = made_said(4.0, &m(-10.0), &keys, video_time);
+    assert!(over[1].contains("2.0 dB over the quietest") && over.len() == 3, "{over:#?}");
+    let none = made_said(0.0, &m(-20.0), &[], video_time);
+    assert!(none.len() == 2 && none[1].contains("no key heard"), "{none:#?}");
 }
 
 fn drawn(ms: u64, text: &str) -> Rec {

@@ -61,7 +61,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use crate::Result;
-use crate::sound::{self, RATE};
+use crate::sound::{self, RATE, stereo_lufs};
 
 const USAGE: &str = "usage: cargo xtask rain OUT.wav --len 12m [--kind \
                      forest|forest-sparse|forest-sparse-pat|forest-thick|soft|leaves|heavy] [--seed N] | rain samples [DIR] | rain \
@@ -1288,12 +1288,6 @@ fn limit(x: f32) -> f32 {
         true => x,
         false => (KNEE + (CEILING - KNEE) * ((a - KNEE) / (CEILING - KNEE)).tanh()).copysign(x),
     }
-}
-
-/// The two sides' loudness together (LUFS): each side's mean square, as `sound::lufs` gates it, summed.
-fn stereo_lufs(l: &[f32], r: &[f32]) -> f32 {
-    let power = |lufs: f32| 10f64.powf((f64::from(lufs) + 0.691) / 10.0);
-    (-0.691 + 10.0 * (power(sound::lufs(l)) + power(sound::lufs(r))).log10()) as f32
 }
 
 /// What making a rain came to.
