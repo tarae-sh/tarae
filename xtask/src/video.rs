@@ -1170,6 +1170,30 @@ pub(crate) fn screen_at(times: &[u64], k: u64) -> usize {
     times.partition_point(|&t| t * FPS <= k * 1000).saturating_sub(1)
 }
 
+/// One screen as the wide video draws it — its ground, the screen at `fit`'s glyph size centred above the captions'
+/// band, the band's hairline — with no caption: a size's look (`record`'s stills). Its glyph size, the screen's
+/// picture (w, h) in the frame, and the frame's RGB.
+pub(crate) fn wide_still(screen: &vt100::Screen, bg: Bg) -> Result<(f32, (usize, usize), Vec<u8>)> {
+    let (rows, cols) = screen.size();
+    let fonts = Fonts::load(1)?;
+    let px = fit(&fonts, usize::from(cols), usize::from(rows))
+        .ok_or_else(|| format!("{cols}×{rows} cells don't fit {W}×{H} under the captions' band"))?;
+    let look = look(bg);
+    let pic = shot::render_px(screen, &fonts, px, None);
+    let mut out = look.ground.repeat(W * H);
+    let (x0, y0) = ((W - pic.0) / 2, (H - BAND - pic.1) / 2);
+    blit(&mut out, (W, H), &pic, x0, y0, 255);
+    let at = (H - BAND) * W * 3;
+    for x in x0 + PAD..x0 + pic.0 - PAD {
+        out[at + x * 3..][..3].copy_from_slice(&look.faint);
+    }
+    Ok((px, (pic.0, pic.1), out))
+}
+
+/// The room the wide video gives a screen (px, the renderer's margin inside it): the picture less `SIDE` at either
+/// side, the captions' band and `ABOVE` over and under the screen.
+pub(crate) const WIDE_ROOM: (usize, usize) = (W - 2 * SIDE, H - BAND - 2 * ABOVE);
+
 /// The largest glyph size (whole pixels) whose `cols`×`rows` cells, with the renderer's margin, fit the picture above
 /// the captions' band with `SIDE` and `ABOVE` round them.
 fn fit(fonts: &Fonts, cols: usize, rows: usize) -> Option<f32> {

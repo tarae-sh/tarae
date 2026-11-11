@@ -56,6 +56,11 @@
 //!   [`buildprune`]).
 //! - `homepage [<out-dir>]` — the homepage hero scene ("Three Claudes, one repository") recorded in both themes
 //!   (`hero-meok.json`, `hero-hanji.json`), first-frame PNGs, and 6-beat contact sheets (see [`homepage`]).
+//! - `record [--size 120x34] --out DIR [--keys FILE] [--headless] -- COMMAND …` — a live tarae recorded in a terminal
+//!   of its own of exactly that size, shown in yours (a pass-through): its screen's and keys' bytes with their times and
+//!   tarae's own state as landmarks; `record draw DIR` the take as the wide video, unedited; `record still DIR OUT.png`
+//!   one screen of it as the video draws it; `record check DIR` every place it shows your name, home, a mail address
+//!   or an amount of money; `record spike [OUT]` the full video's V0 take and measures (see [`record`]).
 //! - `sign [<out-dir>]` — the working sign's candidates as animated PNGs, one recorded turn each in meok and hanji,
 //!   and their frames a second (see [`sign`]).
 //! - `focus [scene …] [--layout L …] [--bin TARAE] [--compare]` — a turn's reading path from its frames: where new
@@ -94,6 +99,7 @@ mod homepage;
 mod kernels;
 mod linux;
 mod perf;
+mod record;
 mod recording;
 mod remote;
 // (tarae's own: a pty close-on-exec from the start)
@@ -176,9 +182,10 @@ fn main() {
         Some("focus") => focus::run(&args[1..]),
         Some("sign") => sign::run(&args[1..]),
         Some("sound") => sound::run(&args[1..]),
+        Some("record") => record::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | record [--size CxR] --out DIR [--keys F] -- COMMAND … | record draw|still|check DIR | record spike [OUT] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };

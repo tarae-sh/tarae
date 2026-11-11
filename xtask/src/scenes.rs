@@ -6952,6 +6952,39 @@ fn take(
     Ok(rec)
 }
 
+/// A live take's tarae (`cargo xtask record spike`): the demo project, config (the stand-in claude running `claude`),
+/// state and homes a scene's take gets (`take`), in a folder of its own removed on drop — nothing started here.
+pub(crate) struct Live {
+    pub(crate) _dir: Named,
+    pub(crate) setup: Setup,
+    pub(crate) state: PathBuf,
+    pub(crate) homes: Vec<(&'static str, std::ffi::OsString)>,
+}
+
+/// `Live` for a take named `name` on `bg`, its Claude the scenes' stand-in script `claude`, `bin` the tarae and `me`
+/// this xtask (the stand-in); `video`: tarae draws its fades at the video's rate, as a scene's video take does.
+pub(crate) fn live(
+    name: &'static str,
+    claude: &'static str,
+    bg: Bg,
+    bin: &Path,
+    me: &Path,
+    video: bool,
+) -> Result<Live> {
+    let scene = Scene { name, claude, files: MAIN, keys: &[] };
+    let dir = Named::new(&format!("rec-{name}-{}-{}", bg.theme(), std::process::id()))?;
+    let real = std::fs::canonicalize(&dir.0).map_err(|e| format!("{}: {e}", dir.0.display()))?;
+    let mut env_homes = homes(&real, &|k| std::env::var_os(k))?;
+    env_homes.push(("TZ", fixed_clock(now()).into()));
+    let demo = real.join("home/tarae-demo");
+    let mut setup = prepare(&scene, bg.word(), false, bin, me, &real, &demo)?;
+    if video {
+        setup.env.push(("TARAE_SHOT_FRAME_MS", Some(video::FRAME_MS)));
+    }
+    own_build_dir(&demo)?;
+    Ok(Live { _dir: dir, setup, state: real.join("state"), homes: env_homes })
+}
+
 /// `scene` as a short video into `at` (`--video`; `--shorts` a Short, its camera's moves and its sound said): taken as
 /// `record` takes it, made by `video::make` — `<scene>.mp4` and `sheet.png` (a Short's `<scene>.wav` too). A wait that
 /// timed out, or a Short's target never found, fails it, the video made all the same.

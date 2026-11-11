@@ -71,7 +71,7 @@ const BG: Rgb = [30, 31, 40];
 const FG: Rgb = [248, 248, 242];
 /// tarae wraps each frame in a synchronized update (`CSI ?2026h … ?2026l`) — only whole frames are fed, so a
 /// capture never lands mid-frame (cards half overdrawn while an animation ticks).
-const FRAME_END: &[u8] = b"\x1b[?2026l";
+pub(crate) const FRAME_END: &[u8] = b"\x1b[?2026l";
 
 pub(crate) type Rgb = [u8; 3];
 
@@ -635,7 +635,7 @@ pub(crate) fn ui_connect(sock: &Path) -> io::Result<std::os::unix::net::UnixStre
 
 /// A connect that failed only because the socket isn't bound yet (tarae starting): worth asking again. Any other
 /// failure is said.
-fn not_there_yet(e: &io::Error) -> bool {
+pub(crate) fn not_there_yet(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
 }
 
@@ -646,7 +646,7 @@ fn ui_ask(sock: &Path, req: &serde_json::Value) -> Result<serde_json::Value> {
 }
 
 /// `ui_ask` on its socket `s`, connected.
-fn ui_ask_on(
+pub(crate) fn ui_ask_on(
     mut s: std::os::unix::net::UnixStream,
     sock: &Path,
     req: &serde_json::Value,
@@ -880,7 +880,7 @@ fn strips(pictures: &[(usize, usize, Vec<u8>)], rows: &[usize], scale: usize, pa
     Ok(())
 }
 
-fn cvt(rc: libc::c_int) -> io::Result<libc::c_int> {
+pub(crate) fn cvt(rc: libc::c_int) -> io::Result<libc::c_int> {
     if rc == -1 { Err(io::Error::last_os_error()) } else { Ok(rc) }
 }
 
@@ -898,6 +898,39 @@ fn drive(
     drive_with(vt, setup, keys, state, homes, cols, rows, &|_| {})
 }
 
+/// The command a take starts `setup`'s tarae with — its files, folder, theme, variables, `as_a_terminal`'s, `homes`
+/// last, and a PATH whose `claude` refuses (`no_claude_path`) — its terminal left to the caller (a shot's pty,
+/// `record`'s). Refused unless its config names a stand-in claude (#247, `stand_in_only`).
+pub(crate) fn command(setup: &Setup, state: &Path, homes: &[(&str, std::ffi::OsString)]) -> Result<Command> {
+    // (#247 at the one place a take starts tarae, whoever wrote its config: scenes, docs, homepage, focus, sign, shot,
+    // record)
+    let file = setup.config.join("tarae/config.toml");
+    let text = std::fs::read_to_string(&file).map_err(|e| {
+        format!("{}: {e} — a take never starts tarae on its defaults (the real claude)", file.display())
+    })?;
+    stand_in_only(&text, &file)?;
+    if !setup.bin.is_file() {
+        return Err(format!("{} not found", setup.bin.display()));
+    }
+    let mut cmd = Command::new(&setup.bin);
+    cmd.args(&setup.files).current_dir(&setup.cwd);
+    if let Some(bg) = setup.background {
+        cmd.env("TARAE_BACKGROUND", bg);
+    }
+    for (k, v) in &setup.env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    as_a_terminal(&mut cmd, setup.config.as_os_str(), state);
+    for (k, v) in homes {
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", no_claude_path(state, std::env::var_os("PATH").as_deref())?);
+    Ok(cmd)
+}
+
 /// `drive`, `on_spawn` told the tarae's pid as it starts.
 #[allow(clippy::too_many_arguments)]
 fn drive_with(
@@ -910,37 +943,11 @@ fn drive_with(
     rows: u16,
     on_spawn: &dyn Fn(u32),
 ) -> Result<Vec<String>> {
-    // (#247 at the one place a take starts tarae, whoever wrote its config: scenes, docs, homepage, focus, sign, shot)
-    let file = setup.config.join("tarae/config.toml");
-    let text = std::fs::read_to_string(&file).map_err(|e| {
-        format!("{}: {e} — a take never starts tarae on its defaults (the real claude)", file.display())
-    })?;
-    stand_in_only(&text, &file)?;
-    if !setup.bin.is_file() {
-        return Err(format!("{} not found", setup.bin.display()));
-    }
+    let mut cmd = command(setup, state, homes)?;
     let (master, slave) = crate::pty::open(rows, cols).map_err(|e| format!("pty: {e}"))?;
     let mut master = File::from(master);
     let stdio = || slave.try_clone().map(Stdio::from).map_err(|e| e.to_string());
-    let mut cmd = Command::new(&setup.bin);
-    cmd.args(&setup.files).current_dir(&setup.cwd);
-    if let Some(bg) = setup.background {
-        cmd.env("TARAE_BACKGROUND", bg);
-    }
-    for (k, v) in &setup.env {
-        match v {
-            Some(v) => cmd.env(k, v),
-            None => cmd.env_remove(k),
-        };
-    }
-    as_a_terminal(&mut cmd, setup.config.as_os_str(), state)
-        .stdin(stdio()?)
-        .stdout(stdio()?)
-        .stderr(stdio()?);
-    for (k, v) in homes {
-        cmd.env(k, v);
-    }
-    cmd.env("PATH", no_claude_path(state, std::env::var_os("PATH").as_deref())?);
+    cmd.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
     // SAFETY: only async-signal-safe calls between fork and exec.
     unsafe {
         cmd.pre_exec(|| {
@@ -1244,7 +1251,7 @@ fn drive_with(
 /// `@type:<text>`: each character of `text` and the seconds before it is sent (the first's unused) — a person's
 /// rhythm, steady from run to run: a key after a key inside a word 55–100 ms, a word's first key after a space or
 /// punctuation 110–190 ms (a fixed sequence, so a take's timing is the same each time).
-fn typed(text: &str) -> Vec<(char, f64)> {
+pub(crate) fn typed(text: &str) -> Vec<(char, f64)> {
     let mut seed: u32 = 0x7a2a_e5d1;
     let mut unit = || {
         seed ^= seed << 13;
@@ -1283,7 +1290,7 @@ fn touch_key(key: &str) -> Option<&str> {
 const WAIT_MAX: f64 = 120.0;
 
 /// `@?text` / `@30?text`: wait until `text` is on screen — at most `WAIT_MAX` seconds, or the ones given.
-fn wait_key(key: &str) -> Option<(f64, &str)> {
+pub(crate) fn wait_key(key: &str) -> Option<(f64, &str)> {
     let (secs, text) = key.strip_prefix('@')?.split_once('?')?;
     let max = if secs.is_empty() { WAIT_MAX } else { secs.parse().ok()? };
     (!text.is_empty()).then_some((max, text))
@@ -1380,7 +1387,7 @@ fn state_key(key: &str) -> Option<f64> {
 }
 
 /// `@!text` / `@30!text`: wait until `text` is gone from the screen — as `wait_key`'s limits.
-fn gone_key(key: &str) -> Option<(f64, &str)> {
+pub(crate) fn gone_key(key: &str) -> Option<(f64, &str)> {
     let (secs, text) = key.strip_prefix('@')?.split_once('!')?;
     let max = if secs.is_empty() { WAIT_MAX } else { secs.parse().ok()? };
     (!text.is_empty()).then_some((max, text))
@@ -1475,7 +1482,7 @@ fn quit(master: &mut File, child: &mut Child, rx: &Receiver<Vec<u8>>) {
 }
 
 /// `\r` `\t` `\xHH` → their bytes; everything else as UTF-8.
-fn unescape(k: &str) -> Vec<u8> {
+pub(crate) fn unescape(k: &str) -> Vec<u8> {
     let (b, mut out, mut i) = (k.as_bytes(), Vec::new(), 0);
     while i < b.len() {
         let hex = k.get(i + 2..i + 4).and_then(|h| u8::from_str_radix(h, 16).ok());
