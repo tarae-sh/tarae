@@ -426,7 +426,7 @@ pub(crate) enum Heard {
 
 /// A Short's loudness: −20 LUFS integrated (BS.1770, `lufs`) at most — a keys-only track's (CLAUDE.md's Shorts bullet:
 /// sparse short clicks reach −16 only by limiting every one flat); YouTube turns a loud track down, never a quiet one up.
-const SHORT_LUFS: f32 = -20.0;
+pub(crate) const SHORT_LUFS: f32 = -20.0;
 /// The most the limiter takes from the keys (dB): their gain no higher than leaves their loudest click this much over
 /// the ceiling — the track quieter than `SHORT_LUFS` where that's what it costs, so a click keeps its own shape.
 const LIMIT_MOST_DB: f32 = 2.0;
@@ -694,7 +694,7 @@ fn reach<T>(target: f32, at: f32, made: impl Fn(f32) -> (T, f32)) -> (T, f32) {
 /// `ceiling`, let back up over `RELEASE_S` after a peak and brought down over `ATTACK_S` before it (a backward pass: it
 /// sees the peak coming) — never a peak past the ceiling, never a step in the gain. Its largest reduction (dB, positive)
 /// and the sample it's at.
-fn limit(x: &mut [f32], peaks: &[f32], ceiling: f32) -> (f32, usize) {
+pub(crate) fn limit(x: &mut [f32], peaks: &[f32], ceiling: f32) -> (f32, usize) {
     const ATTACK_S: f32 = 0.002;
     const RELEASE_S: f32 = 0.060;
     let per = |s: f32| 1.0 - (-1.0 / (s * RATE as f32)).exp();
@@ -723,7 +723,7 @@ fn limit(x: &mut [f32], peaks: &[f32], ceiling: f32) -> (f32, usize) {
 /// The true peak at each sample of `x`: the largest of it, its neighbours and the three points a quarter apart on
 /// either side, 4× oversampled by a Hann-windowed sinc over 16 samples (BS.1770's way to the peaks between samples —
 /// what a player's converter, and AAC after it, reaches).
-fn true_peaks(x: &[f32]) -> Vec<f32> {
+pub(crate) fn true_peaks(x: &[f32]) -> Vec<f32> {
     const TAPS: i32 = 8;
     let phase = |f: f32| -> Vec<f32> {
         (-TAPS + 1..=TAPS)
@@ -759,24 +759,7 @@ fn true_peaks(x: &[f32]) -> Vec<f32> {
 /// The integrated loudness of `x` (mono at `RATE`), LUFS, as ITU-R BS.1770-4 measures it: K-weighted, in 400 ms blocks
 /// a 100 ms step apart, gated at −70 LUFS and then 10 LU under the blocks kept. −∞ where no block is kept.
 pub(crate) fn lufs(x: &[f32]) -> f32 {
-    // (the K-weighting's two stages at 48 kHz: the head's shelf, then the high-pass)
-    let biquad = |x: &[f64], b: [f64; 3], a: [f64; 2]| -> Vec<f64> {
-        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
-        x.iter()
-            .map(|&v| {
-                let y = b[0] * v + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
-                (x2, x1, y2, y1) = (x1, v, y1, y);
-                y
-            })
-            .collect()
-    };
-    let x: Vec<f64> = x.iter().map(|&v| f64::from(v)).collect();
-    let shelf = biquad(
-        &x,
-        [1.535_124_859_586_97, -2.691_696_189_406_38, 1.198_392_810_852_85],
-        [-1.690_659_293_182_41, 0.732_480_774_215_85],
-    );
-    let k = biquad(&shelf, [1.0, -2.0, 1.0], [-1.990_047_454_833_98, 0.990_072_250_366_21]);
+    let k = k_weighted(x);
     let mut sums = vec![0.0f64; k.len() + 1];
     for (i, v) in k.iter().enumerate() {
         sums[i + 1] = sums[i] + v * v;
@@ -796,6 +779,43 @@ pub(crate) fn lufs(x: &[f32]) -> f32 {
     let gate = loud(mean(&kept)) - 10.0;
     let kept: Vec<f64> = kept.into_iter().filter(|&ms| loud(ms) > gate).collect();
     loud(mean(&kept)) as f32
+}
+
+/// The loudness of each `window_s` of `x` stepped by `step_s` (LUFS, K-weighted, ungated — BS.1770's short-term at
+/// 3 s): the first from 0, the last ending at or before `x`'s end. −∞ for a silent one.
+pub(crate) fn short_term(x: &[f32], window_s: f32, step_s: f32) -> Vec<f32> {
+    let k = k_weighted(x);
+    let mut sums = vec![0.0f64; k.len() + 1];
+    for (i, v) in k.iter().enumerate() {
+        sums[i + 1] = sums[i] + v * v;
+    }
+    let (w, step) = ((window_s * RATE as f32) as usize, ((step_s * RATE as f32) as usize).max(1));
+    (0..)
+        .map(|i| i * step)
+        .take_while(|s| s + w <= k.len())
+        .map(|s| (-0.691 + 10.0 * ((sums[s + w] - sums[s]) / w as f64).log10()) as f32)
+        .collect()
+}
+
+/// `x` K-weighted as BS.1770 hears it: the head's shelf, then the high-pass (their coefficients at 48 kHz).
+fn k_weighted(x: &[f32]) -> Vec<f64> {
+    let biquad = |x: &[f64], b: [f64; 3], a: [f64; 2]| -> Vec<f64> {
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        x.iter()
+            .map(|&v| {
+                let y = b[0] * v + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
+                (x2, x1, y2, y1) = (x1, v, y1, y);
+                y
+            })
+            .collect()
+    };
+    let x: Vec<f64> = x.iter().map(|&v| f64::from(v)).collect();
+    let shelf = biquad(
+        &x,
+        [1.535_124_859_586_97, -2.691_696_189_406_38, 1.198_392_810_852_85],
+        [-1.690_659_293_182_41, 0.732_480_774_215_85],
+    );
+    biquad(&shelf, [1.0, -2.0, 1.0], [-1.990_047_454_833_98, 0.990_072_250_366_21])
 }
 
 /// The intro's brush, as 10-27's `mix.pl` made it (main's `.sb/youtube/2026-10-27-first-clip/`), at `RATE` from the
@@ -942,6 +962,24 @@ mod tests {
             .collect();
         let tp = true_peaks(&quarter)[100..4_700].iter().fold(0.0f32, |m, p| m.max(*p));
         assert!((tp - 1.0).abs() < 0.02, "true peak {tp}");
+    }
+
+    /// `short_term`: each 3 s window stepped by a second — silence then a sine 20 dB down reads nothing, then a third
+    /// of the sine (4.77 LU under it), then the sine's own −23.01.
+    #[test]
+    fn the_short_term_loudness_is_each_windows_own() {
+        let n = RATE as usize;
+        let x: Vec<f32> = (0..6 * n)
+            .map(|i| match i < 3 * n {
+                true => 0.0,
+                false => 0.1 * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / RATE as f32).sin(),
+            })
+            .collect();
+        let w = short_term(&x, 3.0, 1.0);
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert_eq!(w[0], f32::NEG_INFINITY);
+        assert!((w[1] + 23.01 + 4.77).abs() < 0.1, "{w:?}");
+        assert!((w[3] + 23.01).abs() < 0.05, "{w:?}");
     }
 
     /// A Short's track stands at `SHORT_LUFS` or as near as `LIMIT_MOST_DB` of limiting lets it, with every sample under

@@ -1,9 +1,11 @@
 //! `cargo xtask cut init TAKE [--out FILE]` — a first edit list for a take, by rule, to be tuned by hand after (the
 //! brief's "The first edit list, by rule"):
 //!
+//! - a card from shown to answered plus `CARD_AFTER` (one never answered: `CARD_OPEN` from shown): 1×;
+//! - what was typed, complete before it's sent: from the last key before a return (or `ASK_STANDS` before the return,
+//!   where it came later) to `TYPED_AFTER` past the return, 1× — as long as the take had it stand, never longer;
 //! - something typed (an ask, a `:` command — keys from the terminal or the key script, a burst while each comes within
-//!   `TYPED_GAP` of the last) to `TYPED_AFTER` past its last key, and a card from shown to answered plus `CARD_AFTER`
-//!   (one never answered: `CARD_OPEN` from shown): 1×;
+//!   `TYPED_GAP` of the last) to `TYPED_AFTER` past its last key: `TYPED_SPEED`×;
 //! - a stretch where nothing on the screen changes but a timer or a spinner (`ticking`) for over `STILL_MS`: left out
 //!   but for its first `STILL_KEPT`, shown at 1×;
 //! - a turn: sped so what's left of it takes at most `TURN_MAX` on screen, never under `TURN_MIN`×;
@@ -23,6 +25,8 @@ use crate::record::{Rec, Replay, SCREEN, Take, read_log};
 
 pub(crate) const TYPED_GAP: u64 = 1_500;
 pub(crate) const TYPED_AFTER: u64 = 500;
+pub(crate) const TYPED_SPEED: f64 = 2.0;
+pub(crate) const ASK_STANDS: u64 = 1_500;
 pub(crate) const CARD_AFTER: u64 = 1_000;
 pub(crate) const CARD_OPEN: u64 = 3_000;
 pub(crate) const STILL_MS: u64 = 2_000;
@@ -118,11 +122,8 @@ pub(crate) fn stills(recs: &[Rec], size: (u16, u16), end: u64) -> Vec<(u64, u64)
 /// — not the terminal's answers to tarae's questions nor the mouse's reports —, a burst while each comes within
 /// `TYPED_GAP` of the one before.
 pub(crate) fn typing(keys: &[Rec]) -> Vec<(u64, u64)> {
-    let answer = |b: &[u8]| {
-        [&b"\x1b]"[..], b"\x1b[?", b"\x1b[<", b"\x1bP", b"\x1b[M"].iter().any(|p| b.starts_with(p))
-    };
     let mut out: Vec<(u64, u64)> = Vec::new();
-    for r in keys.iter().filter(|r| r.whose != SCREEN && !answer(&r.bytes)) {
+    for r in keys.iter().filter(|r| is_key(r)) {
         let ms = r.us / 1000;
         match out.last_mut() {
             Some(b) if ms <= b.1 + TYPED_GAP => b.1 = ms,
@@ -132,14 +133,44 @@ pub(crate) fn typing(keys: &[Rec]) -> Vec<(u64, u64)> {
     out
 }
 
+/// Whether a record of the input log is a key someone pressed: the terminal's or the key script's — not the terminal's
+/// answers to tarae's questions (colours, modes, the keyboard protocol), its focus reports nor the mouse's.
+pub(crate) fn is_key(r: &Rec) -> bool {
+    let b = &r.bytes[..];
+    let answer = [&b"\x1b]"[..], b"\x1b[?", b"\x1b[<", b"\x1bP", b"\x1b[M"].iter().any(|p| b.starts_with(p))
+        || b == b"\x1b[I"
+        || b == b"\x1b[O";
+    r.whose != SCREEN && !b.is_empty() && !answer
+}
+
+/// Whether a key is a return: `\r`, `\n`, or the keyboard protocol's `ESC [ 13 u` (pressed, not released).
+pub(crate) fn is_return(b: &[u8]) -> bool {
+    matches!(b, b"\r" | b"\n" | b"\r\n")
+        || (b.starts_with(b"\x1b[13") && b.ends_with(b"u") && !b.ends_with(b":3u"))
+}
+
+/// The sends of a take (the last key before, the return, ms): each return, and the key before it — what was typed, from
+/// when it stood complete.
+pub(crate) fn sends(keys: &[Rec]) -> Vec<(u64, u64)> {
+    let keys: Vec<&Rec> = keys.iter().filter(|r| is_key(r)).collect();
+    (keys.iter().enumerate())
+        .filter(|(_, r)| is_return(&r.bytes))
+        .map(|(i, r)| {
+            let at = r.us / 1000;
+            (i.checked_sub(1).map_or(at, |j| keys[j].us / 1000), at)
+        })
+        .collect()
+}
+
 /// What the rules read from a take: its end; its turns, cards and front changes from the landmarks (each edge with the
-/// landmark it is, as the file says one); what was typed and the still stretches.
+/// landmark it is, as the file says one); what was typed, each send, and the still stretches.
 #[derive(Debug, Default)]
 pub(crate) struct Facts {
     pub(crate) end: u64,
     pub(crate) turns: Vec<((u64, String), (u64, String))>,
     pub(crate) cards: Vec<((u64, String), (u64, String))>,
     pub(crate) typed: Vec<(u64, u64)>,
+    pub(crate) sent: Vec<(u64, u64)>,
     pub(crate) stills: Vec<(u64, u64)>,
     pub(crate) fronts: Vec<(u64, String, String)>,
 }
@@ -175,15 +206,16 @@ impl Facts {
                 }
             })
             .collect();
-        Facts { end, turns, cards, typed: typing(keys), stills, fronts }
+        Facts { end, turns, cards, typed: typing(keys), sent: sends(keys), stills, fronts }
     }
 }
 
 /// Which rule a moment of the take falls to, the first that holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Rule {
-    Typed,
     Card(usize),
+    Sent,
+    Typed,
     Kept,
     Still,
     Turn(usize),
@@ -196,6 +228,8 @@ pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
     let mut edges: Vec<u64> = vec![0, end];
     let mut put = |a: u64, b: u64| edges.extend([a.min(end), b.min(end)]);
     f.typed.iter().for_each(|&(a, b)| put(a, b + TYPED_AFTER));
+    let stands = |&(last, ret): &(u64, u64)| (last.max(ret.saturating_sub(ASK_STANDS)), ret + TYPED_AFTER);
+    f.sent.iter().map(stands).for_each(|(a, b)| put(a, b));
     f.cards.iter().for_each(|c| put(c.0.0, c.1.0));
     f.turns.iter().for_each(|t| put(t.0.0, t.1.0));
     for &(a, b) in &f.stills {
@@ -208,11 +242,14 @@ pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
     edges.dedup();
     let inside = |a: u64, b: u64, t: u64| a <= t && t < b;
     let rule_of = |t: u64| -> Rule {
-        if f.typed.iter().any(|&(a, b)| inside(a, b + TYPED_AFTER, t)) {
-            return Rule::Typed;
-        }
         if let Some(i) = f.cards.iter().position(|c| inside(c.0.0, c.1.0, t)) {
             return Rule::Card(i);
+        }
+        if f.sent.iter().map(stands).any(|(a, b)| inside(a, b, t)) {
+            return Rule::Sent;
+        }
+        if f.typed.iter().any(|&(a, b)| inside(a, b + TYPED_AFTER, t)) {
+            return Rule::Typed;
         }
         if f.stills.iter().any(|&(a, b)| inside(a, (a + STILL_KEPT).min(b), t)) {
             return Rule::Kept;
@@ -232,12 +269,14 @@ pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
         (left as f64 / TURN_MAX as f64).max(TURN_MIN)
     };
     let pace_of = |r: Rule| match r {
-        Rule::Typed | Rule::Card(_) | Rule::Kept => Pace::Speed(1.0),
+        Rule::Sent | Rule::Card(_) | Rule::Kept => Pace::Speed(1.0),
+        Rule::Typed => Pace::Speed(TYPED_SPEED),
         Rule::Still => Pace::Out,
         Rule::Turn(i) => Pace::Speed(speed(i)),
         Rule::Rest => Pace::Speed(DEFAULT),
     };
     let why = |r: Rule| match r {
+        Rule::Sent => "the ask complete before its return".to_string(),
         Rule::Typed => "typed".to_string(),
         Rule::Card(i) => format!("card {}", i + 1),
         Rule::Kept => "a still screen's first half second".into(),
@@ -282,8 +321,9 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
     let at = |ms: u64| labels.get(&ms).cloned().unwrap_or_else(|| exact(ms));
     let mut t = format!(
         "# cut init's list for {}, by rule (cargo xtask cut init): tune it by hand, then `cargo xtask cut` it.\n\
-         # The rules: something typed and a card shown to answered + 1s at 1×; a still screen (but a timer or a\n\
-         # spinner) over 2s left out but its first half second; a turn in at most 20s on screen, never under 4×.\n\n\
+         # The rules: a card shown to answered + 1s at 1×; something typed at 2×, then 1× from its last key (at most\n\
+         # 1.5s) to half a second past its return; a still screen (but a timer or a spinner) over 2s left out but its\n\
+         # first half second; a turn in at most 20s on screen, never under 4×.\n\n\
          title = \"A live take\"\ndefault = {}   # the rest\n",
         dir.display(),
         factor(DEFAULT)
@@ -318,9 +358,23 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
         t += &format!("\n[[span]]   # {why}\nfrom = \"{}\"\nto = \"{}\"\n{pace}\n", at(s.from), at(s.to));
     }
     let s = |ms: u64| ms as f64 / 1e3;
+    // (a send whose text stood complete under `ASK_STANDS` in the take: shown as it stood, said)
+    let short: Vec<String> = (f.sent.iter())
+        .filter(|(last, ret)| ret - last < ASK_STANDS)
+        .map(|(last, ret)| format!("{} ({:.1} s)", clock(*ret), (ret - last) as f64 / 1e3))
+        .collect();
+    let short = match short.len() {
+        0 => String::new(),
+        n => format!(
+            "; {n} of {} returns came under {:.1} s after the last key, shown as they stood: {}",
+            f.sent.len(),
+            ASK_STANDS as f64 / 1e3,
+            short.join(", ")
+        ),
+    };
     let said = format!(
         "the take {} → about {:.1} s of the take part (cards not counted); spans: {} at 1× ({:.1} s), {} sped ({:.1} s), \
-         {} left out ({:.1} s); {} chapters",
+         {} left out ({:.1} s); {} chapters{short}",
         clock(f.end),
         video / 1e3,
         one.0,

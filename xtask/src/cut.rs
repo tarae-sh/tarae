@@ -1,7 +1,8 @@
 //! `cargo xtask cut` — a take (`record`'s) made a video by the edit list beside it, a `cut.toml` (the full video's V1,
 //! main's `.sb/full-video-plan.md` "How it's cut"): an hour and a half into about ten minutes, honest about time.
 //!
-//! - `cut FILE` — the take in FILE's folder cut by FILE, into `<folder>/<stem>/`: `cut.mp4` (1920×1080, silent), its
+//! - `cut FILE` — the take in FILE's folder cut by FILE, into `<folder>/<stem>/`: `cut.mp4` (1920×1080, its sound
+//!   tarae's keys where the picture runs in real time and the beds the file names — `sound.rs`; `cut.wav` beside it), its
 //!   sheet `sheet-NN.png` (every picture says its video time, its take time and its speed), YouTube's chapter list
 //!   `chapters.txt` (video times) and what was made, `cut.txt`.
 //! - `cut init TAKE [--out FILE]` — a first edit list for the take by rule, from its landmarks and its screens
@@ -27,6 +28,7 @@
 //! [[chapter]]                             # a card of `CHAPTER_MS` where it starts; chapters.txt
 //! at = "start"
 //! title = "An empty folder"
+//! card = false                            # no card: its number and title stand in the band `CHAPTER_BAND_MS`
 //!
 //! [[caption]]                             # one line under the picture, ≤ `CAPTION_MAX` characters
 //! at = "turn 1 start"
@@ -37,6 +39,16 @@
 //! at = "card 1 shown + 0.5s"
 //! for = "2s"                              # held, of the video's time
 //! on = "card:wants to run"                # a target as the Shorts' camera reads one (`camera::target`)
+//!
+//! [[music]]                               # a bed from a chapter on, until the next bed's (`sound.rs`)
+//! chapter = 1                             # its chapter's number; chapter 1's from the video's first frame
+//! file = "beds/one.mp3"                   # any file ffmpeg reads, from this file's folder (or a whole path)
+//! loop = ["0:08.2", "1:52"]               # where it repeats, the track's own times marked by ear (else it
+//!                                         # fades where it runs out and the next bed begins)
+//!
+//! [sound]                                 # the mix by distance (LU; each left out: its constant, `sound.rs`)
+//! under = 0                               # the bed under the keys' own loudness where they may sound
+//! over = 6                                # the bed where it leads, over that: the swing
 //! ```
 //!
 //! A time in the take: `start`, `end`, a clock (`1:02:03.5`, `37:12`), a length from the start (`72.5s`), or a landmark
@@ -61,11 +73,15 @@ use crate::video::{self, FPS};
 
 mod draw;
 mod init;
+mod sound;
 #[cfg(test)]
 mod tests;
 
 /// A chapter's card, crossing in and out.
 pub(crate) const CHAPTER_MS: u64 = 2_000;
+/// A chapter with no card: its number and title stand in the band this long (of the video), fading in and out over
+/// `FADE_MS`, as the take goes on.
+pub(crate) const CHAPTER_BAND_MS: u64 = 3_000;
 /// A caption's longest (one line in the band, between the clock and the speed's mark).
 pub(crate) const CAPTION_MAX: usize = 60;
 /// The jump's mark stands this long (then fades), and comes in and goes out over `FADE_MS` — a caption's too.
@@ -413,12 +429,14 @@ pub(crate) struct Hook {
     pub(crate) title: Option<String>,
 }
 
-/// A chapter, a caption, a zoom: where in the take (ms), and the file's line.
+/// A chapter, a caption, a zoom: where in the take (ms), and the file's line. A chapter shows a card, or (`card`
+/// false) stands in the band as the take goes on.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Chapter {
     pub(crate) at: u64,
     pub(crate) title: String,
     pub(crate) line: usize,
+    pub(crate) card: bool,
 }
 
 /// A caption: standing `len` ms of the video.
@@ -439,6 +457,19 @@ pub(crate) struct Zoom {
     pub(crate) line: usize,
 }
 
+/// A music bed: from chapter `chapter` (its index) on, its `file` as the edit list says it, repeating between `looped`'s
+/// two times in the track (ms) where it's given; the file's line.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Bed {
+    pub(crate) chapter: usize,
+    pub(crate) file: String,
+    pub(crate) looped: Option<(u64, u64)>,
+    pub(crate) line: usize,
+}
+
+/// A loop's shortest (ms): a seam every few seconds is no bed.
+pub(crate) const LOOP_MIN: u64 = 2_000;
+
 /// An edit list read and resolved against its take.
 #[derive(Debug)]
 pub(crate) struct Cut {
@@ -450,6 +481,8 @@ pub(crate) struct Cut {
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) captions: Vec<Caption>,
     pub(crate) zooms: Vec<Zoom>,
+    pub(crate) beds: Vec<Bed>,
+    pub(crate) mix: sound::Mix,
     pub(crate) end: u64,
 }
 
@@ -553,7 +586,9 @@ impl Cut {
         let src = Src { lines: text.lines().collect(), file };
         let top: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{file}: {e}"))?;
         let root = Entry { t: &top, line: 0, src: &src, name: "the file" };
-        root.keys(&["title", "bg", "default", "hook", "span", "chapter", "caption", "zoom"])?;
+        root.keys(&[
+            "title", "bg", "default", "hook", "span", "chapter", "caption", "zoom", "music", "sound",
+        ])?;
         let title = root.text("title")?.unwrap_or("A live take").to_string();
         let bg = match root.text("bg")? {
             None | Some("dark") => Bg::Dark,
@@ -675,8 +710,15 @@ impl Cut {
 
         let mut chapters: Vec<Chapter> = Vec::new();
         for e in list("chapter")? {
-            e.keys(&["at", "title"])?;
+            e.keys(&["at", "title", "card"])?;
             let (at, title) = (e.time("at", marks)?, e.needed("title")?.trim().to_string());
+            let card = match e.t.get("card") {
+                None => true,
+                Some(toml::Value::Boolean(b)) => *b,
+                Some(_) => {
+                    return Err(e.err("card", "chapter: card = false (no card: its title in the band)"));
+                }
+            };
             if title.is_empty() {
                 return Err(e.err("title", "chapter: its title is empty"));
             }
@@ -696,8 +738,11 @@ impl Cut {
             if map.left_out(at) {
                 return Err(e.err("at", format!("chapter: at {}, inside a span left out", clock(at))));
             }
-            chapters.push(Chapter { at, title, line: e.line });
+            chapters.push(Chapter { at, title, line: e.line, card });
         }
+        // (where a chapter with no card stands in the band, of the map's µs: a caption waits for it)
+        let banded: Vec<(u64, usize)> =
+            (chapters.iter().filter(|c| !c.card)).map(|c| (map.video(c.at), c.line)).collect();
 
         let mut captions: Vec<Caption> = Vec::new();
         for e in list("caption")? {
@@ -712,6 +757,15 @@ impl Cut {
             }
             if map.left_out(at) {
                 return Err(e.err("at", format!("caption: at {}, inside a span left out", clock(at))));
+            }
+            let (v0, v1) = (map.video(at), map.video(at) + len * 1000);
+            if let Some((_, l)) = banded.iter().find(|(c, _)| v0 < c + CHAPTER_BAND_MS * 1000 && *c < v1) {
+                return Err(e.err(
+                    "at",
+                    format!(
+                        "caption: it shows while the chapter at line {l} stands in the band — one at a time"
+                    ),
+                ));
             }
             if let Some(b) = captions.last() {
                 if at < b.at {
@@ -768,7 +822,106 @@ impl Cut {
             }
             zooms.push(Zoom { at, len, on, line: e.line });
         }
-        Ok(Cut { file: file.to_string(), title, bg, map, hook, chapters, captions, zooms, end: marks.end })
+
+        let mut beds: Vec<Bed> = Vec::new();
+        for e in list("music")? {
+            e.keys(&["chapter", "file", "loop"])?;
+            let n = match e.t.get("chapter") {
+                Some(toml::Value::Integer(n)) if *n >= 1 && (*n as usize) <= chapters.len() => *n as usize,
+                Some(_) if chapters.is_empty() => {
+                    return Err(e.err("chapter", "music: the file has no chapter for it to start at"));
+                }
+                Some(_) => {
+                    return Err(
+                        e.err("chapter", format!("music: chapter 1 to {} (its number)", chapters.len()))
+                    );
+                }
+                None => {
+                    return Err(src.at(e.line, "music: no chapter (the number of the chapter it starts at)"));
+                }
+            };
+            if let Some(b) = beds.last()
+                && n <= b.chapter + 1
+            {
+                return Err(e.err(
+                    "chapter",
+                    format!(
+                        "music: chapter {n}, not after the bed at line {} (chapter {})",
+                        b.line,
+                        b.chapter + 1
+                    ),
+                ));
+            }
+            let file = e.needed("file")?.trim().to_string();
+            if file.is_empty() {
+                return Err(e.err("file", "music: its file is empty"));
+            }
+            let looped = match e.t.get("loop") {
+                None => None,
+                Some(toml::Value::Array(a)) if a.len() == 2 => {
+                    let at = |v: &toml::Value| -> Result<u64> {
+                        let s = v
+                            .as_str()
+                            .ok_or_else(|| e.err("loop", "music: loop = [\"0:08.2\", \"1:52\"]"))?;
+                        match s.contains(':') {
+                            true => clock_at(s.trim()),
+                            false => length(s),
+                        }
+                        .map_err(|m| e.err("loop", format!("music: loop: {m}")))
+                    };
+                    let (a, b) = (at(&a[0])?, at(&a[1])?);
+                    if b < a + LOOP_MIN {
+                        return Err(e.err(
+                            "loop",
+                            format!(
+                                "music: loop from {:.1} s to {:.1} s — its end {} s or more after its start",
+                                a as f64 / 1e3,
+                                b as f64 / 1e3,
+                                LOOP_MIN / 1000
+                            ),
+                        ));
+                    }
+                    Some((a, b))
+                }
+                Some(_) => {
+                    return Err(e.err("loop", "music: loop = [\"0:08.2\", \"1:52\"], its start and end"));
+                }
+            };
+            beds.push(Bed { chapter: n - 1, file, looped, line: e.line });
+        }
+        let mut mix = sound::Mix::default();
+        match top.get("sound") {
+            None => {}
+            Some(toml::Value::Table(t)) => {
+                let e = Entry { t, line: src.header("sound", None), src: &src, name: "sound" };
+                e.keys(&["under", "over"])?;
+                let lu = |key: &str, least: f64| -> Result<Option<f32>> {
+                    match t.get(key) {
+                        None => Ok(None),
+                        Some(v) => match number(v) {
+                            Some(n) if (least..=30.0).contains(&n) => Ok(Some(n as f32)),
+                            _ => Err(e.err(key, format!("sound: {key} = a number of LU, {least} to 30"))),
+                        },
+                    }
+                };
+                mix.under = lu("under", -10.0)?.unwrap_or(mix.under);
+                mix.over = lu("over", 0.0)?.unwrap_or(mix.over);
+            }
+            Some(_) => return Err(src.at(src.key(0, "sound"), "sound: a table, as [sound]")),
+        }
+        Ok(Cut {
+            mix,
+            file: file.to_string(),
+            title,
+            bg,
+            map,
+            hook,
+            chapters,
+            captions,
+            zooms,
+            beds,
+            end: marks.end,
+        })
     }
 }
 
@@ -804,7 +957,8 @@ pub(crate) enum Card {
 
 /// What one frame shows: the take's screen at its ms, or a card; and what the band says — the take's time, a sped
 /// span's factor, the jump's mark (how much was left out, and how drawn, of 255), whether it's the hook's (from later),
-/// a caption (which, how drawn) —; and where in the map it is (the camera's clock), the take part's frames only.
+/// a caption or a chapter with no card (which, how drawn) —; and where in the map it is (the camera's clock), the take
+/// part's frames only.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
     pub(crate) screen: Option<u64>,
@@ -814,6 +968,7 @@ pub(crate) struct Frame {
     pub(crate) jump: Option<(u64, u8)>,
     pub(crate) later: bool,
     pub(crate) caption: Option<(usize, u8)>,
+    pub(crate) chapter: Option<(usize, u8)>,
     pub(crate) map: Option<u64>,
 }
 
@@ -827,6 +982,7 @@ impl Frame {
             jump: None,
             later: false,
             caption: None,
+            chapter: None,
             map: None,
         }
     }
@@ -844,13 +1000,14 @@ pub(crate) fn envelope(since: u64, len: u64) -> u8 {
 
 /// The video, part by part: the hook first (where there is one), the title card, the take part with each chapter's card
 /// where it starts, its last screen held, the end card; where time is left out (the map's µs, how much of the take);
-/// each caption's stretch on the map.
+/// each caption's stretch on the map, and each chapter's with no card (from, to, which).
 pub(crate) struct Program<'c> {
     pub(crate) cut: &'c Cut,
     pub(crate) parts: Vec<Part>,
     pub(crate) total: u64,
     pub(crate) jumps: Vec<(u64, u64)>,
     captions: Vec<(u64, u64)>,
+    banded: Vec<(u64, u64, usize)>,
 }
 
 impl<'c> Program<'c> {
@@ -867,7 +1024,7 @@ impl<'c> Program<'c> {
         }
         push(What::Title, video::TITLE_MS * 1000);
         let mut from = 0;
-        for (i, c) in cut.chapters.iter().enumerate() {
+        for (i, c) in cut.chapters.iter().enumerate().filter(|(_, c)| c.card) {
             let m = map.video(c.at);
             if m > from {
                 push(What::Take { from }, m - from);
@@ -889,7 +1046,16 @@ impl<'c> Program<'c> {
         }
         let captions =
             cut.captions.iter().map(|c| (map.video(c.at), map.video(c.at) + c.len * 1000)).collect();
-        Program { cut, parts, total: at, jumps, captions }
+        let banded = (cut.chapters.iter().enumerate().filter(|(_, c)| !c.card))
+            .map(|(i, c)| (map.video(c.at), map.video(c.at) + CHAPTER_BAND_MS * 1000, i))
+            .collect();
+        Program { cut, parts, total: at, jumps, captions, banded }
+    }
+
+    /// Where chapter `i` starts in the video (µs): its card's start, or (no card) the take's frame where it begins.
+    pub(crate) fn chapter_at(&self, i: usize) -> u64 {
+        let card = self.parts.iter().find(|p| p.what == What::Chapter(i)).map(|p| p.at);
+        card.or_else(|| self.video_of(self.cut.map.video(self.cut.chapters[i].at))).unwrap_or(0)
     }
 
     /// The video's frames at `FPS`.
@@ -956,6 +1122,9 @@ impl<'c> Program<'c> {
             .find(|(_, c)| c.0 <= m && m < c.1)
             .map(|(k, c)| (k, envelope(m - c.0, c.1 - c.0)))
             .filter(|c| c.1 > 0);
+        let chapter = (self.banded.iter().find(|c| c.0 <= m && m < c.1))
+            .map(|c| (c.2, envelope(m - c.0, c.1 - c.0)))
+            .filter(|c| c.1 > 0 && moving);
         Frame {
             screen: Some(t),
             card: None,
@@ -964,6 +1133,7 @@ impl<'c> Program<'c> {
             jump,
             later: false,
             caption,
+            chapter,
             map: Some(m),
         }
     }
@@ -981,11 +1151,8 @@ impl<'c> Program<'c> {
     /// title there where it has one, else the first chapter's, which then covers the hook and the title card); and what
     /// keeps YouTube from taking it (fewer than three, one under ten seconds), said.
     pub(crate) fn chapters(&self) -> (String, Vec<String>) {
-        let mut list: Vec<(u64, String)> = (self.parts.iter())
-            .filter_map(|p| match p.what {
-                What::Chapter(i) => Some((p.at, self.cut.chapters[i].title.clone())),
-                _ => None,
-            })
+        let mut list: Vec<(u64, String)> = (self.cut.chapters.iter().enumerate())
+            .map(|(i, c)| (self.chapter_at(i), c.title.clone()))
             .collect();
         match (&self.cut.hook.as_ref().and_then(|h| h.title.clone()), list.first_mut()) {
             (Some(t), _) => list.insert(0, (0, t.clone())),

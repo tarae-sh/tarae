@@ -643,17 +643,17 @@ pub(crate) fn make(
 
 /// A Short's AAC: its true peak at most this (dBTP, as encoded — a player decodes the AAC, not the WAV), with this much
 /// room below it aimed at, and this near the aim enough; the limiter's ceiling moved this many times at most.
-const AAC_PEAK_DB: f32 = -1.0;
+pub(crate) const AAC_PEAK_DB: f32 = -1.0;
 const AAC_MARGIN_DB: f32 = 0.3;
 const AAC_NEAR_DB: f32 = 0.2;
-const AAC_TRIES: usize = 4;
+pub(crate) const AAC_TRIES: usize = 4;
 
 /// The limiter's next ceiling (dBTP) from the ceilings tried and the AAC's true peak each came out at, in order: where
 /// the last came out over the aim (`AAC_MARGIN_DB` under `AAC_PEAK_DB`) or more than `AAC_NEAR_DB` under it, moved by
 /// the difference, never past the aim — and inside what's known (the encoder isn't even: a ceiling raised 0.6 dB came
 /// out 1.2 dB higher): under the lowest that came out over, over the highest that came out under, else half way
 /// between them. None where it's near enough, or the next is one tried.
-fn next_ceiling(tried: &[(f32, f32)]) -> Option<f32> {
+pub(crate) fn next_ceiling(tried: &[(f32, f32)]) -> Option<f32> {
     let aim = AAC_PEAK_DB - AAC_MARGIN_DB;
     let &(ceiling, tp) = tried.last()?;
     if tp <= aim && aim - tp <= AAC_NEAR_DB {
@@ -677,14 +677,14 @@ const SAME_DB: f32 = 0.05;
 
 /// Of the ceilings tried (with the AAC's true peak each came out at), the one to keep: the highest whose AAC is under
 /// `AAC_PEAK_DB` (ebur128 says a tenth of a dB: −1.0 may be −0.96), else the one whose AAC came out lowest.
-fn best_ceiling(tried: &[(f32, f32)]) -> Option<f32> {
+pub(crate) fn best_ceiling(tried: &[(f32, f32)]) -> Option<f32> {
     let under = tried.iter().filter(|t| t.1 < AAC_PEAK_DB).max_by(|a, b| a.0.total_cmp(&b.0));
     under.or_else(|| tried.iter().min_by(|a, b| a.1.total_cmp(&b.1))).map(|t| t.0)
 }
 
 /// `wav`'s true peak as AAC (dBTP): encoded as the MP4's sound is (160 kb/s) into a file beside it, read by `ebur128`
 /// (`loudness`), the file removed.
-fn aac_peak(ffmpeg: &Path, wav: &Path) -> std::result::Result<f32, String> {
+pub(crate) fn aac_peak(ffmpeg: &Path, wav: &Path) -> std::result::Result<f32, String> {
     let m4a = wav.with_extension("peak.m4a");
     let out = Command::new(ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
@@ -723,7 +723,7 @@ const BED_SPARE_S: u64 = 10;
 
 /// `music`'s first `upto` as `sound::track` takes it: mono at `sound::RATE`, decoded by ffmpeg (any file it reads — an
 /// MP3 from YouTube Studio's Audio Library), its channels mixed down as the hand mix's `amix` did.
-fn decoded(ffmpeg: &Path, music: &Path, upto: Duration) -> Result<Vec<f32>> {
+pub(crate) fn decoded(ffmpeg: &Path, music: &Path, upto: Duration) -> Result<Vec<f32>> {
     let out = Command::new(ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(music)
@@ -744,7 +744,7 @@ fn decoded(ffmpeg: &Path, music: &Path, upto: Duration) -> Result<Vec<f32>> {
 
 /// The MP4's sound as a player hears it: ffmpeg's `ebur128` over its AAC — its summary's integrated loudness and true
 /// peak.
-fn loudness(ffmpeg: &Path, mp4: &Path) -> std::result::Result<(f32, f32), String> {
+pub(crate) fn loudness(ffmpeg: &Path, mp4: &Path) -> std::result::Result<(f32, f32), String> {
     let out = Command::new(ffmpeg)
         .args(["-hide_banner", "-nostats", "-i"])
         .arg(mp4)

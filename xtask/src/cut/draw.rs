@@ -56,7 +56,7 @@ pub(super) fn run(file: &Path) -> Result<()> {
     }
     let stem = file.file_stem().map_or("cut".into(), |s| s.to_string_lossy().into_owned());
     let out = dir.join(stem);
-    let said = make(&cut, &take, &out)?;
+    let said = make(&cut, &take, (dir, &marks), &out)?;
     let p = out.join("cut.txt");
     std::fs::write(&p, &said).map_err(|e| format!("{}: {e}", p.display()))?;
     print!("{said}");
@@ -84,6 +84,7 @@ struct Key {
     jump: Option<(u64, u8)>,
     later: bool,
     caption: Option<(usize, u8)>,
+    chapter: Option<(usize, u8)>,
     screen: (bool, u64),
     region: Region,
     cross: Option<u8>,
@@ -107,8 +108,9 @@ impl Words<'_> {
     }
 }
 
-/// The cut of `take` as `cut` says, into `out`: `cut.mp4`, the sheet's pages, `chapters.txt`. What was made, said.
-pub(crate) fn make(cut: &Cut, take: &Take, out: &Path) -> Result<String> {
+/// The cut of `take` (in `dir`, its landmarks `marks`) as `cut` says, into `out`: `cut.mp4` with its sound
+/// (`sound.rs`, `cut.wav` beside it), the sheet's pages, `chapters.txt`. What was made, said.
+pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &Path) -> Result<String> {
     let started = Instant::now();
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let prog = Program::new(cut);
@@ -142,16 +144,22 @@ pub(crate) fn make(cut: &Cut, take: &Take, out: &Path) -> Result<String> {
 
     // (the camera: each zoom's window from its target on the screen then)
     let mut reads = Vec::new();
+    let mut found_at = Vec::new();
     let mut scan = Replay::new(&take.screen, size);
     for z in &cut.zooms {
         scan.to(z.at);
         let mut found = camera::target(&Cells::of(scan.screen()), &z.on);
+        let mut when = z.at;
         while found.is_none() {
             match scan.next() {
-                Some(ms) if ms <= z.at + FIND_MS => found = camera::target(&Cells::of(scan.screen()), &z.on),
+                Some(ms) if ms <= z.at + FIND_MS => {
+                    found = camera::target(&Cells::of(scan.screen()), &z.on);
+                    when = ms;
+                }
                 _ => break,
             }
         }
+        found_at.push(when);
         let target = found.ok_or_else(|| {
             format!(
                 "{}:{}: zoom on \"{}\": not on the screen at {} nor in the {} s after",
@@ -177,6 +185,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, out: &Path) -> Result<String> {
         ));
     }
     drop(scan);
+    let lost = lost_zooms(cut, take, &prog, &reads, &found_at);
     let path =
         camera::Path::of(&camera::aims(&reads, size), size, cut.map.len() / 1000 + 2 * camera::DRIFT_MS);
 
@@ -193,8 +202,20 @@ pub(crate) fn make(cut: &Cut, take: &Take, out: &Path) -> Result<String> {
 
     let mp4 = out.join("cut.mp4");
     let ffmpeg = video::ffmpeg();
+    // (the sound first: ffmpeg reads it beside the frames)
+    let wav = out.join("cut.wav");
+    let heard = match &ffmpeg {
+        Some(f) => {
+            let keys = match dir.join("keys.bin").exists() {
+                true => crate::record::read_log(&dir.join("keys.bin"))?,
+                false => Vec::new(),
+            };
+            Some(super::sound::make(&prog, dir, &keys, marks, f, &wav)?)
+        }
+        None => None,
+    };
     let mut child = match &ffmpeg {
-        Some(f) => Some(video::encoder(f, &mp4, (W, H), None)?),
+        Some(f) => Some(video::encoder(f, &mp4, (W, H), heard.as_ref().map(|_| wav.as_path()))?),
         None => None,
     };
     let mut stdin = child.as_mut().and_then(|c| c.stdin.take());
@@ -253,6 +274,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, out: &Path) -> Result<String> {
             jump: f.jump,
             later: f.later,
             caption: f.caption,
+            chapter: f.chapter,
             screen,
             region,
             cross: share,
@@ -353,9 +375,64 @@ pub(crate) fn make(cut: &Cut, take: &Take, out: &Path) -> Result<String> {
     head.extend(spans_said(cut));
     head.push(format!("chapters.txt:\n{}", chapters.trim_end()));
     head.extend(said);
+    if let (Some(mut heard), Some(f)) = (heard, &ffmpeg)
+        && encoded.is_ok()
+    {
+        let enc = match video::loudness(f, &mp4) {
+            Ok((l, tp)) => format!("{l:.1} LUFS integrated, {tp:.1} dBTP"),
+            Err(e) => format!("not measured ({e})"),
+        };
+        heard.insert(1, format!("  as encoded (the MP4's AAC, ffmpeg's ebur128): {enc}"));
+        head.extend(heard);
+    }
     head.push(cost(started));
+    if !lost.is_empty() {
+        head.push(format!(
+            "zooms whose target leaves the screen before the camera starts back ({}):",
+            lost.len()
+        ));
+        head.extend(lost.iter().map(|l| format!("  {l}")));
+    }
     encoded?;
     Ok(head.join("\n") + "\n")
+}
+
+/// Each zoom whose target isn't on the screen for its whole length — from where it was found (`found_at`, the take's
+/// ms) until the camera starts back (`reads`' end, the map's ms) —, checked at every frame: the file's line, the video
+/// time it's gone and how long before the camera leaves. Said, never refused: the file's to tune.
+pub(crate) fn lost_zooms(
+    cut: &Cut,
+    take: &Take,
+    prog: &Program,
+    reads: &[(u64, u64, Region)],
+    found_at: &[u64],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chk = Replay::new(&take.screen, take.size);
+    let step = 1_000_000 / video::FPS;
+    for ((z, &(m0, m1, _)), &found) in cut.zooms.iter().zip(reads).zip(found_at) {
+        let mut v = (m0 * 1000).max(cut.map.video(found));
+        let mut first = true;
+        while v < m1 * 1000 {
+            let (t, _) = cut.map.take(v);
+            let came = chk.to(t);
+            if (came || first) && camera::target(&Cells::of(chk.screen()), &z.on).is_none() {
+                out.push(format!(
+                    "{}:{}: zoom on \"{}\": gone at {} in the video (take {}), {:.1} s before the camera starts back",
+                    cut.file,
+                    z.line,
+                    z.on,
+                    prog.video_of(v).map_or("?".into(), video_time),
+                    super::clock_tenths(t),
+                    (m1 * 1000 - v) as f64 / 1e6
+                ));
+                break;
+            }
+            first = false;
+            v += step;
+        }
+    }
+    out
 }
 
 /// `to` drawn `a` of 255 of the way over `from` (a crossing).
@@ -401,6 +478,14 @@ fn band(
         let p = words.get(&cut.captions[i].text, video::CAPTION_PX, look.ink);
         put(p, (W - p.0.min(W)) / 2, a);
     }
+    // (a chapter with no card: its number, faint, then its title, centred as a caption is)
+    if let Some((i, a)) = f.chapter {
+        let n = words.get(&format!("{}   ", i + 1), video::CAPTION_PX, look.faint).clone();
+        let p = words.get(&cut.chapters[i].title, video::CAPTION_PX, look.ink);
+        let x = (W - (n.0 + p.0).min(W)) / 2;
+        put(&n, x, a);
+        put(p, x + n.0, a);
+    }
 }
 
 /// Where the sheet looks besides its regular pictures (video µs, what's there): each part, caption, zoom, jump and
@@ -425,6 +510,10 @@ pub(crate) fn sheet_marks(prog: &Program) -> Vec<(u64, String)> {
         if let Some(v) = prog.video_of(map.video(c.at)) {
             out.push((v + super::FADE_MS * 1000, format!("caption “{}”", c.text)));
         }
+    }
+    for (i, c) in cut.chapters.iter().enumerate().filter(|(_, c)| !c.card) {
+        let v = prog.chapter_at(i);
+        out.push((v + super::FADE_MS * 1000, format!("chapter {} in the band: “{}”", i + 1, c.title)));
     }
     for z in &cut.zooms {
         if let Some(v) = prog.video_of(map.video(z.at)) {
