@@ -1,5 +1,5 @@
 //! `cargo xtask rain OUT.wav --len 12m [--kind forest|forest-sparse|forest-sparse-pat|forest-thick|soft|leaves|heavy]
-//! [--seed N]` — the full video's bed: rain, made from noise as the brush is (`.sb/full-video-rain-brief.md`;
+//! [--seed N] [--drops DB]` — the full video's bed: rain, made from noise as the brush is (`.sb/full-video-rain-brief.md`;
 //! showcase's "The rain is made, not found", and round 3's forest drizzle, `.sb/full-video-rain-round3.md`, 2026-11-11,
 //! with round 4's fewer near drops and round 5's drop a bubble, `.sb/full-video-rain-round5.md`). Stereo, 48 kHz, 16
 //! bits, as long as asked — no loop, nothing to seam —, written a block at a time, never held whole; the same seed,
@@ -33,6 +33,11 @@
 //! **`forest-sparse-pat`** is it with a faint pat under each near drop (round 4's burst, `PAT_UNDER_DB` under the
 //! bubble: the drop landing on something); **`forest-thick`** falls half again as thick (`THICK`).
 //!
+//! `--drops DB` sets a forest kind's drops — the near ones with the pats under them, the mid ones and the drips,
+//! together — against its far hush (the full video's V2b calls: a balance right alone is wrong under keys, where the
+//! hush has to come up and the drops less). `0` is the kind as it is, to the byte
+//! (`drops_at_0_leave_every_kinds_bytes_as_they_were`); the round-2 kinds have no hush and refuse it.
+//!
 //! The round-2 kinds (`soft`, `leaves`, `heavy`) are three layers, each made apart for the left and the right:
 //!
 //! - **The wash**, the far rain: pink noise between `Measure::wash_low` and 9 kHz, easing above 2.5 kHz, its level a
@@ -64,8 +69,8 @@ use crate::Result;
 use crate::sound::{self, RATE, stereo_lufs};
 
 const USAGE: &str = "usage: cargo xtask rain OUT.wav --len 12m [--kind \
-                     forest|forest-sparse|forest-sparse-pat|forest-thick|soft|leaves|heavy] [--seed N] | rain samples [DIR] | rain \
-                     figures FILE.wav …";
+                     forest|forest-sparse|forest-sparse-pat|forest-thick|soft|leaves|heavy] [--seed N] [--drops DB] | rain \
+                     samples [DIR] | rain figures FILE.wav …";
 
 /// The file's own ceiling (−6 dBFS): 6 dB left for the cut, which sets the level.
 const CEILING: f32 = 0.5;
@@ -113,7 +118,7 @@ pub fn run(args: &[String]) -> Result<()> {
 }
 
 fn make(out: &str, args: &[String]) -> Result<()> {
-    let (mut frames, mut kind, mut seed) = (None, Kind::Forest, 1u64);
+    let (mut frames, mut kind, mut seed, mut drops) = (None, Kind::Forest, 1u64, 0.0f64);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("rain: {a} needs a value\n{USAGE}"));
@@ -121,19 +126,27 @@ fn make(out: &str, args: &[String]) -> Result<()> {
             "--len" => frames = Some(frames_of(value()?)?),
             "--kind" => kind = Kind::parse(value()?)?,
             "--seed" => seed = value()?.parse().map_err(|_| format!("rain: --seed is a number\n{USAGE}"))?,
+            "--drops" => drops = drops_db(value()?)?,
             _ => return Err(format!("rain: {a}?\n{USAGE}")),
         }
     }
     let frames = frames.ok_or_else(|| format!("rain: --len says how long (12m, 25s, 1m30s)\n{USAGE}"))?;
+    if drops != 0.0 && !kind.has_hush() {
+        return Err(format!(
+            "rain: --drops is a forest kind's (its drops against its far hush); {} has no hush",
+            kind.name()
+        ));
+    }
     let started = Instant::now();
     let file = std::fs::File::create(out).map_err(|e| format!("{out}: {e}"))?;
     let mut w = std::io::BufWriter::with_capacity(1 << 20, file);
-    let made = write(&mut w, kind, seed, frames)?;
+    let made = write(&mut w, kind, seed, frames, drops)?;
     w.flush().map_err(|e| format!("{out}: {e}"))?;
     println!(
-        "{out}: {}, seed {seed}, {:.1} s ({frames} frames, {:.1} MB) · gain {:+.1} dB · {} samples past the knee · \
+        "{out}: {}, seed {seed}{}, {:.1} s ({frames} frames, {:.1} MB) · gain {:+.1} dB · {} samples past the knee · \
          peak {:.1} dBFS · made in {:.1} s",
         kind.name(),
+        if drops == 0.0 { String::new() } else { format!(", the drops {drops:+.1} dB against the hush") },
         frames as f64 / R,
         (44 + frames * 4) as f64 / 1e6,
         made.gain_db,
@@ -142,6 +155,19 @@ fn make(out: &str, args: &[String]) -> Result<()> {
         started.elapsed().as_secs_f64(),
     );
     Ok(())
+}
+
+/// The most `--drops` moves the drops either way (dB).
+const DROPS_MOST_DB: f64 = 24.0;
+
+/// `--drops`' dB: a number within `DROPS_MOST_DB` of 0.
+fn drops_db(s: &str) -> Result<f64> {
+    match s.parse::<f64>() {
+        Ok(db) if db.abs() <= DROPS_MOST_DB => Ok(db),
+        _ => Err(format!(
+            "rain: --drops is dB on the drops against the hush, -{DROPS_MOST_DB} to {DROPS_MOST_DB}: {s:?}"
+        )),
+    }
 }
 
 /// `12m`, `25s`, `1m30s`, `500ms`, `1h` → frames at `RATE`.
@@ -246,10 +272,15 @@ impl Kind {
         })
     }
 
+    /// A forest kind: drops over a far hush (`hush_gain`), which `--drops` sets them against.
+    fn has_hush(self) -> bool {
+        self.measure().pat_rate > 0.0
+    }
+
     /// Its file's loudness before the cut levels it (LUFS); none for the forest, whose gain is fixed
     /// (`FOREST_GAIN_DB`).
     fn loudness(self) -> Option<f32> {
-        match self.measure().pat_rate > 0.0 {
+        match self.has_hush() {
             true => None,
             false => Some(LOUDNESS),
         }
@@ -1084,7 +1115,8 @@ impl Density {
 /// `HUSH_LUFS` in the file at the forest's gain — round 3's far "쏴", whatever drops fall over it.
 fn hush_gain(kind: Kind, seed: u64) -> f64 {
     let secs = 4;
-    let mut rain = Rain::with(kind.measure(), seed, Layers { wash: true, fine: true, ..NONE }, 1.0, true);
+    let mut rain =
+        Rain::with(kind.measure(), seed, Layers { wash: true, fine: true, ..NONE }, (1.0, 1.0), true);
     let (mut l, mut r) = (vec![0.0f32; secs * BLOCK], vec![0.0f32; secs * BLOCK]);
     for (l, r) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
         rain.block(l, r);
@@ -1123,6 +1155,9 @@ struct Rain {
     steady: bool,
     /// The far hush's gain on the wash and the fine drops (`hush_gain`); 1 without pats.
     hush: f64,
+    /// The forest's drops — near (and the pats under them), mid and drips — against the hush (`--drops`, linear): 1, as
+    /// the kind is.
+    drops: f64,
     /// Made since the pre-roll: near drops, mid drops, drips (one heard twice, once).
     counts: [u64; 3],
     /// The density's least and most since the pre-roll.
@@ -1132,15 +1167,16 @@ struct Rain {
 }
 
 impl Rain {
-    fn new(kind: Kind, seed: u64, on: Layers) -> Rain {
-        let hush = match kind.measure().pat_rate > 0.0 {
+    /// `drops`: `--drops`' dB.
+    fn new(kind: Kind, seed: u64, on: Layers, drops: f64) -> Rain {
+        let hush = match kind.has_hush() {
             true => hush_gain(kind, seed),
             false => 1.0,
         };
-        Rain::with(kind.measure(), seed, on, hush, false)
+        Rain::with(kind.measure(), seed, on, (hush, 10f64.powf(drops / 20.0)), false)
     }
 
-    fn with(m: Measure, seed: u64, on: Layers, hush: f64, steady: bool) -> Rain {
+    fn with(m: Measure, seed: u64, on: Layers, (hush, drops): (f64, f64), steady: bool) -> Rain {
         let s = |stream| Rng::new(seed, stream);
         let (places, spots) = surfaces(seed);
         let mut rain = Rain {
@@ -1166,6 +1202,7 @@ impl Rain {
             density: Density::new(s(21)),
             steady,
             hush,
+            drops,
             counts: [0; 3],
             densities: [f64::INFINITY, 0.0],
             ring: [vec![0.0; RING], vec![0.0; RING]],
@@ -1217,7 +1254,7 @@ impl Rain {
             let level = db(-w.range(0.0, NEAR_SPREAD_DB));
             let n = rings(w);
             let x = drop_of(w, at_place.r, n);
-            let a = level * swell * self.near_gain;
+            let a = level * swell * self.near_gain * self.drops;
             if self.on.pats {
                 place_as(&mut self.ring, at, &x, a, at_place.pan);
             }
@@ -1238,7 +1275,7 @@ impl Rain {
             let level = db(-w.range(self.m.mid_db[0], self.m.mid_db[1]));
             let x = bubble(r, w.range(BUBBLE_ONSET_S[0], BUBBLE_ONSET_S[1]));
             if self.on.mids {
-                place(&mut self.ring, at, &x, level * swell, pan);
+                place(&mut self.ring, at, &x, level * swell * self.drops, pan);
             }
             self.counts[1] += 1;
         }
@@ -1248,7 +1285,7 @@ impl Rain {
             let level = db(NEAR_DB + w.range(DRIP_DB[0], DRIP_DB[1]));
             let x = drop_of(w, spot.r, 1);
             if self.on.drips {
-                place(&mut self.ring, at, &x, level * swell, spot.pan);
+                place(&mut self.ring, at, &x, level * swell * self.drops, spot.pan);
             }
             self.counts[2] += 1;
             // (some heard twice: the drop, then its fall — one drip)
@@ -1257,7 +1294,7 @@ impl Rain {
                 let level = level * db(-w.range(DRIP_FALL_DB[0], DRIP_FALL_DB[1]));
                 let x = drop_of(w, spot.r, 1);
                 if self.on.drips {
-                    place(&mut self.ring, at + after, &x, level * swell, spot.pan);
+                    place(&mut self.ring, at + after, &x, level * swell * self.drops, spot.pan);
                 }
             }
         }
@@ -1307,23 +1344,24 @@ fn gain(kind: Kind, seed: u64) -> f32 {
     let Some(loudness) = kind.loudness() else { return 10f32.powf(FOREST_GAIN_DB / 20.0) };
     let n = (CALIBRATE_S * RATE) as usize;
     let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
-    let mut rain = Rain::new(kind, seed, ALL);
+    let mut rain = Rain::new(kind, seed, ALL, 0.0);
     for (l, r) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
         rain.block(l, r);
     }
     10f32.powf((loudness - stereo_lufs(&l, &r)) / 20.0)
 }
 
-/// `frames` of `kind` (its `on` layers at the whole's level), a block at a time to `each`.
+/// `frames` of `kind` (its `on` layers at the whole's level, its drops `drops` dB against the hush), a block at a time
+/// to `each`.
 fn made(
     kind: Kind,
     seed: u64,
     frames: u64,
-    on: Layers,
+    (on, drops): (Layers, f64),
     mut each: impl FnMut(&[f32], &[f32]) -> Result<()>,
 ) -> Result<Made> {
     let gain = gain(kind, seed);
-    let mut rain = Rain::new(kind, seed, on);
+    let mut rain = Rain::new(kind, seed, on, drops);
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
     let (mut left, mut kneed, mut peak) = (frames, 0u64, 0.0f32);
     while left > 0 {
@@ -1343,6 +1381,11 @@ fn made(
 
 /// `frames` of `kind` held whole (the samples, the figures, the tests).
 fn render(kind: Kind, seed: u64, frames: u64, on: Layers) -> Result<(Vec<f32>, Vec<f32>, Made)> {
+    render_drops(kind, seed, frames, (on, 0.0))
+}
+
+/// `render` with its drops `drops` dB against the hush.
+fn render_drops(kind: Kind, seed: u64, frames: u64, on: (Layers, f64)) -> Result<(Vec<f32>, Vec<f32>, Made)> {
     let (mut ls, mut rs) = (Vec::with_capacity(frames as usize), Vec::with_capacity(frames as usize));
     let made = made(kind, seed, frames, on, |l, r| {
         ls.extend_from_slice(l);
@@ -1357,11 +1400,12 @@ fn pcm(x: f32) -> [u8; 2] {
     ((x * 32_767.0).round() as i16).to_le_bytes()
 }
 
-/// The WAV (stereo, 16-bit, `RATE`) of `frames` of `kind`, written a block at a time.
-fn write(w: &mut impl Write, kind: Kind, seed: u64, frames: u64) -> Result<Made> {
+/// The WAV (stereo, 16-bit, `RATE`) of `frames` of `kind`, its drops `drops` dB against the hush, written a block at a
+/// time.
+fn write(w: &mut impl Write, kind: Kind, seed: u64, frames: u64, drops: f64) -> Result<Made> {
     w.write_all(&head(frames)?).map_err(|e| e.to_string())?;
     let mut bytes = Vec::with_capacity(BLOCK * 4);
-    made(kind, seed, frames, ALL, |l, r| {
+    made(kind, seed, frames, (ALL, drops), |l, r| {
         bytes.clear();
         for (l, r) in l.iter().zip(r) {
             bytes.extend_from_slice(&pcm(*l));
@@ -1797,7 +1841,7 @@ fn samples(dir: &Path) -> Result<()> {
         let started = Instant::now();
         let file = std::fs::File::create(&wav).map_err(|e| format!("{}: {e}", wav.display()))?;
         let mut w = std::io::BufWriter::new(file);
-        let made = write(&mut w, kind, seed, frames)?;
+        let made = write(&mut w, kind, seed, frames, 0.0)?;
         w.flush().map_err(|e| e.to_string())?;
         let took = started.elapsed().as_secs_f64();
         encode(&ffmpeg, &format!("rain · {}", name.replace('-', " ")), &wav, SAMPLE_S, &mp4)?;
@@ -2166,7 +2210,7 @@ mod tests {
 
     fn wav(kind: Kind, seed: u64, frames: u64) -> Vec<u8> {
         let mut b = Vec::new();
-        write(&mut b, kind, seed, frames).unwrap();
+        write(&mut b, kind, seed, frames, 0.0).unwrap();
         b
     }
 
@@ -2185,6 +2229,72 @@ mod tests {
         assert_eq!(frames_of("1m30s").unwrap(), 90 * u64::from(RATE));
         assert_eq!(frames_of("500ms").unwrap(), u64::from(RATE) / 2);
         assert!(frames_of("12").is_err() && frames_of("").is_err() && frames_of("2x").is_err());
+    }
+
+    /// `--drops 0` is every kind as it was before `--drops` came: FNV-1a over each kind's WAV (seed 38, across a
+    /// block's end), taken from the code as it was. On macOS only: the floats' `sin`, `exp` and `powf` are the
+    /// platform's libm, and its figures are this Mac's.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn drops_at_0_leave_every_kinds_bytes_as_they_were() {
+        let frames = u64::from(RATE) * 2 + 4_801;
+        let got: Vec<(&str, u64)> = (KINDS.iter())
+            .map(|&k| {
+                let b = wav(k, SEED, frames);
+                (
+                    k.name(),
+                    b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                        (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)
+                    }),
+                )
+            })
+            .collect();
+        let was = [
+            ("forest", 5_297_035_654_491_544_816),
+            ("forest-sparse", 10_244_817_708_142_689_839),
+            ("forest-sparse-pat", 6_477_354_380_291_187_604),
+            ("forest-thick", 4_318_022_275_886_606_862),
+            ("soft", 5_876_012_249_163_684_313),
+            ("leaves", 13_838_684_041_028_107_154),
+            ("heavy", 15_351_788_193_998_514_218),
+        ];
+        assert_eq!(got, was, "a kind's bytes at --drops 0 changed");
+    }
+
+    /// `--drops` moves the drops and nothing else: the far hush alone the same bytes at −8 and at 0; the drops alone at
+    /// −8 dB (and +4) the drops at 0 times that, sample for sample (under the knee); the whole between. A number out of
+    /// range or not one is refused, and so is a kind with no hush.
+    #[test]
+    fn drops_move_the_drops_against_the_hush_and_nothing_else() {
+        let frames = u64::from(RATE) * 2;
+        let at = |on: Layers, db: f64| render_drops(Kind::SparsePat, SEED, frames, (on, db)).unwrap();
+        let hush = Layers { wash: true, fine: true, ..NONE };
+        let (h0, h8) = (at(hush, 0.0), at(hush, -8.0));
+        assert!(h0.0 == h8.0 && h0.1 == h8.1, "the hush moved");
+        let drops = Layers { pats: true, mids: true, drips: true, ..NONE };
+        let d0 = at(drops, 0.0);
+        let loudest = d0.0.iter().chain(&d0.1).fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(loudest > 0.01 && loudest < KNEE / 2.0, "the drops alone, under the knee at +4: {loudest}");
+        for db in [-8.0, 4.0] {
+            let g = 10f32.powf(db as f32 / 20.0);
+            let d = at(drops, db);
+            let off = (d.0.iter().zip(&d0.0).chain(d.1.iter().zip(&d0.1)))
+                .fold(0.0f32, |m, (a, b)| m.max((a - b * g).abs()));
+            assert!(off < 1e-6, "{db:+} dB: a sample {off} off the drops at 0 times {g}");
+        }
+        let lufs = |x: &(Vec<f32>, Vec<f32>, Made)| stereo_lufs(&x.0, &x.1);
+        let (all0, all8) = (at(ALL, 0.0), at(ALL, -8.0));
+        assert!(lufs(&h0) < lufs(&all8) && lufs(&all8) < lufs(&all0) - 1.0, "the whole between");
+        for bad in ["25", "-24.5", "loud", ""] {
+            assert!(drops_db(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(drops_db("-8").unwrap(), -8.0);
+        let dir = tarae_testkit::scratch::Scratch::new("xtask-rain-drops");
+        let out = dir.join("soft.wav");
+        let args: Vec<String> = ["--len", "1s", "--kind", "soft", "--drops", "-8"].map(String::from).into();
+        let e = make(out.to_str().unwrap(), &args).unwrap_err();
+        assert!(e.contains("soft has no hush"), "{e}");
+        assert!(!out.exists(), "nothing written");
     }
 
     /// No sample over the file's own ceiling (the knee bends whatever comes near it, as made under it); no DC.

@@ -569,6 +569,8 @@ struct Levels {
     under: f32,
     whole: f32,
     true_peak: f32,
+    /// Each chapter's true peak (dBTP).
+    chapter_peaks: Vec<f32>,
     correlation: f32,
     limited: (f32, f32, f32),
 }
@@ -650,8 +652,20 @@ pub(crate) fn make(
         .filter(|h| matches!(h.1, Heard::Key(_)))
         .map(|h| h.0.as_micros() as u64)
         .collect();
+    // (the keys made once and at the cap once: where it holds, a try only moves their level)
+    let rendered = sound::Keys::new(&heard.list, length, brush);
+    let unit = rendered.unit();
+    // (the whole, then each chapter: from its start — the first from 0:00 — to the next's)
+    let starts: Vec<u64> =
+        (0..cut.chapters.len()).map(|i| if i == 0 { 0 } else { prog.chapter_at(i) }).collect();
+    let ranges: Vec<(usize, usize)> = std::iter::once((0, len))
+        .chain((0..starts.len()).map(|i| {
+            let next = starts.get(i + 1).copied().unwrap_or(prog.total);
+            (samples(starts[i]).min(len), samples(next).min(len))
+        }))
+        .collect();
     let made = |ceiling: f32| -> ([Vec<f32>; 2], Levels) {
-        let mut keys = sound::track(&heard.list, length, brush, ceiling, None);
+        let mut keys = rendered.mastered(&unit, ceiling);
         if let (Some(b), Some(i)) = (heard.brush, heard.intro) {
             let skip = samples(swing_skip).min(brush_len);
             intro_brush(&mut keys.samples, samples(b) + skip, samples(i), brush_len - skip);
@@ -662,11 +676,13 @@ pub(crate) fn make(
         let key_peaks = key_peaks(&keys.samples, key_at.iter().copied());
         let [mut l, mut r] = sides(&keys.samples, &beds, &d, x, depth);
         let keys_gain = keys.gain;
-        let keys_limited = keys.limited.keys;
+        let keys_limited = keys.limited;
         drop(keys);
         let c = 10f32.powf(ceiling / 20.0);
         let peaks = sound::true_peaks_of(&[&l, &r]);
         let gains = sound::limit_sides(&mut [&mut l, &mut r], &peaks, c);
+        // (the true peaks after the limiter, bounded from those before it: only the blocks that could be the peak read)
+        let tps = sound::true_peak_after(&[&l, &r], &peaks, &gains, &ranges);
         drop(peaks);
         let (most, at) = sound::most(&gains);
         let floor = 10f32.powf(-sound::TOUCHED_DB / 20.0);
@@ -696,7 +712,8 @@ pub(crate) fn make(
             lead: alone(0.0),
             under: alone(1.0),
             whole: sound::stereo_lufs(&l, &r),
-            true_peak: sound::true_peak_db(&[&l, &r]),
+            true_peak: 20.0 * tps[0].log10(),
+            chapter_peaks: tps[1..].iter().map(|p| 20.0 * p.log10()).collect(),
             correlation: sound::correlation(&l, &r),
             limited: (most, at as f32 / RATE as f32, touched as f32 / RATE as f32),
         };
@@ -713,7 +730,7 @@ pub(crate) fn make(
     loop {
         let (y, levels) = made(ceiling);
         sound::wav_sides(wav, &[&y[0], &y[1]])?;
-        let peak = video::aac_peak(ffmpeg, wav);
+        let peak = video::aac_peak(ffmpeg, wav, video::Form::Wide);
         let failed = peak.is_err();
         ceilings.push((ceiling, peak));
         last = (y, levels);
@@ -820,13 +837,10 @@ pub(crate) fn make(
         ceilings.len(),
         if again { ", the one kept made again" } else { "" }
     ));
-    // (each chapter's loudness: from its start — the first from 0:00 — to the next's)
-    let starts: Vec<u64> =
-        (0..cut.chapters.len()).map(|i| if i == 0 { 0 } else { prog.chapter_at(i) }).collect();
+    // (each chapter's loudness and true peak)
     for (i, c) in cut.chapters.iter().enumerate() {
-        let (a, b) =
-            (samples(starts[i]).min(len), samples(starts.get(i + 1).copied().unwrap_or(prog.total)).min(len));
-        let tp = sound::true_peak_db(&[&yl[a..b], &yr[a..b]]);
+        let (a, b) = ranges[i + 1];
+        let tp = lv.chapter_peaks[i];
         said.push(format!(
             "  chapter {} “{}” {}–{}: {} LUFS, {} dBTP",
             i + 1,

@@ -1135,9 +1135,10 @@ fn a_made_bed_keeps_its_level_through_a_1x_span_and_a_levelled_one_swings() {
 }
 
 /// By hand (V2b): a ten-minute cut's sound at the build's opt-level, each step timed — once a cut: a stereo bed written
-/// and read back as ffmpeg decodes one, laid at its gain, the swing's curve; each ceiling try: the keys' track (a key
-/// every 0.3 s over half the video), their peaks, the two sides, their true peaks and limiter, the figures, the WAV and
-/// its AAC; once after: the 3 s windows. Then the most memory held.
+/// and read back as ffmpeg decodes one, laid at its gain, the swing's curve, the keys rendered (a key every 0.3 s over
+/// half the video) and at the cap; each ceiling try: the keys at it, their peaks, the two sides, their true peaks and
+/// limiter, the figures (the true peaks after bounded, then read whole to check — not a try's), the WAV and its AAC;
+/// once after: the 3 s windows. Then the most memory held.
 #[test]
 #[ignore = "by hand: a ten-minute cut's sound, timed"]
 fn ten_minutes_of_the_cuts_sound_timed() {
@@ -1187,8 +1188,12 @@ fn ten_minutes_of_the_cuts_sound_timed() {
     lap("(once) the swing's curve");
     let ms = Duration::from_millis;
     let heard: Vec<(Duration, Heard)> = (0..1_000).map(|i| (ms(i * 300), Heard::Key('a'))).collect();
-    let keys = crate::sound::track(&heard, Duration::from_micros(total), Some(ms(595_000)), -2.0, None);
-    lap("(a try) the keys' track");
+    let rendered = crate::sound::Keys::new(&heard, Duration::from_micros(total), Some(ms(595_000)));
+    lap("(once) the keys rendered, their true peaks");
+    let unit = rendered.unit();
+    lap("(once) the keys at the cap");
+    let keys = rendered.mastered(&unit, -2.6);
+    lap("(a try) the keys at its ceiling");
     let peaks = super::sound::key_peaks(&keys.samples, heard.iter().map(|h| h.0.as_micros() as u64));
     assert_eq!(peaks.len(), 1_000);
     lap("(a try) each key's peak");
@@ -1198,19 +1203,23 @@ fn ten_minutes_of_the_cuts_sound_timed() {
     let tp = crate::sound::true_peaks_of(&[&l, &r]);
     lap("(a try) their true peaks");
     let gains = crate::sound::limit_sides(&mut [&mut l, &mut r], &tp, 10f32.powf(-2.0 / 20.0));
-    drop((tp, gains));
     lap("(a try) the limiter");
     let _ = crate::sound::stereo_lufs(&l, &r);
     lap("(a try) the whole's loudness");
-    let _ = crate::sound::true_peak_db(&[&l, &r]);
-    lap("(a try) the whole's true peak");
+    let tps =
+        crate::sound::true_peak_after(&[&l, &r], &tp, &gains, &[(0, len), (0, len / 2), (len / 2, len)]);
+    lap("(a try) true peaks after, bounded: whole, 2 chapters");
+    drop((tp, gains));
+    let exact = crate::sound::true_peak_db(&[&l, &r]);
+    assert_eq!((20.0 * tps[0].log10()).to_bits(), exact.to_bits());
+    lap("(not in a try) the whole's true peak, read whole");
     let _ = crate::sound::correlation(&l, &r);
     lap("(a try) the correlation");
     let wav = dir.join("cut.wav");
     crate::sound::wav_sides(&wav, &[&l, &r]).unwrap();
     lap("(a try) the WAV");
     if let Some(f) = crate::video::ffmpeg() {
-        let _ = crate::video::aac_peak(&f, &wav);
+        let _ = crate::video::aac_peak(&f, &wav, crate::video::Form::Wide);
         lap("(a try) its AAC's true peak");
     }
     let _ = crate::sound::stereo_short_term(&l, &r, 3.0, 1.0);

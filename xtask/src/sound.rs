@@ -501,69 +501,163 @@ pub(crate) fn track(
     ceiling_db: f32,
     music: Option<&[f32]>,
 ) -> Track {
-    let mut seed: u32 = 0x5107_7a2a;
-    let mut next = || {
-        seed ^= seed << 13;
-        seed ^= seed >> 17;
-        seed ^= seed << 5;
-        seed
-    };
-    let start = Instant::now();
-    let mut hand = typist::Typist::new(0x5eed);
-    let mut said: Vec<(Duration, Said)> = Vec::new();
-    for (t, h) in heard {
-        let t = *t;
-        let mut push = |kind: Kind, gain: f32| said.push((t, Said { kind, gain, seed: next(), delay: 0.0 }));
-        match h {
-            Heard::Key('\r' | '\n') => push(Kind::Return, 1.0),
-            Heard::Key(' ') => push(Kind::Space, 1.0),
-            Heard::Key(_) => push(Kind::Key, 0.9),
-            Heard::Stamp => {
-                push(Kind::Return, 1.0);
-                push(Kind::Settle, 0.8);
-            }
-            Heard::Settle => said.push((t, hand.once(start + t, Kind::Settle))),
-            Heard::Shown(text, step) => {
-                if let Some(s) = hand.step(start + t, text, *step) {
-                    said.push((t, s));
+    Keys::new(heard, length, brush_at).track(ceiling_db, music)
+}
+
+/// A track's keys and brush as rendered, before their level — what `track` makes whatever the ceiling — with their
+/// true peaks and loudness (`Prepared`): made once, mastered at as many ceilings as asked.
+pub(crate) struct Keys {
+    keys: Vec<f32>,
+    brush: Option<(usize, Vec<f32>)>,
+    /// The brush's loudness over the rest's, before the gain and limiter.
+    before: Option<f32>,
+    tp: Vec<f32>,
+    brush_tp: Option<Vec<f32>>,
+    at: f32,
+    brush_at: f32,
+}
+
+/// The keys' track at a ceiling, for the cut: its samples, loudness (LUFS), gain (dB) and the most the limiter took from
+/// a click (dB).
+pub(crate) struct Mastered {
+    pub(crate) samples: Vec<f32>,
+    pub(crate) lufs: f32,
+    pub(crate) gain: f32,
+    pub(crate) limited: f32,
+}
+
+/// The keys at the cap for the first ceiling tried, `SHORT_CEILING_DB` (`Keys::unit`): where the gain is capped — the
+/// limiter would take more than `LIMIT_MOST_DB` to reach `SHORT_LUFS` — the track at another ceiling is this moved by
+/// as many dB (the limiter's gains depend only on the ceiling over the keys' gain, which the cap holds), so only its
+/// level moves. (The brush's own level is found to 0.05 LU, `reach`: at another ceiling its samples may differ by that.)
+pub(crate) struct Unit {
+    ceiling: f32,
+    samples: Vec<f32>,
+    lufs: f32,
+    gain: f32,
+    limited: f32,
+}
+
+impl Keys {
+    pub(crate) fn new(heard: &[(Duration, Heard)], length: Duration, brush_at: Option<Duration>) -> Keys {
+        let mut seed: u32 = 0x5107_7a2a;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let start = Instant::now();
+        let mut hand = typist::Typist::new(0x5eed);
+        let mut said: Vec<(Duration, Said)> = Vec::new();
+        for (t, h) in heard {
+            let t = *t;
+            let mut push =
+                |kind: Kind, gain: f32| said.push((t, Said { kind, gain, seed: next(), delay: 0.0 }));
+            match h {
+                Heard::Key('\r' | '\n') => push(Kind::Return, 1.0),
+                Heard::Key(' ') => push(Kind::Space, 1.0),
+                Heard::Key(_) => push(Kind::Key, 0.9),
+                Heard::Stamp => {
+                    push(Kind::Return, 1.0);
+                    push(Kind::Settle, 0.8);
+                }
+                Heard::Settle => said.push((t, hand.once(start + t, Kind::Settle))),
+                Heard::Shown(text, step) => {
+                    if let Some(s) = hand.step(start + t, text, *step) {
+                        said.push((t, s));
+                    }
                 }
             }
         }
-    }
-    said.sort_by_key(|s| s.0);
-    let keys = render(&said, length, 100, Some(&recorded::BANK));
-    let brush = brush_at.map(|at| {
-        let from = ((at.as_secs_f64() * f64::from(RATE)) as usize).min(keys.len());
-        let mut b = brush();
-        b.truncate(keys.len() - from);
-        (from, b)
-    });
-    // (the brush's loudness over the rest's: what comes before it and after — the end card's brush has little after it)
-    let over = |x: &[f32]| {
-        (brush.as_ref()).map(|(a, b)| {
-            let rest: Vec<f32> = x[..*a].iter().chain(&x[a + b.len()..]).copied().collect();
-            lufs(&x[*a..a + b.len()]) - lufs(&rest)
-        })
-    };
-    let mut mixed = keys.clone();
-    if let Some((from, b)) = &brush {
-        mixed[*from..from + b.len()].iter_mut().zip(b).for_each(|(x, b)| *x += b);
-    }
-    let before = over(&mixed);
-    let laid = brush.as_ref().map(|(from, b)| (*from, b.as_slice()));
-    let ceiling = 10f32.powf(ceiling_db / 20.0);
-    let (samples, gain, limited) = master(&keys, laid, SHORT_LUFS, ceiling, LIMIT_MOST_DB);
-    let brush = before.zip(over(&samples));
-    let (samples, bed) = match music {
-        Some(m) => {
-            let (y, b) = bedded(samples, m, ceiling);
-            (y, Some(b))
+        said.sort_by_key(|s| s.0);
+        let keys = render(&said, length, 100, Some(&recorded::BANK));
+        let brush = brush_at.map(|at| {
+            let from = ((at.as_secs_f64() * f64::from(RATE)) as usize).min(keys.len());
+            let mut b = brush();
+            b.truncate(keys.len() - from);
+            (from, b)
+        });
+        let mut mixed = keys.clone();
+        if let Some((from, b)) = &brush {
+            mixed[*from..from + b.len()].iter_mut().zip(b).for_each(|(x, b)| *x += b);
         }
-        None => (samples, None),
-    };
-    let (peak, rms) = levels(&samples);
-    let true_peak = 20.0 * true_peaks(&samples).into_iter().fold(0.0f32, f32::max).log10();
-    Track { lufs: lufs(&samples), samples, peak, rms, true_peak, gain, brush, limited, bed }
+        let before = over(&brush, &mixed);
+        drop(mixed);
+        // (a gain's true peaks are the gain's times x's: found once)
+        let (tp, brush_tp) = (true_peaks(&keys), brush.as_ref().map(|b| true_peaks(&b.1)));
+        let (at, brush_at) = (lufs(&keys), brush.as_ref().map_or(f32::NEG_INFINITY, |b| lufs(&b.1)));
+        Keys { keys, brush, before, tp, brush_tp, at, brush_at }
+    }
+
+    fn prepared(&self) -> Prepared<'_> {
+        Prepared {
+            keys: &self.keys,
+            brush: self.brush.as_ref().map(|(from, b)| (*from, b.as_slice())),
+            tp: (&self.tp, self.brush_tp.as_deref()),
+            at: self.at,
+            brush_at: self.brush_at,
+        }
+    }
+
+    /// `track`'s: mastered at `ceiling_db`, `music` under it, its figures.
+    fn track(&self, ceiling_db: f32, music: Option<&[f32]>) -> Track {
+        let ceiling = 10f32.powf(ceiling_db / 20.0);
+        let (samples, gain, limited) = self.prepared().master(SHORT_LUFS, ceiling, LIMIT_MOST_DB);
+        let brush = self.before.zip(over(&self.brush, &samples));
+        let (samples, bed) = match music {
+            Some(m) => {
+                let (y, b) = bedded(samples, m, ceiling);
+                (y, Some(b))
+            }
+            None => (samples, None),
+        };
+        let (peak, rms) = levels(&samples);
+        let true_peak = 20.0 * true_peaks(&samples).into_iter().fold(0.0f32, f32::max).log10();
+        Track { lufs: lufs(&samples), samples, peak, rms, true_peak, gain, brush, limited, bed }
+    }
+
+    /// The keys at the cap for the first ceiling tried (`Unit`): made once, whatever the ceilings tried.
+    pub(crate) fn unit(&self) -> Unit {
+        let p = self.prepared();
+        let ceiling = SHORT_CEILING_DB;
+        let c = 10f32.powf(ceiling / 20.0);
+        let cap = p.cap(c, LIMIT_MOST_DB);
+        let ((samples, limited), lufs) = p.made(cap, c);
+        Unit { ceiling, samples, lufs, gain: cap, limited: limited.keys }
+    }
+
+    /// The keys mastered at `ceiling_db` as `track` masters them, for the cut (no bed, none of a Short's figures): where
+    /// the gain is capped there, `unit` times the ceiling — no pass over the track —, else mastered again.
+    pub(crate) fn mastered(&self, unit: &Unit, ceiling_db: f32) -> Mastered {
+        let moved = ceiling_db - unit.ceiling;
+        if unit.lufs.is_finite() && unit.lufs + moved < SHORT_LUFS {
+            let samples = match moved {
+                0.0 => unit.samples.clone(),
+                _ => {
+                    let k = 10f32.powf(moved / 20.0);
+                    unit.samples.iter().map(|x| x * k).collect()
+                }
+            };
+            return Mastered {
+                samples,
+                lufs: unit.lufs + moved,
+                gain: unit.gain + moved,
+                limited: unit.limited,
+            };
+        }
+        let ceiling = 10f32.powf(ceiling_db / 20.0);
+        let (samples, gain, limited) = self.prepared().master(SHORT_LUFS, ceiling, LIMIT_MOST_DB);
+        Mastered { lufs: lufs(&samples), samples, gain, limited: limited.keys }
+    }
+}
+
+/// The brush's loudness over the rest's in `x`: what comes before it and after — the end card's brush has little after it.
+fn over(brush: &Option<(usize, Vec<f32>)>, x: &[f32]) -> Option<f32> {
+    (brush.as_ref()).map(|(a, b)| {
+        let rest: Vec<f32> = x[..*a].iter().chain(&x[a + b.len()..]).copied().collect();
+        lufs(&x[*a..a + b.len()]) - lufs(&rest)
+    })
 }
 
 /// `keys` (the track as mastered) with `music` laid under them as their bed: from where its sound starts
@@ -621,7 +715,9 @@ fn bed_laid(music: &[f32], len: usize) -> Vec<f32> {
 /// quieter than `target` there —, the brush at the loudness over them it was made at (`brush`'s level against a key) — a
 /// limiter takes more from a key's click than from the brush's swish, and more from the tap than from a click, so one
 /// gain for both would move it —, the two limited again together. Each gain found again after the limiter took its
-/// share (`reach`). The mix, the keys' gain in dB, and what the limiter took.
+/// share (`reach`). The mix, the keys' gain in dB, and what the limiter took. (`keys`, the brush from its sample, their
+/// true peaks and loudness — `Keys`'s, found once.)
+#[cfg(test)]
 fn master(
     keys: &[f32],
     brush: Option<(usize, &[f32])>,
@@ -629,24 +725,56 @@ fn master(
     ceiling: f32,
     most_db: f32,
 ) -> (Vec<f32>, f32, Limited) {
-    // (a gain's true peaks are the gain's times x's: found once)
-    let scaled = |x: &[f32], peaks: &[f32], db: f32| {
+    let tp = (true_peaks(keys), brush.map(|b| true_peaks(b.1)));
+    let (at, brush_at) = (lufs(keys), brush.map_or(f32::NEG_INFINITY, |b| lufs(b.1)));
+    Prepared { keys, brush, tp: (&tp.0, tp.1.as_deref()), at, brush_at }.master(target, ceiling, most_db)
+}
+
+struct Prepared<'a> {
+    keys: &'a [f32],
+    brush: Option<(usize, &'a [f32])>,
+    tp: (&'a [f32], Option<&'a [f32]>),
+    at: f32,
+    brush_at: f32,
+}
+
+impl Prepared<'_> {
+    fn master(&self, target: f32, ceiling: f32, most_db: f32) -> (Vec<f32>, f32, Limited) {
+        let made = |db: f32| self.made(db, ceiling);
+        let cap = self.cap(ceiling, most_db);
+        let ((mut y, mut limited), mut db) = reach(target, made(0.0).1, made);
+        if db > cap {
+            ((y, limited), _) = made(cap);
+            db = cap;
+        }
+        (y, db, limited)
+    }
+
+    /// The keys' gain past which the limiter takes more than `most_db` from their loudest true peak under `ceiling`.
+    fn cap(&self, ceiling: f32, most_db: f32) -> f32 {
+        let loudest = self.tp.0.iter().fold(0.0f32, |m, p| m.max(*p));
+        20.0 * (ceiling / loudest).log10() + most_db
+    }
+
+    /// `x` at `db`, limited under `ceiling` (its true peaks `peaks`, the gain's times x's); its loudness.
+    fn scaled(x: &[f32], peaks: &[f32], db: f32, ceiling: f32) -> ((Vec<f32>, (f32, usize)), f32) {
         let g = 10f32.powf(db / 20.0);
         let mut y: Vec<f32> = x.iter().map(|v| v * g).collect();
         let took = limit(&mut y, peaks, ceiling / g);
         let l = lufs(&y);
         ((y, took), l)
-    };
-    let tp = (true_peaks(keys), brush.map(|b| true_peaks(b.1)));
-    let (at, brush_at) = (lufs(keys), brush.map_or(f32::NEG_INFINITY, |b| lufs(b.1)));
-    let made = |db: f32| {
-        let ((mut y, took), laid) = scaled(keys, &tp.0, db);
+    }
+
+    /// The keys at `db` and the brush at its loudness over them, limited under `ceiling`; the mix's loudness.
+    fn made(&self, db: f32, ceiling: f32) -> ((Vec<f32>, Limited), f32) {
+        let (keys, (at, brush_at)) = (self.keys, (self.at, self.brush_at));
+        let ((mut y, took), laid) = Self::scaled(keys, self.tp.0, db, ceiling);
         let mut limited = Limited { keys: took.0, keys_at: took.1 as f32 / RATE as f32, brush: None };
-        if let (Some((from, b)), Some(peaks)) = (brush, &tp.1) {
+        if let (Some((from, b)), Some(peaks)) = (self.brush, self.tp.1) {
             // (the brush its loudness over the keys, or the keys' gain where they're silent)
             let ((b, own), _) = match laid.is_finite() {
-                true => reach(laid + brush_at - at, brush_at, |db| scaled(b, peaks, db)),
-                false => scaled(b, peaks, db),
+                true => reach(laid + brush_at - at, brush_at, |db| Self::scaled(b, peaks, db, ceiling)),
+                false => Self::scaled(b, peaks, db, ceiling),
             };
             y[from..from + b.len()].iter_mut().zip(&b).for_each(|(y, b)| *y += b);
             // (the two together, where they meet: a tenth of a second round the brush)
@@ -658,16 +786,7 @@ fn master(
         }
         let l = lufs(&y);
         ((y, limited), l)
-    };
-    // (the keys' loudest true peak: past `most_db` over the ceiling, the limiter takes more than `most_db`)
-    let loudest = tp.0.iter().fold(0.0f32, |m, p| m.max(*p));
-    let cap = 20.0 * (ceiling / loudest).log10() + most_db;
-    let ((mut y, mut limited), mut db) = reach(target, made(0.0).1, made);
-    if db > cap {
-        ((y, limited), _) = made(cap);
-        db = cap;
     }
-    (y, db, limited)
 }
 
 /// The gain (dB) at which `made` comes to `target` LUFS, its loudness at 0 dB `at`: a limiter gives back less than each
@@ -744,7 +863,8 @@ pub(crate) fn true_peaks_of(sides: &[&[f32]]) -> Vec<f32> {
     })
 }
 
-/// A track's true peak (dBTP): its larger side's.
+/// A track's true peak (dBTP): its larger side's (the cut reads it bounded, `true_peak_after`).
+#[cfg(test)]
 pub(crate) fn true_peak_db(sides: &[&[f32]]) -> f32 {
     20.0 * true_peaks_of(sides).into_iter().fold(0.0f32, f32::max).log10()
 }
@@ -783,22 +903,7 @@ pub(crate) fn correlation(l: &[f32], r: &[f32]) -> f32 {
 /// either side, 4× oversampled by a Hann-windowed sinc over 16 samples (BS.1770's way to the peaks between samples —
 /// what a player's converter, and AAC after it, reaches).
 pub(crate) fn true_peaks(x: &[f32]) -> Vec<f32> {
-    const TAPS: i32 = 8;
-    let phase = |f: f32| -> Vec<f32> {
-        (-TAPS + 1..=TAPS)
-            .map(|k| {
-                let t = k as f32 - f;
-                let sinc = if t == 0.0 {
-                    1.0
-                } else {
-                    (std::f32::consts::PI * t).sin() / (std::f32::consts::PI * t)
-                };
-                let hann = 0.5 + 0.5 * (std::f32::consts::PI * t / TAPS as f32).cos();
-                sinc * hann
-            })
-            .collect()
-    };
-    let phases = [phase(0.25), phase(0.5), phase(0.75)];
+    let phases = phases();
     let at = |i: i64| x.get(usize::try_from(i).ok().unwrap_or(usize::MAX)).copied().unwrap_or(0.0);
     // (the peak between sample n and n + 1)
     let between: Vec<f32> = (0..x.len() as i64)
@@ -813,6 +918,107 @@ pub(crate) fn true_peaks(x: &[f32]) -> Vec<f32> {
         })
         .collect();
     (0..x.len()).map(|n| between[n].max(if n > 0 { between[n - 1] } else { 0.0 })).collect()
+}
+
+/// `true_peaks`' half width: a sample's true peak reads its neighbours this far off on either side.
+const TAPS: i32 = 8;
+
+/// `true_peaks`' three interpolators, a quarter, a half and three quarters past a sample.
+fn phases() -> [Vec<f32>; 3] {
+    let phase = |f: f32| -> Vec<f32> {
+        (-TAPS + 1..=TAPS)
+            .map(|k| {
+                let t = k as f32 - f;
+                let sinc = if t == 0.0 {
+                    1.0
+                } else {
+                    (std::f32::consts::PI * t).sin() / (std::f32::consts::PI * t)
+                };
+                let hann = 0.5 + 0.5 * (std::f32::consts::PI * t / TAPS as f32).cos();
+                sinc * hann
+            })
+            .collect()
+    };
+    [phase(0.25), phase(0.5), phase(0.75)]
+}
+
+/// The blocks `true_peak_after` bounds (samples).
+const BOUND_BLOCK: usize = 512;
+
+/// The true peak (linear) of each of `ranges` of `after` — a track's sides once a limiter took `gains` from them — as
+/// `true_peak_db` would find it over that range alone (`after[a..b]`), without reading all of it: `peaks` are the sides'
+/// true peaks before (`true_peaks_of`). Over a block, the limited signal's interpolated value at a sample is at most
+/// the block's largest gain times its peak before, plus the gains' spread times the interpolators' summed size times
+/// the largest sample there (|Σ w·g·x| ≤ gₘₐₓ·|Σ w·x| + Σ |w|·(gₘₐₓ − g)·|x|): blocks are read exactly, the
+/// highest bound first, until none left could pass the peak found. A range's first and last block are always read
+/// (outside a range is silence to it, which no peak before bounds). The same figure as `true_peak_db`'s, bit for bit.
+pub(crate) fn true_peak_after(
+    after: &[&[f32]],
+    peaks: &[f32],
+    gains: &[f32],
+    ranges: &[(usize, usize)],
+) -> Vec<f32> {
+    let w = phases().iter().map(|p| p.iter().map(|w| w.abs()).sum::<f32>()).fold(0.0f32, f32::max);
+    let pad = TAPS as usize;
+    let n = peaks.len();
+    // (each block's bound, from the whole: its gains' range and largest sample padded by `TAPS` either side)
+    let blocks = n.div_ceil(BOUND_BLOCK);
+    let bounds: Vec<f32> = (0..blocks)
+        .map(|k| {
+            let (s, e) = (k * BOUND_BLOCK, ((k + 1) * BOUND_BLOCK).min(n));
+            let (ps, pe) = (s.saturating_sub(pad), (e + pad).min(n));
+            let (mut lo, mut hi, mut x) = (f32::INFINITY, 0.0f32, 0.0f32);
+            for i in ps..pe {
+                (lo, hi) = (lo.min(gains[i]), hi.max(gains[i]));
+                // (the sample before the limiter: after over its gain, or the peak before where the gain is 0)
+                for side in after {
+                    x = x.max(if gains[i] > 0.0 { side[i].abs() / gains[i] } else { peaks[i] });
+                }
+            }
+            let p = peaks[s..e].iter().fold(0.0f32, |m, p| m.max(*p));
+            // (a margin for the bound's own rounding)
+            (hi * p + (hi - lo) * w * x) * 1.001 + 1e-9
+        })
+        .collect();
+    let exact = |a: usize, b: usize, s: usize, e: usize| -> f32 {
+        // (read over the range as `true_peak_db` would, padded so the block's own samples see what they'd see there)
+        let (ps, pe) = (s.saturating_sub(pad).max(a), (e + pad).min(b));
+        let mut m = 0.0f32;
+        for side in after {
+            let tp = true_peaks(&side[ps..pe]);
+            m = tp[s - ps..e - ps].iter().fold(m, |m, p| m.max(*p));
+        }
+        m
+    };
+    (ranges.iter())
+        .map(|&(a, b)| {
+            let (a, b) = (a.min(n), b.min(n));
+            if a >= b {
+                return 0.0;
+            }
+            let (first, last) = (a / BOUND_BLOCK, (b - 1) / BOUND_BLOCK);
+            let span = |k: usize| ((k * BOUND_BLOCK).max(a), ((k + 1) * BOUND_BLOCK).min(b));
+            // (the edges: within `TAPS` of the range's ends, read)
+            let mut found = 0.0f32;
+            let mut rest = Vec::new();
+            for k in first..=last {
+                let (s, e) = span(k);
+                match s < a + pad || e + pad > b {
+                    true => found = found.max(exact(a, b, s, e)),
+                    false => rest.push(k),
+                }
+            }
+            rest.sort_by(|i, j| bounds[*j].total_cmp(&bounds[*i]));
+            for k in rest {
+                if bounds[k] <= found {
+                    break;
+                }
+                let (s, e) = span(k);
+                found = found.max(exact(a, b, s, e));
+            }
+            found
+        })
+        .collect()
 }
 
 /// The integrated loudness of `x` (mono at `RATE`), LUFS, as ITU-R BS.1770-4 measures it: K-weighted, in 400 ms blocks
@@ -1163,6 +1369,146 @@ mod tests {
         assert!((3.5..3.505).contains(&limited.keys_at), "at the loudest click: {:.3} s", limited.keys_at);
         let tp = true_peaks(&y).into_iter().fold(0.0f32, f32::max);
         assert!(tp <= ceiling * 1.001, "under the ceiling: {tp}");
+    }
+
+    /// The keys made once (`Keys`) and mastered at each ceiling are what `track` makes there: where the gain is capped
+    /// (sparse keys), the unit moved by the ceiling — at the first ceiling the same samples; at another the keys within a
+    /// millionth of the ceiling, the brush's stretch within 1 % (its level found to 0.05 LU), the same gain and loudness
+    /// within 0.01 —; where it isn't (keys dense enough to reach `SHORT_LUFS`), mastered again, the same samples.
+    #[test]
+    fn the_keys_made_once_are_the_track_at_every_ceiling() {
+        let ms = Duration::from_millis;
+        let brush_at = Some(ms(3_000));
+        for (every, capped) in [(400, true), (25, false)] {
+            let heard: Vec<(Duration, Heard)> = (0..(3_000 / every))
+                .map(|i| (ms(200 + i * every), Heard::Key(['a', ' ', '\r'][(i % 3) as usize])))
+                .collect();
+            let length = ms(4_500);
+            let keys = Keys::new(&heard, length, brush_at);
+            let unit = keys.unit();
+            for ceiling in [SHORT_CEILING_DB, -2.6, -3.4] {
+                assert_eq!(unit.lufs + ceiling < SHORT_LUFS, capped, "every {every} ms at {ceiling}");
+                let (got, want) =
+                    (keys.mastered(&unit, ceiling), track(&heard, length, brush_at, ceiling, None));
+                let c = 10f32.powf(ceiling / 20.0);
+                assert_eq!(got.samples.len(), want.samples.len());
+                if ceiling == SHORT_CEILING_DB || !capped {
+                    assert!(
+                        got.samples == want.samples,
+                        "every {every} ms at {ceiling}: not the same samples"
+                    );
+                }
+                // (the brush from 3 s, with the tenth of a second round it the two are limited in)
+                let brush = RATE as usize * 29 / 10;
+                let off = |r: std::ops::Range<usize>| {
+                    (got.samples[r.clone()].iter().zip(&want.samples[r]))
+                        .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()))
+                };
+                let (keys_off, brush_off) = (off(0..brush), off(brush..want.samples.len()));
+                assert!(keys_off <= c * 1e-6, "every {every} ms at {ceiling}: a key's sample {keys_off} off");
+                assert!(brush_off <= c * 0.01, "every {every} ms at {ceiling}: the brush's {brush_off} off");
+                assert!((got.gain - want.gain).abs() < 0.01, "gain {} against {}", got.gain, want.gain);
+                assert!((got.lufs - want.lufs).abs() < 0.01, "{} LUFS against {}", got.lufs, want.lufs);
+                assert!((got.limited - want.limited.keys).abs() < 0.01, "{} dB taken", got.limited);
+            }
+        }
+    }
+
+    /// The true peak after a limiter, bounded from the peaks before it (`true_peak_after`), is `true_peak_db`'s over
+    /// each range, bit for bit: a track limited as the cut limits it, and gains at random (the bound holds for any), over
+    /// the whole, ranges starting and ending inside blocks, one shorter than the interpolators and an empty one.
+    #[test]
+    fn the_true_peak_after_the_limiter_bounded_is_the_true_peak() {
+        let mut seed = 7u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32
+        };
+        let n = RATE as usize * 3;
+        // (quiet noise with loud bursts here and there, two sides apart)
+        let mut side = || -> Vec<f32> {
+            (0..n)
+                .map(|i| {
+                    let burst = (i / 4_000) % 5 == 2;
+                    (rnd() - 0.5) * if burst { 2.4 } else { 0.2 }
+                })
+                .collect()
+        };
+        let (l0, r0) = (side(), side());
+        let ranges = [(0, n), (1_000, 77_777), (40_100, 40_110), (90_000, 90_000), (100_003, n)];
+        let check = |gains: &[f32], what: &str| {
+            let (l, r): (Vec<f32>, Vec<f32>) = (
+                l0.iter().zip(gains).map(|(x, g)| x * g).collect(),
+                r0.iter().zip(gains).map(|(x, g)| x * g).collect(),
+            );
+            let peaks = true_peaks_of(&[&l0, &r0]);
+            let got = true_peak_after(&[&l, &r], &peaks, gains, &ranges);
+            for (&(a, b), got) in ranges.iter().zip(got) {
+                let want = match a < b {
+                    true => true_peaks_of(&[&l[a..b], &r[a..b]]).into_iter().fold(0.0f32, f32::max),
+                    false => 0.0,
+                };
+                assert_eq!(got.to_bits(), want.to_bits(), "{what}, {a}..{b}: {got} against {want}");
+            }
+        };
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        let peaks = true_peaks_of(&[&l0, &r0]);
+        let gains = limit_sides(&mut [&mut l, &mut r], &peaks, 10f32.powf(-2.0 / 20.0));
+        assert!(most(&gains).0 > 6.0, "the limiter at work: {:.1} dB", most(&gains).0);
+        check(&gains, "limited");
+        let wild: Vec<f32> = (0..n).map(|_| 0.05 + 0.95 * rnd()).collect();
+        check(&wild, "gains at random");
+
+        // (designed: the half-way interpolator's taps around `at`, each sample `sign` of its weight's sign)
+        let b = BOUND_BLOCK;
+        let half = &phases()[1];
+        let pattern = |x: &mut [f32], at: usize, sign: &dyn Fn(i64) -> f32| {
+            for (j, w) in half.iter().enumerate() {
+                let k = j as i64 - i64::from(TAPS) + 1;
+                x[(at as i64 + k) as usize] = w.signum() * sign(k);
+            }
+        };
+        let peak =
+            |x: &[f32], r: std::ops::Range<usize>| true_peaks(x)[r].iter().fold(0.0f32, |m, p| m.max(*p));
+        let n = b * 8;
+        // (a cluster whose taps cancel before the limiter, some then taken down: the peak after is over the block's
+        // largest gain times its peaks before — the gains' spread is the bound's; found among small random ones)
+        let c = b * 5 / 2;
+        let (mut x, mut g, mut after) = (vec![0.0f32; n], vec![1.0f32; n], Vec::new());
+        let (mut before, mut over) = (0.0, 0.0);
+        for _ in 0..20_000 {
+            for i in c - 12..c + 12 {
+                (x[i], g[i]) = (rnd() * 2.0 - 1.0, if rnd() < 0.5 { 1.0 } else { 0.01 });
+            }
+            after = x.iter().zip(&g).map(|(x, g)| x * g).collect();
+            (before, over) = (peak(&x, 2 * b..3 * b), peak(&after, 2 * b..3 * b));
+            if over > before * 1.05 {
+                break;
+            }
+        }
+        assert!(over > before * 1.05, "the design: {over} after against {before} before");
+        // (a louder peak elsewhere than the cluster's before, quieter than its after: read first)
+        let mut x2 = after.clone();
+        x2[6 * b + 100] = (before + over) / 2.0;
+        let p = true_peaks(&{
+            let mut x = x.clone();
+            x[6 * b + 100] = (before + over) / 2.0;
+            x
+        });
+        let got = true_peak_after(&[&x2], &p, &g, &[(0, n)])[0];
+        assert_eq!(got.to_bits(), peak(&x2, 0..n).to_bits(), "the gains' spread: {got}");
+        // (a range starting inside a pattern whose left half cancels its right: cut there, its peak is over what the
+        // whole's peaks say — a range's edges are read)
+        let mut x = vec![0.0f32; n];
+        let a = 3 * b + 100;
+        pattern(&mut x, a, &|k| if k >= 0 { 1.0 } else { -1.0 });
+        let (whole, cut) = (peak(&x, a..4 * b), true_peaks(&x[a..]).into_iter().fold(0.0f32, f32::max));
+        assert!(cut > whole * 1.05, "the design: {cut} cut against {whole} whole");
+        x[6 * b + 100] = (whole + cut) / 2.0;
+        let p = true_peaks(&x);
+        let got = true_peak_after(&[&x], &p, &vec![1.0; n], &[(a, n)])[0];
+        let want = true_peaks(&x[a..]).into_iter().fold(0.0f32, f32::max);
+        assert_eq!(got.to_bits(), want.to_bits(), "a range's edge: {got} against {want}");
     }
 
     /// The limiter changes nothing at the default volume: the code paragraph (`code-final.wav`'s — Claude's edit as

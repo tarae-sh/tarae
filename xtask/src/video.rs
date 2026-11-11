@@ -165,6 +165,15 @@ impl Form {
     fn last_ms(self) -> u64 {
         if self == Form::Short { camera::CROSS_MS } else { LAST_MS }
     }
+
+    /// Its sound's AAC rate: the wide video's 320 kb/s (the cut's rain is noise, the hardest for a codec, and YouTube
+    /// encodes it once more); a Short's 160, its bytes as they were.
+    pub(crate) fn aac_rate(self) -> &'static str {
+        match self {
+            Form::Wide => "320k",
+            Form::Short => "160k",
+        }
+    }
 }
 
 /// Where a take's showing ends, its last screen at `last`: that screen held `Form::last_ms`; a Short's on to the take's
@@ -595,7 +604,7 @@ pub(crate) fn make(
             loop {
                 let track = sound::track(&heard, length, brush, ceiling, music.as_deref());
                 sound::wav(&wav, &track.samples)?;
-                let peak = aac_peak(&ffmpeg, &wav);
+                let peak = aac_peak(&ffmpeg, &wav, form);
                 let failed = peak.is_err();
                 ceilings.push((ceiling, peak));
                 tracks.push(track);
@@ -682,23 +691,28 @@ pub(crate) fn best_ceiling(tried: &[(f32, f32)]) -> Option<f32> {
     under.or_else(|| tried.iter().min_by(|a, b| a.1.total_cmp(&b.1))).map(|t| t.0)
 }
 
-/// `wav`'s true peak as AAC (dBTP): encoded as the MP4's sound is (160 kb/s) into a file beside it, read by `ebur128`
-/// (`loudness`), the file removed.
-pub(crate) fn aac_peak(ffmpeg: &Path, wav: &Path) -> std::result::Result<f32, String> {
+/// `wav`'s true peak as AAC (dBTP): encoded as the MP4's sound is (`form`'s rate) into a file beside it, read by
+/// `ebur128` (`loudness`), the file removed.
+pub(crate) fn aac_peak(ffmpeg: &Path, wav: &Path, form: Form) -> std::result::Result<f32, String> {
     let m4a = wav.with_extension("peak.m4a");
-    let out = Command::new(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-        .arg(wav)
-        .args(["-c:a", "aac", "-b:a", "160k"])
-        .arg(&m4a)
-        .output()
-        .map_err(|e| format!("{}: {e}", ffmpeg.display()))?;
+    let out =
+        aac_command(ffmpeg, wav, &m4a, form).output().map_err(|e| format!("{}: {e}", ffmpeg.display()))?;
     let peak = match out.status.success() {
         true => loudness(ffmpeg, &m4a).map(|l| l.1),
         false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
     };
     let _ = std::fs::remove_file(&m4a);
     peak
+}
+
+/// ffmpeg to encode `wav` into `m4a` as `form`'s MP4 carries its sound.
+fn aac_command(ffmpeg: &Path, wav: &Path, m4a: &Path, form: Form) -> Command {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(wav)
+        .args(["-c:a", "aac", "-b:a", form.aac_rate()])
+        .arg(m4a);
+    cmd
 }
 
 /// A Short's sound as made: the track's peak and RMS (dBFS, while sounding), true peak (dBTP), loudness (LUFS) and the
@@ -2295,7 +2309,7 @@ impl Video<'_> {
     /// in BT.709 (what a phone's player assumes for HD), the index at the front; `audio` (a WAV) as AAC beside it. How
     /// many frames differ from the one before.
     fn encode(&self, ffmpeg: &Path, mp4: &Path, audio: Option<&Path>) -> Result<u64> {
-        let mut child = encoder(ffmpeg, mp4, self.form.dims(), audio)?;
+        let mut child = encoder(ffmpeg, mp4, self.form.dims(), audio.map(|a| (a, self.form)))?;
         let mut stdin = child.stdin.take().ok_or("ffmpeg's stdin")?;
         let (mut drawn, mut captions) = (Vec::new(), HashMap::new());
         let mut last: Option<(Framed, Vec<u8>)> = None;
@@ -2372,20 +2386,35 @@ impl Video<'_> {
 
 /// ffmpeg started to make `mp4` from raw RGB frames of `(w, h)` on its stdin: H.264 `slow` CRF 20 tuned for flat
 /// pictures, 4:2:0 in BT.709 (what a phone's player assumes for HD), the index at the front; `audio` (a WAV) as AAC
-/// beside it. Its stderr kept for what it says when it stops.
+/// beside it at `form`'s rate (`Form::aac_rate`). Its stderr kept for what it says when it stops.
 pub(crate) fn encoder(
     ffmpeg: &Path,
     mp4: &Path,
-    (w, h): (usize, usize),
-    audio: Option<&Path>,
+    dims: (usize, usize),
+    audio: Option<(&Path, Form)>,
 ) -> Result<std::process::Child> {
+    encoder_command(ffmpeg, mp4, dims, audio)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", ffmpeg.display()))
+}
+
+fn encoder_command(
+    ffmpeg: &Path,
+    mp4: &Path,
+    (w, h): (usize, usize),
+    audio: Option<(&Path, Form)>,
+) -> Command {
     let size = format!("{w}x{h}");
     let fps = FPS.to_string();
     let mut cmd = Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s"])
         .args([&size, "-r", &fps, "-i", "-"]);
-    if let Some(wav) = audio {
-        cmd.arg("-i").arg(wav).args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "160k"]);
+    if let Some((wav, form)) = audio {
+        let rate = form.aac_rate();
+        cmd.arg("-i").arg(wav).args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", rate]);
     }
     cmd.args(["-c:v", "libx264", "-preset", "slow", "-crf", "20"])
         .args(["-tune", "animation", "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"])
@@ -2393,12 +2422,8 @@ pub(crate) fn encoder(
         // (the primaries and transfer written into the stream itself: the filter's frames leave them unspecified,
         // whatever `-color_primaries` says)
         .args(["-bsf:v", "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"])
-        .arg(mp4)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{}: {e}", ffmpeg.display()))
+        .arg(mp4);
+    cmd
 }
 
 impl From<Take> for Shows {
@@ -2410,6 +2435,24 @@ impl From<Take> for Shows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wide video's AAC is 320 kb/s, a Short's 160 — in the MP4 and in the encode its true peak is measured on.
+    #[test]
+    fn the_wide_videos_aac_is_320_kbps_and_a_shorts_160() {
+        let rate = |cmd: Command| {
+            let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            let at = args.iter().position(|a| a == "-b:a").expect("-b:a");
+            assert_eq!(args.iter().filter(|a| *a == "-b:a").count(), 1);
+            args[at + 1].clone()
+        };
+        let (f, wav, out) = (Path::new("ffmpeg"), Path::new("cut.wav"), Path::new("cut.mp4"));
+        for (form, want) in [(Form::Wide, "320k"), (Form::Short, "160k")] {
+            assert_eq!(rate(encoder_command(f, out, form.dims(), Some((wav, form)))), want, "{form:?}'s MP4");
+            assert_eq!(rate(aac_command(f, wav, Path::new("x.m4a"), form)), want, "{form:?}'s peak");
+        }
+        let silent = encoder_command(f, out, (W, H), None);
+        assert!(!silent.get_args().any(|a| a == "-b:a"), "no sound, no AAC");
+    }
 
     /// The limiter's ceiling follows what the encoder did: lowered by an AAC over the aim (−1.3 dBTP), raised by one
     /// well under it — never past the aim —, left where the AAC came near enough.

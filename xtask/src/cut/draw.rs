@@ -275,7 +275,9 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
         None => None,
     };
     let mut child = match &ffmpeg {
-        Some(f) => Some(video::encoder(f, &mp4, (W, H), heard.as_ref().map(|_| wav.as_path()))?),
+        Some(f) => {
+            Some(video::encoder(f, &mp4, (W, H), heard.as_ref().map(|_| (wav.as_path(), video::Form::Wide)))?)
+        }
         None => None,
     };
     let mut stdin = child.as_mut().and_then(|c| c.stdin.take());
