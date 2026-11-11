@@ -1,7 +1,9 @@
 //! `cargo xtask cut init TAKE [--out FILE]` — a first edit list for a take, by rule, to be tuned by hand after (the
 //! brief's "The first edit list, by rule"):
 //!
-//! - a card from shown to answered plus `CARD_AFTER` (one never answered: `CARD_OPEN` from shown): 1×;
+//! - a card from shown to answered plus `CARD_AFTER` (one never answered: `CARD_OPEN` from shown): 1× — but one
+//!   answered `CARD_WHOLE` or more after it's shown only its first `CARD_READ` and from `CARD_BEFORE` before its answer
+//!   to `CARD_AFTER` past it, the rules below deciding between (what was done under it still seen, its wait not held);
 //! - what was typed, complete before it's sent: from the last key before a return (or `ASK_STANDS` before the return,
 //!   where it came later) to `TYPED_AFTER` past the return, 1× — as long as the take had it stand, never longer;
 //! - something typed (an ask, a `:` command — keys from the terminal or the key script, a burst while each comes within
@@ -34,6 +36,11 @@ pub(crate) const TYPED_AFTER: u64 = 500;
 pub(crate) const TYPED_SPEED: f64 = 2.0;
 pub(crate) const ASK_STANDS: u64 = 1_500;
 pub(crate) const CARD_AFTER: u64 = 1_000;
+/// A card waited on: 1× for its first `CARD_READ` (to read it) and from `CARD_BEFORE` before its answer to
+/// `CARD_AFTER` past it, the other rules between; one answered within `CARD_WHOLE` stays one span at 1×.
+pub(crate) const CARD_READ: u64 = 4_000;
+pub(crate) const CARD_BEFORE: u64 = 2_000;
+pub(crate) const CARD_WHOLE: u64 = 7_000;
 pub(crate) const ENDS_BEFORE: u64 = 6_000;
 pub(crate) const ENDS_FOR: u64 = 4_000;
 pub(crate) const CARD_OPEN: u64 = 3_000;
@@ -174,15 +181,19 @@ pub(crate) fn sends(keys: &[Rec]) -> Vec<(u64, u64)> {
         .collect()
 }
 
+/// A moment of the take (ms) and how the list writes it (`card 2 answered + 1s`).
+pub(crate) type Edge = (u64, String);
+
 /// What the rules read from a take: its end; its turns, cards and chapters from the landmarks (each edge with the
 /// landmark it is, as the file says one); what was typed, each send, and the still stretches.
 ///
 /// A chapter: where (ms), its edge as the file says it, its title, and whether the driver said it (else the front's).
+/// A card: its number and a stretch it holds at 1× — one, or two where it waited (`CARD_WHOLE`).
 #[derive(Debug, Default)]
 pub(crate) struct Facts {
     pub(crate) end: u64,
     pub(crate) turns: Vec<((u64, String), (u64, String))>,
-    pub(crate) cards: Vec<((u64, String), (u64, String))>,
+    pub(crate) cards: Vec<(usize, Edge, Edge)>,
     pub(crate) typed: Vec<(u64, u64)>,
     pub(crate) sent: Vec<(u64, u64)>,
     pub(crate) stills: Vec<(u64, u64)>,
@@ -201,14 +212,36 @@ impl Facts {
             })
             .collect();
         let cards = (marks.of("card-shown").enumerate())
-            .map(|(i, v)| {
+            .flat_map(|(i, v)| {
                 let n = i + 1;
-                let gone = (marks.of("card-answered")).find(|e| e["id"] == v["id"] && ms_of(e) >= ms_of(v));
-                let to = match gone {
-                    Some(e) => (ms_of(e) + CARD_AFTER, format!("card {n} answered + {}s", CARD_AFTER / 1000)),
-                    None => (ms_of(v) + CARD_OPEN, format!("card {n} shown + {}s", CARD_OPEN / 1000)),
-                };
-                ((ms_of(v), format!("card {n} shown")), (to.0.min(end), to.1))
+                let shown = ms_of(v);
+                let gone = (marks.of("card-answered")).find(|e| e["id"] == v["id"] && ms_of(e) >= shown);
+                let at = |ms: u64, said: String| (ms.min(end), said);
+                let s = |ms: u64| ms as f64 / 1e3;
+                match gone.map(ms_of) {
+                    Some(a) if a - shown >= CARD_WHOLE => vec![
+                        (
+                            n,
+                            at(shown, format!("card {n} shown")),
+                            at(shown + CARD_READ, format!("card {n} shown + {}s", s(CARD_READ))),
+                        ),
+                        (
+                            n,
+                            at(a - CARD_BEFORE, format!("card {n} answered - {}s", s(CARD_BEFORE))),
+                            at(a + CARD_AFTER, format!("card {n} answered + {}s", s(CARD_AFTER))),
+                        ),
+                    ],
+                    Some(a) => vec![(
+                        n,
+                        at(shown, format!("card {n} shown")),
+                        at(a + CARD_AFTER, format!("card {n} answered + {}s", s(CARD_AFTER))),
+                    )],
+                    None => vec![(
+                        n,
+                        at(shown, format!("card {n} shown")),
+                        at(shown + CARD_OPEN, format!("card {n} shown + {}s", s(CARD_OPEN))),
+                    )],
+                }
             })
             .collect();
         let said: Vec<(u64, String, String, bool)> = (marks.of("chapter").enumerate())
@@ -261,15 +294,16 @@ enum Rule {
     Rest,
 }
 
-/// The spans the rules give (end to end over the take, apart at each chapter), each with what made it.
-pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
+/// The take cut where any rule's stretch begins or ends (and at each chapter), each piece with the rule that holds it
+/// and its pace.
+fn pieces(f: &Facts) -> Vec<(u64, u64, Rule, Pace)> {
     let end = f.end;
     let mut edges: Vec<u64> = vec![0, end];
     let mut put = |a: u64, b: u64| edges.extend([a.min(end), b.min(end)]);
     f.typed.iter().for_each(|&(a, b)| put(a, b + TYPED_AFTER));
     let stands = |&(last, ret): &(u64, u64)| (last.max(ret.saturating_sub(ASK_STANDS)), ret + TYPED_AFTER);
     f.sent.iter().map(stands).for_each(|(a, b)| put(a, b));
-    f.cards.iter().for_each(|c| put(c.0.0, c.1.0));
+    f.cards.iter().for_each(|c| put(c.1.0, c.2.0));
     f.turns.iter().for_each(|t| put(t.0.0, t.1.0));
     for &(a, b) in &f.stills {
         put(a, (a + STILL_KEPT).min(b));
@@ -281,8 +315,8 @@ pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
     edges.dedup();
     let inside = |a: u64, b: u64, t: u64| a <= t && t < b;
     let rule_of = |t: u64| -> Rule {
-        if let Some(i) = f.cards.iter().position(|c| inside(c.0.0, c.1.0, t)) {
-            return Rule::Card(i);
+        if let Some(c) = f.cards.iter().find(|c| inside(c.1.0, c.2.0, t)) {
+            return Rule::Card(c.0);
         }
         if f.sent.iter().map(stands).any(|(a, b)| inside(a, b, t)) {
             return Rule::Sent;
@@ -314,18 +348,49 @@ pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
         Rule::Turn(i) => Pace::Speed(speed(i)),
         Rule::Rest => Pace::Speed(DEFAULT),
     };
+    pieces.iter().map(|&(a, b, r)| (a, b, r, pace_of(r))).collect()
+}
+
+/// The video's seconds of the take part each kind of rule gives (cards, the asks complete, typed, stills' first half
+/// second, turns, the rest) — where init's length goes.
+pub(crate) fn by_kind(f: &Facts) -> [(&'static str, f64); 6] {
+    let mut out = [
+        ("cards", 0.0),
+        ("asks complete", 0.0),
+        ("typed", 0.0),
+        ("stills' first 0.5 s", 0.0),
+        ("turns", 0.0),
+        ("the rest", 0.0),
+    ];
+    for (a, b, r, pace) in pieces(f) {
+        let Pace::Speed(k) = pace else { continue };
+        let i = match r {
+            Rule::Card(_) => 0,
+            Rule::Sent => 1,
+            Rule::Typed => 2,
+            Rule::Kept => 3,
+            Rule::Turn(_) => 4,
+            Rule::Rest | Rule::Still => 5,
+        };
+        out[i].1 += (b - a) as f64 / k / 1e3;
+    }
+    out
+}
+
+/// The spans the rules give (end to end over the take, apart at each chapter), each with what made it.
+pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
+    let chapters: Vec<u64> = f.chapters.iter().map(|c| c.0).collect();
     let why = |r: Rule| match r {
         Rule::Sent => "the ask complete before its return".to_string(),
         Rule::Typed => "typed".to_string(),
-        Rule::Card(i) => format!("card {}", i + 1),
+        Rule::Card(n) => format!("card {n}"),
         Rule::Kept => "a still screen's first half second".into(),
         Rule::Still => "a still screen".into(),
         Rule::Turn(i) => format!("turn {}", i + 1),
         Rule::Rest => "the rest".into(),
     };
     let mut out: Vec<(Seg, String)> = Vec::new();
-    for &(a, b, r) in &pieces {
-        let pace = pace_of(r);
+    for (a, b, r, pace) in pieces(f) {
         match out.last_mut() {
             Some((s, w)) if s.pace == pace && !chapters.contains(&a) => {
                 s.to = b;
@@ -348,7 +413,7 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
     let mut label = |(ms, l): &(u64, String)| {
         labels.entry(*ms).or_insert_with(|| l.clone());
     };
-    f.turns.iter().chain(&f.cards).for_each(|(a, b)| {
+    (f.turns.iter().map(|(a, b)| (a, b))).chain(f.cards.iter().map(|(_, a, b)| (a, b))).for_each(|(a, b)| {
         label(a);
         label(b);
     });
@@ -360,7 +425,8 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
     let at = |ms: u64| labels.get(&ms).cloned().unwrap_or_else(|| exact(ms));
     let mut t = format!(
         "# cut init's list for {}, by rule (cargo xtask cut init): tune it by hand, then `cargo xtask cut` it.\n\
-         # The rules: a card shown to answered + 1s at 1×; something typed at 2×, then 1× from its last key (at most\n\
+         # The rules: a card shown to answered + 1s at 1× (one waited on 7s or more: its first 4s, and its answer from
+         # 2s before to 1s past); something typed at 2×, then 1× from its last key (at most\n\
          # 1.5s) to half a second past its return; a still screen (but a timer or a spinner) over 2s left out but its\n\
          # first half second; a turn in at most 20s on screen, never under 4×.\n\n\
          default = {}   # the rest\n",
@@ -427,7 +493,7 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
     };
     let said = format!(
         "the take {} → about {:.1} s of the take part (cards not counted); spans: {} at 1× ({:.1} s), {} sped ({:.1} s), \
-         {} left out ({:.1} s); {} chapters {}{short}",
+         {} left out ({:.1} s); {} chapters {}{short}; of the take part's seconds: {}",
         clock(f.end),
         video / 1e3,
         one.0,
@@ -440,7 +506,8 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
         match f.chapters.first() {
             Some((.., true)) => "(the driver's)",
             _ => "(by the front: the driver said none)",
-        }
+        },
+        (by_kind(f).iter()).map(|(k, v)| format!("{k} {v:.1}")).collect::<Vec<_>>().join(", ")
     );
     (t, said)
 }

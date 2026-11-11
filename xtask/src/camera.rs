@@ -158,6 +158,9 @@ pub(crate) const READ_MIN_MS: u64 = 1_000;
 /// — over `CROSS_MS`, never a cut.
 pub(crate) const CROSS: f32 = 0.5;
 pub(crate) const CROSS_MS: u64 = 200;
+/// The full video's cut: a change crosses only where the screen before it and the one after each stand this long in
+/// the video (`standing`) — the crossing and a read; else it cuts.
+pub(crate) const STAND_MS: u64 = CROSS_MS + 400;
 /// The most reads a Short has (CLAUDE.md's Shorts bullet: a zoom is for emphasis only — the moments it's for, two or
 /// three); one past them is said and its beat stays on the whole.
 pub(crate) const READS_MAX: usize = 3;
@@ -328,6 +331,25 @@ pub(crate) fn changed(a: &Cells, b: &Cells) -> f32 {
 /// (`changed[i]`: between screen `i - 1` and `i`).
 pub(crate) fn crossfades(changed: &[f32]) -> Vec<usize> {
     (changed.iter().enumerate()).skip(1).filter(|(_, c)| **c > CROSS).map(|(i, _)| i).collect()
+}
+
+/// Which of the whole-screen changes (`changes`, video µs, in order) cross: those whose screen before and screen after
+/// each stand `STAND_MS` of video — from the change or edge (`edges`: where the edit list crosses — a part beginning,
+/// time left out) before it to it, and from it to the next. In video time, so one rule at every speed (at ×8 a screen
+/// stands 4.8 s of take). The rest cut: a terminal scrolling a line at a time never shows two screens over each other.
+pub(crate) fn standing(changes: &[u64], edges: &[u64]) -> Vec<u64> {
+    let stand = STAND_MS * 1000;
+    let mut all: Vec<u64> = changes.iter().chain(edges).copied().collect();
+    all.sort_unstable();
+    all.dedup();
+    (changes.iter().copied())
+        .filter(|&c| {
+            let i = all.partition_point(|&x| x < c);
+            let before = i.checked_sub(1).map(|j| all[j]);
+            let after = all[i..].iter().find(|&&x| x > c);
+            before.is_none_or(|b| c - b >= stand) && after.is_none_or(|a| a - c >= stand)
+        })
+        .collect()
 }
 
 /// What crosses `ms` into the take (the screens drawn at `times`, those that come by a crossing `fades`): the screen it

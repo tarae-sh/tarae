@@ -213,6 +213,12 @@ pub(crate) struct Placed {
     pub(crate) ran_out: Option<u64>,
 }
 
+/// Every track of the cut in samples — the keys' (`sound::Keys`, rendered from the programme's total), each bed's, the
+/// mix: one length, whichever way the total rounds.
+pub(crate) fn track_len(prog: &Program) -> usize {
+    sound::samples_in(Duration::from_micros(prog.total))
+}
+
 fn samples(us: u64) -> usize {
     (us as f64 * f64::from(RATE) / 1e6).round() as usize
 }
@@ -591,7 +597,7 @@ pub(crate) fn make(
     let cut = prog.cut;
     let heard = sounds(prog, keys, marks);
     let length = Duration::from_micros(prog.total);
-    let len = samples(prog.total);
+    let len = track_len(prog);
     let mut said = Vec::new();
 
     // (the beds: read, laid out, each brought to one loudness and summed)

@@ -6,8 +6,8 @@ use serde_json::json;
 use super::draw::{label, lost_zooms, wide_window};
 use super::init::{Facts, rules, stills, ticking, written};
 use super::sound::{
-    BED_REF_LUFS, Made, Mix, NEAR_KEY_DB, Placed, Track, Where, bed_gains, heard_at, laid, lay, layout,
-    made_said, mixed, realtime, sides, sounds, under,
+    BED_REF_LUFS, Laid, Made, Mix, NEAR_KEY_DB, Placed, Track, Where, bed_gains, heard_at, laid, lay, layout,
+    made_said, mixed, realtime, sides, sounds, track_len, under,
 };
 use super::*;
 use crate::camera::Region;
@@ -639,12 +639,17 @@ fn the_small_line_says_the_takes_length_and_the_videos_by_run_duration() {
     let c = cut(CUT).unwrap();
     let p = Program::new(&c);
     assert_eq!(
-        told(c.end, p.total),
+        told(worked(&c), p.total),
         format!(
             "A real session with Claude in tarae: 2m 00s, shown in {}",
             run_duration(Duration::from_micros(p.total))
         )
     );
+    // (how long the work took: from the first chapter, 10 s in, to the last moment kept, 100 s — the tail left out)
+    let later = CUT.replacen("at = \"start\"", "at = \"turn 1 start\"", 1)
+        + "\n[[span]]\nfrom = \"100s\"\nto = \"end\"\nout = true\n";
+    let c = cut(&later).unwrap();
+    assert_eq!((c.chapters[0].at, worked(&c)), (10_000, 90_000));
 }
 
 /// By hand (the design session's look, before any commit): the card of what's built at 1080p on meok and on hanji, the
@@ -1290,6 +1295,121 @@ fn a_screen_where_only_a_timer_or_a_spinner_moves_stands_still() {
     assert!(!r.to(2_900), "nothing new by then");
 }
 
+/// `cut.txt` names every place `record check` found that a span of the cut shows — a weak one too (a two-letter login
+/// as a bare word) —, with its video time, take time, row and words; one in a stretch left out isn't named; with none
+/// inside, it says so. `check.txt` read back as `listed` wrote it.
+#[test]
+fn cut_txt_names_every_check_hit_inside_the_cut_and_none_outside() {
+    use crate::record::check::{Hit, listed, parse};
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let hit = |from: u64, to: u64, found: &str, weak: bool| Hit {
+        from,
+        to,
+        row: 3,
+        kind: "name",
+        found: found.into(),
+        text: format!("drwxr-xr-x  4 {found} wheel  128 tasks"),
+        weak,
+    };
+    // (12–13 s in the 1× span; 30–31 s left out)
+    let hits = vec![hit(12_000, 13_000, "zq", true), hit(30_000, 31_000, "zz", false)];
+    let read = parse(&listed(&hits)).unwrap();
+    assert_eq!(read, [hits[1].clone(), hits[0].clone()], "the weak listed after the rest");
+    let said = super::check::said(&p, &read, "check.txt");
+    let v = video_time(p.video_of(c.map.video(12_000)).unwrap());
+    assert_eq!(
+        said,
+        [
+            "check (check.txt): 0 strong, 1 weak inside the cut's spans, crossings included — of the take's 2 hits; for \
+             the user to decide:"
+                .to_string(),
+            format!(
+                "  {v} in the video (take 0:00:12.00–0:00:13.00), row 3: name zq (weak) │ drwxr-xr-x  4 zq wheel  128 \
+                 tasks"
+            ),
+        ]
+    );
+    assert_eq!(
+        super::check::said(&p, &read[..1], "check.txt"),
+        [
+            "check (check.txt): 0 strong, 0 weak inside the cut's spans, crossings included — of the take's 1 hits; none \
+          inside the cut"
+        ]
+    );
+    // (a strong one inside is counted as strong: the rough cut goes to the user only with 0)
+    let strong = super::check::said(&p, &[hit(13_000, 14_000, "zz", false)], "check.txt");
+    assert!(strong[0].starts_with("check (check.txt): 1 strong, 0 weak inside"), "{strong:?}");
+    // (where it ends shows its stretch too: a hit there named at both its video times)
+    assert_eq!(super::check::shown(&p, 56_000, 57_000).len(), 2);
+}
+
+/// The keys' track and the mix are one length, `track_len`'s, on a cut whose total in samples rounds up (V4's made-up
+/// 90 minutes: a chapter's range one sample past the keys' track).
+#[test]
+fn the_keys_track_and_the_mix_are_one_length_however_the_total_rounds() {
+    let c = cut(&CUT.replace("default = 4", "default = 3")).unwrap();
+    let p = Program::new(&c);
+    let exact = p.total as f64 * f64::from(RATE) / 1e6;
+    assert_ne!(exact.round() as usize, exact as usize, "the total rounds up: {} µs", p.total);
+    let len = track_len(&p);
+    let heard = [(std::time::Duration::from_secs(1), Heard::Key('k'))];
+    let keys = crate::sound::Keys::new(&heard, std::time::Duration::from_micros(p.total), None);
+    let keys = keys.mastered(&keys.unit(), crate::sound::SHORT_CEILING_DB).samples;
+    assert_eq!(keys.len(), len, "the keys' track");
+    let beds = Laid { levelled: [vec![0.0; len], vec![0.0; len]], made: [vec![0.0; len], vec![0.0; len]] };
+    let d = under(&realtime(&p), len);
+    let [l, r] = sides(&keys, &beds, &d, 0.0, 6.0);
+    assert_eq!((l.len(), r.len()), (len, len), "the mix");
+}
+
+/// A change of the whole screen crosses only between two screens that each stand `camera::STAND_MS` of video: a stretch
+/// of whole-screen changes every 250 ms of video — at 4× (one a second of take) and at 1× — has no crossing frame, a
+/// lone change still crosses (V4's sped 4K clip: two frames in four were two screens over each other).
+#[test]
+fn a_change_crosses_only_between_two_screens_that_each_stand() {
+    // (the rule alone: before and after, against the edit list's edges too)
+    let s = |ms: &[u64]| ms.iter().map(|m| m * 1000).collect::<Vec<u64>>();
+    assert_eq!(camera::standing(&s(&[5_000]), &[]), s(&[5_000]), "a lone change");
+    assert_eq!(camera::standing(&s(&[5_000, 5_250, 5_500]), &[]), s(&[]), "every 250 ms");
+    assert_eq!(camera::standing(&s(&[5_000, 5_600]), &[]), s(&[5_000, 5_600]), "600 ms apart");
+    assert_eq!(camera::standing(&s(&[5_000]), &s(&[4_700])), s(&[]), "a part began 300 ms before");
+    assert_eq!(camera::standing(&s(&[5_000]), &s(&[5_300])), s(&[]), "time left out 300 ms after");
+    // (through the replay, as the frames see it: the made-up cut's 0–10 s at 4×, 10–20 s at 1×)
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    // (three cells in four changed: more than `camera::CROSS`, not all)
+    let full = |ms: u64, ch: char| {
+        let row: String = std::iter::repeat_n(ch, 6).chain("xx".chars()).collect();
+        Rec {
+            us: ms * 1000,
+            whose: SCREEN,
+            bytes: format!("\x1b[H\x1b[2J\x1b[?25l{row}\r\n{row}").into_bytes(),
+        }
+    };
+    let mut recs = vec![full(0, 'a')];
+    let sped: Vec<u64> = (4..=7).map(|s| s * 1_000).collect();
+    let real: Vec<u64> = (0..=12).map(|i| 10_500 + i * 250).collect();
+    let lone = 16_000;
+    for (i, &ms) in sped.iter().chain(&real).chain([&lone]).enumerate() {
+        recs.push(full(ms, if i % 2 == 0 { 'b' } else { 'c' }));
+    }
+    let take = Take { about: Value::Null, size: (8, 2), screen: recs };
+    let (whole, crossing) = super::draw::changes(&p, &take);
+    // (a change is found on the first frame that shows it, or the next)
+    let v = |t: u64| p.video_of(c.map.video(t)).unwrap();
+    let near =
+        |list: &[u64], t: u64| list.iter().any(|&x| x >= v(t) && x <= v(t) + 2 * 1_000_000 / video::FPS);
+    for &t in sped.iter().chain(&real).chain([&lone]) {
+        assert!(near(&whole, t), "the change at {t} ms found: {whole:?}");
+    }
+    assert_eq!(whole.len(), sped.len() + real.len() + 1, "{whole:?}");
+    assert!(
+        crossing.len() == 1 && near(&crossing, lone),
+        "only the lone change crosses: {crossing:?} of {whole:?}"
+    );
+}
+
 /// By hand (the report's cost): a made-up 90-minute take at 182×36 written to `$CUT_MADE_UP` (a folder not there yet) —
 /// twenty cycles of an ask typed (10 s, a key every 150 ms), a turn streaming its answer for three minutes (a line every
 /// 200 ms, the whole screen redrawn every 2 s, a run card shown 5 s at its middle), then 80 s where only a timer ticks;
@@ -1471,6 +1591,69 @@ fn cut_init_gives_the_spans_its_rules_say_and_reads_them_back() {
         back.chapters.iter().map(|c| (c.at, c.title.as_str())).collect::<Vec<_>>(),
         [(0, "main"), (50_000, "fix")]
     );
+}
+
+/// A card waited on (7 s or more) is 1× for its first 4 s and from 2 s before its answer to 1 s past it; between, the
+/// other rules decide — a still left out, the rest at the default — so its wait isn't held (take 1: 601 of init's
+/// 1,103 s were cards). One answered within 7 s stays one span. What's written reads back to the same stretches.
+#[test]
+fn cut_init_holds_a_waited_card_for_its_read_and_its_answer_only() {
+    let at = |ms: u64, what: &str, id: &str| json!({ "ms": ms, "what": what, "id": id, "kind": "run" });
+    let m = Marks::new(
+        vec![
+            at(10_000, "card-shown", "card#1"),
+            at(40_000, "card-answered", "card#1"),
+            at(50_000, "card-shown", "card#2"),
+            at(56_900, "card-answered", "card#2"),
+            at(60_000, "card-shown", "card#3"),
+            at(67_000, "card-answered", "card#3"),
+        ],
+        90_000,
+    );
+    let f = Facts::of(&m, &[], vec![(20_000, 36_000)]);
+    let held: Vec<(usize, u64, u64)> = f.cards.iter().map(|c| (c.0, c.1.0, c.2.0)).collect();
+    assert_eq!(
+        held,
+        [
+            (1, 10_000, 14_000),
+            (1, 38_000, 41_000),
+            (2, 50_000, 57_900),
+            (3, 60_000, 64_000),
+            (3, 65_000, 68_000)
+        ],
+        "a 30 s wait in two; 6.9 s whole; 7 s in two"
+    );
+    let (one, four) = (Pace::Speed(1.0), Pace::Speed(4.0));
+    let got: Vec<(u64, u64, Pace)> = rules(&f).iter().map(|(s, _)| (s.from, s.to, s.pace)).collect();
+    assert_eq!(
+        got,
+        [
+            (0, 10_000, four),
+            (10_000, 14_000, one),
+            (14_000, 20_000, four),
+            (20_000, 20_500, one),
+            (20_500, 36_000, Pace::Out),
+            (36_000, 38_000, four),
+            (38_000, 41_000, one),
+            (41_000, 50_000, four),
+            (50_000, 57_900, one),
+            (57_900, 60_000, four),
+            (60_000, 64_000, one),
+            (64_000, 65_000, four),
+            (65_000, 68_000, one),
+            (68_000, 90_000, four),
+        ]
+    );
+    let (text, _) = written(&f, std::path::Path::new("take"));
+    assert!(
+        text.contains("to = \"card 1 shown + 4s\"") && text.contains("from = \"card 1 answered - 2s\""),
+        "{text}"
+    );
+    let text =
+        text.replacen("name = \"\"", "name = \"halil\"", 1).replacen("line = \"\"", "line = \"A tool.\"", 1);
+    let back = Cut::parse(&text, "init.toml", &m).unwrap();
+    let read: Vec<(u64, u64, Pace)> = back.map.segs().iter().map(|s| (s.from, s.to, s.pace)).collect();
+    assert_eq!(read, got, "{text}");
 }
 
 // ── The mascot at the keys ──

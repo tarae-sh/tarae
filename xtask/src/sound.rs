@@ -376,6 +376,12 @@ fn compare(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// A track `length` long in samples at `RATE`, whole ones (a last part of one left out): the length the keys are
+/// rendered at, and every track mixed with them (the cut's `sound::track_len`).
+pub(crate) fn samples_in(length: Duration) -> usize {
+    (length.as_secs_f64() * RATE as f64) as usize
+}
+
 /// The burst played: each sound handed to the synth at its step's sample, as the audio thread hands it — by `bank`'s
 /// strokes, or synthesized all through.
 fn render(burst: &[(Duration, Said)], length: Duration, volume: u8, bank: Option<&'static Bank>) -> Vec<f32> {
@@ -391,7 +397,7 @@ fn render_with(
     finish: impl Fn(&mut Synth, &mut [f32], f32),
 ) -> Vec<f32> {
     let mut synth = Synth::with(RATE as f32, bank);
-    let total = (length.as_secs_f64() * RATE as f64) as usize;
+    let total = samples_in(length);
     let mut out = vec![0.0f32; total];
     let mut at = 0usize;
     let master = said::master(volume);

@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use super::{Take, screens};
+use super::{Replay, Take};
 use crate::Result;
 
 /// What's yours, to look for: names (login, full), homes, mail addresses.
@@ -127,42 +127,102 @@ pub(crate) fn listed(hits: &[Hit]) -> String {
     list
 }
 
-/// The places the take in `dir` shows something of `yours` (`hits` over its screens).
+/// `listed`'s text read back: each place, the weak ones (listed after their heading) weak — its times to the 10 ms it
+/// wrote, the row's text without its trailing blanks. A line that isn't a place's (a count, a heading) is passed over.
+pub(crate) fn parse(text: &str) -> Result<Vec<Hit>> {
+    let mut out = Vec::new();
+    let mut weak = false;
+    for (n, line) in text.lines().enumerate() {
+        if line.starts_with("weak — ") {
+            weak = true;
+            continue;
+        }
+        let Some((head, row_text)) = line.split_once("  │ ") else { continue };
+        let bad = || format!("check.txt:{}: not a place: {line}", n + 1);
+        let (times, rest) = head.trim_start().split_once(' ').ok_or_else(bad)?;
+        let (from, to) = times.split_once("s–").ok_or_else(bad)?;
+        let ms = |s: &str| s.trim_end_matches('s').parse::<f64>().map(|x| (x * 1000.0).round() as u64);
+        let (from, to) = (ms(from).map_err(|_| bad())?, ms(to).map_err(|_| bad())?);
+        let rest = rest.trim_start().strip_prefix("row ").ok_or_else(bad)?.trim_start();
+        let (row, rest) = rest.split_once(' ').ok_or_else(bad)?;
+        let row: u16 = row.parse().map_err(|_| bad())?;
+        let (kind, found) = rest.trim_start().split_once(' ').ok_or_else(bad)?;
+        let kind = ["name", "home", "mail", "money"].into_iter().find(|k| *k == kind).ok_or_else(bad)?;
+        out.push(Hit {
+            from,
+            to,
+            row,
+            kind,
+            found: found.trim().to_string(),
+            text: row_text.to_string(),
+            weak,
+        });
+    }
+    Ok(out)
+}
+
+/// The places the take in `dir` shows something of `yours` (`hits` over its screens, one held at a time: an hour and a
+/// half's every screen at once would be gigabytes).
 pub(crate) fn scan(dir: &Path, yours: &Yours) -> Result<Vec<Hit>> {
     let take = Take::read(dir)?;
-    let frames = screens(&take.screen, take.size);
-    let end = take.ms().max(frames.last().map_or(0, |f| f.0));
-    Ok(hits(&frames, end, yours))
+    let mut replay = Replay::new(&take.screen, take.size);
+    let (mut h, mut last) = (Hits::default(), 0);
+    while let Some(t) = replay.next() {
+        h.screen(t, replay.screen(), yours);
+        last = t;
+    }
+    Ok(h.end(take.ms().max(last)))
 }
 
 /// Each place `frames` (each screen with its time, the take ending at `end`) shows something of `yours`, once for as
-/// long as it stands on its row, in the order they came.
+/// long as it stands on its row, in the order they came (the tests' made-up screens; a take's are `scan`'s).
+#[cfg(test)]
 pub(crate) fn hits(frames: &[(u64, vt100::Screen)], end: u64, yours: &Yours) -> Vec<Hit> {
-    let mut done: Vec<Hit> = Vec::new();
-    let mut open: Vec<Hit> = Vec::new();
-    for (i, (t, screen)) in frames.iter().enumerate() {
-        let until = frames.get(i + 1).map_or(end, |f| f.0);
+    let mut h = Hits::default();
+    for (t, screen) in frames {
+        h.screen(*t, screen, yours);
+    }
+    h.end(end)
+}
+
+/// `hits` as the screens come: those gone, and those still standing (each till the screen last seen).
+#[derive(Default)]
+struct Hits {
+    done: Vec<Hit>,
+    open: Vec<Hit>,
+}
+
+impl Hits {
+    /// The screen at `t`: what stood before stood till now; what it shows that stood is longer, the rest begins.
+    fn screen(&mut self, t: u64, screen: &vt100::Screen, yours: &Yours) {
+        self.open.iter_mut().for_each(|o| o.to = t);
         let mut now = Vec::new();
         for (row, text) in rows(screen).into_iter().enumerate() {
             for (kind, found, weak) in found(&text, yours) {
-                now.push(Hit { from: *t, to: until, row: row as u16, kind, found, text: text.clone(), weak });
+                now.push(Hit { from: t, to: t, row: row as u16, kind, found, text: text.clone(), weak });
             }
         }
         let same =
             |a: &Hit, b: &Hit| a.row == b.row && a.kind == b.kind && a.found == b.found && a.weak == b.weak;
         // (one still standing: longer; one gone: done)
-        let (stay, gone): (Vec<Hit>, Vec<Hit>) = open.drain(..).partition(|o| now.iter().any(|n| same(o, n)));
-        done.extend(gone);
+        let (stay, gone): (Vec<Hit>, Vec<Hit>) =
+            self.open.drain(..).partition(|o| now.iter().any(|n| same(o, n)));
+        self.done.extend(gone);
         for n in now {
             match stay.iter().position(|o| same(o, &n)) {
-                Some(k) => open.push(Hit { from: stay[k].from, ..n }),
-                None => open.push(n),
+                Some(k) => self.open.push(Hit { from: stay[k].from, ..n }),
+                None => self.open.push(n),
             }
         }
     }
-    done.extend(open);
-    done.sort_by_key(|h| (h.from, h.row));
-    done
+
+    /// Every place, those still standing till the take's `end`, in the order they came.
+    fn end(mut self, end: u64) -> Vec<Hit> {
+        self.open.iter_mut().for_each(|o| o.to = end);
+        self.done.extend(self.open);
+        self.done.sort_by_key(|h| (h.from, h.row));
+        self.done
+    }
 }
 
 /// A screen's rows as text: each cell's, a wide character's second cell left out, an empty cell a space.

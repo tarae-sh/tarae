@@ -1355,7 +1355,7 @@ pub(crate) fn seal(bg: Bg) -> Result<Rgba> {
     rgba(&root().join(format!("docs/brand/seal-{}-96.png", bg.theme())))
 }
 
-/// The seal at `s`: 1080p's `seal`; 2160p's made from the same SVG at twice its size (main's `.sb/v4-pictures-2x.sh`:
+/// The seal at `s`: 1080p's `seal`; 2160p's made from the same SVG at twice its size (main's `.sb/youtube/v4-pictures-2x.sh`:
 /// `TARAE_SEAL_2X`, else main's `.sb/youtube/seal/seal-<theme>-192.png`, found as the intro's frames are).
 pub(crate) fn seal_at(bg: Bg, s: Scale) -> Result<Rgba> {
     if s == Scale::HD {
@@ -1389,7 +1389,8 @@ fn intro_frames(bg: Bg) -> Result<Vec<Rgba>> {
 }
 
 /// The intro's frames' files for `bg`'s theme at `s`, in order: `<theme>/NNN.png` (880×960), at 2160p
-/// `<theme>-2x/NNN.png` (the same page rendered at device scale 2, 1760×1920: `.sb/v4-pictures-2x.sh`).
+/// `<theme>-2x/NNN.png` (the same page rendered at device scale 2, 1760×1920: main's
+/// `.sb/youtube/v4-pictures-2x.sh`).
 fn intro_paths(bg: Bg, s: Scale) -> Result<Vec<PathBuf>> {
     let folder = match s {
         Scale::HD => bg.theme().to_string(),

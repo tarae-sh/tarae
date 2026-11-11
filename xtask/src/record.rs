@@ -60,7 +60,7 @@ use crate::shot::{self, FRAME_END, Recorded};
 use crate::video;
 use crate::{Result, root};
 
-mod check;
+pub(crate) mod check;
 mod hands;
 mod keys;
 mod landmarks;

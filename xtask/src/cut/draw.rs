@@ -10,7 +10,8 @@
 //! - Crossings (`camera::CROSS_MS`, never a cut): where a part begins (the card of what's built, where it ends, a
 //!   chapter's card, the take after them, the end card) through the ground — the part going out fades to it, then the
 //!   next comes up (`cross_px`) —; where time is left out, and where most of the cells change at once
-//!   (`camera::CROSS`), the two screens over each other.
+//!   (`camera::CROSS`) between two screens that each stand `camera::STAND_MS` of video (`changes`, else a cut), the two
+//!   screens over each other.
 //! - The sheet (`sheet_picks`): each picture taken once its part has come up, never inside a crossing.
 //! - The band (`band`): the clock, the jump's mark, the speed's mark or `where it ends`, the caption; the mascot at the
 //!   keys at its right end (`mascot.rs`), the marks `mascot::GAP` from its box, a caption that would reach them refused.
@@ -232,6 +233,30 @@ impl<'a> Stage<'a> {
     }
 }
 
+/// The take part's whole-screen changes (video µs: each frame whose screen has more than `camera::CROSS` of its cells
+/// unlike the one shown before it — as the frames will see the replay) and those of them that cross (`camera::standing`,
+/// against the edit list's own crossings); the rest cut. One pass over the replay before the frames: the look ahead.
+pub(crate) fn changes(prog: &Program, take: &Take) -> (Vec<u64>, Vec<u64>) {
+    let mut replay = Replay::new(&take.screen, take.size);
+    let mut seen: Option<Cells> = None;
+    let mut whole = Vec::new();
+    for k in 0..prog.frames() {
+        let v = Program::time_of(k);
+        let f = prog.frame(v);
+        let Some(t) = f.screen.filter(|_| !f.ends) else { continue };
+        if replay.to(t) {
+            let cells = Cells::of(replay.screen());
+            if seen.as_ref().is_some_and(|s| camera::changed(s, &cells) > camera::CROSS) {
+                whole.push(v);
+            }
+            seen = Some(cells);
+        }
+    }
+    let edges: Vec<u64> = prog.crossings().iter().map(|c| c.0).collect();
+    let crossing = camera::standing(&whole, &edges);
+    (whole, crossing)
+}
+
 /// The cut of `take` (in `dir`, its landmarks `marks`) as `cut` says, at `scale`, into `out`: `cut.mp4` with its sound
 /// (`sound.rs`, `cut.wav` beside it), the sheet's pages, `chapters.txt`. What was made, said.
 pub(crate) fn make(
@@ -291,7 +316,7 @@ pub(crate) fn make(
     };
     let card = |lines: &[(&str, f32, Rgb, bool)]| video::card_at(lines, &seal, &look, &fonts, dims, scale);
     let name = ("t a r a e", video::NAME_PX, look.accent, true);
-    let told = told(cut.end, prog.total);
+    let told = told(super::worked(cut), prog.total);
     let built_card = opening::card(&cut.opening, &told, cut.bg, &look, &fonts, scale);
     // (the intro: the swing's frames, else the name and the seal — said)
     let intro = match video::WideIntro::new(cut.bg, &look, &fonts, scale) {
@@ -409,13 +434,26 @@ pub(crate) fn make(
     let mut stdin = child.as_mut().and_then(|c| c.stdin.take());
     let crossings = prog.crossings();
     let mut next_cross = 0;
+    // (the whole-screen changes found first, each crossing only between two screens that stand)
+    let looked = Instant::now();
+    let (whole, changed) = changes(&prog, take);
+    said.push(format!(
+        "whole-screen changes: {} in the take part, {} crossed (each screen standing {:.1} s of video before and after), \
+         {} cut; found in {:.1} s",
+        whole.len(),
+        changed.len(),
+        camera::STAND_MS as f64 / 1e3,
+        whole.len() - changed.len(),
+        looked.elapsed().as_secs_f64()
+    ));
+    drop(whole);
+    let mut next_change = 0;
     let (mut ends, mut replay) = (Replay::new(&take.screen, size), Replay::new(&take.screen, size));
     let mut words = Words::new(&fonts, look.ground, scale);
     let sheet_fonts = Fonts::load(1)?;
     let mut pic: Option<((bool, u64, u32), Picture)> = None;
     let mut last: Option<(Key, Vec<u8>)> = None;
     let mut cross: Option<(Vec<u8>, u64, bool)> = None;
-    let mut seen: Option<Cells> = None;
     let (mut differ, mut drawn, mut wrote) = (0u64, 0u64, Ok(()));
     let mut sheet: Vec<Picture> = Vec::new();
     let mut pages = 0;
@@ -424,19 +462,17 @@ pub(crate) fn make(
     for k in 0..frames {
         let v = Program::time_of(k);
         let f = prog.frame(v);
-        // (the screen in force; where most of it changed at once, a crossing from the frame before)
+        // (the screen in force; where most of it changed at once between two that stand, a crossing from the frame
+        // before)
         if let Some(t) = f.screen {
             let r = if f.ends { &mut ends } else { &mut replay };
-            let came = r.to(t);
-            if came && !f.ends {
-                let cells = Cells::of(replay.screen());
-                if seen.as_ref().is_some_and(|s| camera::changed(s, &cells) > camera::CROSS)
-                    && let Some((_, px)) = &last
-                {
-                    cross = Some((px.clone(), v, false));
-                }
-                seen = Some(cells);
+            r.to(t);
+        }
+        while next_change < changed.len() && changed[next_change] <= v {
+            if let Some((_, px)) = &last {
+                cross = Some((px.clone(), changed[next_change], false));
             }
+            next_change += 1;
         }
         while next_cross < crossings.len() && crossings[next_cross].0 <= v {
             if let Some((_, px)) = &last {
@@ -589,6 +625,9 @@ pub(crate) fn make(
         picks.len(),
     )];
     head.extend(spans_said(cut));
+    // (every place `record check` found that the cut shows, strong or weak: said, never hidden)
+    let (hits, source) = super::check::read(dir)?;
+    head.extend(super::check::said(&prog, &hits, source));
     head.push(format!("chapters.txt:\n{}", chapters.trim_end()));
     head.extend(said);
     if let (Some(mut heard), Some(f)) = (heard, &ffmpeg)

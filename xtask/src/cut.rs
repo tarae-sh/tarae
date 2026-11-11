@@ -84,6 +84,7 @@ use crate::camera;
 use crate::scenes::docshots::Bg;
 use crate::video::{self, FPS};
 
+mod check;
 mod draw;
 pub(crate) mod init;
 mod mascot;
@@ -228,8 +229,16 @@ pub(crate) fn run_duration(d: Duration) -> String {
     }
 }
 
-/// The card of what's built's small line, made by the cut from the take's length (ms) and the video's (µs), so it can't
-/// be wrong.
+/// How long the work took (ms): from the first chapter to the last moment the cut keeps (the last stretch not left out,
+/// or where it ends) — not the take's file, with the wait before the first chapter and any tail left out.
+pub(crate) fn worked(cut: &Cut) -> u64 {
+    let kept = (cut.map.segs().iter()).filter(|s| s.pace != Pace::Out).map(|s| s.to).max().unwrap_or(0);
+    let last = kept.max(cut.opening.from + cut.opening.len);
+    last.saturating_sub(cut.chapters.first().map_or(0, |c| c.at))
+}
+
+/// The card of what's built's small line, made by the cut from how long the work took (ms, `worked`) and the video's
+/// length (µs), so it can't be wrong.
 pub(crate) fn told(take_ms: u64, video_us: u64) -> String {
     format!(
         "A real session with Claude in tarae: {}, shown in {}",
