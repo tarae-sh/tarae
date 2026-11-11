@@ -103,6 +103,7 @@ mod homepage;
 mod kernels;
 mod linux;
 mod perf;
+mod rain;
 mod record;
 mod recording;
 mod remote;
@@ -188,6 +189,7 @@ fn main() {
         Some("sound") => sound::run(&args[1..]),
         Some("record") => record::run(&args[1..]),
         Some("cut") => cut::run(&args[1..]),
+        Some("rain") => rain::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
             "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | record [--size CxR] --out DIR [--keys F] -- COMMAND … | record draw|still|check DIR | record spike [OUT] | cut FILE | cut init TAKE [--out FILE] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
