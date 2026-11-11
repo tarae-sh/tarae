@@ -664,6 +664,226 @@ fn a_told_rows_markdown_is_drawn_not_its_markers() {
     );
 }
 
+/// A message tarae sent by itself, made as its senders make it (`chat::submit_by_itself`, a stand-in claude that reads
+/// nothing) and taken out of that chat.
+fn sent_by_itself(text: &str) -> Msg {
+    let scratch = crate::scratch::Scratch::new("composed-by-itself");
+    let mut ed = Editor::new(Config::default());
+    ed.workspace.root = std::fs::canonicalize(&scratch).unwrap();
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    crate::chat::open(&mut ed);
+    assert!(crate::chat::submit_by_itself(&mut ed, text, None, None), "sent");
+    let m = ed.workspace.claude.chat.as_mut().unwrap().msgs.pop().expect("its row");
+    assert!(m.role == Role::User && m.by_itself && !m.typed, "by itself, never your words");
+    m
+}
+
+/// A run's end tarae sent Claude by itself (`tools::told`): its head, the report, and what it says last — many lines,
+/// its last words `goodbye` (past the cut).
+fn composed_report() -> String {
+    let mut lines = vec![
+        concat!(
+            "The user ran `curl -sS -T skein.tar.gz https://uploads.skein.invalid/` again, letting it reach ",
+            "uploads.skein.invalid this once. How it ended:"
+        )
+        .to_string(),
+        "exit 0 in 1.4s".into(),
+        "$ curl -sS -T skein.tar.gz https://uploads.skein.invalid/".into(),
+        String::new(),
+        "Output:".into(),
+    ];
+    lines.extend((1..=16).map(|i| format!("  part {i:02}/16 sent · 64 KiB · {} ms", 80 + i * 3)));
+    lines.push("ok: https://uploads.skein.invalid/skein.tar.gz".into());
+    lines.push(
+        "(tarae sent this when the run ended — the user typed nothing. Go on from it, and say goodbye.)"
+            .into(),
+    );
+    lines.join("\n")
+}
+
+/// F4 (Short 4's recut): a message tarae sent Claude by itself (`Msg.by_itself` — a rerun's report) is one
+/// faint row — who sent it and its first line, cut with `…` — never your message's rows; whole on its card under the mouse
+/// and in hand (the view mode's cursor on it), whole in the transcript, its line breaks there a space.
+#[test]
+fn a_message_tarae_composed_is_one_faint_row_whole_on_its_card() {
+    let report = composed_report();
+    let mut ed = chat(vec![
+        Msg::new(Role::User, "ship the release", ""),
+        run_row("curl -sS -T skein.tar.gz https://uploads.skein.invalid/"),
+        Msg::new(Role::Assistant, "Refused.", ""),
+        sent_by_itself(&report),
+        Msg::new(Role::Assistant, "Uploaded.", ""),
+    ]);
+    ed.workspace.viewer.keys_to_code();
+    let screen = frame(&mut ed);
+    assert_eq!(rows_of(&ed, Of::Msg(3)), 1, "one row:\n{screen}");
+    assert!(!screen.contains("goodbye") && !screen.contains("part 16/16"), "cut:\n{screen}");
+    let row =
+        screen.lines().find(|l| l.contains("▎ tarae: The user ran")).expect("who sent it, its first line");
+    assert!(row.trim_end().ends_with('…'), "its `…` at its end:\n{screen}");
+    // (faint, all of it — your message's words are drawn strong)
+    let faint = ed.theme.try_get("ui.linenr").and_then(|s| s.fg);
+    let laid = |i: usize| {
+        let laid = ed.screen.chat_laid.borrow();
+        laid.iter().find(|(o, _)| *o == Of::Msg(i)).map(|(_, r)| r.to_vec()).expect("laid")
+    };
+    let spans = laid(3)[0].spans.clone();
+    assert!(
+        faint.is_some() && spans.iter().all(|s| s.style.fg == faint && !s.style.bold),
+        "faint: {spans:?}"
+    );
+    let yours_row =
+        laid(0).into_iter().find(|r| r.spans.iter().any(|s| s.text.contains("ship"))).expect("yours");
+    assert!(
+        yours_row.spans.iter().any(|s| s.text.contains("ship") && s.style.fg != faint),
+        "yours as it was"
+    );
+    // (the transcript keeps it whole, its breaks a space: every line there has a row)
+    let text = transcript_text(&ed);
+    let line: Vec<&str> = report.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(text.contains(&format!("{}\n", line.join(" "))), "the transcript's line is whole:\n{text}");
+    // (under the mouse: whole on its card, line breaks kept; the row never unfolds)
+    let (y, x, _, whole) = cut_text(&ed, "goodbye").expect("recorded as cut");
+    assert_eq!(whole.text, report, "its card says the message as sent");
+    assert!(screen.lines().nth(y).unwrap().chars().skip(x).collect::<String>().starts_with("The user ran"));
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    let screen = frame(&mut ed);
+    assert!(screen.contains("part 01/16 sent") && card(&ed).is_some(), "whole under the mouse:\n{screen}");
+    assert_eq!(rows_of(&ed, Of::Msg(3)), 1, "never unfolds");
+    ed.handle_event(Event::Hover(0, 0));
+    // (in hand: the view mode's cursor on it, the search's `enter` taking it there)
+    ed.workspace.set_at(crate::workspace::Here::Chat);
+    feed(&mut ed, "<esc>gg/say goodbye<ret>");
+    let screen = frame(&mut ed);
+    assert!(card(&ed).is_some() && screen.contains("part 01/16 sent"), "whole in hand:\n{screen}");
+    assert_eq!(rows_of(&ed, Of::Msg(3)), 1, "never unfolds");
+    assert_eq!(transcript_text(&ed), text, "the same words, folded or not");
+}
+
+/// F4: what Claude is sent of a run's end is the message tarae composed, whole, as before — only its row is folded.
+#[test]
+fn a_composed_message_goes_to_claude_whole() {
+    let scratch = crate::scratch::Scratch::new("composed-sent");
+    let dir = std::fs::canonicalize(&scratch).unwrap();
+    let mut ed = Editor::new(Config::default());
+    ed.workspace.root = dir.clone();
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > sent.log".into()];
+    crate::chat::open(&mut ed);
+    ed.workspace.claude.chat.as_mut().unwrap().msgs.push(Msg::new(Role::User, "ship the release", ""));
+    let report = composed_report();
+    crate::tools::told_for_test(&mut ed, &report);
+    let sent = || std::fs::read_to_string(dir.join("sent.log")).unwrap_or_default();
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while !sent().contains(r#""type":"user""#) {
+        assert!(std::time::Instant::now() < end, "the stand-in claude read nothing: {}", sent());
+        if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+            ed.handle_event(ev);
+        }
+    }
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let m = c.msgs.last().unwrap();
+    assert!(m.role == Role::User && m.by_itself && !m.typed, "a message tarae sent by itself");
+    let lines: Vec<serde_json::Value> = sent().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let line = lines.iter().find(|l| l["type"] == "user").expect("the user message's line");
+    let content = line["message"]["content"].as_str().expect("its content a string").to_string();
+    // (the message whole, every line of it, the head first and tarae's last words last)
+    let message = format!("cargo test, run again by you, ended:\n{report}\n{}", crate::tools::SENT_BY_ITSELF);
+    assert!(content.ends_with(&message), "sent whole:\n{content}");
+    assert_eq!(m.text, message, "the chat's row holds it whole");
+    ed.workspace.set_at(crate::workspace::Here::Chat);
+    frame(&mut ed);
+    assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "its row folded");
+}
+
+/// F4: a message sent by itself with no words — empty, or only line breaks — is one row all the same, `tarae:` alone:
+/// its fold never takes a first line on trust.
+#[test]
+fn an_empty_message_sent_by_itself_is_one_row() {
+    for text in ["", "\n \n"] {
+        let mut ed = chat(vec![Msg::new(Role::User, "ship the release", ""), sent_by_itself(text)]);
+        let screen = frame(&mut ed);
+        assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "{text:?}:\n{screen}");
+        assert!(screen.contains("▎ tarae:"), "{text:?}:\n{screen}");
+    }
+}
+
+/// F4 narrowed: a code review you send (`space v s`) is yours though tarae wrote its sentence — drawn as it was, its
+/// chip and its rows, never folded as tarae's — and still not your words to auto cards' reviewer (`autocards::user_words`:
+/// its body carries the repository's text).
+#[test]
+fn a_review_you_send_is_drawn_as_yours_and_isnt_your_words() {
+    let scratch = crate::scratch::Scratch::new("composed-review");
+    let dir = std::fs::canonicalize(&scratch).unwrap();
+    let file = dir.join("lib.rs");
+    std::fs::write(&file, "fn main() {}\n").unwrap();
+    let mut ed = Editor::new(Config::default());
+    ed.workspace.root = dir.clone();
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    crate::chat::open(&mut ed);
+    ed.open(&file).unwrap();
+    crate::notes::add(&mut ed, &file, 0..1, crate::notes::By::You, "MARKER-COMMENT about this line");
+    crate::codereview::send(&mut ed);
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let at = c.msgs.iter().rposition(|m| m.role == Role::User).expect("the review went");
+    let m = &c.msgs[at];
+    assert!(
+        m.text.starts_with("My review") && m.chip.starts_with("review · 1 comment"),
+        "{:?} {:?}",
+        m.text,
+        m.chip
+    );
+    assert!(!m.by_itself && !m.typed, "yours to draw, never your words to judge by");
+    let words = crate::autocards::user_words(c);
+    assert!(words.iter().all(|w| !w.contains("My review") && !w.contains("MARKER")), "{words:?}");
+    ed.workspace.set_at(crate::workspace::Here::Chat);
+    let screen = frame(&mut ed);
+    assert!(screen.contains("review · 1 comment") && !screen.contains("tarae: My review"), "{screen}");
+    assert!(rows_of(&ed, Of::Msg(at)) > 1, "its chip's row and its words':\n{screen}");
+}
+
+/// F4's shots (only with `TARAE_FRAMES_DIR` set: both themes, 80×34 and 120×34, named by `TARAE_FRAMES_WHICH` —
+/// `before` on the tree before the change): Short 4's turn as its chat stands at the end, a run's end that tarae sent
+/// Claude by itself before the answer after it.
+#[test]
+fn composed_row_frames() {
+    let Some(_) = std::env::var_os("TARAE_FRAMES_DIR") else { return };
+    let which = std::env::var("TARAE_FRAMES_WHICH").unwrap_or_else(|_| "after".into());
+    let mut said = Msg::new(Role::User, "ship the release", "");
+    said.chip = "release.sh".into();
+    let mut ed = chat(vec![
+        said,
+        Msg::new(Role::Assistant, "The script signs the tag with your SSH key. Let me read it.", ""),
+        run_row("cat ~/.ssh/id_ed25519"),
+        Msg::new(Role::Assistant, "The key is kept out. Next, the upload host.", ""),
+        run_row("curl -sS -T skein.tar.gz https://uploads.skein.invalid/"),
+        Msg::new(Role::Assistant, "Refused.", ""),
+        sent_by_itself(&composed_report()),
+        Msg::new(Role::Assistant, "Uploaded. Publishing needs your GitHub token.", ""),
+        Msg::new(Role::Note, "13.4s", ""),
+    ]);
+    ed.docs[0].text = ropey::Rope::from_str(
+        "#!/bin/sh\n# Tags the release, uploads the build, publishes it on GitHub.\nset -e\n\n# the tag, signed with \
+         the SSH key\nkey=$(cat ~/.ssh/id_ed25519)\ngit tag -s v0.4.0 -m \"skein 0.4.0\"\n\n# the build, uploaded\n\
+         curl -sS -T skein.tar.gz https://uploads.skein.invalid/\n",
+    );
+    ed.workspace.viewer.keys_to_code();
+    crate::screen::frames_sized(&mut ed, &format!("composed-row-{which}"), &[(80, 34), (120, 34)]);
+    if which != "after" {
+        return;
+    }
+    // (after: the pointer on its row, its card)
+    for (w, h) in [(80u16, 34u16), (120, 34)] {
+        crate::term::render(&mut ed, &mut Vec::new(), w, h).unwrap();
+        let (y, x, ..) = cut_text(&ed, "say goodbye").expect("its cut");
+        ed.handle_event(Event::Hover(x as u16 + 4, y as u16));
+        crate::screen::frames_sized(&mut ed, "composed-row-hover", &[(w, h)]);
+        ed.handle_event(Event::Hover(0, 0));
+    }
+}
+
 /// The run card stays inside the slot's columns: on a narrow, short screen, past its cap, its last row (`K`) fitted —
 /// nothing printed past the edge wraps onto the line under it; a slot with no room for a card shows none.
 #[test]

@@ -572,16 +572,23 @@ fn every_message_sent_is_typed_or_composed() {
         ("codereview.rs", "submit", 1),
         ("codereview.rs", "submit_from_with", 1),
         ("idlecompact.rs", "submit_bare", 1),
-        // WOKE, and a parent's message to its child
-        ("orchestra.rs", "submit", 1),
+        // WOKE (by itself), and a parent's message to its child
+        ("orchestra.rs", "submit_by_itself", 1),
         ("orchestra.rs", "submit_from", 1),
-        // a rebase's ask: its branches' and conflicted files' names
-        ("rebase.rs", "submit", 1),
-        // a rerun's report: its failures and its output's last lines
-        ("tools.rs", "submit", 1),
+        // a rebase's ask (by itself): its branches' and conflicted files' names
+        ("rebase.rs", "submit_by_itself", 1),
+        // a rerun's report (by itself): its failures and its output's last lines
+        ("tools.rs", "submit_by_itself", 1),
     ];
-    const SENDERS: &[&str] =
-        &["submit", "submit_from", "submit_from_with", "submit_bare", "submit_input", "submit_command"];
+    const SENDERS: &[&str] = &[
+        "submit",
+        "submit_by_itself",
+        "submit_from",
+        "submit_from_with",
+        "submit_bare",
+        "submit_input",
+        "submit_command",
+    ];
     let mut found: Vec<(String, &str, usize)> = Vec::new();
     for (file, src) in crate::sim::lint::sources() {
         for name in SENDERS {

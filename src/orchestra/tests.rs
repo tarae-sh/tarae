@@ -665,6 +665,20 @@ fn a_parent_is_woken_only_when_it_asked_and_is_idle() {
     let pressed =
         notes_of(&p.ed).into_iter().filter(|n| n.starts_with("not woken for one: the plan's ")).count();
     assert_eq!(pressed, 1, "{:?}", notes_of(&p.ed));
+    // A wake is sent by itself (F4): its rows marked so, each drawn as one row — `tarae:` and its line
+    let c = p.ed.workspace.claude.chat.as_ref().unwrap();
+    let wakes: Vec<usize> = (0..c.msgs.len()).filter(|&i| c.msgs[i].text == crate::orchestra::WOKE).collect();
+    assert_eq!(wakes.len(), 2, "both wakes' rows");
+    assert!(wakes.iter().all(|&i| c.msgs[i].by_itself && !c.msgs[i].typed), "by itself");
+    p.ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
+    p.ed.workspace.set_at(crate::workspace::Here::Chat);
+    let mut bytes = Vec::new();
+    crate::term::render(&mut p.ed, &mut bytes, 100, 40).unwrap();
+    let laid = p.ed.screen.chat_laid.borrow();
+    for i in wakes {
+        let rows = laid.iter().find(|(o, _)| *o == crate::chatdoc::Of::Msg(i)).map_or(0, |(_, r)| r.len());
+        assert_eq!(rows, 1, "the wake's one row");
+    }
 }
 
 /// A wake that came while the parent was idle but busy otherwise — a card up in front — isn't dropped: it goes once the

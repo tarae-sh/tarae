@@ -268,6 +268,9 @@ pub fn rows_of(msgs: &[Msg]) -> Vec<Value> {
             if m.typed {
                 v["typed"] = json!(true);
             }
+            if m.by_itself {
+                v["by_itself"] = json!(true);
+            }
             if let Some(l) = &m.look {
                 v["look"] = json!({
                     "verb": l.verb, "what": l.what, "pattern": l.pattern, "range": l.range,
@@ -326,6 +329,7 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
             m.from = r["from"].as_str().map(str::to_string);
             m.from_conversation = r["from_conversation"].as_str().map(str::to_string);
             m.typed = r["typed"].as_bool() == Some(true);
+            m.by_itself = r["by_itself"].as_bool() == Some(true);
             if role == Role::Tool {
                 let l = &r["look"];
                 let verb = VERBS.iter().copied().find(|v| l["verb"] == *v).unwrap_or("use");

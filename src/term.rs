@@ -19185,6 +19185,13 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     }
                 }
             }
+            // A message tarae sent by itself, no act of yours (`Msg.by_itself`, said by its sender: a rerun's report, a
+            // wake, a rebase's ask) — one faint row, whole under the pointer and in hand (F4: a run's report took 25 rows
+            // where Short 4's payoff stands, its words already in the run's panel). What your key sent — a review — is
+            // drawn as yours, below
+            Role::User if m.by_itself => {
+                lines.push(composed_row(&m.text, w, faint));
+            }
             Role::User => {
                 if !m.chip.is_empty() {
                     // The screen that went with it is a link (it opens its copy): underlined like the
@@ -19654,6 +19661,45 @@ fn told_row(text: &str, w: usize, dim: Style, theme: &Theme) -> crate::chat::Cha
             text: plain,
             style: dim,
             pieces,
+            cols: (0, 0),
+            state: None,
+            float: None,
+        };
+        row.cut = Some((hang, to, whole));
+    }
+    row
+}
+
+/// Who a message tarae composed is drawn as sent by (`composed_row`).
+const COMPOSED_BY: &str = "▎ tarae: ";
+
+/// A message tarae sent Claude by itself (`Msg.by_itself`), as the chat draws it (F4): one faint row — who
+/// sent it and its first line, cut (`cut::fit_in_hand`: `…` after it when more lines follow) —, never your message's
+/// rows; whole on its card under the mouse and in hand, its line breaks kept (`cut_card`); whole in the transcript, its
+/// breaks a space there (every line there has a row, as a folded thought's — `chatdoc::keep_whole`). What Claude was
+/// sent is the message, unchanged.
+fn composed_row(text: &str, w: usize, faint: Style) -> crate::chat::ChatRow {
+    use crate::chat::ChatRow;
+    use crate::markdown::Span;
+    let hang = COMPOSED_BY.chars().count();
+    let room = w.saturating_sub(COMPOSED_BY.width()).max(1);
+    // (one row folded, always — an empty text's too: never taken on trust)
+    let shown = crate::cut::fit_in_hand(text, room, false, false).into_iter().next().map(|w| w.text);
+    let shown = shown.unwrap_or_default();
+    let sp = |text: String| Span { cut: None, hint: false, text, style: faint };
+    let mut row =
+        ChatRow { spans: vec![sp(COMPOSED_BY.into()), sp(shown)], skip: hang, ..ChatRow::default() };
+    let lines: Vec<&str> =
+        text.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.trim().is_empty()).collect();
+    crate::chatdoc::keep_whole(&mut row, &lines.join(" "));
+    if row.rest.is_some() {
+        let to = row.spans.iter().map(|s| s.text.width()).sum();
+        let whole = crate::whole::Whole {
+            key: None,
+            on: crate::whole::On::Transcript,
+            text: text.to_string(),
+            style: faint,
+            pieces: Vec::new(),
             cols: (0, 0),
             state: None,
             float: None,

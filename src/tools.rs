@@ -3619,7 +3619,7 @@ fn told(ed: &mut Editor, head: String, report: String) {
     let text = format!("{head}\n{report}");
     if key.is_some_and(|k| goes_on(ed, k)) {
         let message = format!("{text}\n{SENT_BY_ITSELF}");
-        if crate::chat::submit(ed, &message, None, None) {
+        if crate::chat::submit_by_itself(ed, &message, None, None) {
             return ed.note("how it ended went to Claude, which goes on");
         }
     }
@@ -3641,7 +3641,8 @@ pub(crate) fn told_for_test(ed: &mut Editor, report: &str) {
 }
 
 /// What the message a rerun's end sends by itself says last (`told`).
-const SENT_BY_ITSELF: &str = "(tarae sent this when the run ended — the user typed nothing. Go on from it.)";
+pub(crate) const SENT_BY_ITSELF: &str =
+    "(tarae sent this when the run ended — the user typed nothing. Go on from it.)";
 
 /// Whether the user's run again of `key` goes on to Claude by itself as it ends (piece D3): it was a failed run of
 /// Claude's last turn, the conversation is the one it ran in, and the chat is idle.

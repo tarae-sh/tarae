@@ -1683,7 +1683,10 @@ impl Editor {
             r.waiting = Some(a);
             return self.set_status(format!("conflicts in {files} — Claude is asked once its turn ends"));
         }
-        let sent = crate::chat::submit(self, &a.question, Some(a.about.clone()), Some(a.chip.clone()));
+        // (by itself: it goes as git stops at the conflicts, or once a turn or claude's start lets it — no key of
+        // yours sends it)
+        let sent =
+            crate::chat::submit_by_itself(self, &a.question, Some(a.about.clone()), Some(a.chip.clone()));
         // (frictions34 41: a chat whose claude isn't running — none started since tarae did — starts it once the
         // project's Claude settings are read, which the send began — only that first read sets `waiting`, and its
         // end opens the gate: the ask goes then, `chat_ready`)

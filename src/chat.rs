@@ -457,6 +457,11 @@ pub struct Msg {
     /// (`autocards::sent_words`); a row tarae composed (a rerun's report, a wake, a rebase's ask, a review's
     /// template) never is one, nor a message of tarae's own put back in the queue (`Chat.queued_composed`).
     pub typed: bool,
+    /// Sent by tarae with no act of yours (`submit_by_itself`: a rerun's report, a wake, a rebase's ask once git stops
+    /// at its conflicts) — drawn as one faint row, `tarae:` and its first line (`term::composed_row`). What a key of
+    /// yours sent — a code review, a card's answer — is yours, whoever wrote its words, and drawn as yours. Never read
+    /// for whose words they are (`typed` is that).
+    pub by_itself: bool,
     /// Goes up with every change to what it shows (`changed`) — a word replaced, a row's verdict — so its rows
     /// are laid out again, even when the text's length stays.
     version: u64,
@@ -565,6 +570,7 @@ impl Msg {
             from_conversation: None,
             wake: false,
             typed: false,
+            by_itself: false,
             version: 0,
             cache: RefCell::new(None),
         }
@@ -3760,6 +3766,27 @@ fn send_from(ed: &mut Editor, slash: bool) {
 /// one isn't this one's.
 pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Option<String>) -> bool {
     submit_as(ed, question, about, chip, false, false, None)
+}
+
+/// `submit` for what tarae sends by itself, with no act of yours — a rerun's report (`tools::told`), a wake
+/// (`orchestra::wake`), a rebase's ask once git stops at its conflicts (`rebase_ask`): its row marked `Msg.by_itself`,
+/// drawn as one faint row (`term::composed_row`). What Claude is sent is `submit`'s, unchanged.
+pub fn submit_by_itself(
+    ed: &mut Editor,
+    question: &str,
+    about: Option<String>,
+    chip: Option<String>,
+) -> bool {
+    if !submit_as(ed, question, about, chip, false, false, None) {
+        return false;
+    }
+    // (the message just pushed, as `submit_from_with` marks its own)
+    if let Some(m) =
+        ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rfind(|m| m.role == Role::User))
+    {
+        m.by_itself = true;
+    }
+    true
 }
 
 /// A message from the session `from`'s Claude — this one's parent (`orchestra.rs`) — as the next turn: in

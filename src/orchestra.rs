@@ -983,7 +983,7 @@ pub fn wake(ed: &mut Editor) {
         return;
     }
     let turns = ed.workspace.claude.usage.turns.len();
-    if crate::chat::submit(ed, WOKE, None, None) {
+    if crate::chat::submit_by_itself(ed, WOKE, None, None) {
         ed.workspace.claude.wakes.push(now_ms);
         if let Some(c) = ed.workspace.claude.chat.as_mut() {
             c.waking = Some((asked, turns));
