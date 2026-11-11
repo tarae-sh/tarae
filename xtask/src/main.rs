@@ -106,6 +106,7 @@ mod homepage;
 mod kernels;
 mod linux;
 mod perf;
+mod quickjs;
 mod rain;
 mod record;
 mod recording;
@@ -160,10 +161,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // (what reaches Docker, in tarae's sandbox: the settings a run can't find for itself — #139; its config folder
     // removed at the end)
-    let docker = match matches!(args.first().map(String::as_str), Some("linux" | "compat" | "trace")) {
-        true => linux::docker_in_sandbox(),
-        false => None,
-    };
+    let docker =
+        match matches!(args.first().map(String::as_str), Some("linux" | "compat" | "trace" | "quickjs")) {
+            true => linux::docker_in_sandbox(),
+            false => None,
+        };
     let result = match args.first().map(String::as_str) {
         Some("vendor-grammars") => vendor_grammars(),
         Some("shot") => shot::run(&args[1..]),
@@ -193,9 +195,10 @@ fn main() {
         Some("record") => record::run(&args[1..]),
         Some("cut") => cut::run(&args[1..]),
         Some("rain") => rain::run(&args[1..]),
+        Some("quickjs") => quickjs::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | record [--size CxR] --out DIR [--keys F] -- COMMAND … | record draw|still|check DIR | record spike [OUT] | cut FILE | cut init TAKE [--out FILE] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | record [--size CxR] --out DIR [--keys F] -- COMMAND … | record draw|still|check DIR | record spike [OUT] | cut FILE | cut init TAKE [--out FILE] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | quickjs [fetch|build] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };

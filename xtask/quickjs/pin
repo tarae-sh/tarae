@@ -1,0 +1,9 @@
+# The code tool's engine, pinned: the one place its build reads what it builds from (build.sh sources this; a
+# change here is a change of engine, its own commit with the measures re-run).
+#
+# TAG          QuickJS-ng's release tag (github.com/quickjs-ng/quickjs)
+# SOURCE       the sha256 of codeload.github.com's tarball of TAG — fetch checks it, and build again before use
+# IMAGE        wasi-sdk's image by digest (wasi-sdk 25, clang 19.1.5): never a moving tag
+TAG=v0.10.1
+SOURCE=4e917eea3bb6051a0551fdd3aac45199ff705fa08920c15b824a08c5fbb032e4
+IMAGE=ghcr.io/webassembly/wasi-sdk@sha256:fdebde86990902087ecc470bf993ffec4d646e8fbd2e68c290a44120437622d0

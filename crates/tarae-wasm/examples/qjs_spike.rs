@@ -155,7 +155,8 @@ impl Engine {
 
     fn start(&mut self, src: &str) -> Result<Reply, Trap> {
         let p = self.put(src.as_bytes())?;
-        let r = self.call(self.start, &[Val::I32(p), Val::I32(src.len() as i32)])?;
+        // (no step limit: -1 is u32::MAX steps — the fuel is what this measures)
+        let r = self.call(self.start, &[Val::I32(p), Val::I32(src.len() as i32), Val::I32(-1)])?;
         Ok(self.reply(r))
     }
 
@@ -311,7 +312,7 @@ fn measure(bytes: &[u8], jit: bool) {
     let trivial: Vec<_> = (0..7)
         .map(|_| {
             let (r, fuel, t) = e.fuel_used(FUEL, |e| drive(e, "return 1 + 1", ""));
-            assert_eq!(r.as_ref().map(|r| r.0.body.clone()).ok(), Some(r#"{"done":2,"printed":""}"#.into()));
+            assert!(r.as_ref().is_ok_and(|r| r.0.body.starts_with(r#"{"done":2,"printed":"","#)));
             (t, fuel)
         })
         .collect();

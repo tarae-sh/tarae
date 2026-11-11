@@ -31,6 +31,7 @@ pub mod plugin;
 mod read;
 
 use std::fmt;
+use std::sync::Arc;
 
 pub use module::Module;
 
@@ -193,9 +194,11 @@ struct Frame {
     base: u32,
 }
 
-/// A running module: its memory, tables, and globals.
+/// A running module: its memory, tables, and globals. The module itself is shared: it's never written once
+/// compiled (its machine code neither), so any number of instances on any threads may run one `Arc<Module>`,
+/// each with nothing of the others — what the code tool does, a fresh instance a program.
 pub struct Instance {
-    module: Module,
+    module: Arc<Module>,
     limits: Limits,
     memory: Vec<u8>,
     memory_max: usize,
@@ -219,8 +222,9 @@ fn eval(c: Const, globals: &[u64]) -> u64 {
 
 impl Instance {
     /// Sets up memory, tables, and globals, applies the active segments, and runs the start function
-    /// (with `fuel`).
-    pub fn new(module: Module, limits: Limits, fuel: u64) -> Result<Instance, Trap> {
+    /// (with `fuel`). `module` is a `Module` (this instance's alone) or an `Arc<Module>` shared with others.
+    pub fn new(module: impl Into<Arc<Module>>, limits: Limits, fuel: u64) -> Result<Instance, Trap> {
+        let module = module.into();
         let mut globals = Vec::with_capacity(module.globals.len());
         for g in &module.globals {
             globals.push(eval(g.init, &globals));

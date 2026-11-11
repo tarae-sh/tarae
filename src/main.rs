@@ -39,6 +39,7 @@ mod clipboard;
 mod clock;
 mod cmdline;
 mod codereview;
+mod codetool;
 mod codetrust;
 mod codeview;
 mod commands;

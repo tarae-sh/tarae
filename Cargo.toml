@@ -176,5 +176,6 @@ vt100 = "0.16.2"
 tarae-testkit = { path = "crates/tarae-testkit" }  # a test's scratch folder, the one patience, the mutators
 tarae-web = { path = "crates/tarae-web", features = ["check"] }  # the gzip bodies and pictures tests build
 tarae-wire = { path = "crates/tarae-wire", features = ["check"] }  # every message's sample, for the wire's pin
+wat = "1"  # the code tool's stand-in engine, written as text (codetool's tests; tarae-wasm's already)
 # tests/live.rs scales a screenshot past the ladder's first step
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

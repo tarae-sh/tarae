@@ -1,13 +1,24 @@
-// The code tool's engine (S0 spike, .sb/codemode-compute-plan.md §3): QuickJS-ng as a WebAssembly module with no
-// imports, driven by two exports. A program is the body of an async function; what it awaits from `tool(name,
-// arg)` comes back as a list of pending calls, which the host answers one by one through `resume`.
+// The code tool's engine (.sb/codemode-compute-plan.md §3; tarae's host is src/codetool.rs): QuickJS-ng as a
+// WebAssembly module with no imports, driven by two exports. A program is the body of an async function; what it
+// awaits from `tool(name, arg)` comes back as a list of pending calls, which the host answers one by one through
+// `resume`.
 //
 //   alloc(len) -> ptr                    a buffer of len + 1 bytes the host writes into (text, NUL added here)
-//   start(src, len) -> reply             a fresh runtime and context; runs the program until it waits or ends
+//   start(src, len, steps) -> reply      a fresh runtime and context; runs the program until it waits or ends,
+//                                        `steps` its limit (below)
 //   resume(id, answer, len, err) -> reply   answers call `id` with JSON text (rejects it when err != 0)
 //
 // A reply is a u32 length then that many bytes: a header line — `pending <id>:<name> …`, `done` or `error` —
-// then JSON: {"pending":[{id,name,arg}]}, {"done":value,"printed":…} or {"error":message,"printed":…}.
+// then JSON: {"pending":[{id,name,arg}]}, or {"done":value,…} / {"error":message,…}, each of the last two with
+// "printed" (what print() wrote, its first PRINTED_MAX bytes), "printed_bytes" (all it was asked to write),
+// "steps" (the program's so far), "syntax":true when the program didn't compile, and, when the step limit ended
+// it, "stopped":"steps".
+//
+// A step is a call of QuickJS's interrupt handler: every 10,000 bytecode ops (JS_INTERRUPT_COUNTER_INIT), and
+// every so many steps of the regex engine (lre_poll_timeout). The same count on every machine and under the JIT
+// or the interpreter: the limit of one program is work, not seconds. Past it the handler interrupts, and goes
+// on interrupting whatever JS runs after (a `toJSON` of the result too) — QuickJS's "interrupted" can't be
+// caught.
 //
 // Included whole so the glue can reach the context's eval hook: once the program is compiled it's cleared, and
 // `eval`, `Function`, and every constructor reached through a function's `.constructor` throw.
@@ -26,9 +37,25 @@ static int calls;
 static JSValue waiting; // [{id, name, arg}] asked since the last reply
 static uint32_t waiting_n;
 static DynBuf printed;
+static uint64_t printed_bytes;
+static uint32_t steps, max_steps;
+static int stopped, syntax;
 static uint8_t *reply;
 
+static int interrupt(JSRuntime *r, void *opaque) {
+    if (!stopped && ++steps > max_steps)
+        stopped = 1;
+    return stopped;
+}
+
 __attribute__((export_name("alloc"))) char *alloc(uint32_t len) { return malloc((size_t)len + 1); }
+
+// Kept up to PRINTED_MAX (whole pieces only: a character is never cut), every byte counted.
+static void put_printed(const char *s, size_t len) {
+    printed_bytes += len;
+    if (printed.size + len <= PRINTED_MAX)
+        dbuf_put(&printed, (const uint8_t *)s, len);
+}
 
 static void print_value(JSContext *ctx, JSValueConst v) {
     size_t len;
@@ -37,18 +64,17 @@ static void print_value(JSContext *ctx, JSValueConst v) {
         JS_FreeValue(ctx, JS_GetException(ctx));
         s = JS_ToCStringLen(ctx, &len, JS_NewString(ctx, "[unprintable]"));
     }
-    if (printed.size + len < PRINTED_MAX)
-        dbuf_put(&printed, (const uint8_t *)s, len);
+    put_printed(s, len);
     JS_FreeCString(ctx, s);
 }
 
 static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     for (int i = 0; i < argc; i++) {
         if (i)
-            dbuf_putc(&printed, ' ');
+            put_printed(" ", 1);
         print_value(ctx, argv[i]);
     }
-    dbuf_putc(&printed, '\n');
+    put_printed("\n", 1);
     return JS_UNDEFINED;
 }
 
@@ -70,11 +96,27 @@ static JSValue js_tool(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     return p;
 }
 
+// The end's counts, on a reply's body.
+static void counts(JSValue body) {
+    JS_SetPropertyStr(cx, body, "printed", JS_NewStringLen(cx, (const char *)printed.buf, printed.size));
+    JS_SetPropertyStr(cx, body, "printed_bytes", JS_NewFloat64(cx, (double)printed_bytes));
+    JS_SetPropertyStr(cx, body, "steps", JS_NewUint32(cx, steps));
+    if (stopped)
+        JS_SetPropertyStr(cx, body, "stopped", JS_NewString(cx, "steps"));
+    if (syntax)
+        JS_SetPropertyStr(cx, body, "syntax", JS_TRUE);
+}
+
 static uint8_t *answer(const char *head, JSValue body) {
     JSValue text = JS_JSONStringify(cx, body, JS_UNDEFINED, JS_UNDEFINED);
-    if (JS_IsException(text)) {
-        JS_FreeValue(cx, JS_GetException(cx));
-        text = JS_NewString(cx, "{\"error\":\"the reply isn't JSON\"}");
+    if (JS_IsException(text) || !JS_IsString(text)) {
+        // the result's own toJSON threw, or ran past the limit, or it can't be said in JSON (a cycle, a BigInt)
+        JS_FreeValue(cx, JS_IsException(text) ? JS_GetException(cx) : text);
+        char e[160];
+        snprintf(e, sizeof e, "{\"error\":\"the result can't be turned into JSON\",\"steps\":%u%s}", steps,
+                 stopped ? ",\"stopped\":\"steps\"" : "");
+        head = "error";
+        text = JS_NewString(cx, e);
     }
     size_t len, hlen = strlen(head);
     const char *s = JS_ToCStringLen(cx, &len, text);
@@ -90,8 +132,6 @@ static uint8_t *answer(const char *head, JSValue body) {
     JS_FreeValue(cx, body);
     return reply;
 }
-
-static JSValue printed_text(void) { return JS_NewStringLen(cx, (const char *)printed.buf, printed.size); }
 
 // The exception's words, and its stack when it has one.
 static uint8_t *failed(JSValue exc) {
@@ -116,7 +156,7 @@ static uint8_t *failed(JSValue exc) {
     JSValue body = JS_NewObject(cx);
     JS_SetPropertyStr(cx, body, "error", JS_NewStringLen(cx, (const char *)b.buf, b.size));
     dbuf_free(&b);
-    JS_SetPropertyStr(cx, body, "printed", printed_text());
+    counts(body);
     return answer("error", body);
 }
 
@@ -134,7 +174,7 @@ static uint8_t *settle(void) {
     case JS_PROMISE_FULFILLED: {
         JSValue body = JS_NewObject(cx);
         JS_SetPropertyStr(cx, body, "done", JS_PromiseResult(cx, program));
-        JS_SetPropertyStr(cx, body, "printed", printed_text());
+        counts(body);
         return answer("done", body);
     }
     case JS_PROMISE_REJECTED:
@@ -188,8 +228,13 @@ static void fresh(void) {
     }
     calls = 0;
     waiting_n = 0;
+    printed_bytes = 0;
+    steps = 0;
+    stopped = 0;
+    syntax = 0;
     rt = JS_NewRuntime();
     JS_SetMemoryLimit(rt, MEMORY_LIMIT);
+    JS_SetInterruptHandler(rt, interrupt, NULL);
     // QuickJS-ng turns the stack check off on wasi (`update_stack_limit`); put it back, within the module's 1 MB
     // shadow stack (linked first: past it is below address 0, a trap), so deep recursion is a RangeError
     rt->stack_size = STACK_LIMIT;
@@ -208,10 +253,12 @@ static void fresh(void) {
     JS_FreeValue(cx, g);
 }
 
-__attribute__((export_name("start"))) uint8_t *start(char *src, uint32_t len) {
+__attribute__((export_name("start"))) uint8_t *start(char *src, uint32_t len, uint32_t limit) {
     src[len] = 0;
     fresh();
-    static const char before[] = "(async () => {\n", after[] = "\n})()";
+    max_steps = limit;
+    // (on the program's first line, so an error's line is the program's own)
+    static const char before[] = "(async () => {", after[] = "\n})()";
     DynBuf b;
     dbuf_init(&b);
     dbuf_put(&b, (const uint8_t *)before, sizeof before - 1);
@@ -222,8 +269,10 @@ __attribute__((export_name("start"))) uint8_t *start(char *src, uint32_t len) {
     dbuf_free(&b);
     // from here on nothing becomes code: eval and every Function constructor throw
     cx->eval_internal = NULL;
-    if (JS_IsException(f))
+    if (JS_IsException(f)) {
+        syntax = 1;
         return failed(JS_GetException(cx));
+    }
     program = JS_EvalFunction(cx, f);
     if (JS_IsException(program)) {
         program = JS_UNDEFINED;

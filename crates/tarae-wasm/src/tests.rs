@@ -401,6 +401,46 @@ fn float_registers_come_through_calls_helpers_and_moves() {
     }
 }
 
+/// Instances of one shared module are apart: memory, globals, tables and data segments are each instance's own,
+/// a trap in one leaves the others running, and a `Module` passed by value (as plugins do) still instantiates.
+#[test]
+fn instances_of_one_module_share_nothing_but_the_code() {
+    let wat = r#"(module (memory 1) (global $g (mut i32) (i32.const 0)) (data "seed")
+        (func (export "bump") (result i32)
+          (global.set $g (i32.add (global.get $g) (i32.const 1)))
+          (i32.store (i32.const 16) (i32.add (i32.load (i32.const 16)) (i32.const 10)))
+          (i32.add (global.get $g) (i32.load (i32.const 16))))
+        (func (export "init") (memory.init 0 (i32.const 64) (i32.const 0) (i32.const 4)) (data.drop 0))
+        (func (export "seeded") (result i32) (i32.load8_u (i32.const 64)))
+        (func (export "spin") (loop $l (br $l))))"#;
+    let bytes = wat::parse_str(wat).unwrap();
+    for jit in [true, false] {
+        let limits = Limits { jit, ..Limits::default() };
+        let m = std::sync::Arc::new(Module::new(&bytes).unwrap());
+        let mut a = Instance::new(m.clone(), limits, FUEL).unwrap();
+        let mut b = Instance::new(m.clone(), limits, 1_000).unwrap();
+        assert_eq!(i32s(&mut a, "bump", &[]), Ok(11));
+        assert_eq!(i32s(&mut a, "bump", &[]), Ok(22));
+        // the data segment dropped in `a` is still there for `b`
+        call(&mut a, "init", &[]).unwrap();
+        assert_eq!(call(&mut a, "init", &[]), Err(Trap::MemoryOutOfBounds));
+        assert_eq!(call(&mut b, "spin", &[]), Err(Trap::OutOfFuel));
+        b.set_fuel(FUEL);
+        call(&mut b, "init", &[]).unwrap();
+        assert_eq!(i32s(&mut b, "seeded", &[]), Ok(b's' as i32));
+        assert_eq!(i32s(&mut b, "bump", &[]), Ok(11), "b starts from nothing of a's");
+        assert_eq!(i32s(&mut a, "bump", &[]), Ok(33), "a carries on after b's trap");
+        // on another thread at the same time
+        let t = std::thread::spawn({
+            let m = m.clone();
+            move || i32s(&mut Instance::new(m, limits, FUEL).unwrap(), "bump", &[])
+        });
+        assert_eq!(t.join().unwrap(), Ok(11));
+        let by_value = Module::new(&bytes).unwrap();
+        assert_eq!(i32s(&mut Instance::new(by_value, limits, FUEL).unwrap(), "bump", &[]), Ok(11));
+    }
+}
+
 /// A function reference from the host must name one of the module's functions (the JIT's `call_indirect`
 /// trusts what's in tables).
 #[test]
