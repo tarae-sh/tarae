@@ -568,6 +568,19 @@ impl Editor {
         false
     }
 
+    /// The base session `id` is brought into: its own, else the branch of the checkout tarae started in.
+    pub(crate) fn bring_base(&self, id: WorkspaceId) -> String {
+        let l = std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == id);
+        l.and_then(|l| l.base.clone()).unwrap_or_else(|| start_branch(self, &self.start_root()))
+    }
+
+    /// A bring card (`m`'s) answered `n` — said to watchers of `bring`.
+    pub(crate) fn bring_declined(&mut self, m: &crate::rebase::Moved) {
+        if let Some(id) = self.session_at(&m.root) {
+            crate::uistate::watch::bring(self, id, &m.base, crate::uistate::watch::BringEnd::Declined);
+        }
+    }
+
     fn bring_name(&self, id: WorkspaceId) -> String {
         let all = std::iter::once(&self.workspace).chain(&self.workspaces);
         let queued = || {

@@ -3046,6 +3046,7 @@ impl crate::editor::Editor {
             What::Instructions(b) => crate::instructions::answer(self, *b, false),
             What::ReviewEnd { .. } => self.set_status("still reviewing — space v m marks a file viewed"),
             What::Rebase(m) => {
+                self.bring_declined(&m);
                 self.set_status(format!("Not rebased — {} as it is, nothing brought", m.branch))
             }
             What::RebaseHeld(h) => {
@@ -3056,13 +3057,20 @@ impl crate::editor::Editor {
                 self.set_status(format!("Not rebased — {} as it is, nothing brought", h.moved.branch))
             }
             What::Rebased(m) => {
+                self.bring_declined(&m);
                 self.set_status(format!("Not brought — :workspace-bring {} when you're ready", m.name))
             }
             What::RebaseResolved { .. } => {
                 self.set_status("the rebase waits — its card is in the inbox (space I), or :rebase-continue")
             }
             What::UpTo(m) => self.set_status(format!("Left {} where it is, behind {}", m.name, m.base)),
-            What::BringQueue(_) => self.set_status("Not brought — they stay marked: B in space W asks again"),
+            What::BringQueue(ask) => {
+                for id in ask.ids {
+                    let base = self.bring_base(id);
+                    crate::uistate::watch::bring(self, id, &base, crate::uistate::watch::BringEnd::Declined);
+                }
+                self.set_status("Not brought — they stay marked: B in space W asks again")
+            }
             What::BaseMoved(m) => crate::keepclose::dismissed(self, &m),
             What::Hooks(ask) => self.hooks_answer(o.id, *ask, false),
             What::Restart(c) => crate::restart::chosen(self, o.id, *c, None),

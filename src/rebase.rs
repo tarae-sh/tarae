@@ -1504,6 +1504,19 @@ impl Editor {
         match end {
             Ended::Stopped(stop, ask) => {
                 let at = stop.at();
+                // (a bring's rebase — the one card's `y`, or the queue's one under way — stopped at its conflicts)
+                let id = self.workspace.id;
+                let bringing = self.workspace.bring_go
+                    || self.bring_queue_at(id) == Some(crate::bringqueue::Stage::Rebasing);
+                if bringing && !stop.files.is_empty() && id != crate::event::WorkspaceId::HOME {
+                    let files = stop.files.len();
+                    crate::uistate::watch::bring(
+                        self,
+                        id,
+                        &base,
+                        crate::uistate::watch::BringEnd::Conflict { files },
+                    );
+                }
                 if let Some(r) = self.workspace.rebase.as_mut() {
                     (r.stage, r.step, r.asked) = (Stage::Stopped, stop.step, false);
                     r.stop = *stop;
@@ -2758,6 +2771,15 @@ impl Editor {
             return;
         }
         let (id, name) = (self.workspace.id, self.workspace.label().to_string());
+        if !passed {
+            let base = card.as_ref().map_or_else(|| self.bring_base(id), |m| m.base.clone());
+            crate::uistate::watch::bring(
+                self,
+                id,
+                &base,
+                crate::uistate::watch::BringEnd::Preflight { title },
+            );
+        }
         // (the bring queue's one under way: said there, the next going on if it failed)
         if self.bring_queue_at(id) == Some(crate::bringqueue::Stage::Preflight) {
             // (its card back saying what failed, as a single bring's — then out, the next going on)

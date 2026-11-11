@@ -385,6 +385,65 @@ pub fn sandbox(ed: &mut Editor, g: crate::sandbox::guarantees::Guarantees) {
     ed.ui_said(ev);
 }
 
+/// How a bring ended — the `bring` event's `how`.
+pub enum BringEnd<'a> {
+    /// Its base moved up to its branch: the base's new tip, and the commits it took.
+    Landed { tip: &'a str, commits: usize },
+    /// The preflight it waited for (`title`: which set) didn't pass — nothing landed.
+    Preflight { title: &'a str },
+    /// Its rebase onto the base stopped at conflicts in `files` files — nothing landed; once they're resolved the bring
+    /// may go on, and another `bring` event says how that ended.
+    Conflict { files: usize },
+    /// Its card answered `n`.
+    Declined,
+}
+
+impl BringEnd<'_> {
+    fn how(&self) -> &'static str {
+        match self {
+            BringEnd::Landed { .. } => "landed",
+            BringEnd::Preflight { .. } => "preflight-failed",
+            BringEnd::Conflict { .. } => "conflict",
+            BringEnd::Declined => "declined",
+        }
+    }
+}
+
+/// A bring of workspace `id` into `base` ended (`end`) — for watchers of `bring`. Its own kind, said where it ends: a
+/// landing changes nothing a snapshot diffs (only a toast's words said it), and a watcher of what sessions are doing
+/// needn't hear commits. When is the event's `frame` and `input`, as every event's.
+pub fn bring(ed: &mut Editor, id: crate::event::WorkspaceId, base: &str, end: BringEnd) {
+    if !ed.ui_watch.watching() {
+        return;
+    }
+    let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id);
+    let (session, name) = match l {
+        Some(l) => (Some(super::session_id(l.claude.id)), l.label().to_string()),
+        None => (None, format!("session {id}")),
+    };
+    let who = session.as_ref().map_or_else(|| name.clone(), |s| format!("{s} {name}"));
+    let mut ev =
+        json!({ "event": "bring", "session": session, "name": name, "base": base, "how": end.how() });
+    let said = match end {
+        BringEnd::Landed { tip, commits } => {
+            (ev["tip"], ev["commits"]) = (json!(tip), json!(commits));
+            format!("{who}: brought into {base} — {}, now at {tip}", crate::worktree::commits(commits))
+        }
+        BringEnd::Preflight { title } => {
+            ev["preflight"] = json!(title);
+            format!("{who}: not brought into {base} — the {title} didn't pass")
+        }
+        BringEnd::Conflict { files } => {
+            ev["conflicts"] = json!(files);
+            let n = crate::nav::count(files, "conflicted file");
+            format!("{who}: not brought into {base} — its rebase stopped at {n}")
+        }
+        BringEnd::Declined => format!("{who}: not brought into {base} — declined"),
+    };
+    ev["said"] = json!(said);
+    ed.ui_said(ev);
+}
+
 /// Where the plan's limits stand changed (`limits.rs`) — for watchers of `usage`: the account's, so no session;
 /// said as the chat's row says the weekly window.
 pub fn limits(ed: &mut Editor) {
@@ -469,6 +528,12 @@ pub(crate) fn owed(ed: &Editor) -> Option<String> {
     let now = summary(&ed.ui_state());
     let changed = ed.ui_watch.last.as_ref().map(|old| diff(old, &now)).unwrap_or_default();
     changed.first().map(|ev| format!("changed, not sent: {}", ev["said"]))
+}
+
+/// The events said and not sent yet — the watchers hear them at this batch's end (a simulation's check between).
+#[cfg(test)]
+pub(crate) fn said_unsent(ed: &Editor) -> impl Iterator<Item = &Value> {
+    ed.ui_watch.pending.iter().map(|(ev, _)| ev)
 }
 
 /// The gone ring's newest, for the state (`gone`).

@@ -176,7 +176,7 @@ fn peer(stream: UnixStream, tx: crate::event::Tx) {
 
 /// The kinds of events a watcher may ask for (`{"watch":[…]}`; none: all).
 const KINDS: &[&str] = &[
-    "keys", "cards", "sessions", "reviewer", "review", "turns", "runs", "toasts", "usage", "procs",
+    "keys", "cards", "sessions", "reviewer", "review", "bring", "turns", "runs", "toasts", "usage", "procs",
     "sandbox", "regions",
 ];
 
@@ -374,7 +374,8 @@ usage: tarae state [--json] [--pid PID] [--after-input N]
   --features         instead: which features get used, and which never (:features; counted only with
                      features.count on)
   --watch [KINDS]    what changes, a line an event, until interrupted — KINDS: keys,cards,sessions,reviewer,
-                     review,turns,runs,toasts,usage,procs,sandbox (all when left out); regions only when named";
+                     review,bring,turns,runs,toasts,usage,procs,sandbox (all when left out); regions only when
+                     named";
 
 /// `tarae state`: a reader that stops early (`| head -3`) ends it quietly — exit 0, nothing said.
 pub fn cli(args: &[String]) -> anyhow::Result<()> {

@@ -525,6 +525,7 @@ A snapshot is one question. An event stream tells you about change without polli
 | `session` | id, doing old → new, `reviewer` (its reviewer reading: `idle → idle · reviewing`) | diff |
 | `reviewer` | session, `reviewer_run` (above), `was`: its state before (`reading` → `done`); only when it starts, ends or stops | diff |
 | `review` | session, `what`: `began` (kind) · `decided` (an edit review's change answered: file, its number in the review, outcome) · `ended` (changes, `active_ms`, outcomes counted) | explicit, at `reviews.rs`'s frame and ends |
+| `bring` | session, `name`, `base`, `how`: `landed` (`tip`, `commits`) · `preflight-failed` (`preflight`: which set) · `conflict` (`conflicts`: files — its rebase stopped; once they're resolved the bring may go on, and a later `bring` says how that ended) · `declined` (its card's `n`; the queue's card: one a session) — when, its `frame` and `input` | explicit, where a bring ends (`watch::bring`: the bring's worker landing, `rebase_preflight_done`, `rebase_ended`, `offer_dismiss`); no snapshot field — a landing changes nothing the diff reads |
 | `turn` | session, `started` / `ended` (`chat` Done), calls, edits | explicit |
 | `run` | id, `queued` · `started` · `waiting <what>` · `ended <how> <took>` | explicit, beside the `RunTrace` steps phase 0 already logs (and `Waiting::line`) |
 | `toast` | the toast | diff |

@@ -58,6 +58,11 @@ fn run(choices: Choices) -> Vec<String> {
     }
     ed.workspace_switch(crate::event::WorkspaceId::HOME);
     ed.bring_queue.stand_in = true;
+    // (a watcher of `bring`, as the full video's recorder: told at each step's end, as the main loop tells it)
+    let (tx, rx) = std::sync::mpsc::sync_channel(crate::uistate::watch::UNREAD);
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    ed.ui_watch_add(crate::uistate::watch::Watcher { tx, kinds: vec!["bring".into()], overflowed: flag });
+    let told = std::cell::RefCell::new(Vec::new());
     let dir = world.dir.display().to_string();
     // (each `y` that asked a bring, in order: those in line go as asked)
     let asked = std::cell::RefCell::new(Vec::new());
@@ -71,12 +76,16 @@ fn run(choices: Choices) -> Vec<String> {
             .and_then(|()| line_said(ed))
             .and_then(|()| first_asked_first(ed, &asked.borrow()))
             .and_then(|()| preflights_checked(ed, &names))
+            .and_then(|()| brings_told(ed, &told.borrow(), &names))
     };
     let said = |ed: &Editor| format!("{} · {}{}", print(ed, &dir), queue_said(ed), trust_waits(ed));
     let step = |sim: &mut Sim, ed: &mut Editor| {
         let s = input(sim, ed, &names, &mut asked.borrow_mut(), &world.repo);
         // (an input is an event: what every event runs after it, the line's part — `handle_event`)
         ed.bring_queue_sync();
+        crate::uistate::undrawn(ed);
+        told.borrow_mut()
+            .extend(rx.try_iter().map(|l| serde_json::from_str::<serde_json::Value>(&l).unwrap()));
         s
     };
     sim.walk(&mut ed, INPUTS, step, check, said);
@@ -541,6 +550,44 @@ fn queue_asked(
     ed.handle_key(Key::plain(Code::Char('y')));
     asked.extend(marks.into_iter().filter(|id| ed.bring_queued(*id)));
     "B, and y on its card".into()
+}
+
+/// Every landing told a watcher of `bring` once, in its order (by its batch's end): one `landed` event for each
+/// `Brought …` said, its workspace, commits and tip the same — and every end told names one of the scenario's sessions
+/// and its base, `main`.
+fn brings_told(
+    ed: &Editor,
+    told: &[serde_json::Value],
+    names: &[(String, std::path::PathBuf)],
+) -> Result<(), String> {
+    // (what a job's landing said is told at its batch's end: counted with what was)
+    let unsent = crate::uistate::watch::said_unsent(ed).filter(|e| e["event"] == "bring");
+    let told: Vec<&serde_json::Value> = told.iter().chain(unsent).collect();
+    for e in &told {
+        let named = names.iter().any(|(n, _)| e["name"] == n.as_str());
+        if !named || e["base"] != "main" || e["event"] != "bring" {
+            return Err(format!("a bring told of another workspace or base: {e}"));
+        }
+    }
+    let landed: Vec<String> = told
+        .iter()
+        .filter(|e| e["how"] == "landed")
+        .map(|e| {
+            let commits = crate::worktree::commits(e["commits"].as_u64().unwrap_or(0) as usize);
+            format!(
+                "Brought {commits} of {} into main — now at {}",
+                e["name"].as_str().unwrap_or(""),
+                e["tip"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    let said: Vec<&str> =
+        ed.messages.iter().map(|m| m.2.as_str()).filter(|m| m.starts_with("Brought ")).collect();
+    let same = landed.len() == said.len() && landed.iter().zip(&said).all(|(l, s)| s.starts_with(l.as_str()));
+    match same {
+        true => Ok(()),
+        false => Err(format!("the landings told {landed:?}, said {said:?}")),
+    }
 }
 
 /// What the queue's one under way waits on, ended by the scenario: its rebase — run here, aborted at a conflict —

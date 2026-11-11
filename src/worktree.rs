@@ -2968,6 +2968,8 @@ impl Editor {
                     let bases = std::iter::once(&ed.workspace).chain(&ed.workspaces);
                     let bases = bases.filter(|l| l.git_branch.as_deref() == Some(b.base.as_str()));
                     ed.lsp_look(bases.map(|l| l.root.clone()).collect());
+                    let landed = crate::uistate::watch::BringEnd::Landed { tip: &b.tip, commits: b.count };
+                    crate::uistate::watch::bring(ed, id, &b.base, landed);
                     // A child its parent's Claude started is done once it's in: its end offered at once, carded
                     // even with nothing to lose (orchestra §7) — yours to answer; nothing did it before. Not idle
                     // yet (its Claude answering, a rebase, a file unsaved): once it is, said here
@@ -5015,6 +5017,146 @@ mod tests {
         assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nmain\nfeat\n");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A watcher of `bring` only (`tarae state --watch bring`): its lines come as `heard` reads them.
+    fn bring_watched(ed: &mut Editor) -> std::sync::mpsc::Receiver<String> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(crate::uistate::watch::UNREAD);
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        ed.ui_watch_add(crate::uistate::watch::Watcher { tx, kinds: vec!["bring".into()], overflowed: flag });
+        rx
+    }
+
+    /// What a watcher of `bring` was told since the last look — at a batch's end, as the main loop tells it.
+    fn heard(ed: &mut Editor, rx: &std::sync::mpsc::Receiver<String>) -> Vec<serde_json::Value> {
+        crate::uistate::undrawn(ed);
+        rx.try_iter().map(|l| serde_json::from_str(&l).unwrap()).collect()
+    }
+
+    /// The full video's chapter 4 (the design session, 2026-11-11): a bring's end is an event on the UI socket — its
+    /// card's `n` (`declined`), its landing (`landed`: the base's new tip, the commits it took), a failed preflight
+    /// (`preflight-failed`) — each naming the workspace and the base, its `said` the line `tarae state --watch` prints,
+    /// when it was its `frame` and `input`. A card coming up ends nothing.
+    #[test]
+    fn a_brings_end_is_told_to_a_watcher() {
+        let (_s, repo, dir) = place("bring-watched");
+        let mut ed = editor(&repo, &dir);
+        let rx = bring_watched(&mut ed);
+        let wt = new_session(&mut ed, "feat");
+        std::fs::write(wt.join("a.txt"), "feat\n").unwrap();
+        git_in(&wt, &["commit", "-qam", "feat"]);
+        let tip = git_in(&wt, &["rev-parse", "HEAD"]);
+        feed(&mut ed, ":workspace-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "{}", stack(&ed));
+        assert_eq!(heard(&mut ed, &rx), Vec::<serde_json::Value>::new(), "a card up ends nothing");
+        // Its `n`: declined
+        feed(&mut ed, "n");
+        let ev = heard(&mut ed, &rx);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        let session = ev[0]["session"].as_str().unwrap_or_default().to_string();
+        assert!(session.starts_with('s'), "{}", ev[0]);
+        assert_eq!(
+            (&ev[0]["event"], &ev[0]["how"], &ev[0]["name"], &ev[0]["base"]),
+            (&json!("bring"), &json!("declined"), &json!("feat"), &json!("main"))
+        );
+        assert_eq!(ev[0]["said"], format!("{session} feat: not brought into main — declined"));
+        assert!(ev[0]["frame"].is_u64() && ev[0]["input"].is_u64(), "when: {}", ev[0]);
+        // Its `y`: the preflight, then landed
+        bring_asked(&mut ed, "feat", "main");
+        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "bring feat:"));
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), tip, "{}", said(&ed));
+        let ev = heard(&mut ed, &rx);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(
+            (&ev[0]["how"], &ev[0]["session"], &ev[0]["base"], &ev[0]["tip"], &ev[0]["commits"]),
+            (&json!("landed"), &json!(session), &json!("main"), &json!(&tip[..7]), &json!(1))
+        );
+        assert_eq!(
+            ev[0]["said"],
+            format!("{session} feat: brought into main — 1 commit, now at {}", &tip[..7])
+        );
+        // A preflight that fails: nothing lands, and that's how it ended
+        let wt = new_session(&mut ed, "fails");
+        std::fs::write(wt.join("f.txt"), "f\n").unwrap();
+        git_in(&wt, &["add", "-A"]);
+        git_in(&wt, &["commit", "-qm", "f"]);
+        ed.config.preflight[0].cmd = "false".into();
+        feed(&mut ed, ":workspace-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "Bring fails into main").is_some() || says(ed, "bring fails:"));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "{}", stack(&ed));
+        feed(&mut ed, "y");
+        let failed = |ed: &Editor| card(ed, "Bring fails into main").is_some_and(|o| !o.warnings.is_empty());
+        settle_until(&mut ed, failed);
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), tip, "nothing landed");
+        let ev = heard(&mut ed, &rx);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(
+            (&ev[0]["how"], &ev[0]["name"], &ev[0]["base"], &ev[0]["preflight"]),
+            (&json!("preflight-failed"), &json!("fails"), &json!("main"), &json!("preflight"))
+        );
+        let said = ev[0]["said"].as_str().unwrap();
+        assert!(said.ends_with(" fails: not brought into main — the preflight didn't pass"), "{said}");
+        drop(ed);
+    }
+
+    /// The bring queue's card answered `n`: each session it asked about is told declined, into its base.
+    #[test]
+    fn the_bring_queues_n_is_told_a_decline_a_session() {
+        let (_s, repo, dir) = place("bring-watched-queue");
+        let mut ed = editor(&repo, &dir);
+        let rx = bring_watched(&mut ed);
+        for name in ["one", "two"] {
+            let wt = new_session(&mut ed, name);
+            git_in(&wt, &["commit", "-q", "--allow-empty", "-m", name]);
+            let id = ed.session_named(name).unwrap().0;
+            ed.bring_mark(id);
+        }
+        ed.bring_queue_ask().unwrap();
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "{}", stack(&ed));
+        feed(&mut ed, "n");
+        let ev = heard(&mut ed, &rx);
+        let s = |e: &serde_json::Value, k: &str| e[k].as_str().unwrap_or_default().to_string();
+        let got: Vec<(String, String, String)> =
+            ev.iter().map(|e| (s(e, "name"), s(e, "how"), s(e, "base"))).collect();
+        let want = |n: &str| (n.to_string(), "declined".to_string(), "main".to_string());
+        assert_eq!(got, [want("one"), want("two")], "{ev:?}");
+        drop(ed);
+    }
+
+    /// A bring's rebase stopped at a conflict is how that bring ended, told to a watcher of `bring` — the files it
+    /// stopped at counted; nothing landed.
+    #[test]
+    fn a_brings_rebase_stopped_at_a_conflict_is_told_to_a_watcher() {
+        let (_s, repo, dir) = place("bring-watched-conflict");
+        let mut ed = editor(&repo, &dir);
+        passing_preflight(&mut ed);
+        let rx = bring_watched(&mut ed);
+        moved_apart(&mut ed, &repo, false);
+        let main = git_in(&repo, &["rev-parse", "main"]);
+        bring_go_asked(&mut ed);
+        // (its task panel says it stopped at its conflicts — the rebase's stage reads stopped before git runs)
+        let stopped = |ed: &Editor| {
+            let run = ed.workspace.task_run.as_ref();
+            run.is_some_and(|t| matches!(t.state, crate::task::State::Stopped(_))) || says(ed, "rebase feat:")
+        };
+        settle_until(&mut ed, stopped);
+        let ev = heard(&mut ed, &rx);
+        assert_eq!(ev.len(), 1, "{ev:?} — {}", said(&ed));
+        assert_eq!(
+            (&ev[0]["how"], &ev[0]["name"], &ev[0]["base"], &ev[0]["conflicts"]),
+            (&json!("conflict"), &json!("feat"), &json!("main"), &json!(1))
+        );
+        assert!(
+            ev[0]["said"]
+                .as_str()
+                .unwrap()
+                .ends_with(" feat: not brought into main — its rebase stopped at 1 conflicted file"),
+            "{}",
+            ev[0]
+        );
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), main, "nothing landed");
+        drop(ed);
     }
 
     /// The one bring card's `y`, a high-risk change among what it brings (the Rust pack's `unsafe`): rebased, the
