@@ -65,7 +65,7 @@ fn state_calls() -> Option<PathBuf> {
 }
 
 /// `p` itself, or the `.jsonl` files in it, oldest month first.
-fn jsonl_in(p: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn jsonl_in(p: &Path) -> Result<Vec<PathBuf>> {
     if !p.is_dir() {
         return Ok(vec![p.to_path_buf()]);
     }
@@ -76,24 +76,30 @@ fn jsonl_in(p: &Path) -> Result<Vec<PathBuf>> {
     Ok(v)
 }
 
-/// One turn, as the report reads it.
-struct Turn {
-    kind: &'static str,
+/// One turn, as the report reads it (and `fold --record`).
+pub(crate) struct Turn {
+    pub(crate) kind: &'static str,
+    /// When it ended, as the entry writes it (`2026-10-17 10:00:00`).
+    pub(crate) at: String,
+    pub(crate) model: String,
     /// Each request's tool names, in order.
-    steps: Vec<Vec<String>>,
+    pub(crate) steps: Vec<Vec<String>>,
     /// Each request's context and output (None: not reported).
-    sizes: Vec<(Option<u64>, Option<u64>)>,
+    pub(crate) sizes: Vec<(Option<u64>, Option<u64>)>,
     /// None: not counted (an aside's).
     requests: Option<u64>,
     calls: u64,
     context: u64,
-    cost: Option<f64>,
+    pub(crate) cost: Option<f64>,
     /// input · cache write · cache read · output tokens.
-    counts: [u64; 4],
+    pub(crate) counts: [u64; 4],
 }
 
+/// The chat's kinds of turn (the rest — `/compact`'s, the asides' — aren't the chat's work).
+pub(crate) const CHAT: [&str; 3] = ["question", "change", "refactor"];
+
 impl Turn {
-    fn of(e: &Value) -> Turn {
+    pub(crate) fn of(e: &Value) -> Turn {
         let n = |v: &Value| v.as_u64().unwrap_or(0);
         let steps: Vec<Vec<String>> = e["steps"]
             .as_array()
@@ -130,6 +136,8 @@ impl Turn {
         let c = &e["counts"];
         Turn {
             kind,
+            at: e["at"].as_str().unwrap_or_default().to_string(),
+            model: e["model"].as_str().unwrap_or_default().to_string(),
             sizes,
             requests: e["requests"].as_u64(),
             calls: n(&e["calls"]["calls"]),
@@ -173,7 +181,7 @@ impl Turn {
 }
 
 /// A request's calls as a label: `search`, `read×3`, `search+read`.
-fn label(step: &[String]) -> String {
+pub(crate) fn label(step: &[String]) -> String {
     let mut parts: Vec<(&str, usize)> = Vec::new();
     for t in step {
         match parts.last_mut() {
@@ -236,10 +244,10 @@ pub(crate) fn table(head: &[&str], rows: &[Vec<String>]) -> String {
     out
 }
 
-/// The whole report for the record's `text` (its files named `from`).
-fn report(from: &str, text: &str) -> String {
+/// The record's entries, and how many lines weren't one (a write cut short).
+pub(crate) fn entries(text: &str) -> (Vec<Value>, usize) {
     let mut broken = 0;
-    let all: Vec<Value> = text
+    let all = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| {
@@ -248,6 +256,12 @@ fn report(from: &str, text: &str) -> String {
             v
         })
         .collect();
+    (all, broken)
+}
+
+/// The whole report for the record's `text` (its files named `from`).
+fn report(from: &str, text: &str) -> String {
+    let (all, broken) = entries(text);
     let mut out = format!("# Turns\n\nFrom {from}: {} entries", all.len());
     if let (Some(first), Some(last)) = (all.first(), all.last()) {
         out += &format!(", {} – {}", first["at"].as_str().unwrap_or(""), last["at"].as_str().unwrap_or(""));
@@ -314,8 +328,7 @@ fn report(from: &str, text: &str) -> String {
     );
 
     // Round trips in a row
-    let chat: Vec<&Turn> =
-        turns.iter().filter(|t| matches!(t.kind, "question" | "change" | "refactor")).collect();
+    let chat: Vec<&Turn> = turns.iter().filter(|t| CHAT.contains(&t.kind)).collect();
     let requests: u64 = chat.iter().map(|t| t.steps.len() as u64).sum();
     let chains: Vec<usize> = chat.iter().flat_map(|t| t.chains()).collect();
     let in_long: u64 = chains.iter().filter(|n| **n >= CHAIN).map(|n| *n as u64).sum();

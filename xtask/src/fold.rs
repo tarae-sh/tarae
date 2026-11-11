@@ -29,14 +29,27 @@
 //! outline for `symbols`, each saying the server is starting, still loading or didn't answer in time), by tool, of
 //! how many; their characters; and what they cost to carry: each one's share (by characters) of the results its
 //! next request wrote to the cache, at that request's write rates, and the same tokens read by each request after.
+//!
+//! `cargo xtask fold --record CALLS CELL …` — code mode (b) measured again on the call-order record (main's
+//! `.sb/decisions/chat.md`, "Code mode (b), measured again"; the brief `.sb/codemode-b-remeasure-brief.md`). The
+//! record (`CALLS`: a month's file or the folder; never found by itself) holds each request's tools, context and
+//! output — no arguments, no results, no words — so the rule above can't be applied to it. A **loose** one can
+//! (`loose`): a request folds when the one before it had calls, its own calls are all bindings, and its output is
+//! at most the quiet threshold. Its cost is bound A, priced from its sizes alone (`sized_costs`); bound B is a
+//! result of `LARGE` or more ahead of it (its context's growth less the output before: `result`). The cells given
+//! calibrate it (`calibrate`), as each has both: the threshold that best tells a request that said nothing, how
+//! often the loose rule is wrong each way, and the factor from the loose ceiling to the real bound, pooled, with
+//! its spread over cells. The estimate is the record's loose ceiling times that factor; the report closes on the
+//! rule set before the numbers.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use crate::Result;
-use crate::turns::table;
+use crate::turns::{CHAT, Turn, label, table};
 
 /// The tools a program could call (the plan's §2: read-only, no card or review of their own).
 const BINDINGS: [&str; 7] = ["read", "search", "symbols", "definition", "references", "diagnostics", "git"];
@@ -76,10 +89,25 @@ const CHECK: f64 = 0.02;
 /// The price table tarae carries (`switchcost::Price`'s rows, the tools pack's `[[claude.price]]`).
 const PRICE_TABLE: &str = include_str!("../../runtime/packs/tools/pack.toml");
 
+const RECORD_USAGE: &str = "usage: cargo xtask fold --record CALLS CELL … (the call-order record's folder or file; saved stream-json cells, \
+     or folders of them, to calibrate on)";
+
 pub fn run(args: &[String]) -> Result<()> {
+    if args.first().is_some_and(|a| a == "--record") {
+        return record_run(&args[1..]);
+    }
     if args.is_empty() {
         return Err("usage: cargo xtask fold PATH … (saved stream-json files, or folders of them)".into());
     }
+    print!("{}", report(&groups_of(args)?));
+    Ok(())
+}
+
+/// A path named, with its cells: each a file's stem and its stream.
+type Group = (String, Vec<(String, String)>);
+
+/// Each path named, with its cells.
+fn groups_of(args: &[String]) -> Result<Vec<Group>> {
     let mut groups = Vec::new();
     for a in args {
         let p = PathBuf::from(a);
@@ -95,7 +123,23 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         groups.push((a.clone(), cells));
     }
-    print!("{}", report(&groups));
+    Ok(groups)
+}
+
+fn record_run(args: &[String]) -> Result<()> {
+    let [calls, cells @ ..] = args else { return Err(RECORD_USAGE.into()) };
+    if cells.is_empty() {
+        return Err(RECORD_USAGE.into());
+    }
+    let files = crate::turns::jsonl_in(Path::new(calls))?;
+    if files.is_empty() {
+        return Err(format!("no call-order record in {calls}"));
+    }
+    let mut text = String::new();
+    for f in &files {
+        text += &std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+    }
+    print!("{}", record_report(calls, &text, &groups_of(cells)?));
     Ok(())
 }
 
@@ -134,8 +178,11 @@ fn rates(id: &str, tokens: u64) -> Option<Rates> {
         Some((head, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => head,
         _ => id,
     };
-    let table: toml::Value = toml::from_str(PRICE_TABLE).ok()?;
-    let rows = table.get("claude")?.get("price")?.as_array()?;
+    static ROWS: OnceLock<Vec<toml::Value>> = OnceLock::new();
+    let rows = ROWS.get_or_init(|| {
+        let table: Option<toml::Value> = toml::from_str(PRICE_TABLE).ok();
+        table.and_then(|t| t.get("claude")?.get("price")?.as_array().cloned()).unwrap_or_default()
+    });
     let row = rows.iter().find(|r| {
         r.get("model").and_then(toml::Value::as_str) == Some(id)
             && r.get("up-to").and_then(toml::Value::as_integer).is_none_or(|n| tokens <= n as u64)
@@ -586,7 +633,8 @@ fn task_arm(stem: &str) -> (String, String) {
 }
 
 fn dollars(x: f64) -> String {
-    format!("${x:.3}")
+    // (+ 0.0: an empty sum is -0.0)
+    format!("${:.3}", x + 0.0)
 }
 
 /// A row of means over `cells`: cells, $ a cell, bound A, bound B (each a cell), (A + B) as a share of the cells' $,
@@ -611,7 +659,7 @@ fn row(head: Vec<String>, cells: &[&Measured]) -> Vec<String> {
 }
 
 /// The report for `groups`: each a name (the folder or file named) and its cells (a file's stem, its stream).
-fn report(groups: &[(String, Vec<(String, String)>)]) -> String {
+fn report(groups: &[Group]) -> String {
     let mut out = String::from(
         "# What folding could save at most\n\nBound A: the folding requests' own cost; bound B: a result over 8k \
          tokens before a folding request, carried by the requests after it, at the cache-read rate. Both upper \
@@ -664,6 +712,697 @@ fn report(groups: &[(String, Vec<(String, String)>)]) -> String {
     }
     out += "\n## Totals\n\n";
     out += &table(&[&["named"][..], &head[..]].concat(), &totals);
+    out
+}
+
+// ---- `--record`: the loose rule, its calibration on cells, the estimate on the record (the module's doc)
+
+/// A model with no rates (a stand-in's, a name the table lacks) is priced as this one, said on the report.
+const FALLBACK: &str = "claude-opus-5-5";
+/// The rule set before the numbers (the brief's): (b) reopens at this share of chat cost over the record …
+const REOPEN: f64 = 0.20;
+/// … or when the turns whose own estimate is `TURN` or more hold `HELD` of all chat cost.
+const TURN: f64 = 0.30;
+const HELD: f64 = 0.25;
+/// Fewer calibration cells with a loose ceiling above 0 than this carry no estimate.
+const THIN: usize = 10;
+/// The factor's spread: resamples of the cells (a fixed seed), their 10th and 90th percentiles.
+const RESAMPLES: usize = 2000;
+/// A folder's own factor counts toward the range with this many cells carrying a loose ceiling.
+const FOLDER: usize = 5;
+
+/// A call a program could make: the plan's bindings, and with `run` every run (an upper bound on a tool that runs
+/// in the sandbox from a script: the record doesn't say which runs only read).
+fn binds(tool: &str, run: bool) -> bool {
+    BINDINGS.contains(&tool) || (run && tool == "run")
+}
+
+/// A turn as the call-order record holds it, or a cell read as if it did: names and sizes only.
+struct Sized {
+    model: String,
+    steps: Vec<Vec<String>>,
+    /// Each request's context and output.
+    sizes: Vec<(Option<u64>, Option<u64>)>,
+    /// What the turn wrote to the cache and sent uncached (its counts' write + input): how much of its first
+    /// request's context was new.
+    written: Option<u64>,
+}
+
+fn sized_turn(t: &Turn) -> Sized {
+    Sized {
+        model: t.model.clone(),
+        steps: t.steps.clone(),
+        sizes: t.sizes.clone(),
+        written: Some(t.counts[0] + t.counts[1]),
+    }
+}
+
+fn sized_cell(c: &Cell) -> Sized {
+    Sized {
+        model: c.requests.iter().map(|r| r.model.clone()).find(|m| !m.is_empty()).unwrap_or_default(),
+        steps: c.requests.iter().map(|r| r.calls.iter().map(|(n, _)| n.clone()).collect()).collect(),
+        sizes: (c.requests.iter())
+            .map(|r| (Some(r.usage[0] + r.written() + r.usage[3]), Some(r.output.unwrap_or(r.usage[4]))))
+            .collect(),
+        written: Some(c.requests.iter().map(|r| r.usage[0] + r.written()).sum()),
+    }
+}
+
+/// Each request's cost from its context and output alone, and its rates: it read the request before's context and
+/// wrote the rest, for an hour (every saved cell's writes are 1-hour ones), its few uncached input tokens with it;
+/// the turn's first request wrote what the turn wrote that the later ones don't account for. None: no context said.
+fn sized_costs(t: &Sized) -> Vec<Option<(f64, Rates)>> {
+    let n = t.sizes.len();
+    let ctx = |i: usize| t.sizes.get(i).and_then(|s| s.0);
+    let mut write: Vec<u64> = (0..n)
+        .map(|i| match (i.checked_sub(1).and_then(ctx), ctx(i)) {
+            (Some(before), Some(c)) => c.saturating_sub(before),
+            _ => 0,
+        })
+        .collect();
+    if let (Some(first), Some(w)) = (ctx(0), t.written) {
+        write[0] = w.saturating_sub(write.iter().skip(1).sum()).min(first);
+    }
+    (0..n)
+        .map(|i| {
+            let c = ctx(i)?;
+            let r = rates(&t.model, c).or_else(|| rates(FALLBACK, c))?;
+            let out = t.sizes[i].1.unwrap_or(0) as f64;
+            let cost = ((c - write[i]) as f64 * r.read + write[i] as f64 * r.write_1h + out * r.output) / 1e6;
+            Some((cost, r))
+        })
+        .collect()
+}
+
+/// What request `i - 1`'s calls brought back: request `i`'s context over `i - 1`'s and its output (`turns`'
+/// large results). None: a size not said, or a first request.
+fn result(t: &Sized, i: usize) -> Option<u64> {
+    let (before, out) = *t.sizes.get(i.checked_sub(1)?)?;
+    Some(t.sizes.get(i)?.0?.saturating_sub(before? + out?))
+}
+
+/// What the loose rule finds in a sized turn.
+#[derive(Default)]
+struct Loose {
+    /// Every request's cost from its sizes.
+    cost: f64,
+    a: f64,
+    b: f64,
+    folded: usize,
+    requests: usize,
+    /// Which requests fold.
+    folds: Vec<bool>,
+}
+
+/// The loose rule on `t` (the module's doc): request `i` folds when `i - 1` had calls, `i`'s calls are all
+/// bindings (`binds`, with `run` or not), and its output is `quiet` tokens or fewer. Bound A its sized cost; bound
+/// B a result of `LARGE` or more ahead of it, carried by the requests after it at the cache-read rate.
+fn loose(t: &Sized, quiet: u64, run: bool) -> Loose {
+    let costs = sized_costs(t);
+    let n = t.sizes.len().max(t.steps.len());
+    let step = |i: usize| t.steps.get(i).map_or(&[][..], |s| &s[..]);
+    let mut l = Loose { cost: costs.iter().flatten().map(|c| c.0).sum(), requests: n, ..Default::default() };
+    for i in 0..n {
+        let cost = costs.get(i).copied().flatten();
+        let folds = i > 0
+            && !step(i - 1).is_empty()
+            && !step(i).is_empty()
+            && step(i).iter().all(|s| binds(s, run))
+            && t.sizes.get(i).and_then(|s| s.1).is_some_and(|o| o <= quiet)
+            && cost.is_some();
+        l.folds.push(folds);
+        let Some((c, r)) = cost.filter(|_| folds) else { continue };
+        l.folded += 1;
+        l.a += c;
+        if let Some(res) = result(t, i).filter(|x| *x >= LARGE) {
+            l.b += res as f64 * (n - i - 1) as f64 * r.read / 1e6;
+        }
+    }
+    l
+}
+
+/// The output threshold that best tells a request that said nothing from one that spoke, over `cand` (each
+/// request's output, and whether it said nothing): the one with the fewest wrong either way, the lowest on a tie —
+/// with how many spoke at or under it, and how many said nothing over it.
+fn quiet_threshold(cand: &[(u64, bool)]) -> (u64, usize, usize) {
+    let mut ts: Vec<u64> = cand.iter().map(|c| c.0).chain([0]).collect();
+    ts.sort_unstable();
+    ts.dedup();
+    (ts.iter())
+        .map(|&t| {
+            let spoke = cand.iter().filter(|(o, quiet)| !quiet && *o <= t).count();
+            let missed = cand.iter().filter(|(o, quiet)| *quiet && *o > t).count();
+            (t, spoke, missed)
+        })
+        .min_by_key(|(t, s, m)| (s + m, *t))
+        .unwrap_or((0, 0, 0))
+}
+
+/// The pooled ratio of `pairs` (real, loose) resampled over its items, a fixed seed: its 10th and 90th
+/// percentiles (resamples whose loose sum is 0 left out).
+fn spread(pairs: &[(f64, f64)]) -> (f64, f64) {
+    let mut seed: u64 = 0x5eed;
+    let mut next = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) as usize
+    };
+    let mut fs = Vec::new();
+    for _ in 0..RESAMPLES {
+        let (mut real, mut lo) = (0.0, 0.0);
+        for _ in 0..pairs.len() {
+            let (r, l) = pairs[next() % pairs.len()];
+            (real, lo) = (real + r, lo + l);
+        }
+        if lo > 0.0 {
+            fs.push(real / lo);
+        }
+    }
+    fs.sort_by(f64::total_cmp);
+    match fs.len() {
+        0 => (0.0, 0.0),
+        n => (fs[n / 10], fs[(n * 9 / 10).min(n - 1)]),
+    }
+}
+
+/// What the calibration cells say of the loose rule.
+struct Calibration {
+    /// A request's output at most this many tokens said nothing.
+    quiet: u64,
+    /// From the loose ceiling to `fold`'s real bound: pooled over the cells, and its spread (10th, 90th).
+    factor: f64,
+    spread: (f64, f64),
+    /// The folders' own factors, lowest and highest (those with `FOLDER` cells or more carrying a ceiling): the
+    /// kind of work moves it more than the sampling does.
+    range: (f64, f64),
+    /// Those folders by name, each with its factor.
+    folders: Vec<(String, f64)>,
+    /// Cells, and those whose loose ceiling is above 0.
+    cells: usize,
+    carrying: usize,
+    /// Its section of the report.
+    text: String,
+}
+
+impl Calibration {
+    /// Every factor the calibration allows: the resampling's spread and the folders' own, together.
+    fn bounds(&self) -> (f64, f64) {
+        match self.folders.is_empty() {
+            true => self.spread,
+            false => (self.spread.0.min(self.range.0), self.spread.1.max(self.range.1)),
+        }
+    }
+}
+
+fn pct1(x: f64) -> String {
+    // (+ 0.0: an empty sum is -0.0)
+    format!("{:.1} %", x * 100.0 + 0.0)
+}
+
+/// A folder of cells by its checkout and name (`orchestra/codemode-ab` for `…/orchestra/target/live/codemode-ab`).
+fn folder(path: &str) -> String {
+    let parts: Vec<String> =
+        Path::new(path).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let last = parts.last().cloned().unwrap_or_default();
+    match parts.iter().rposition(|p| p == "target") {
+        Some(i) if i > 0 => format!("{}/{last}", parts[i - 1]),
+        _ => last,
+    }
+}
+
+fn calibrate(groups: &[Group]) -> Calibration {
+    let mut cells: Vec<(&str, String, Cell)> = Vec::new();
+    for (name, cs) in groups {
+        for (stem, text) in cs {
+            cells.push((name.as_str(), task_arm(stem).0, cell(text)));
+        }
+    }
+    // (the threshold: requests after one with calls, calling only bindings — did they say nothing?)
+    let mut cand: Vec<(u64, bool)> = Vec::new();
+    for (_, _, c) in &cells {
+        for w in c.requests.windows(2) {
+            let (before, r) = (&w[0], &w[1]);
+            if !before.calls.is_empty() && !r.calls.is_empty() && r.calls.iter().all(|(n, _)| binds(n, false))
+            {
+                cand.push((r.output.unwrap_or(r.usage[4]), !r.text));
+            }
+        }
+    }
+    let (quiet, spoke, missed) = quiet_threshold(&cand);
+    // (each cell: fold's real bound, the loose one, request by request where they differ)
+    let (mut both, mut real_only, mut requests) = (0, 0, 0);
+    let (mut spoke_l, mut after_q, mut chosen) = (0, 0, 0);
+    let (mut real_cost, mut sized_cost) = (0.0, 0.0);
+    let mut pairs: Vec<(f64, f64)> = Vec::new();
+    // (a folder: its tasks, $, fold's bound, the loose ceiling, cells carrying one)
+    let mut by: BTreeMap<&str, (Vec<String>, f64, f64, f64, usize)> = BTreeMap::new();
+    for (group, task, c) in &cells {
+        let m = measured(c);
+        let l = loose(&sized_cell(c), quiet, false);
+        for (r, lf) in c.requests.iter().zip(&l.folds) {
+            requests += 1;
+            match (folds(c, r), *lf) {
+                (true, true) => both += 1,
+                (true, false) => real_only += 1,
+                (false, true) if r.text => spoke_l += 1,
+                (false, true) if !r.after_result => after_q += 1,
+                (false, true) => chosen += 1,
+                (false, false) => {}
+            }
+        }
+        real_cost += m.cost;
+        sized_cost += l.cost;
+        pairs.push((m.a + m.b, l.a + l.b));
+        let e = by.entry(group).or_default();
+        if !e.0.contains(task) {
+            e.0.push(task.clone());
+        }
+        (e.1, e.2, e.3) = (e.1 + m.cost, e.2 + m.a + m.b, e.3 + l.a + l.b);
+        e.4 += usize::from(l.a + l.b > 0.0);
+    }
+    let folders: Vec<(String, f64)> =
+        by.iter().filter(|e| e.1.4 >= FOLDER && e.1.3 > 0.0).map(|(g, e)| (folder(g), e.2 / e.3)).collect();
+    let range = folders.iter().fold((f64::INFINITY, 0.0f64), |r, x| (r.0.min(x.1), r.1.max(x.1)));
+    let range = if folders.is_empty() { (0.0, 0.0) } else { range };
+    let (real, lo) = pairs.iter().fold((0.0, 0.0), |s, p| (s.0 + p.0, s.1 + p.1));
+    let factor = if lo > 0.0 { real / lo } else { 0.0 };
+    let spread = spread(&pairs);
+    let carrying = pairs.iter().filter(|p| p.1 > 0.0).count();
+    let mut each: Vec<f64> = pairs.iter().filter(|p| p.1 > 0.0).map(|p| p.0 / p.1).collect();
+    each.sort_by(f64::total_cmp);
+
+    let mut t = format!(
+        "\n## Calibration\n\n{} cells in {} folders (each named below). A request said nothing when its output is \
+         **{quiet} tokens or fewer**: of {} requests after one with calls and calling only bindings, {spoke} spoke at \
+         or under it, {missed} said nothing over it.\n\nThe loose rule against fold's, request by request ({requests} \
+         requests): both fold {both}; loose only {} (it spoke {spoke_l}, after a question {after_q}, an argument it \
+         chose {chosen}); fold's only {real_only}.\n\n",
+        cells.len(),
+        groups.len(),
+        cand.len(),
+        spoke_l + after_q + chosen,
+    );
+    let ratio = |r: f64, l: f64| if l > 0.0 { format!("{:.2}", r / l) } else { "—".into() };
+    let rows: Vec<Vec<String>> = by
+        .iter()
+        .map(|(g, (tasks, cost, r, l, _))| {
+            let n = cells.iter().filter(|c| c.0 == *g).count();
+            vec![
+                folder(g),
+                n.to_string(),
+                tasks.len().to_string(),
+                dollars(*cost),
+                format!("{} ({})", dollars(*r), if *cost > 0.0 { pct1(r / cost) } else { "—".into() }),
+                format!("{} ({})", dollars(*l), if *cost > 0.0 { pct1(l / cost) } else { "—".into() }),
+                ratio(*r, *l),
+            ]
+        })
+        .collect();
+    t += &table(&["folder", "cells", "tasks", "$", "fold's bound", "loose ceiling", "real / loose"], &rows);
+    t += "\n";
+    for (g, (tasks, ..)) in &by {
+        let shown: Vec<&str> = tasks.iter().take(12).map(String::as_str).collect();
+        let more = if tasks.len() > 12 { format!(" and {} more", tasks.len() - 12) } else { String::new() };
+        t += &format!("- {g}: {}{more}\n", shown.join(", "));
+    }
+    t += &format!(
+        "\n**Factor** from the loose ceiling to fold's bound: **{:.2}** pooled ({:.2}–{:.2}, the 10th to 90th \
+         percentile of {RESAMPLES} resamples of the cells); {carrying} of {} cells have a loose ceiling above 0, their \
+         own ratios {} median, {} – {}; the folders' own factors (those with {FOLDER} or more) {:.2}–{:.2}.\nSizes priced alone against the cells' own usage: {} against {} ({}).\n",
+        factor,
+        spread.0,
+        spread.1,
+        cells.len(),
+        each.get(each.len() / 2).map_or("—".into(), |x| format!("{x:.2}")),
+        each.first().map_or("—".into(), |x| format!("{x:.2}")),
+        each.last().map_or("—".into(), |x| format!("{x:.2}")),
+        range.0,
+        range.1,
+        dollars(sized_cost),
+        dollars(real_cost),
+        if real_cost > 0.0 {
+            format!("{:+.1} %", (sized_cost / real_cost - 1.0) * 100.0)
+        } else {
+            "—".into()
+        },
+    );
+    Calibration { quiet, factor, spread, range, folders, cells: cells.len(), carrying, text: t }
+}
+
+/// A chat turn of the record, measured both ways.
+struct Rec<'a> {
+    t: &'a Turn,
+    /// The plan's bindings; every run folding too.
+    ro: Loose,
+    run: Loose,
+    /// What claude reported, else its sized cost.
+    cost: f64,
+}
+
+impl Rec<'_> {
+    /// Its own estimated share, at factor `f`.
+    fn share(&self, f: f64, run: bool) -> f64 {
+        let l = if run { &self.run } else { &self.ro };
+        if self.cost > 0.0 { (l.a + l.b) * f / self.cost } else { 0.0 }
+    }
+}
+
+/// The share of `recs`' cost in turns whose own estimate at `f` is `TURN` or more.
+fn held(recs: &[&Rec], f: f64, run: bool) -> f64 {
+    let all: f64 = recs.iter().map(|r| r.cost).sum();
+    let held: f64 = recs.iter().filter(|r| r.share(f, run) >= TURN).map(|r| r.cost).sum();
+    if all > 0.0 { held / all } else { 0.0 }
+}
+
+/// The factor the report carries: its middle and its range — the middle left out when the calibration can't carry
+/// a verdict, both when it can't carry an estimate.
+#[derive(Clone, Copy)]
+struct Est {
+    mid: Option<f64>,
+    range: Option<(f64, f64)>,
+}
+
+impl Est {
+    /// A share `at` a factor, as the report writes it: `6.1 % (5.5 %–7.0 %)`, `5.5 %–7.0 %`, or not carried.
+    fn show(&self, at: impl Fn(f64) -> f64) -> String {
+        match (self.mid, self.range) {
+            (_, None) => "not carried".into(),
+            (None, Some((lo, hi))) => format!("{}–{}", pct1(at(lo)), pct1(at(hi))),
+            (Some(m), Some((lo, hi))) => format!("{} ({}–{})", pct1(at(m)), pct1(at(lo)), pct1(at(hi))),
+        }
+    }
+}
+
+/// The turn lengths the report splits by, and a turn of `n` requests' one.
+const LENGTHS: [&str; 3] = ["under 10 requests", "10–30 requests", "over 30 requests"];
+
+fn length(n: usize) -> usize {
+    match n {
+        n if n < 10 => 0,
+        n if n <= 30 => 1,
+        _ => 2,
+    }
+}
+
+/// The least factor at which the rule reopens (b) — with the plan's bindings, or with every run folding: the
+/// estimate over the record reaching `REOPEN`, or the turns whose own estimate reaches `TURN` holding `HELD` of the
+/// chat's $. None: no factor does.
+fn turning(recs: &[&Rec], run: bool) -> Option<f64> {
+    let ab = |r: &Rec| if run { r.run.a + r.run.b } else { r.ro.a + r.ro.b };
+    let cost: f64 = recs.iter().map(|r| r.cost).sum();
+    let all: f64 = recs.iter().map(|r| ab(r)).sum();
+    let whole = (all > 0.0 && cost > 0.0).then(|| REOPEN * cost / all);
+    // (each turn enters the held ones at the factor its own estimate reaches `TURN`)
+    let mut entry: Vec<(f64, f64)> = recs
+        .iter()
+        .filter(|r| ab(r) > 0.0 && r.cost > 0.0)
+        .map(|r| (TURN * r.cost / ab(r), r.cost))
+        .collect();
+    entry.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut held = 0.0;
+    let turns = (entry.iter())
+        .find(|(_, c)| {
+            held += c;
+            held >= HELD * cost
+        })
+        .map(|e| e.0);
+    [whole, turns].into_iter().flatten().reduce(f64::min)
+}
+
+/// The verdict by the rule set before the numbers, or why the calibration can't carry one and what would tighten
+/// it — one paragraph — and the factor the report then carries.
+fn judge(recs: &[&Rec], cal: &Calibration) -> (String, Est) {
+    let (lo, hi) = cal.bounds();
+    let (f_ro, f_run) = (turning(recs, false), turning(recs, true));
+    let word = |f: f64| match (f_ro.is_some_and(|x| f >= x), f_run.is_some_and(|x| f >= x)) {
+        (true, _) => "(b) is worth reopening",
+        (false, true) => {
+            "neither: only \"every run folds\" passes — a different tool, the user's own question"
+        }
+        (false, false) => "the stop stands",
+    };
+    let at = |x: Option<f64>| x.map_or("no factor".into(), |x| format!("a factor of {x:.2} or more"));
+    let turns = format!("(b) reopens by the rule at {}, every run folding passes at {}", at(f_ro), at(f_run));
+    if cal.carrying < THIN {
+        let text = format!(
+            "**No verdict: the calibration is too thin to carry an estimate.** {} of {} cells have a loose ceiling \
+             above 0; it takes {THIN}. To tighten it: {} more cells with a request that folds loosely (after calls, \
+             calling only bindings) — any live A/B kept under `target/live/`. The record's numbers below are the \
+             loose ceiling only, an upper bound.",
+            cal.carrying,
+            cal.cells,
+            THIN - cal.carrying
+        );
+        return (text, Est { mid: None, range: None });
+    }
+    let inside = [f_ro, f_run].into_iter().flatten().find(|x| lo < *x && *x <= hi);
+    let Some(x) = inside else {
+        let text = format!(
+            "**Verdict, by the rule:** {} — at every factor the calibration allows ({lo:.2}–{hi:.2}; {turns}).",
+            word(cal.factor)
+        );
+        return (text, Est { mid: Some(cal.factor), range: Some((lo, hi)) });
+    };
+    let side = |below: bool| {
+        let v: Vec<String> = (cal.folders.iter())
+            .filter(|f| (f.1 < x) == below)
+            .map(|f| format!("{} {:.2}", f.0, f.1))
+            .collect();
+        if v.is_empty() { "none".into() } else { v.join(", ") }
+    };
+    let cost: f64 = recs.iter().map(|r| r.cost).sum();
+    let mut by = [0.0; 3];
+    for r in recs {
+        by[length(r.ro.requests)] += r.cost;
+    }
+    let most = (0..3).max_by(|a, b| by[*a].total_cmp(&by[*b])).unwrap_or(0);
+    let text = format!(
+        "**No verdict: the factor spreads too wide to carry one.** {turns}; the calibration puts the factor anywhere \
+         in {lo:.2}–{hi:.2} (resampling the cells {:.2}–{:.2}, the folders' own {:.2}–{:.2}), which holds {x:.2}: \
+         \"{}\" at its low end, \"{}\" at its high end. To tighten it: a range wholly above or below {x:.2} — the \
+         folders below it now: {}; above it: {}. Cells of the work the record holds most — its turns of {}, {} of \
+         its chat $ — measured as the A/Bs' were, would put the factor on that work rather than on the A/Bs' tasks. \
+         The estimates below are ranges, not a number to read.",
+        cal.spread.0,
+        cal.spread.1,
+        cal.range.0,
+        cal.range.1,
+        word(lo),
+        word(hi),
+        side(true),
+        side(false),
+        LENGTHS[most],
+        if cost > 0.0 { pct1(by[most] / cost) } else { "—".into() },
+    );
+    (text, Est { mid: None, range: Some((lo, hi)) })
+}
+
+/// A row of the record's tables: turns, chat $, then for the plan's bindings and with every run: requests folded
+/// of all, the ceiling's A · B, the ceiling as a share, the estimate as `est` carries it.
+fn record_row(head: String, recs: &[&Rec], est: Est) -> Vec<String> {
+    let cost: f64 = recs.iter().map(|r| r.cost).sum();
+    let share = |x: f64| if cost > 0.0 { pct1(x / cost) } else { "—".into() };
+    let mut row = vec![head, recs.len().to_string(), dollars(cost)];
+    for run in [false, true] {
+        let pick = |r: &&Rec| {
+            if run {
+                (r.run.a, r.run.b, r.run.folded, r.run.requests)
+            } else {
+                (r.ro.a, r.ro.b, r.ro.folded, r.ro.requests)
+            }
+        };
+        let (a, b, folded, requests) =
+            recs.iter().map(pick).fold((0.0, 0.0, 0, 0), |s, x| (s.0 + x.0, s.1 + x.1, s.2 + x.2, s.3 + x.3));
+        row.push(format!("{folded} / {requests}"));
+        if !run {
+            row.push(format!("{} · {}", dollars(a), dollars(b)));
+        }
+        row.push(share(a + b));
+        row.push(est.show(|f| if cost > 0.0 { (a + b) * f / cost } else { 0.0 }));
+    }
+    row
+}
+
+const RECORD_HEAD: [&str; 10] = [
+    "",
+    "turns",
+    "chat $",
+    "folded",
+    "ceiling A · B",
+    "ceiling",
+    "estimate (range)",
+    "every run: folded",
+    "ceiling",
+    "estimate (range)",
+];
+
+/// The report of `--record`: the calibration on `groups`' cells, then the record's `text` (its files named `from`).
+fn record_report(from: &str, text: &str, groups: &[Group]) -> String {
+    let cal = calibrate(groups);
+    let (all, broken) = crate::turns::entries(text);
+    let turns: Vec<Turn> = (all.iter())
+        .filter(|e| e["what"] != "board-whole")
+        .map(Turn::of)
+        .filter(|t| CHAT.contains(&t.kind))
+        .collect();
+    let recs: Vec<Rec> = turns
+        .iter()
+        .map(|t| {
+            let s = sized_turn(t);
+            let ro = loose(&s, cal.quiet, false);
+            let run = loose(&s, cal.quiet, true);
+            let cost = t.cost.filter(|c| *c > 0.0).unwrap_or(ro.cost);
+            Rec { t, ro, run, cost }
+        })
+        .collect();
+    let every: Vec<&Rec> = recs.iter().collect();
+    let (verdict, est) = judge(&every, &cal);
+
+    let mut out = format!(
+        "# Code mode (b), measured again on the record\n\n{verdict}\n\nFrom {from}: {} entries, {} chat turns",
+        all.len(),
+        recs.len()
+    );
+    if let (Some(first), Some(last)) = (turns.first(), turns.last()) {
+        out += &format!(", {} – {}", first.at, last.at);
+    }
+    if broken > 0 {
+        out += &format!(" ({broken} line{} not an entry, skipped)", if broken == 1 { "" } else { "s" });
+    }
+    let no_size: usize = turns.iter().map(|t| t.sizes.iter().filter(|s| s.0.is_none()).count()).sum();
+    let requests: usize = turns.iter().map(|t| t.sizes.len()).sum();
+    let reported: Vec<&Rec> = recs.iter().filter(|r| r.t.cost.is_some_and(|c| c > 0.0)).collect();
+    let (said, sized) = reported.iter().fold((0.0, 0.0), |s, r| (s.0 + r.cost, s.1 + r.ro.cost));
+    let unpriced = turns.iter().filter(|t| rates(&t.model, 0).is_none()).count();
+    out += &format!(
+        ".\n\nChat $ is what claude reported ({} of {} turns; the rest priced from their sizes). Sized against \
+         reported: {} against {} ({}). Requests with no size said: {no_size} of {requests}{}.\n",
+        reported.len(),
+        recs.len(),
+        dollars(sized),
+        dollars(said),
+        if said > 0.0 { format!("{:+.1} %", (sized / said - 1.0) * 100.0) } else { "—".into() },
+        if unpriced > 0 {
+            format!("; {unpriced} turns' model has no rates, priced as {FALLBACK}")
+        } else {
+            String::new()
+        },
+    );
+    out += &cal.text;
+
+    // The ceiling and the estimate
+    out += &format!(
+        "\n## The ceiling and the estimate\n\nA request folds loosely after one with calls, calling only the plan's \
+         bindings (`{}`), its output {} tokens or fewer; \"every run\" lets `run` in too. Ceiling: bound A + bound B \
+         as a share of chat $; estimate: the ceiling × the factor, {}. An estimate, said as one: the factor is \
+         calibrated with the bindings and carried to runs as it is.\n\n",
+        BINDINGS.join("`, `"),
+        cal.quiet,
+        match (est.mid, est.range) {
+            (_, None) => "not carried (too few cells)".to_string(),
+            (None, Some((lo, hi))) => format!("anywhere in {lo:.2}–{hi:.2} (no middle carried)"),
+            (Some(m), Some((lo, hi))) => format!("{m:.2} ({lo:.2}–{hi:.2})"),
+        },
+    );
+    let mut rows = vec![record_row("the record".into(), &every, est)];
+    let mut months: BTreeMap<&str, Vec<&Rec>> = BTreeMap::new();
+    let mut kinds: BTreeMap<&str, Vec<&Rec>> = BTreeMap::new();
+    let mut lengths: BTreeMap<u8, Vec<&Rec>> = BTreeMap::new();
+    for r in &recs {
+        months.entry(r.t.at.get(..7).unwrap_or("?")).or_default().push(r);
+        kinds.entry(r.t.kind).or_default().push(r);
+        lengths.entry(length(r.ro.requests) as u8).or_default().push(r);
+    }
+    rows.extend(months.iter().map(|(m, rs)| record_row(m.to_string(), rs, est)));
+    rows.extend(kinds.iter().map(|(k, rs)| record_row(k.to_string(), rs, est)));
+    rows.extend(lengths.iter().map(|(l, rs)| record_row(LENGTHS[*l as usize].into(), rs, est)));
+    out += &table(&RECORD_HEAD, &rows);
+
+    // Where it concentrates: by each turn's own estimate when one is carried, else by its ceiling
+    let (by_f, by) = match est.mid {
+        Some(m) => (m, "own estimate (the plan's bindings, the factor's middle)"),
+        None => (1.0, "own loose ceiling (the plan's bindings; no estimate carried)"),
+    };
+    let mut sorted: Vec<&Rec> = recs.iter().collect();
+    sorted.sort_by(|a, b| b.share(by_f, false).total_cmp(&a.share(by_f, false)));
+    let cost: f64 = recs.iter().map(|r| r.cost).sum();
+    // (a turn's band by its own estimate: none, then under each of these, then `TURN` or more)
+    let band = |s: f64| match s {
+        s if s <= 0.0 => 0,
+        s if s < 0.1 => 1,
+        s if s < 0.2 => 2,
+        s if s < TURN => 3,
+        _ => 4,
+    };
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for (i, name) in ["0", "under 10 %", "10–20 %", "20–30 %", "30 % or more"].iter().enumerate() {
+        let rs: Vec<&&Rec> = sorted.iter().filter(|r| band(r.share(by_f, false)) == i).collect();
+        let c: f64 = rs.iter().map(|r| r.cost).sum();
+        rows.push(vec![
+            name.to_string(),
+            rs.len().to_string(),
+            dollars(c),
+            if cost > 0.0 { pct1(c / cost) } else { "—".into() },
+        ]);
+    }
+    out += &format!("\n## Where it concentrates\n\nTurns by their {by}:\n\n");
+    out += &table(&["band", "turns", "chat $", "of all chat $"], &rows);
+    out += "\nThe 15 largest:\n\n";
+    let rows: Vec<Vec<String>> = (sorted.iter().take(15))
+        .map(|r| {
+            vec![
+                r.t.at.clone(),
+                r.t.kind.into(),
+                format!("{} / {}", r.ro.folded, r.ro.requests),
+                dollars(r.cost),
+                pct1(r.share(1.0, false)),
+                est.show(|f| r.share(f, false)),
+            ]
+        })
+        .collect();
+    out += &table(&["at", "kind", "folded", "$", "ceiling", "estimate"], &rows);
+    let mut pairs: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for r in sorted.iter().filter(|r| r.share(by_f, false) >= TURN) {
+        for (i, f) in r.ro.folds.iter().enumerate().skip(1) {
+            if *f {
+                let step = |i: usize| r.t.steps.get(i).map_or(String::new(), |s| label(s));
+                *pairs.entry((step(i - 1), step(i))).or_default() += 1;
+            }
+        }
+    }
+    let mut pairs: Vec<_> = pairs.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    out += &format!(
+        "\nIn the turns at {:.0} % or more by that measure, the step pairs whose second request folds (10 at most):\n\n",
+        TURN * 100.0
+    );
+    let rows: Vec<Vec<String>> =
+        pairs.iter().take(10).map(|((a, b), n)| vec![format!("{a} → {b}"), n.to_string()]).collect();
+    out += &table(&["pair", "times"], &rows);
+
+    out += "\nThe loading fallback can't be seen in the record (it holds no results); references-loading's fix \
+            changes how large some results are, so bound B on turns before it may be larger than after.\n";
+
+    // The rule set before
+    let share = |run: bool, f: f64| {
+        let ab: f64 = every.iter().map(|r| if run { r.run.a + r.run.b } else { r.ro.a + r.ro.b }).sum();
+        if cost > 0.0 { ab * f / cost } else { 0.0 }
+    };
+    out += &format!(
+        "\n## The rule set before the numbers\n\n(b) reopens if the estimate with the plan's bindings is {:.0} % or \
+         more of chat $ over the record, or if turns holding {:.0} % or more of chat $ have an estimate of {:.0} % or \
+         more; else the stop stands; if only \"every run folds\" passes, neither; a calibration that can't carry it \
+         gives no verdict.\n\n- The estimate with the plan's bindings: {}.\n- Chat $ in turns whose own estimate is \
+         {:.0} % or more: {}.\n- Every run folding: the estimate {}; held by turns at {:.0} % or more {}.\n\n{verdict}\n",
+        REOPEN * 100.0,
+        HELD * 100.0,
+        TURN * 100.0,
+        est.show(|f| share(false, f)),
+        TURN * 100.0,
+        est.show(|f| held(&every, f, false)),
+        est.show(|f| share(true, f)),
+        TURN * 100.0,
+        est.show(|f| held(&every, f, true)),
+    );
     out
 }
 
@@ -733,6 +1472,229 @@ mod tests {
         assert!((m.loading_cost.0 - written).abs() < 1e-12, "written {} ≠ {written}", m.loading_cost.0);
         assert!((m.loading_cost.1 - read).abs() < 1e-12, "read {} ≠ {read}", m.loading_cost.1);
         assert_eq!(thousands(1234567), "1,234,567");
+    }
+
+    /// A made-up record's turn (opus 5.5: an hour's write $8, a read $0.20, output $20, a million each): `steps`
+    /// each its tools, context and output.
+    fn turn(steps: &[(&[&str], u64, u64)], write: u64) -> Turn {
+        let steps: Vec<Value> = (steps.iter())
+            .map(|(tools, context, output)| serde_json::json!({"tools": tools, "context": context, "output": output}))
+            .collect();
+        Turn::of(&serde_json::json!({
+            "v": 1, "at": "2026-10-20 10:00:00", "what": "chat", "model": "claude-opus-5-5",
+            "requests": steps.len(), "counts": {"input": 0, "write": write, "read": 0, "output": 0}, "cost": 0.5,
+            "calls": {"calls": 5, "read_only_runs": 0}, "steps": steps,
+        }))
+    }
+
+    /// The loose rule on a made-up turn: a quiet `read` after a `search` folds (its sized cost bound A; the 9,000
+    /// tokens its search brought back, carried by the 4 requests after it, bound B); one that speaks (300 tokens out)
+    /// doesn't, nor a quiet `run` (not a binding — it does once every run folds), nor a quiet `read` after a request
+    /// with no calls, nor the first request.
+    #[test]
+    fn the_loose_rule_folds_a_quiet_binding_request_after_calls_and_nothing_else() {
+        let t = turn(
+            &[
+                (&["search"], 20_000, 50),
+                (&["read"], 29_050, 40),
+                (&["read"], 30_000, 300),
+                (&["run"], 31_000, 30),
+                (&[], 32_000, 200),
+                (&["read"], 33_000, 20),
+            ],
+            18_000,
+        );
+        let l = loose(&sized_turn(&t), 60, false);
+        assert_eq!(l.folds, [false, true, false, false, false, false]);
+        // (A: 20,000 read × $0.20 + 9,050 written × $8 + 40 out × $20; B: 9,000 × 4 × $0.20)
+        assert!((l.a - 0.0772).abs() < 1e-12, "bound A {}", l.a);
+        assert!((l.b - 0.0072).abs() < 1e-12, "bound B {}", l.b);
+        assert_eq!((l.folded, l.requests), (1, 6));
+        let run = loose(&sized_turn(&t), 60, true);
+        assert_eq!(run.folds, [false, true, false, true, false, false]);
+        // (the run: 30,000 read, 1,000 written, 30 out)
+        assert!((run.a - 0.0772 - 0.0146).abs() < 1e-12, "with runs {}", run.a);
+        // (the first request wrote what the turn wrote less the later ones' growth: 5,000 of its 20,000)
+        let first = sized_costs(&sized_turn(&t))[0].unwrap().0;
+        assert!(
+            (first - (15_000.0 * 0.2 + 5_000.0 * 8.0 + 50.0 * 20.0) / 1e6).abs() < 1e-12,
+            "first {first}"
+        );
+    }
+
+    /// The verdict waits on a calibration that can carry it. One made-up turn of $0.50 whose loose ceiling is
+    /// $0.0808 (A $0.0772, B 9,000 × 2 × $0.20 a million; $0.0948 with its run): by the rule (b) reopens at a factor
+    /// of 0.2 × 0.5 / 0.0808 = 1.24 (the turn's own 30 % comes later, at 1.86), every run passes at 1.05. Too few
+    /// cells: no verdict, no estimate. A range holding 1.24: no verdict, the estimate a range, the folders named on
+    /// each side. Ranges wholly below or above: the stop stands, or (b) reopens.
+    #[test]
+    fn the_verdict_waits_on_a_calibration_that_can_carry_it() {
+        let t = turn(
+            &[(&["search"], 20_000, 50), (&["read"], 29_050, 40), (&["run"], 30_000, 30), (&[], 31_000, 300)],
+            18_000,
+        );
+        let s = sized_turn(&t);
+        let (ro, run) = (loose(&s, 60, false), loose(&s, 60, true));
+        let rec = Rec { t: &t, ro, run, cost: 0.5 };
+        let recs = [&rec];
+        let f_ro = turning(&recs, false).unwrap();
+        assert!((f_ro - 0.2 * 0.5 / (0.0772 + 0.0036)).abs() < 1e-9, "turns at {f_ro}");
+        let cal = |carrying: usize, factor: f64, spread: (f64, f64), range: (f64, f64)| Calibration {
+            quiet: 60,
+            factor,
+            spread,
+            range,
+            folders: vec![("a/low".into(), range.0), ("b/high".into(), range.1)],
+            cells: 40,
+            carrying,
+            text: String::new(),
+        };
+        let (text, est) = judge(&recs, &cal(3, 1.0, (0.9, 1.1), (0.8, 1.3)));
+        assert!(
+            text.starts_with("**No verdict: the calibration is too thin to carry an estimate.** 3 of 40"),
+            "{text}"
+        );
+        assert_eq!(est.show(|f| f), "not carried");
+        let (text, est) = judge(&recs, &cal(20, 1.0, (0.9, 1.1), (0.8, 1.3)));
+        assert!(text.starts_with("**No verdict: the factor spreads too wide to carry one.**"), "{text}");
+        assert!(
+            text.contains("which holds 1.24")
+                && text.contains("below it now: a/low 0.80; above it: b/high 1.30"),
+            "{text}"
+        );
+        assert_eq!(est.show(|f| f), "80.0 %–130.0 %");
+        let (text, est) = judge(&recs, &cal(20, 0.33, (0.30, 0.36), (0.2, 0.5)));
+        assert!(text.starts_with("**Verdict, by the rule:** the stop stands — at every factor"), "{text}");
+        assert_eq!(est.show(|f| f), "33.0 % (20.0 %–50.0 %)");
+        let (text, _) = judge(&recs, &cal(20, 1.5, (1.4, 1.6), (1.3, 1.7)));
+        assert!(text.starts_with("**Verdict, by the rule:** (b) is worth reopening"), "{text}");
+    }
+
+    /// A result's size is the next context over this one and its output; none with a size missing or for a first
+    /// request.
+    #[test]
+    fn a_results_size_is_the_contexts_growth_less_the_output_before() {
+        let t = Sized {
+            model: "claude-opus-5-5".into(),
+            steps: Vec::new(),
+            sizes: vec![(Some(100), Some(10)), (Some(9_110), Some(5)), (None, None), (Some(500), Some(1))],
+            written: None,
+        };
+        assert_eq!([0, 1, 2, 3].map(|i| result(&t, i)), [None, Some(9_000), None, None]);
+    }
+
+    /// A request of a made-up stream: its text, calls (tarae's tools), cache write (an hour's), read and output,
+    /// and the text of each call's result.
+    struct Req<'a> {
+        text: &'a str,
+        calls: Vec<(&'a str, Value)>,
+        write: u64,
+        read: u64,
+        out: u64,
+        result: &'a str,
+    }
+
+    fn stream(question: &str, reqs: &[Req]) -> String {
+        use serde_json::json;
+        let mut lines =
+            vec![json!({"type": "user", "message": {"content": [{"type": "text", "text": question}]}})];
+        for (i, r) in reqs.iter().enumerate() {
+            let mut content = Vec::new();
+            if !r.text.is_empty() {
+                content.push(json!({"type": "text", "text": r.text}));
+            }
+            for (k, (name, input)) in r.calls.iter().enumerate() {
+                content.push(json!({"type": "tool_use", "id": format!("t{i}-{k}"),
+                                    "name": format!("mcp__tarae__{name}"), "input": input}));
+            }
+            let usage = json!({"input_tokens": 0, "cache_creation_input_tokens": r.write,
+                               "cache_creation": {"ephemeral_1h_input_tokens": r.write},
+                               "cache_read_input_tokens": r.read, "output_tokens": r.out});
+            lines.push(
+                json!({"type": "assistant", "message": {"id": format!("m{i}"), "model": "claude-opus-5-5",
+                                                              "content": content, "usage": usage}}),
+            );
+            if !r.calls.is_empty() {
+                let results: Vec<Value> = (0..r.calls.len())
+                    .map(|k| json!({"type": "tool_result", "tool_use_id": format!("t{i}-{k}"), "content": r.result}))
+                    .collect();
+                lines.push(json!({"type": "user", "message": {"content": results}}));
+            }
+        }
+        lines.iter().map(|l| format!("{l}\n")).collect()
+    }
+
+    /// The calibration on two made-up cells whose bounds are known by construction. In the first, a quiet read of
+    /// a window round the hit its search printed folds both ways: fold's A and the loose A are the same request's
+    /// cost ($0.0772), its B 9,050 written (fold's) or 9,000 brought back (the loose one), read once after. In the
+    /// second a quiet read of a path no result holds folds only loosely ($0.0132), and a read that spoke (120 out)
+    /// neither — which sets the threshold at the quiet ones' 40.
+    #[test]
+    fn the_calibration_finds_the_threshold_and_the_factor_of_cells_known_by_construction() {
+        use serde_json::json;
+        let found = stream(
+            "where is foo used",
+            &[
+                Req {
+                    text: "",
+                    calls: vec![("search", json!({"pattern": "foo"}))],
+                    write: 20_000,
+                    read: 0,
+                    out: 50,
+                    result: "src/a.rs\n  12: foo()",
+                },
+                Req {
+                    text: "",
+                    calls: vec![("read", json!({"files": ["src/a.rs:10-14"]}))],
+                    write: 9_050,
+                    read: 20_000,
+                    out: 40,
+                    result: "10: fn f() {",
+                },
+                Req { text: "In f.", calls: vec![], write: 50, read: 29_050, out: 300, result: "" },
+            ],
+        );
+        let chose = stream(
+            "where is bar used",
+            &[
+                Req {
+                    text: "",
+                    calls: vec![("search", json!({"pattern": "bar"}))],
+                    write: 20_000,
+                    read: 0,
+                    out: 50,
+                    result: "src/b.rs:3: bar",
+                },
+                Req {
+                    text: "",
+                    calls: vec![("read", json!({"files": ["src/zzz.rs"]}))],
+                    write: 1_050,
+                    read: 20_000,
+                    out: 40,
+                    result: "1: mod b;",
+                },
+                Req {
+                    text: "Now b.",
+                    calls: vec![("read", json!({"files": ["src/b.rs"]}))],
+                    write: 100,
+                    read: 21_050,
+                    out: 120,
+                    result: "3: bar",
+                },
+                Req { text: "In b.", calls: vec![], write: 50, read: 21_270, out: 300, result: "" },
+            ],
+        );
+        let cal = calibrate(&[(
+            "x/target/live/made".into(),
+            vec![("found-off-1-7".into(), found), ("chose-off-1-7".into(), chose)],
+        )]);
+        assert_eq!(cal.quiet, 40);
+        let real = 0.0772 + 9_050.0 * 0.2 / 1e6;
+        let lo = 0.0772 + 9_000.0 * 0.2 / 1e6 + 0.0132;
+        assert!((cal.factor - real / lo).abs() < 1e-9, "factor {} ≠ {}", cal.factor, real / lo);
+        assert_eq!((cal.cells, cal.carrying), (2, 2));
+        assert!(cal.text.contains("both fold 1; loose only 1 (it spoke 0, after a question 0, an argument it chose 1); fold's only 0."), "{}", cal.text);
+        assert!(cal.text.contains("| x/made "), "{}", cal.text);
     }
 
     /// A read's range is met by a hit it holds or an end a result wrote; a name or path as written; a number only
