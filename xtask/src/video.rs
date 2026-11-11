@@ -1332,7 +1332,7 @@ impl WideIntro {
 }
 
 /// An RGBA picture over the frame `dst` (`dims` px) at (`x0`, `y0`), by its alpha; clipped.
-fn stamp(dst: &mut [u8], (w, h): (usize, usize), (fw, fh, rgba): &Rgba, (x0, y0): (usize, usize)) {
+pub(crate) fn stamp(dst: &mut [u8], (w, h): (usize, usize), (fw, fh, rgba): &Rgba, (x0, y0): (usize, usize)) {
     for y in 0..*fh {
         for x in 0..*fw {
             let s = &rgba[(y * fw + x) * 4..][..4];
@@ -1345,7 +1345,7 @@ fn stamp(dst: &mut [u8], (w, h): (usize, usize), (fw, fh, rgba): &Rgba, (x0, y0)
 }
 
 /// An 8-bit RGBA PNG.
-fn rgba(path: &Path) -> Result<Rgba> {
+pub(crate) fn rgba(path: &Path) -> Result<Rgba> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().map_err(|e| err(&e))?;
@@ -1813,7 +1813,7 @@ const INTRO_GAP: usize = 40;
 
 /// `p` made `k` (< 1) of its size, each pixel the mean of those it covers, by their alpha (no dark fringe round the
 /// mascot's strokes).
-fn shrunk(p: &Rgba, k: f32) -> Rgba {
+pub(crate) fn shrunk(p: &Rgba, k: f32) -> Rgba {
     let (w, h, src) = p;
     let (nw, nh) = (((*w as f32) * k).round().max(1.0) as usize, ((*h as f32) * k).round().max(1.0) as usize);
     let mut out = vec![0u8; nw * nh * 4];

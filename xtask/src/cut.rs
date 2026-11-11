@@ -13,6 +13,7 @@
 //! ```toml
 //! bg = "dark"                             # or "light" (dark if left out)
 //! default = 8                             # what no span names: a speed, or "out"
+//! mascot = false                          # no mascot at the keys in the band (`mascot.rs`; there if left out)
 //!
 //! [opening]                               # the video's first seconds (`Program`): the intro — the brush's swing
 //!                                         # and `t a r a e`, `INTRO_MS` —, the card of what's built (`BUILT_MS`),
@@ -82,6 +83,7 @@ use crate::video::{self, FPS};
 
 mod draw;
 mod init;
+mod mascot;
 mod opening;
 mod sound;
 #[cfg(test)]
@@ -545,6 +547,7 @@ pub(crate) const LOOP_MIN: u64 = 2_000;
 pub(crate) struct Cut {
     pub(crate) file: String,
     pub(crate) bg: Bg,
+    pub(crate) mascot: bool,
     pub(crate) map: Map,
     pub(crate) opening: Opening,
     pub(crate) chapters: Vec<Chapter>,
@@ -655,7 +658,14 @@ impl Cut {
         let src = Src { lines: text.lines().collect(), file };
         let top: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{file}: {e}"))?;
         let root = Entry { t: &top, line: 0, src: &src, name: "the file" };
-        root.keys(&["bg", "default", "opening", "span", "chapter", "caption", "zoom", "music", "sound"])?;
+        root.keys(&[
+            "bg", "default", "mascot", "opening", "span", "chapter", "caption", "zoom", "music", "sound",
+        ])?;
+        let mascot = match top.get("mascot") {
+            None => true,
+            Some(toml::Value::Boolean(b)) => *b,
+            Some(_) => return Err(root.err("mascot", "mascot: true or false")),
+        };
         let bg = match root.text("bg")? {
             None | Some("dark") => Bg::Dark,
             Some("light") => Bg::Light,
@@ -962,6 +972,7 @@ impl Cut {
             mix,
             file: file.to_string(),
             bg,
+            mascot,
             map,
             opening,
             chapters,

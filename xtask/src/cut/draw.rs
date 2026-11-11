@@ -12,13 +12,15 @@
 //!   next comes up (`cross_px`) —; where time is left out, and where most of the cells change at once
 //!   (`camera::CROSS`), the two screens over each other.
 //! - The sheet (`sheet_picks`): each picture taken once its part has come up, never inside a crossing.
-//! - The band (`band`): the clock, the jump's mark, the speed's mark or `where it ends`, the caption.
+//! - The band (`band`): the clock, the jump's mark, the speed's mark or `where it ends`, the caption; the mascot at the
+//!   keys at its right end (`mascot.rs`), the marks `mascot::GAP` from its box, a caption that would reach them refused.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
+use super::mascot::{self, Art, Hands, Place};
 use super::{
     Card, Cut, Frame, Marks, Pace, Program, What, clock, factor, jumped, opening, sped, told, video_time,
 };
@@ -96,16 +98,21 @@ struct Key {
     screen: (bool, u64),
     region: Region,
     cross: Option<u8>,
+    pose: Option<mascot::Pose>,
 }
 
 /// `text` at `px` in `fg`, kept: the band's words repeat.
-struct Words<'f> {
+pub(crate) struct Words<'f> {
     fonts: &'f Fonts,
     ground: Rgb,
     kept: HashMap<(String, u32, Rgb), Picture>,
 }
 
-impl Words<'_> {
+impl<'f> Words<'f> {
+    pub(crate) fn new(fonts: &'f Fonts, ground: Rgb) -> Words<'f> {
+        Words { fonts, ground, kept: HashMap::new() }
+    }
+
     fn get(&mut self, text: &str, px: f32, fg: Rgb) -> &Picture {
         if self.kept.len() > 512 {
             self.kept.clear();
@@ -129,12 +136,30 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let blank = vt100::Parser::new(size.1, size.0, 0);
     let (pw, ph, _) = shot::render_px(blank.screen(), &fonts, glyph, None);
     let (x0, y0) = ((W - pw) / 2, (H - BAND - ph) / 2);
+    let mut said = Vec::new();
+    // (the mascot at the keys: its frames and its place, else the cut without it — said)
+    let loaded = Instant::now();
+    let mascot: Option<(Art, Place)> = match mascot::found(cut, mascot::dir(), (x0, pw), y0 + ph - PAD) {
+        Ok(m) => Some(m),
+        Err(none) => {
+            said.push(none);
+            None
+        }
+    };
+    let loaded = loaded.elapsed();
+    let marks_right = mascot.as_ref().map_or(x0 + pw, |m| m.1.marks_right);
+    captions_clear(cut, &fonts, (marks_right, mascot.is_some()))?;
+    let keys = match dir.join("keys.bin").exists() {
+        true => crate::record::read_log(&dir.join("keys.bin"))?,
+        false => Vec::new(),
+    };
+    let taps = super::sound::sounds(&prog, &keys, marks).taps;
+    let hands = Hands::new(&taps);
     let look = video::look(cut.bg);
     let seal = video::seal(cut.bg)?;
     let name = ("t a r a e", video::NAME_PX, look.accent, true);
     let told = told(cut.end, prog.total);
     let built_card = opening::card(&cut.opening, &told, cut.bg, &look, &fonts, (W, H));
-    let mut said = Vec::new();
     // (the intro: the swing's frames, else the name and the seal — said)
     let intro = match video::WideIntro::new(cut.bg, &look, &fonts) {
         Ok(i) => {
@@ -244,10 +269,6 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let wav = out.join("cut.wav");
     let heard = match &ffmpeg {
         Some(f) => {
-            let keys = match dir.join("keys.bin").exists() {
-                true => crate::record::read_log(&dir.join("keys.bin"))?,
-                false => Vec::new(),
-            };
             let skip = intro.as_ref().map_or(0, video::WideIntro::skipped_us);
             Some(super::sound::make(&prog, dir, &keys, marks, (f, skip), &wav)?)
         }
@@ -261,7 +282,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let crossings = prog.crossings();
     let mut next_cross = 0;
     let (mut ends, mut replay) = (Replay::new(&take.screen, size), Replay::new(&take.screen, size));
-    let mut words = Words { fonts: &fonts, ground: look.ground, kept: HashMap::new() };
+    let mut words = Words::new(&fonts, look.ground);
     let mut pic: Option<((bool, u64, u32), Picture)> = None;
     let mut last: Option<(Key, Vec<u8>)> = None;
     let mut cross: Option<(Vec<u8>, u64, bool)> = None;
@@ -270,6 +291,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let mut sheet: Vec<Picture> = Vec::new();
     let mut pages = 0;
     let all = Region::all(size);
+    let (mut posed, mut stamping) = ([0u64; 5], std::time::Duration::ZERO);
     for k in 0..frames {
         let v = Program::time_of(k);
         let f = prog.frame(v);
@@ -304,6 +326,10 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
             true => (true, ends.shown),
             false => (false, replay.shown),
         };
+        let pose = mascot.as_ref().and_then(|_| mascot::pose_at(&hands, k, &f));
+        if let Some(p) = pose {
+            posed[p as usize] += 1;
+        }
         let key = Key {
             card: f.card,
             secs: f.clock.map(|t| t / 1000),
@@ -315,6 +341,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
             screen,
             region,
             cross: share,
+            pose,
         };
         if last.as_ref().is_none_or(|l| l.0 != key) {
             let mut px = match f.card {
@@ -342,10 +369,16 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
                         Some(view) => video::resample(&mut px, W, (x0, y0), (pw, ph), p, view),
                     }
                     let at = (H - BAND) * W * 3;
-                    for x in x0 + PAD..x0 + pw - PAD {
+                    let rule_end = mascot.as_ref().map_or(x0 + pw - PAD, |m| m.1.rule_end);
+                    for x in x0 + PAD..rule_end {
                         px[at + x * 3..][..3].copy_from_slice(&look.faint);
                     }
-                    band(&mut px, &f, cut, (x0, pw), &look, &mut words);
+                    band(&mut px, &f, cut, (x0, marks_right), &look, &mut words);
+                    if let (Some((art, place)), Some(p)) = (&mascot, pose) {
+                        let t = Instant::now();
+                        video::stamp(&mut px, (W, H), art.picture(p), (place.x, place.y));
+                        stamping += t.elapsed();
+                    }
                     px
                 }
             };
@@ -371,6 +404,35 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
                 sheet.clear();
             }
         }
+    }
+    if let Some((art, place)) = &mascot {
+        let of = |s: mascot::Side| taps.iter().filter(|t| t.1 == s).count();
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+        said.push(format!(
+            "the mascot at the keys ({}): {} taps — {} left, {} right, {} both (returns, stamps), {} on the space bar; on {} \
+             frames: up {}, left {}, right {}, both {}, watching {}; its box {}×{} at ({}, {}), the rule stopping at x {}, \
+             the marks ending at x {}; it cost {:.0} ms to load and shrink, {:.0} ms to stamp",
+            art.dir.display(),
+            hands.taps(),
+            of(mascot::Side::Left),
+            of(mascot::Side::Right),
+            of(mascot::Side::Both),
+            of(mascot::Side::Space),
+            posed.iter().sum::<u64>(),
+            posed[0],
+            posed[1],
+            posed[2],
+            posed[3],
+            posed[4],
+            mascot::BOX.0,
+            mascot::BOX.1,
+            place.x,
+            place.y,
+            place.rule_end,
+            marks_right - PAD,
+            ms(loaded),
+            ms(stamping),
+        ));
     }
     if !sheet.is_empty() {
         pages += 1;
@@ -436,6 +498,44 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     }
     encoded?;
     Ok(head.join("\n") + "\n")
+}
+
+/// Each caption clear of the band's right end (the marks' pictures ending at `right`; `boxed`: the mascot's box after
+/// them): of the widest speed mark shown over its stretch by `mascot::GAP`, else of that end. One that would reach it is
+/// refused with its line and the width left there.
+pub(crate) fn captions_clear(cut: &Cut, fonts: &Fonts, (right, boxed): (usize, bool)) -> Result<()> {
+    let map = &cut.map;
+    let letters =
+        |t: &str, px: f32| video::text(t, px, [255; 3], [0; 3], false, fonts).0.saturating_sub(2 * PAD);
+    for c in &cut.captions {
+        let (m0, m1) = (map.video(c.at), map.video(c.at) + c.len * 1000);
+        let widest = (0..map.segs().len())
+            .filter(|&i| map.seg_at(i) < m1 && m0 < map.seg_at(i) + map.seg_len(i))
+            .filter_map(|i| match map.segs()[i].pace {
+                Pace::Speed(k) => sped(k),
+                Pace::Out => None,
+            })
+            .map(|t| (letters(&t, MARK_PX), t))
+            .max();
+        let end = right - PAD;
+        let limit = widest.as_ref().map_or(end, |(w, _)| end.saturating_sub(w + mascot::GAP));
+        let room = (2 * limit).saturating_sub(W);
+        let w = letters(&c.text, video::CAPTION_PX);
+        if w > room {
+            let what = match (&widest, boxed) {
+                (Some((_, t)), _) => format!("the speed's mark `{t}`"),
+                (None, true) => "the mascot's box".to_string(),
+                (None, false) => "the screen's right edge".to_string(),
+            };
+            return Err(format!(
+                "{}:{}: caption: {w} px wide, centred it reaches {what} — {room} px left there (about {} characters)",
+                cut.file,
+                c.line,
+                room / shot::cell(fonts, video::CAPTION_PX).0.max(1)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `on` looked for on `scan`'s screen from the take's `at` until `until` (ms): when it's first there, and its region.
@@ -584,13 +684,14 @@ pub(crate) fn sheet_picks(prog: &Program) -> BTreeMap<u64, Vec<String>> {
     picks
 }
 
-/// The band under the screen (its picture at `x0`, `pw` wide): the take's clock at the left with the jump's mark after
-/// it, the speed's mark (or `where it ends`) at the right, the caption in the middle — each centred on the band's height.
-fn band(
+/// The band under the screen (its picture at `x0`): the take's clock at the left with the jump's mark after it, the
+/// speed's mark (or `where it ends`) at the right — its picture ending at `right`: the screen's, or `mascot::GAP` short of
+/// the mascot's box —, the caption in the middle; each centred on the band's height.
+pub(crate) fn band(
     px: &mut [u8],
     f: &Frame,
     cut: &Cut,
-    (x0, pw): (usize, usize),
+    (x0, right): (usize, usize),
     look: &video::Look,
     words: &mut Words,
 ) {
@@ -606,14 +707,14 @@ fn band(
         let p = words.get(&jumped(ms), MARK_PX, look.accent);
         put(p, left, a);
     }
-    let right = match (f.ends, f.speed.and_then(sped)) {
+    let mark = match (f.ends, f.speed.and_then(sped)) {
         (true, _) => Some((ENDS.to_string(), look.accent, 255)),
         (false, Some(s)) => Some((s, look.ink, QUIET)),
         (false, None) => None,
     };
-    if let Some((t, fg, a)) = right {
+    if let Some((t, fg, a)) = mark {
         let p = words.get(&t, MARK_PX, fg);
-        put(p, (x0 + pw).saturating_sub(p.0), a);
+        put(p, right.saturating_sub(p.0), a);
     }
     if let Some((i, a)) = f.caption {
         let p = words.get(&cut.captions[i].text, video::CAPTION_PX, look.ink);

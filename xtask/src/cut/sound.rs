@@ -24,6 +24,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use super::mascot::{Side, side};
 use super::{Marks, Pace, Program, What, ms_of, video_time};
 use crate::Result;
 use crate::record::Rec;
@@ -107,10 +108,12 @@ pub(crate) fn stroke(b: &[u8]) -> Option<char> {
 
 /// What the cut hears, at its video times, and what it doesn't: key strokes heard (one key heard twice where the
 /// opening shows it too), keys not heard for their stretch's speed or because it's left out; stamps heard and not;
-/// where the brush starts (µs) on the end card, and with the intro.
+/// where the brush starts (µs) on the end card, and with the intro; and the mascot's taps, one where each key and stamp
+/// is heard (µs, the hand it asks for: `mascot::side`, both for a stamp).
 #[derive(Debug, Default)]
 pub(crate) struct Sounds {
     pub(crate) list: Vec<(Duration, Heard)>,
+    pub(crate) taps: Vec<(u64, Side)>,
     pub(crate) keys: usize,
     pub(crate) fast: usize,
     pub(crate) out: usize,
@@ -134,6 +137,7 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
         match heard_at(prog, t) {
             Where::At(vs) => {
                 s.keys += vs.len();
+                s.taps.extend(vs.iter().map(|&v| (v, side(&r.bytes))));
                 s.list.extend(vs.into_iter().map(|v| (us(v), Heard::Key(c))));
             }
             Where::Fast => s.fast += 1,
@@ -144,6 +148,7 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
         match heard_at(prog, a) {
             Where::At(vs) => {
                 s.stamps += vs.len();
+                s.taps.extend(vs.iter().map(|&v| (v, Side::Both)));
                 s.list.extend(vs.into_iter().map(|v| (us(v), Heard::Stamp)));
             }
             _ => s.stamps_missed += 1,
@@ -152,6 +157,7 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
     s.brush = prog.parts.iter().find(|p| p.what == What::End).map(|p| p.at);
     s.intro = prog.parts.iter().find(|p| p.what == What::Intro).map(|p| p.at);
     s.list.sort_by_key(|h| h.0);
+    s.taps.sort_by_key(|t| t.0);
     s
 }
 

@@ -1094,3 +1094,205 @@ fn cut_init_gives_the_spans_its_rules_say_and_reads_them_back() {
         [(0, "main"), (50_000, "fix")]
     );
 }
+
+// ── The mascot at the keys ──
+
+use super::mascot::{self, Art, Hands, Pose, Side};
+
+#[test]
+fn a_keys_side_is_its_half_of_a_qwerty() {
+    let cases: [(&[u8], Side); 17] = [
+        (b"q", Side::Left),
+        (b"B", Side::Left),
+        (b"5", Side::Left),
+        (b"6", Side::Right),
+        (b"p", Side::Right),
+        (b":", Side::Right),
+        (b"\x1b", Side::Left),
+        (b"\t", Side::Left),
+        (b"\x7f", Side::Right),
+        (b"\x1b[A", Side::Right),
+        (b"\x11", Side::Left), // C-q
+        (b"\x1bj", Side::Right),
+        (b"\x1b[27u", Side::Left),
+        (b"\x1b[106;5u", Side::Right),
+        (b" ", Side::Space),
+        (b"\x1b[13u", Side::Both),
+        (b"sh git worktree add", Side::Left), // the key script's line: its first
+    ];
+    for (b, s) in cases {
+        assert_eq!(mascot::side(b), s, "{:?}", String::from_utf8_lossy(b));
+    }
+    assert_eq!(mascot::side(b"\r"), Side::Both);
+}
+
+#[test]
+fn the_mascot_taps_where_a_key_is_heard_on_its_side_and_nowhere_else() {
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let keys = [
+        key(5_000, b"f"),   // the default's 4×: not heard, no tap
+        key(14_000, b"a"),  // 1×, left
+        key(14_300, b"j"),  // right
+        key(14_600, b"\r"), // a return: both
+        key(14_950, b"y"),  // the key that answers card 1: the stamp's, both
+        key(30_000, b"d"),  // left out
+    ];
+    let s = sounds(&p, &keys, &marks());
+    // (the opening's where it ends shows 55–58 s: card 2's answer at 56 s, its stamp, there at 7 s)
+    assert_eq!(
+        s.taps,
+        [
+            (7_000_000, Side::Both),
+            (17_500_000, Side::Left),
+            (17_800_000, Side::Right),
+            (18_100_000, Side::Both),
+            (18_500_000, Side::Both)
+        ]
+    );
+    // (every tap where a key or a stamp sounds, and the sound's own times)
+    let heard: Vec<u64> = s.list.iter().map(|h| h.0.as_micros() as u64).collect();
+    assert_eq!(s.taps.iter().map(|t| t.0).collect::<Vec<_>>(), heard);
+    let hands = Hands::new(&s.taps);
+    let at = |us: u64| hands.pose(Program::frame_at(us), false);
+    assert_eq!(
+        [at(17_500_000), at(17_800_000), at(18_100_000), at(18_500_000), at(7_000_000)],
+        [Pose::Left, Pose::Right, Pose::Both, Pose::Both, Pose::Both]
+    );
+    // (between them the hands up; where the 4× key was, no tap: watching)
+    assert_eq!(at(17_700_000), Pose::Up);
+    let fast = p.video_of(c.map.video(5_000)).unwrap();
+    assert_eq!(mascot::pose_at(&hands, Program::frame_at(fast), &p.frame(fast)), Some(Pose::Watch));
+    assert_eq!(hands.taps(), 5);
+}
+
+#[test]
+fn a_hand_stays_down_its_hold_and_the_same_hand_again_comes_up_one_frame_first() {
+    let frame = 1_000_000 / video::FPS;
+    // (alone: down three frames, then up)
+    let one = Hands::new(&[(1_000_000, Side::Left)]);
+    let k = Program::frame_at(1_000_000);
+    let poses: Vec<Pose> = (k..k + 4).map(|f| one.pose(f, false)).collect();
+    assert_eq!(poses, [Pose::Left, Pose::Left, Pose::Left, Pose::Up]);
+    // (the same hand twice in 60 ms, and in 20 ms: an up frame between)
+    for gap in [60_000, 20_000] {
+        let h = Hands::new(&[(0, Side::Right), (gap, Side::Right)]);
+        let poses: Vec<Pose> = (0..4).map(|f| h.pose(f, false)).collect();
+        assert_eq!(poses, [Pose::Right, Pose::Up, Pose::Right, Pose::Right], "{gap} µs apart");
+    }
+    // (the other hand is no wait: both down together)
+    let h = Hands::new(&[(0, Side::Left), (frame, Side::Right)]);
+    assert_eq!((h.pose(0, false), h.pose(1, false)), (Pose::Left, Pose::Both));
+    // (the space bar: the hand that didn't tap last)
+    let h = Hands::new(&[(0, Side::Left), (500_000, Side::Space), (1_000_000, Side::Space)]);
+    assert_eq!(h.pose(Program::frame_at(500_000), false), Pose::Right);
+    assert_eq!(h.pose(Program::frame_at(1_000_000), false), Pose::Left);
+}
+
+#[test]
+fn the_mascot_watches_after_the_quiet_and_on_a_sped_span_and_never_on_a_card() {
+    let quiet = mascot::QUIET_MS * video::FPS / 1000;
+    let h = Hands::new(&[(0, Side::Left)]);
+    assert_eq!((h.pose(quiet - 1, false), h.pose(quiet, false)), (Pose::Up, Pose::Watch));
+    assert_eq!(Hands::new(&[]).pose(10, false), Pose::Watch, "no key yet");
+    // (typing again: the first key is a tap)
+    let h = Hands::new(&[(0, Side::Left), (5_000_000, Side::Right)]);
+    assert_eq!(h.pose(Program::frame_at(5_000_000) - 1, false), Pose::Watch);
+    assert_eq!(h.pose(Program::frame_at(5_000_000), false), Pose::Right);
+    // (on a sped span watching at once, a key a moment before; at 1× and at the 2× fit not)
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let near = |t: u64| {
+        let v = p.video_of(c.map.video(t)).unwrap();
+        let h = Hands::new(&[(v - 200_000, Side::Left)]);
+        mascot::pose_at(&h, Program::frame_at(v), &p.frame(Program::time_of(Program::frame_at(v))))
+    };
+    assert_eq!(
+        (near(5_000), near(15_000), near(53_000)),
+        (Some(Pose::Watch), Some(Pose::Up), Some(Pose::Up))
+    );
+    // (a card: none)
+    let h = Hands::new(&[(4_000_000, Side::Both)]);
+    let built = Program::frame_at(4_000_000);
+    assert_eq!(p.frame(Program::time_of(built)).card, Some(Card::Built));
+    assert_eq!(mascot::pose_at(&h, built, &p.frame(Program::time_of(built))), None);
+    let second = p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap();
+    assert_eq!(mascot::pose_at(&h, Program::frame_at(second.at), &p.frame(second.at + 1)), None);
+}
+
+/// Five made-up poses at the box's size, their ink from column `ink` in rows 20 on.
+fn art(ink: usize) -> Art {
+    let (w, h) = mascot::BOX;
+    let mut px = vec![0u8; w * h * 4];
+    for y in 20..h {
+        for x in ink..w {
+            px[(y * w + x) * 4..][..4].copy_from_slice(&[200, 200, 200, 255]);
+        }
+    }
+    Art { poses: vec![(w, h, px); 5], dir: "made-up".into() }
+}
+
+#[test]
+fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_cell() {
+    use crate::shot::PAD;
+    let (x0, pw) = (33, video::W - 66);
+    let place = mascot::place(&art(60), (x0, pw), 870).unwrap();
+    let right = x0 + pw - PAD;
+    let (y, bottom) = (video::H - 14 - mascot::BOX.1, video::H - 14);
+    assert_eq!(
+        (place.x + mascot::BOX.0, place.y),
+        (right, y),
+        "its right on the rule's end, its foot over the frame's"
+    );
+    assert_eq!(place.rule_end, place.x + 60 - 26, "the rule stops short of its ink");
+    assert_eq!(place.marks_right - PAD + mascot::GAP, place.x);
+    assert!(y < video::H - video::BAND && bottom < video::H, "its head over the rule");
+    let e = mascot::place(&art(60), (x0, pw), y + 49).unwrap_err();
+    assert!(e.contains("49 px over the screen's last row of cells"), "{e}");
+    // (the marks drawn: ink left of the gap, none from it to the frame's edge — a sped span's, where it ends')
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let look = video::look(Bg::Dark);
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    for f in [at_take(&p, 5_000, 0), p.frame(7_000_000)] {
+        let mut px = look.ground.repeat(video::W * video::H);
+        let mut words = super::draw::Words::new(&fonts, look.ground);
+        super::draw::band(&mut px, &f, &c, (x0, place.marks_right), &look, &mut words);
+        let inked = |xs: std::ops::Range<usize>| {
+            (video::H - video::BAND..video::H)
+                .any(|y| xs.clone().any(|x| px[(y * video::W + x) * 3..][..3] != look.ground))
+        };
+        assert!(inked(place.x - mascot::GAP - 60..place.x - mascot::GAP), "the mark drawn: {f:?}");
+        assert!(!inked(place.x - mascot::GAP..video::W), "clear of the box: {f:?}");
+    }
+    // (a caption: clear of the widest speed mark over it, else of the box; one that would reach it refused)
+    let boxed = (place.marks_right, true);
+    assert_eq!(super::draw::captions_clear(&c, &fonts, boxed), Ok(()));
+    let long = format!("[[caption]]\nat = \"5s\"\nfor = \"1s\"\ntext = \"{}\"\n", "x".repeat(60));
+    let text = CUT.replacen("[[caption]]", &format!("{long}\n[[caption]]"), 1);
+    let e = super::draw::captions_clear(&cut(&text).unwrap(), &fonts, boxed).unwrap_err();
+    let line = text.lines().position(|l| l.starts_with("[[caption]]")).unwrap() + 1;
+    assert!(e.starts_with(&format!("cut.toml:{line}: caption:")), "{e}");
+    assert!(e.contains("reaches the speed's mark `▸▸ ×4`") && e.contains("px left there"), "{e}");
+    let fits = text.replacen(&"x".repeat(60), &"x".repeat(40), 1);
+    assert_eq!(super::draw::captions_clear(&cut(&fits).unwrap(), &fonts, boxed), Ok(()));
+}
+
+#[test]
+fn no_frames_no_mascot_and_it_says_so() {
+    let c = cut(CUT).unwrap();
+    let s = tarae_testkit::scratch::Scratch::new("xtask-cut-mascot");
+    let e = mascot::found(&c, Some(s.join("none")), (33, 1854), 870).err().unwrap();
+    assert!(e.starts_with("the mascot: none — ") && e.ends_with("; the cut is made without it"), "{e}");
+    assert!(e.contains("frame-up.png"), "{e}");
+    let e = mascot::found(&c, None, (33, 1854), 870).err().unwrap();
+    assert!(e.contains("no main checkout found"), "{e}");
+    let off = cut(&format!("mascot = false\n{CUT}")).unwrap();
+    assert_eq!(
+        mascot::found(&off, Some(s.join("none")), (33, 1854), 870).err().unwrap(),
+        "the mascot: none (mascot = false)"
+    );
+    let light = cut(&format!("bg = \"light\"\n{CUT}")).unwrap();
+    assert!(mascot::found(&light, None, (33, 1854), 870).err().unwrap().contains("meok's only"));
+    assert!(cut(&format!("mascot = 1\n{CUT}")).unwrap_err().contains("mascot: true or false"));
+}
