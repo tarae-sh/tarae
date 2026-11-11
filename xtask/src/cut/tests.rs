@@ -3,7 +3,7 @@
 
 use serde_json::json;
 
-use super::draw::{label, lost_zooms, wide_window};
+use super::draw::{QUIET, jump_ink, label, lost_zooms, wide_window};
 use super::init::{Facts, rules, stills, ticking, written};
 use super::sound::{
     BED_REF_LUFS, Laid, Made, Mix, NEAR_KEY_DB, Placed, Track, Where, bed_gains, heard_at, laid, lay, layout,
@@ -249,6 +249,89 @@ fn a_file_out_of_the_takes_order_is_refused_with_its_line() {
 /// The frame `ms` after the take part's moment for the take's `t`.
 fn at_take(p: &Program, t: u64, ms: u64) -> Frame {
     p.frame(p.video_of(p.cut.map.video(t)).unwrap() + ms * 1000)
+}
+
+/// A jump's mark is as loud as the jump is far, at each weight's edges: 9.9 s left out none (a cut), 10 s and 59.9 s the
+/// clock's quiet ink (saying seconds, never minutes), a minute the accent; an unmarked one never cuts a mark short; the
+/// clock steps at every jump, marked or not (a 5 s one too); `cut.txt` counts them by weight.
+#[test]
+fn a_jumps_mark_is_as_loud_as_the_jump_is_far() {
+    assert_eq!(
+        [weight(9_900), weight(10_000), weight(59_900), weight(60_000)],
+        [Weight::Unmarked, Weight::Quiet, Weight::Quiet, Weight::Accent]
+    );
+    assert_eq!(
+        (jumped(10_000), jumped(59_900), jumped(60_000)),
+        ("+10 s".into(), "+59 s".into(), "+1 min".into())
+    );
+    let text = r#"
+default = 1
+
+[[span]]
+from = "0:00:10.000"
+to = "0:00:19.900"
+out = true
+
+[[span]]
+from = "0:00:30.000"
+to = "0:00:40.000"
+out = true
+
+[[span]]
+from = "0:00:40.500"
+to = "0:00:45.000"
+out = true
+
+[[span]]
+from = "0:00:50.000"
+to = "0:01:49.900"
+out = true
+
+[[span]]
+from = "0:02:00.000"
+to = "0:03:00.000"
+out = true
+
+[[span]]
+from = "0:03:30.000"
+to = "0:03:35.000"
+out = true
+"#;
+    let c = Cut::parse(&format!("{text}{OPENING}"), "cut.toml", &Marks::new(Vec::new(), 240_000)).unwrap();
+    let p = Program::new(&c);
+    let standing = |t: u64| at_take(&p, t, FADE_MS + JUMP_MS / 2).jump;
+    assert_eq!(standing(19_900), None, "9.9 s: a cut, no mark");
+    assert_eq!(standing(40_000), Some((10_000, 255)), "10 s: marked, through the 4.5 s cut 0.5 s after it");
+    assert_eq!(standing(109_900), Some((59_900, 255)), "59.9 s: marked");
+    assert_eq!(standing(180_000), Some((60_000, 255)), "a minute: marked");
+    // (the clock steps at every jump, whatever its mark: the take's moment before it, then the one after it, a
+    // millisecond of video apart; a mark beside it only from 10 s)
+    let jumps = [
+        (10_000, 19_900, false),
+        (30_000, 40_000, true),
+        (50_000, 109_900, true),
+        (120_000, 180_000, true),
+        (210_000, 215_000, false),
+    ];
+    for (from, to, marked) in jumps {
+        let v = p.video_of(c.map.video(to)).unwrap();
+        let (before, at) = (p.frame(v - 1_000), p.frame(v));
+        assert_eq!((before.clock, at.clock), (Some(from - 1), Some(to)), "the clock steps at {from}–{to}");
+        // (0.3 s on: a mark up by then, and no jump since — the 10 s one's next cut comes at 0.5 s)
+        let up = p.frame(v + 300_000);
+        assert_eq!(up.clock, Some(to + 300), "and goes on from there");
+        assert_eq!(up.jump.is_some(), marked, "{} s left out: marked {marked}", (to - from) / 1000);
+    }
+    // (how each is drawn: the clock's quiet ink under a minute, the accent from it; a fade scales both)
+    let look = video::look(Bg::Dark);
+    assert_eq!(jump_ink(10_000, 255, &look), (look.ink, QUIET));
+    assert_eq!(jump_ink(59_900, 255, &look), (look.ink, QUIET));
+    assert_eq!(jump_ink(60_000, 255, &look), (look.accent, 255));
+    assert_eq!(jump_ink(59_900, 0, &look), (look.ink, 0));
+    assert_eq!(
+        p.jumps_said(),
+        "jumps: 6 — 3 unmarked (under 10 s), 2 quiet (10 s to 1 min), 1 accent (1 min or more)"
+    );
 }
 
 #[test]

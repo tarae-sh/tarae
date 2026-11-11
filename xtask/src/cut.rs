@@ -79,7 +79,8 @@
 //! Every list is in the take's order and spans don't overlap: a file that reorders anything is refused with the line.
 //! What the picture always says, in the band under tarae's cells (never over them): the take's real time (`0:37:12`)
 //! at its left; on a sped span its factor (`▸▸ ×16`) at its right; where time is left out, the clock jumps and a mark
-//! says how much (`+6 min`) for `JUMP_MS`; over where it ends, `where it ends`. The card of what's built has one small
+//! says how much (`+6 min`) for `JUMP_MS`, as loud as the jump is far (`weight`: none under 10 s, the clock's quiet ink to
+//! a minute, the accent from there); over where it ends, `where it ends`. The card of what's built has one small
 //! line the cut makes, never the file (`told`): that it's a real session, how long it took and how long it's shown.
 
 use std::path::Path;
@@ -110,6 +111,26 @@ pub(crate) const CHAPTER_BAND_MS: u64 = 3_000;
 pub(crate) const CAPTION_MAX: usize = 60;
 /// The jump's mark stands this long (then fades), and comes in and goes out over `FADE_MS` — a caption's too.
 pub(crate) const JUMP_MS: u64 = 1_000;
+/// A jump's mark is as loud as the jump is far (the design session's, 2026-11-12): under `JUMP_QUIET_MS` none — a skip
+/// that short reads as a cut —; to `JUMP_ACCENT_MS` the clock's quiet ink; from there the accent.
+pub(crate) const JUMP_QUIET_MS: u64 = 10_000;
+pub(crate) const JUMP_ACCENT_MS: u64 = 60_000;
+
+/// How a jump of `ms` left out is marked (`JUMP_QUIET_MS`, `JUMP_ACCENT_MS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Weight {
+    Unmarked,
+    Quiet,
+    Accent,
+}
+
+pub(crate) fn weight(ms: u64) -> Weight {
+    match ms {
+        ms if ms < JUMP_QUIET_MS => Weight::Unmarked,
+        ms if ms < JUMP_ACCENT_MS => Weight::Quiet,
+        _ => Weight::Accent,
+    }
+}
 pub(crate) const FADE_MS: u64 = crate::captions::FADE_MS;
 /// The intro: the brush's swing and `t a r a e` (`video::WideIntro`), the swing's frames then the name risen, held.
 pub(crate) const INTRO_MS: u64 = 2_500;
@@ -210,10 +231,11 @@ fn chapter_time(us: u64) -> String {
     }
 }
 
-/// The jump's mark: how much of the take is left out there — `+40 s`, `+6 min`, `+1 h 12 min`.
+/// The jump's mark: how much of the take is left out there — `+40 s`, `+6 min`, `+1 h 12 min`; seconds up to the
+/// minute the accent starts at (`+59 s` to it), so a quiet mark never says minutes.
 pub(crate) fn jumped(ms: u64) -> String {
-    if ms < 59_500 {
-        return format!("+{} s", (ms as f64 / 1000.0).round().max(1.0));
+    if ms < JUMP_ACCENT_MS {
+        return format!("+{} s", (ms as f64 / 1000.0).round().clamp(1.0, 59.0));
     }
     let min = (ms as f64 / 60_000.0).round() as u64;
     match (min / 60, min % 60) {
@@ -1323,7 +1345,10 @@ impl<'c> Program<'c> {
             Pace::Speed(k) if moving && k > 1.0 + 1e-6 => Some(k),
             _ => None,
         };
-        let jump = (self.jumps.iter().rev().find(|j| j.0 <= m))
+        // (an unmarked jump is a cut: it neither marks nor ends the mark of a marked one before it)
+        let jump = (self.jumps.iter().rev())
+            .filter(|j| weight(j.1) != Weight::Unmarked)
+            .find(|j| j.0 <= m)
             .map(|j| (j.1, envelope(m - j.0, (JUMP_MS + 2 * FADE_MS) * 1000)))
             .filter(|j| j.1 > 0);
         let caption = (self.captions.iter().enumerate())
@@ -1344,6 +1369,22 @@ impl<'c> Program<'c> {
             chapter,
             map: Some(m),
         }
+    }
+
+    /// `cut.txt`'s line of the jumps, by how their marks are drawn (`weight`).
+    pub(crate) fn jumps_said(&self) -> String {
+        let n = |w: Weight| self.jumps.iter().filter(|j| weight(j.1) == w).count();
+        format!(
+            "jumps: {} — {} unmarked (under {} s), {} quiet ({} s to {} min), {} accent ({} min or more)",
+            self.jumps.len(),
+            n(Weight::Unmarked),
+            JUMP_QUIET_MS / 1000,
+            n(Weight::Quiet),
+            JUMP_QUIET_MS / 1000,
+            JUMP_ACCENT_MS / 60_000,
+            n(Weight::Accent),
+            JUMP_ACCENT_MS / 60_000,
+        )
     }
 
     /// Where the video crosses from one picture to the next (µs), and whether through the ground (`through`): each

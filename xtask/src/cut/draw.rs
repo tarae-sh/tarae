@@ -25,7 +25,8 @@ use super::mascot::motions::{self, Plan};
 use super::mascot::pops::{self, Pops};
 use super::mascot::{self, Art, Hands, Pic, Place};
 use super::{
-    Card, Cut, Frame, Marks, Pace, Program, What, clock, factor, jumped, opening, sped, told, video_time,
+    Card, Cut, Frame, Marks, Pace, Program, Weight, What, clock, factor, jumped, opening, sped, told,
+    video_time, weight,
 };
 use crate::Result;
 use crate::camera::{self, Cells, Region};
@@ -38,7 +39,7 @@ use crate::video::{self, BAND, H, Scale, W};
 /// The band's own words — the clock, the jump's mark, the speed's and `where it ends` — and how strongly the quiet ones (the
 /// clock, the speed) are drawn over the ground, of 255: read, never louder than the caption.
 pub(crate) const MARK_PX: f32 = 26.0;
-const QUIET: u8 = 170;
+pub(crate) const QUIET: u8 = 170;
 /// The mark over the take's stretch the opening shows, and its part's name on the sheet.
 pub(crate) const ENDS: &str = "where it ends";
 /// A chapter card's title.
@@ -741,6 +742,7 @@ pub(crate) fn make(
         picks.len(),
     )];
     head.extend(spans_said(cut));
+    head.push(prog.jumps_said());
     // (every place `record check` found that the cut shows, strong or weak: said, never hidden)
     let (hits, source) = super::check::read(dir)?;
     head.extend(super::check::said(&prog, &hits, source));
@@ -982,7 +984,8 @@ pub(crate) fn band(
         put(p, x0, QUIET);
     }
     if let Some((ms, a)) = f.jump {
-        let p = words.get(&jumped(ms), MARK_PX, look.accent);
+        let (fg, a) = jump_ink(ms, a, look);
+        let p = words.get(&jumped(ms), MARK_PX, fg);
         put(p, left, a);
     }
     let mark = match (f.ends, f.speed.and_then(sped)) {
@@ -1005,6 +1008,15 @@ pub(crate) fn band(
         let x = s.centre(w, (n.0 + p.0).min(w));
         put(&n, x, a);
         put(p, x + n.0, a);
+    }
+}
+
+/// A jump's mark of `ms` left out, `a`/255 into its fade: its ink and strength, as loud as the jump is far — the accent
+/// at full from `JUMP_ACCENT_MS`, under it the clock's quiet ink (`QUIET`; under `JUMP_QUIET_MS` the frame has none).
+pub(crate) fn jump_ink(ms: u64, a: u8, look: &video::Look) -> (Rgb, u8) {
+    match weight(ms) {
+        Weight::Accent => (look.accent, a),
+        _ => (look.ink, (u32::from(a) * u32::from(QUIET) / 255) as u8),
     }
 }
 
@@ -1043,7 +1055,12 @@ pub(crate) fn sheet_marks(prog: &Program) -> Vec<(u64, String)> {
     }
     for &(m, ms) in &prog.jumps {
         if let Some(v) = prog.video_of(m) {
-            out.push((v + camera::CROSS_MS * 1000, format!("jump {}", jumped(ms))));
+            let w = match weight(ms) {
+                Weight::Unmarked => ", unmarked",
+                Weight::Quiet => ", quiet",
+                Weight::Accent => "",
+            };
+            out.push((v + camera::CROSS_MS * 1000, format!("jump {}{w}", jumped(ms))));
         }
     }
     let mut was = None;
