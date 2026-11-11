@@ -20,7 +20,7 @@
 //! the band, never over the picture, fading in and out — one at a time over the whole video (`band`), drawn over the
 //! frame after its crossing. **The hook first, the brand last** (CLAUDE.md's Shorts
 //! bullet): a `@hook` opens it on `HOOK_MS` of the take from there, on the whole (`hooked`), with its hook line (the
-//! Short's title, or the scene's own line where the title alone doesn't say what the peek shows) as its one caption, then the take from its start — nothing before the hook, no title card; its end card the brush swing (10-27's,
+//! Short's title) as its one caption, then the take from its start — nothing before the hook, no title card; its end card the brush swing (10-27's,
 //! its frames made once — `intro_dir` —, `t a r a e` under it, the title said as the caption; `BRAND_MS`). Where a
 //! part begins — the hook into the take, the take into the end card, one take into the next (`Recorded::joined`) — the
 //! whole screen changes at once, so the two cross over `camera::CROSS_MS`, never a cut. Its take has tarae draw its
@@ -262,14 +262,14 @@ pub(crate) struct Made {
 pub(crate) fn make(
     rec: &Recorded,
     bg: Bg,
-    (title, hook_line): (&str, &str),
+    title: &str,
     mp4: &Path,
     yours: Option<&OsStr>,
     form: Form,
     music: Option<&Path>,
 ) -> Result<Made> {
     let Some(first) = rec.frames.first() else { return Err("the take kept no frame".into()) };
-    for text in rec.beats.iter().map(|b| b.1.as_str()).chain([title, hook_line]) {
+    for text in rec.beats.iter().map(|b| b.1.as_str()).chain([title]) {
         none_of_yours(&[text.chars().map(String::from).collect()], yours)?;
     }
     let (rows, cols) = first.1.size();
@@ -539,7 +539,7 @@ pub(crate) fn make(
         whole,
         hook,
         lead,
-        hook_line: hook_line.to_string(),
+        hook_line: title.to_string(),
         brand,
         notes,
     };
@@ -1757,7 +1757,7 @@ struct Video<'a> {
     hook: Option<u64>,
     /// The video's ms before the take starts: a Short's hook (none without one), the wide video's title card.
     lead: u64,
-    /// A Short's hook line (its title, or the scene's own): the hook's one caption.
+    /// A Short's hook line, its title: the hook's one caption.
     hook_line: String,
     brand: Option<Brand>,
     notes: Vec<Noted>,

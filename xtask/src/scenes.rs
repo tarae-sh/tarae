@@ -176,7 +176,8 @@ const REST_REMOVED_KEYS: &[&str] =
 
 /// Short 4, "tarae's own sandbox" (`--video --shorts sandbox-runtime`; whole's `.sb/short4-minute-brief.md`, after
 /// `.sb/short4-sandbox-brief.md`): the release script open, its lines in view; Claude asked to ship it, its six runs
-/// each answered as tarae answers them — the cleanup's `rm -rf ~/Documents` refused (the hook: a folder in the scene's
+/// each answered as tarae answers them — the cleanup's `rm -rf ~/Documents/$BUILD_DIR`, its variable empty (`.env` comes
+/// later), asked for as `rm -rf ~/Documents/` and refused (the hook: a folder in the scene's
 /// own home, the delete asked for only there, `scene_home_checked`; tarae cards it before it runs, your `y`, then the
 /// sandbox refuses it — people say yes without reading, and the OS still holds), the key's read refused, the
 /// upload's host held by the proxy as it connects (the network closed: no card before it runs) and refused, the token
@@ -200,8 +201,8 @@ const SANDBOX_RUNTIME: &[&str] = &[
     // own so `C-q` first, your `y`; then the sandbox refuses it, leading its run's panel)
     "@20?Claude wants to run",
     "@hook",
-    "@beat:Claude runs rm -rf. You say yes. Nothing is gone.",
-    "@note:Claude runs rm -rf → card:Claude wants to run",
+    "@beat:Claude asks to delete your Documents — a variable came out empty. You say yes. Nothing is gone.",
+    "@note:it asks to delete → card:Claude wants to run",
     "@1",
     "\x11",
     "@note:you say yes → card:Claude wants to run",
@@ -252,7 +253,7 @@ const SANDBOX_RUNTIME: &[&str] = &[
     "@note:it gets a fake → fake_value_",
     "@1.3",
     // (the masked toast names the hosts the real one goes to; the read holds till the next beat)
-    "@note:real one: GitHub only → GH_TOKEN masked",
+    "@note:swapped in for GitHub → GH_TOKEN masked",
     "@2",
     // (beat 5, the fake kept: the script's line saves the token to a file; you open it — the stand-in still, its one
     // line the third read, short: in, held ~1.2 s, out. Separable — from here to beat 6 taken out, the scene runs
@@ -6965,16 +6966,7 @@ fn video_of(
     let started = std::time::Instant::now();
     let rec = take(scene, bg, size, tools.bin, tools.me, Some(at), true)?;
     let driven = started.elapsed();
-    let title = video_title(scene.name);
-    made(
-        &rec,
-        (scene.name, title, hook_line(scene.name).unwrap_or(title)),
-        bg,
-        form,
-        tools.music,
-        at,
-        (started, driven),
-    )
+    made(&rec, (scene.name, video_title(scene.name)), bg, form, tools.music, at, (started, driven))
 }
 
 /// What a recording is made with: the tarae it drives, this xtask (the stand-in Claudes), and a Short's music bed.
@@ -7007,15 +6999,7 @@ fn story_of(story: &Story, bg: Bg, size: (u16, u16), tools: &Tools, at: &Path) -
     if rec.hook.is_none() {
         return Err(format!("{}: no @hook in {} — the Short's opening", story.name, story.parts[story.hook]));
     }
-    made(
-        &rec,
-        (story.name, story.title, story.title),
-        bg,
-        video::Form::Short,
-        tools.music,
-        at,
-        (started, driven),
-    )
+    made(&rec, (story.name, story.title), bg, video::Form::Short, tools.music, at, (started, driven))
 }
 
 /// `rec` made into `at/<name>.mp4` (`video::make`) with `title`, a Short's `music` under it, its camera, sound and
@@ -7023,7 +7007,7 @@ fn story_of(story: &Story, bg: Bg, size: (u16, u16), tools: &Tools, at: &Path) -
 /// when its driving started, and how long it took.
 fn made(
     rec: &shot::Recorded,
-    (name, title, hook): (&str, &str, &str),
+    (name, title): (&str, &str),
     bg: Bg,
     form: video::Form,
     music: Option<&Path>,
@@ -7032,7 +7016,7 @@ fn made(
 ) -> Result<()> {
     let mp4 = at.join(format!("{name}.mp4"));
     std::fs::create_dir_all(at).map_err(|e| format!("{}: {e}", at.display()))?;
-    let made = video::make(rec, bg, (title, hook), &mp4, std::env::var_os("HOME").as_deref(), form, music)?;
+    let made = video::make(rec, bg, title, &mp4, std::env::var_os("HOME").as_deref(), form, music)?;
     if form == video::Form::Short {
         let (rows, cols) = rec.frames.first().map_or((0, 0), |f| f.1.size());
         println!("{cols}×{rows} cells; the camera:");
@@ -7130,16 +7114,6 @@ fn video_title(scene: &str) -> &'static str {
         "managers-view" => "The manager's view",
         "sandbox-runtime" => "Only what you allowed.",
         _ => "",
-    }
-}
-
-/// A Short's hook line where it isn't its title (showcase.md: the Short opens on its most striking moment with its
-/// hook line, one a stranger reads in a second; the title goes to the end card): what the opening's peek shows, said.
-fn hook_line(scene: &str) -> Option<&'static str> {
-    match scene {
-        // (Short 4's peek is the rm card, too small to read on a phone: the line says what it is)
-        "sandbox-runtime" => Some("Claude runs rm -rf"),
-        _ => None,
     }
 }
 
@@ -7820,7 +7794,7 @@ const RELEASE_SH: &str = r#"#!/bin/sh
 set -e
 
 # the last build's files, cleaned up
-rm -rf ~/Documents
+rm -rf ~/Documents/$BUILD_DIR
 
 # the tag, signed with the SSH key
 key=$(cat ~/.ssh/id_ed25519)
@@ -7845,11 +7819,23 @@ const S4_MARKER: &str = "notes.md";
 const S4_MARKER_TEXT: &str =
     "A stand-in Short 4's scene made, in its own home, for its delete to be refused.\n";
 
-/// Whether Short 4's `rm -rf ~/Documents` may be asked for here — harmless whatever the sandbox does: `home` is the
+/// Whether Short 4's `rm -rf ~/Documents/` may be asked for here — harmless whatever the sandbox does: `home` is the
 /// scene's own (a folder `home` inside `temp`, the temp folder), the project `cwd` in it (the scene's
-/// `home/tarae-demo`), and its `Documents` holds the file the scene made there, word for word. Never yours: your home
-/// isn't in the temp folder, and its `Documents` doesn't hold that file.
-fn scene_home_checked(home: &Path, cwd: &Path, temp: &Path) -> std::result::Result<(), String> {
+/// `home/tarae-demo`), its `Documents` holds the file the scene made there, word for word, and `build_dir` (the run's
+/// `BUILD_DIR`) is unset — the script's line reads it empty at line 6 (`.env` comes at line 19), which is the accident
+/// the scene shows. Never yours: your home isn't in the temp folder, and its `Documents` doesn't hold that file.
+fn scene_home_checked(
+    home: &Path,
+    cwd: &Path,
+    temp: &Path,
+    build_dir: Option<&std::ffi::OsStr>,
+) -> std::result::Result<(), String> {
+    if let Some(set) = build_dir {
+        return Err(format!(
+            "BUILD_DIR is set ({}): the script's line wouldn't come out empty",
+            set.display()
+        ));
+    }
     let real = |p: &Path| std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
     let (home, cwd, temp) = (real(home)?, real(cwd)?, real(temp)?);
     if home == temp || !home.starts_with(&temp) || home.file_name().is_none_or(|n| n != "home") {
@@ -7883,7 +7869,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         // (Short 4's release script: its key, upload and token lines — what Claude's runs reach for; the host a made-up
         // name, the repository the demo's)
         // (`.env` only where beat 6 reads it: the toasts still ends before that read)
-        "sandbox-runtime" => vec![("release.sh", RELEASE_SH.into()), (".env", "SKEIN_REPO=skein\n".into())],
+        "sandbox-runtime" => vec![("release.sh", RELEASE_SH.into()), (".env", "SKEIN_REPO=skein\nBUILD_DIR=skein-build\n".into())],
         "sandbox-runtime-toasts" => vec![("release.sh", RELEASE_SH.into())],
         "output-task" | "panes-task-places" | "group-task-detail" | "group-task-stacked" => vec![
             (".tarae.toml", "[task.check]\ncmd = \"sh check.sh\"\n".into()),
@@ -9293,20 +9279,24 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
-    /// Short 4's turn, the release script a line at a time: the cleanup's `rm -rf ~/Documents` (the sandbox refuses
-    /// it — asked for only in the scene's own home, `scene_home_checked`), the key read (refused), the upload's host
+    /// Short 4's turn, the release script a line at a time: the cleanup's `rm -rf ~/Documents/` (its `$BUILD_DIR` came
+    /// out empty; the sandbox refuses it — asked for only in the scene's own home, `scene_home_checked`), the key read (refused), the upload's host
     /// reached (the proxy holds it as it connects — nothing in the command says where before it runs), `also {env}`
     /// for the token, the token saved to a file, then `.env` read (refused, named like a key) — each as tarae answers
     /// it. The turn ends there: your run again of the read, once you've allowed that file, tells it the rest.
     fn runtime(&mut self) -> io::Result<()> {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        if let Err(why) = scene_home_checked(&home, &std::env::current_dir()?, &std::env::temp_dir()) {
+        let build_dir = std::env::var_os("BUILD_DIR");
+        let (cwd, temp) = (std::env::current_dir()?, std::env::temp_dir());
+        if let Err(why) = scene_home_checked(&home, &cwd, &temp, build_dir.as_deref()) {
             self.words(&format!("Not cleaning up: {why}."))?;
             return self.line(json!({"type": "result", "result": "done"}));
         }
         self.words("First the script cleans up the last build.")?;
         self.text("\n")?;
-        self.call(1, "run", json!({"command": format!("rm -rf ~/{S4_DOOMED}")}))?;
+        // (the script's `rm -rf ~/Documents/$BUILD_DIR` with its empty value filled in: the line shows the variable,
+        // the card shows it gone — the accident, on one screen)
+        self.call(1, "run", json!({"command": format!("rm -rf ~/{S4_DOOMED}/")}))?;
         self.next_beat(S4_KEY)?;
         self.words("Nothing was removed. Next, the tag: it's signed with your SSH key.")?;
         self.text("\n")?;
@@ -10607,8 +10597,8 @@ mod tests {
     }
 
     /// Short 4's delete is asked for only in the scene's own home: a `home` in the temp folder, the project in it, its
-    /// `Documents` holding the scene's file word for word — each of those missing, refused. Nothing is deleted here:
-    /// the check only looks.
+    /// `Documents` holding the scene's file word for word, and `BUILD_DIR` unset — each of those missing, refused.
+    /// Nothing is deleted here: the check only looks.
     #[test]
     fn short4s_delete_is_asked_for_only_in_the_scenes_own_home() {
         let dir = tarae_testkit::scratch::Scratch::new("xtask-s4-home");
@@ -10617,21 +10607,25 @@ mod tests {
         std::fs::create_dir_all(&demo).unwrap();
         let marker = home.join(S4_DOOMED).join(S4_MARKER);
         write(&marker, S4_MARKER_TEXT).unwrap();
-        assert_eq!(scene_home_checked(&home, &demo, &temp), Ok(()));
+        let checked = |home: &Path, cwd: &Path, temp: &Path| scene_home_checked(home, cwd, temp, None);
+        assert_eq!(checked(&home, &demo, &temp), Ok(()));
+        // (BUILD_DIR set in the run's environment: the script's line wouldn't be the one the scene shows)
+        let set = std::ffi::OsStr::new("skein-build");
+        assert!(scene_home_checked(&home, &demo, &temp, Some(set)).is_err(), "BUILD_DIR set");
         // (a home outside the temp folder: yours)
         let elsewhere = dir.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
-        assert!(scene_home_checked(&home, &demo, &elsewhere).is_err(), "outside the temp folder");
+        assert!(checked(&home, &demo, &elsewhere).is_err(), "outside the temp folder");
         // (the temp folder itself, or a folder not named home)
-        assert!(scene_home_checked(&temp, &temp.join("rec"), &temp).is_err(), "the temp folder");
-        assert!(scene_home_checked(&temp.join("rec"), &home, &temp).is_err(), "not a home");
+        assert!(checked(&temp, &temp.join("rec"), &temp).is_err(), "the temp folder");
+        assert!(checked(&temp.join("rec"), &home, &temp).is_err(), "not a home");
         // (the project elsewhere than in it)
-        assert!(scene_home_checked(&home, &temp.join("rec"), &temp).is_err(), "the project not in it");
+        assert!(checked(&home, &temp.join("rec"), &temp).is_err(), "the project not in it");
         // (its Documents not holding the scene's file, word for word)
         write(&marker, "yours\n").unwrap();
-        assert!(scene_home_checked(&home, &demo, &temp).is_err(), "another file");
+        assert!(checked(&home, &demo, &temp).is_err(), "another file");
         std::fs::remove_file(&marker).unwrap();
-        assert!(scene_home_checked(&home, &demo, &temp).is_err(), "no file");
+        assert!(checked(&home, &demo, &temp).is_err(), "no file");
     }
 
     /// `SCRIPTS` is every script the stand-in plays, and only those: the names its matches' arms take, in
