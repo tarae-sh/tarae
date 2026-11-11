@@ -30,7 +30,7 @@ use crate::record::{Replay, Take};
 use crate::recording::Picture;
 use crate::scenes::docshots::none_of_yours;
 use crate::shot::{self, Fonts, PAD, Rgb};
-use crate::video::{self, BAND, H, W};
+use crate::video::{self, BAND, H, Scale, W};
 
 /// The band's own words — the clock, the jump's mark, the speed's and `where it ends` — and how strongly the quiet ones (the
 /// clock, the speed) are drawn over the ground, of 255: read, never louder than the caption.
@@ -50,7 +50,7 @@ const SHEET_EVERY_US: u64 = 2_000_000;
 const SHEET_REGULAR: u64 = 120;
 const PAGE: usize = 6;
 
-pub(super) fn run(file: &Path) -> Result<()> {
+pub(super) fn run(file: &Path, scale: Scale) -> Result<()> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let dir = file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let take = Take::read(dir)?;
@@ -65,8 +65,12 @@ pub(super) fn run(file: &Path) -> Result<()> {
         none_of_yours(&[w.chars().map(String::from).collect()], yours.as_deref())?;
     }
     let stem = file.file_stem().map_or("cut".into(), |s| s.to_string_lossy().into_owned());
-    let out = dir.join(stem);
-    let said = make(&cut, &take, (dir, &marks), &out)?;
+    // (2160p beside 1080p, never over it)
+    let out = match scale {
+        Scale::HD => dir.join(stem),
+        _ => dir.join(format!("{stem}-{}", scale.name())),
+    };
+    let said = make(&cut, &take, (dir, &marks), &out, scale)?;
     let p = out.join("cut.txt");
     std::fs::write(&p, &said).map_err(|e| format!("{}: {e}", p.display()))?;
     print!("{said}");
@@ -101,67 +105,196 @@ struct Key {
     pose: Option<mascot::Pose>,
 }
 
-/// `text` at `px` in `fg`, kept: the band's words repeat.
+/// `text` at `px` (1080p's) in `fg`, drawn at `scale`, kept: the band's words repeat.
 pub(crate) struct Words<'f> {
     fonts: &'f Fonts,
     ground: Rgb,
+    scale: Scale,
     kept: HashMap<(String, u32, Rgb), Picture>,
 }
 
 impl<'f> Words<'f> {
-    pub(crate) fn new(fonts: &'f Fonts, ground: Rgb) -> Words<'f> {
-        Words { fonts, ground, kept: HashMap::new() }
+    pub(crate) fn new(fonts: &'f Fonts, ground: Rgb, scale: Scale) -> Words<'f> {
+        Words { fonts, ground, scale, kept: HashMap::new() }
     }
 
     fn get(&mut self, text: &str, px: f32, fg: Rgb) -> &Picture {
         if self.kept.len() > 512 {
             self.kept.clear();
         }
-        let (fonts, ground) = (self.fonts, self.ground);
+        let (fonts, ground, s) = (self.fonts, self.ground, self.scale);
         (self.kept.entry((text.to_string(), px as u32, fg)))
-            .or_insert_with(|| video::text(text, px, fg, ground, false, fonts))
+            .or_insert_with(|| video::text_at(text, px, fg, ground, false, fonts, s))
     }
 }
 
-/// The cut of `take` (in `dir`, its landmarks `marks`) as `cut` says, into `out`: `cut.mp4` with its sound
+/// Where a take's frame puts things at a scale (px): the picture; the screen's glyph (1080p's px, drawn at `scale`:
+/// `video::fit`'s) and its picture's size and place, centred above the band; the band's rule's row and its middle; the
+/// renderer's margin. Every figure 1080p's constants times the scale, never a second set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Layout {
+    pub(crate) scale: Scale,
+    pub(crate) dims: (usize, usize),
+    pub(crate) glyph: f32,
+    pub(crate) pic: (usize, usize),
+    pub(crate) at: (usize, usize),
+    pub(crate) rule: usize,
+    pub(crate) mid: usize,
+    pub(crate) pad: usize,
+}
+
+/// The layout of a take `size` cells at `s` — refused where its cells don't fit 1080p's picture over the band.
+pub(crate) fn layout(fonts: &Fonts, size: (u16, u16), s: Scale) -> Result<Layout> {
+    let (cols, rows) = (usize::from(size.0), usize::from(size.1));
+    let glyph = video::fit(fonts, cols, rows)
+        .ok_or_else(|| format!("{cols}×{rows} cells don't fit {W}×{H} over the band"))?;
+    // (the renderer's own picture of them: `shot::render_scaled`'s, its cells and margin `s` times)
+    let (cw, ch) = shot::cell(fonts, glyph);
+    let pic = (s.px(cols * cw + 2 * PAD), s.px(rows * ch + 2 * PAD));
+    let (w, h) = s.dims();
+    let band = s.px(BAND);
+    Ok(Layout {
+        scale: s,
+        dims: (w, h),
+        glyph,
+        pic,
+        at: (s.centre(w, pic.0), s.centre(h - band, pic.1)),
+        rule: h - band,
+        mid: h - band / 2,
+        pad: s.px(PAD),
+    })
+}
+
+impl Layout {
+    /// The camera's `region` of a `size` screen through the screen's place (`video::view`, its cells the renderer's at
+    /// this scale; the view's px 1080p's, drawn at the scale).
+    pub(crate) fn view(&self, region: Region, size: (u16, u16), fonts: &Fonts) -> video::View {
+        let k = self.scale.k();
+        video::view(region, size, self.pic, self.glyph, |p| {
+            let (cw, ch) = shot::cell(fonts, p);
+            (cw * k, ch * k)
+        })
+    }
+}
+
+/// What every take's frame is drawn on: its layout, the theme, the cut, the mascot and where the band's marks end.
+pub(crate) struct Stage<'a> {
+    pub(crate) lay: Layout,
+    pub(crate) look: &'a video::Look,
+    pub(crate) cut: &'a Cut,
+    pub(crate) mascot: Option<(Art, Place)>,
+    pub(crate) marks_right: usize,
+    stamping: std::cell::Cell<std::time::Duration>,
+}
+
+impl<'a> Stage<'a> {
+    pub(crate) fn new(
+        lay: Layout,
+        look: &'a video::Look,
+        cut: &'a Cut,
+        mascot: Option<(Art, Place)>,
+    ) -> Stage<'a> {
+        let marks_right = mascot.as_ref().map_or(lay.at.0 + lay.pic.0, |m| m.1.marks_right);
+        Stage { lay, look, cut, mascot, marks_right, stamping: Default::default() }
+    }
+
+    /// The take's frame `f`: the screen's picture `pic` (drawn at the layout's glyph, or through `view` at the camera's),
+    /// the band's rule (a line `scale` px thick), the band, the mascot in `pose`.
+    pub(crate) fn take_frame(
+        &self,
+        pic: &Picture,
+        view: Option<&video::View>,
+        f: &Frame,
+        pose: Option<mascot::Pose>,
+        words: &mut Words,
+    ) -> Vec<u8> {
+        let lay = &self.lay;
+        let (w, h) = lay.dims;
+        let (x0, y0) = lay.at;
+        let mut px = self.look.ground.repeat(w * h);
+        match view {
+            None => video::blit(&mut px, lay.dims, pic, x0, y0, 255),
+            Some(view) => video::resample(&mut px, w, (x0, y0), lay.pic, pic, view),
+        }
+        let rule_end = self.mascot.as_ref().map_or(x0 + lay.pic.0 - lay.pad, |m| m.1.rule_end);
+        for y in lay.rule..lay.rule + lay.scale.k() {
+            for x in x0 + lay.pad..rule_end {
+                px[(y * w + x) * 3..][..3].copy_from_slice(&self.look.faint);
+            }
+        }
+        band(&mut px, lay, f, self.cut, (x0, self.marks_right), self.look, words);
+        if let (Some((art, place)), Some(p)) = (&self.mascot, pose) {
+            let t = Instant::now();
+            video::stamp(&mut px, lay.dims, art.picture(p), (place.x, place.y));
+            self.stamping.set(self.stamping.get() + t.elapsed());
+        }
+        px
+    }
+}
+
+/// The cut of `take` (in `dir`, its landmarks `marks`) as `cut` says, at `scale`, into `out`: `cut.mp4` with its sound
 /// (`sound.rs`, `cut.wav` beside it), the sheet's pages, `chapters.txt`. What was made, said.
-pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &Path) -> Result<String> {
+pub(crate) fn make(
+    cut: &Cut,
+    take: &Take,
+    (dir, marks): (&Path, &Marks),
+    out: &Path,
+    scale: Scale,
+) -> Result<String> {
     let started = Instant::now();
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let prog = Program::new(cut);
     let size = take.size;
-    let fonts = Fonts::load(1)?;
-    let glyph = video::fit(&fonts, usize::from(size.0), usize::from(size.1))
-        .ok_or_else(|| format!("{}×{} cells don't fit {W}×{H} over the band", size.0, size.1))?;
-    let blank = vt100::Parser::new(size.1, size.0, 0);
-    let (pw, ph, _) = shot::render_px(blank.screen(), &fonts, glyph, None);
-    let (x0, y0) = ((W - pw) / 2, (H - BAND - ph) / 2);
-    let mut said = Vec::new();
+    let k = scale.k();
+    let fonts = Fonts::load(k)?;
+    let lay = layout(&fonts, size, scale)?;
+    let (glyph, (pw, ph), (x0, y0)) = (lay.glyph, lay.pic, lay.at);
+    let dims = lay.dims;
+    let mut said = vec![format!(
+        "the picture: {}×{} ({}), the screen's glyphs {} px",
+        dims.0,
+        dims.1,
+        scale.name(),
+        glyph * k as f32
+    )];
     // (the mascot at the keys: its frames and its place, else the cut without it — said)
     let loaded = Instant::now();
-    let mascot: Option<(Art, Place)> = match mascot::found(cut, mascot::dir(), (x0, pw), y0 + ph - PAD) {
-        Ok(m) => Some(m),
-        Err(none) => {
-            said.push(none);
-            None
-        }
-    };
+    let mascot: Option<(Art, Place)> =
+        match mascot::found(cut, mascot::dir(), (x0, pw), y0 + ph - lay.pad, scale) {
+            Ok(m) => Some(m),
+            Err(none) => {
+                said.push(none);
+                None
+            }
+        };
     let loaded = loaded.elapsed();
-    let marks_right = mascot.as_ref().map_or(x0 + pw, |m| m.1.marks_right);
-    captions_clear(cut, &fonts, (marks_right, mascot.is_some()))?;
+    let look = video::look(cut.bg);
+    let stage = Stage::new(lay, &look, cut, mascot);
+    let mascot = &stage.mascot;
+    let marks_right = stage.marks_right;
+    // (measured at 1080p: every width doubles at 2160p)
+    captions_clear(cut, &Fonts::load(1)?, (marks_right / k, mascot.is_some()))?;
     let keys = match dir.join("keys.bin").exists() {
         true => crate::record::read_log(&dir.join("keys.bin"))?,
         false => Vec::new(),
     };
     let taps = super::sound::sounds(&prog, &keys, marks).taps;
     let hands = Hands::new(&taps);
-    let look = video::look(cut.bg);
-    let seal = video::seal(cut.bg)?;
+    // (the seal made at the picture's size, else 1080p's — smaller, never stretched —, said)
+    let seal = match video::seal_at(cut.bg, scale) {
+        Ok(s) => s,
+        Err(e) if scale != Scale::HD => {
+            said.push(format!("the seal: none made at {} ({e}) — 1080p's, at its own size", scale.name()));
+            video::seal(cut.bg)?
+        }
+        Err(e) => return Err(e),
+    };
+    let card = |lines: &[(&str, f32, Rgb, bool)]| video::card_at(lines, &seal, &look, &fonts, dims, scale);
     let name = ("t a r a e", video::NAME_PX, look.accent, true);
     let told = told(cut.end, prog.total);
-    let built_card = opening::card(&cut.opening, &told, cut.bg, &look, &fonts, (W, H));
+    let built_card = opening::card(&cut.opening, &told, cut.bg, &look, &fonts, scale);
     // (the intro: the swing's frames, else the name and the seal — said)
-    let intro = match video::WideIntro::new(cut.bg, &look, &fonts) {
+    let intro = match video::WideIntro::new(cut.bg, &look, &fonts, scale) {
         Ok(i) => {
             let (n, (w, h), _) = i.drawn();
             said.push(format!(
@@ -177,22 +310,15 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
         }
         Err(e) => {
             said.push(format!("the intro: no brush swing ({e}) — the name and the seal, still"));
-            Err(video::card(&[name], &seal, &look, &fonts, (W, H)))
+            Err(card(&[name]))
         }
     };
     said.push(format!("the card of what's built: “{}” — “{told}”", cut.opening.name));
-    let end_card =
-        video::card(&[name, ("tarae.sh", video::LINE_PX, look.ink, false)], &seal, &look, &fonts, (W, H));
+    let end_card = card(&[name, ("tarae.sh", video::LINE_PX, look.ink, false)]);
     let chapter_cards: Vec<Vec<u8>> = (cut.chapters.iter().enumerate())
         .map(|(i, c)| {
             let n = format!("{}", i + 1);
-            video::card(
-                &[(&n, video::LINE_PX, look.faint, false), (&c.title, CHAPTER_PX, look.ink, true)],
-                &seal,
-                &look,
-                &fonts,
-                (W, H),
-            )
+            card(&[(&n, video::LINE_PX, look.faint, false), (&c.title, CHAPTER_PX, look.ink, true)])
         })
         .collect();
 
@@ -276,7 +402,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     };
     let mut child = match &ffmpeg {
         Some(f) => {
-            Some(video::encoder(f, &mp4, (W, H), heard.as_ref().map(|_| (wav.as_path(), video::Form::Wide)))?)
+            Some(video::encoder(f, &mp4, dims, heard.as_ref().map(|_| (wav.as_path(), video::Form::Wide)))?)
         }
         None => None,
     };
@@ -284,7 +410,8 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let crossings = prog.crossings();
     let mut next_cross = 0;
     let (mut ends, mut replay) = (Replay::new(&take.screen, size), Replay::new(&take.screen, size));
-    let mut words = Words::new(&fonts, look.ground);
+    let mut words = Words::new(&fonts, look.ground, scale);
+    let sheet_fonts = Fonts::load(1)?;
     let mut pic: Option<((bool, u64, u32), Picture)> = None;
     let mut last: Option<(Key, Vec<u8>)> = None;
     let mut cross: Option<(Vec<u8>, u64, bool)> = None;
@@ -293,7 +420,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let mut sheet: Vec<Picture> = Vec::new();
     let mut pages = 0;
     let all = Region::all(size);
-    let (mut posed, mut stamping) = ([0u64; 5], std::time::Duration::ZERO);
+    let mut posed = [0u64; 5];
     for k in 0..frames {
         let v = Program::time_of(k);
         let f = prog.frame(v);
@@ -348,7 +475,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
         if last.as_ref().is_none_or(|l| l.0 != key) {
             let mut px = match f.card {
                 Some(Card::Intro(ms)) => match &intro {
-                    Ok(i) => i.frame(ms, &look, (W, H)),
+                    Ok(i) => i.frame(ms, &look),
                     Err(still) => still.clone(),
                 },
                 Some(Card::Built) => built_card.clone(),
@@ -356,32 +483,15 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
                 Some(Card::Chapter(i)) => chapter_cards[i].clone(),
                 None => {
                     let s = if f.ends { ends.screen() } else { replay.screen() };
-                    let mut px = look.ground.repeat(W * H);
-                    let view = (region != all)
-                        .then(|| video::view(region, size, (pw, ph), glyph, |p| shot::cell(&fonts, p)));
+                    let view = (region != all).then(|| lay.view(region, size, &fonts));
                     let at = view.as_ref().map_or(glyph, |v| v.px);
                     let want = (screen.0, screen.1, at as u32);
                     if pic.as_ref().is_none_or(|p| p.0 != want) {
-                        pic = Some((want, shot::render_px(s, &fonts, at, None)));
+                        pic = Some((want, shot::render_scaled(s, &fonts, at, scale.k())));
                         drawn += 1;
                     }
                     let p = &pic.as_ref().expect("drawn").1;
-                    match &view {
-                        None => video::blit(&mut px, (W, H), p, x0, y0, 255),
-                        Some(view) => video::resample(&mut px, W, (x0, y0), (pw, ph), p, view),
-                    }
-                    let at = (H - BAND) * W * 3;
-                    let rule_end = mascot.as_ref().map_or(x0 + pw - PAD, |m| m.1.rule_end);
-                    for x in x0 + PAD..rule_end {
-                        px[at + x * 3..][..3].copy_from_slice(&look.faint);
-                    }
-                    band(&mut px, &f, cut, (x0, marks_right), &look, &mut words);
-                    if let (Some((art, place)), Some(p)) = (&mascot, pose) {
-                        let t = Instant::now();
-                        video::stamp(&mut px, (W, H), art.picture(p), (place.x, place.y));
-                        stamping += t.elapsed();
-                    }
-                    px
+                    stage.take_frame(p, view.as_ref(), &f, pose, &mut words)
                 }
             };
             if let (Some(p), Some((from, _, through))) = (share, &cross) {
@@ -398,8 +508,8 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
         }
         if let Some(marks) = picks.get(&k) {
             let label = label(&prog, v, &f, region != all, marks);
-            let cols = W / 2 / shot::cell(&fonts, 15.0).0;
-            sheet.push(crate::recording::labelled(video::half(px, (W, H)), &label, cols, &fonts));
+            let cols = W / 2 / shot::cell(&sheet_fonts, 15.0).0;
+            sheet.push(crate::recording::labelled(sheet_picture(px, &lay), &label, cols, &sheet_fonts));
             if sheet.len() == PAGE {
                 pages += 1;
                 crate::recording::grid(&sheet, &out.join(format!("sheet-{pages:02}.png")))?;
@@ -407,7 +517,8 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
             }
         }
     }
-    if let Some((art, place)) = &mascot {
+    if let Some((art, place)) = mascot {
+        let (bw, bh) = mascot::box_at(scale);
         let of = |s: mascot::Side| taps.iter().filter(|t| t.1 == s).count();
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
         said.push(format!(
@@ -426,14 +537,14 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
             posed[2],
             posed[3],
             posed[4],
-            mascot::BOX.0,
-            mascot::BOX.1,
+            bw,
+            bh,
             place.x,
             place.y,
             place.rule_end,
-            marks_right - PAD,
+            marks_right - lay.pad,
             ms(loaded),
-            ms(stamping),
+            ms(stage.stamping.get()),
         ));
     }
     if !sheet.is_empty() {
@@ -500,6 +611,15 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     }
     encoded?;
     Ok(head.join("\n") + "\n")
+}
+
+/// A frame as the sheet shows it: 1080p's halved, whatever the picture's size (the sheet stays small).
+fn sheet_picture(px: &[u8], lay: &Layout) -> Picture {
+    let mut p = video::half(px, lay.dims);
+    while p.0 > W / 2 {
+        p = video::half(&p.2, (p.0, p.1));
+    }
+    p
 }
 
 /// Each caption clear of the band's right end (the marks' pictures ending at `right`; `boxed`: the mascot's box after
@@ -686,19 +806,20 @@ pub(crate) fn sheet_picks(prog: &Program) -> BTreeMap<u64, Vec<String>> {
     picks
 }
 
-/// The band under the screen (its picture at `x0`): the take's clock at the left with the jump's mark after it, the
-/// speed's mark (or `where it ends`) at the right — its picture ending at `right`: the screen's, or `mascot::GAP` short of
-/// the mascot's box —, the caption in the middle; each centred on the band's height.
+/// The band under the screen (its picture at `x0`), laid as `lay` says: the take's clock at the left with the jump's
+/// mark after it, the speed's mark (or `where it ends`) at the right — its picture ending at `right`: the screen's, or
+/// `mascot::GAP` short of the mascot's box —, the caption in the middle; each centred on the band's height.
 pub(crate) fn band(
     px: &mut [u8],
+    lay: &Layout,
     f: &Frame,
     cut: &Cut,
     (x0, right): (usize, usize),
     look: &video::Look,
     words: &mut Words,
 ) {
-    let mid = H - BAND / 2;
-    let mut put = |p: &Picture, x: usize, a: u8| video::blit(px, (W, H), p, x, mid - p.1 / 2, a);
+    let (mid, dims, w, s) = (lay.mid, lay.dims, lay.dims.0, lay.scale);
+    let mut put = |p: &Picture, x: usize, a: u8| video::blit(px, dims, p, x, mid - s.half(p.1), a);
     let mut left = x0;
     if let Some(t) = f.clock {
         let p = words.get(&clock(t), MARK_PX, look.ink);
@@ -720,13 +841,13 @@ pub(crate) fn band(
     }
     if let Some((i, a)) = f.caption {
         let p = words.get(&cut.captions[i].text, video::CAPTION_PX, look.ink);
-        put(p, (W - p.0.min(W)) / 2, a);
+        put(p, s.centre(w, p.0.min(w)), a);
     }
     // (a chapter with no card: its number, faint, then its title, centred as a caption is)
     if let Some((i, a)) = f.chapter {
         let n = words.get(&format!("{}   ", i + 1), video::CAPTION_PX, look.faint).clone();
         let p = words.get(&cut.chapters[i].title, video::CAPTION_PX, look.ink);
-        let x = (W - (n.0 + p.0).min(W)) / 2;
+        let x = s.centre(w, (n.0 + p.0).min(w));
         put(&n, x, a);
         put(p, x + n.0, a);
     }

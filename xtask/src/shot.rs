@@ -1722,6 +1722,17 @@ pub(crate) fn render_px(
     draw(screen, fonts, size, 1, pointer)
 }
 
+/// `render_px`'s layout `s` times (the full video at 2160p, V4): cells `cell(fonts, size)` × `s`, the margin `PAD` × `s`,
+/// lines `s` thick, glyphs drawn at `size` × `s` — never a smaller picture scaled up.
+pub(crate) fn render_scaled(
+    screen: &vt100::Screen,
+    fonts: &Fonts,
+    size: f32,
+    s: usize,
+) -> (usize, usize, Vec<u8>) {
+    draw(screen, fonts, size, s, None)
+}
+
 /// A cell on the screen: its row and column, from 0.
 pub(crate) type Cell = (u16, u16);
 

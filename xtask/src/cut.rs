@@ -1,7 +1,8 @@
 //! `cargo xtask cut` — a take (`record`'s) made a video by the edit list beside it, a `cut.toml` (the full video's V1,
 //! main's `.sb/full-video-plan.md` "How it's cut"): an hour and a half into about ten minutes, honest about time.
 //!
-//! - `cut FILE` — the take in FILE's folder cut by FILE, into `<folder>/<stem>/`: `cut.mp4` (1920×1080, its sound
+//! - `cut FILE [--size 2160p]` — the take in FILE's folder cut by FILE, into `<folder>/<stem>/` (`<stem>-2160p/`):
+//!   `cut.mp4` (1920×1080; 3840×2160 the same picture drawn at twice its scale, `video::Scale`; its sound
 //!   tarae's keys where the picture runs in real time and the beds the file names — `sound.rs`; `cut.wav` beside it), its
 //!   sheet `sheet-NN.png` (every picture says its video time, its take time and its speed), YouTube's chapter list
 //!   `chapters.txt` (video times) and what was made, `cut.txt`.
@@ -111,12 +112,15 @@ pub(crate) const LINE_MAX: usize = 60;
 pub(crate) const CODE_MAX: usize = 56;
 pub(crate) const CODE_LINES: usize = 2;
 
-const USAGE: &str = "usage: cargo xtask cut FILE | cut init TAKE [--out FILE]";
+const USAGE: &str = "usage: cargo xtask cut FILE [--size 1080p|2160p] | cut init TAKE [--out FILE]";
 
 pub fn run(args: &[String]) -> Result<()> {
     match args {
         [init, rest @ ..] if init == "init" => init::run(rest),
-        [file] => draw::run(Path::new(file)),
+        [file] => draw::run(Path::new(file), video::Scale::HD),
+        [file, flag, size] | [flag, size, file] if flag == "--size" => {
+            draw::run(Path::new(file), video::Scale::parse(size)?)
+        }
         _ => Err(USAGE.into()),
     }
 }

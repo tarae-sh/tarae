@@ -20,9 +20,9 @@ use super::{Cut, Frame, Program};
 use crate::Result;
 use crate::scenes::docshots::Bg;
 use crate::shot::PAD;
-use crate::video::{self, BAND, FPS, H, Rgba};
+use crate::video::{self, BAND, FPS, H, Rgba, Scale};
 
-/// The box at 1080p (px): the frames are made at four times it.
+/// The box at 1080p (px): the frames are made at four times it — at 2160p (twice it) still shrunk, by half.
 pub(crate) const BOX: (usize, usize) = (213, 165);
 const MADE: usize = 4;
 /// The box's foot over the frame's bottom (px).
@@ -167,10 +167,16 @@ impl Hands {
     }
 }
 
-/// The five pictures at the box's size, in `Pose`'s order, and where they were found.
+/// The box at `s` (px).
+pub(crate) fn box_at(s: Scale) -> (usize, usize) {
+    (s.px(BOX.0), s.px(BOX.1))
+}
+
+/// The five pictures at the box's size at `scale`, in `Pose`'s order, and where they were found.
 pub(crate) struct Art {
     pub(crate) poses: Vec<Rgba>,
     pub(crate) dir: PathBuf,
+    pub(crate) scale: Scale,
 }
 
 /// Where the frames are: `TARAE_MASCOT_KEYS`, else main's `.sb/youtube/mascot-keys/out` — the main checkout's, by the
@@ -183,8 +189,8 @@ pub(crate) fn dir() -> Option<PathBuf> {
 }
 
 impl Art {
-    /// The frames for `bg` in `dir`: meok's only.
-    pub(crate) fn load(bg: Bg, dir: Option<PathBuf>) -> Result<Art> {
+    /// The frames for `bg` in `dir`, at `scale`'s box: meok's only.
+    pub(crate) fn load(bg: Bg, dir: Option<PathBuf>, scale: Scale) -> Result<Art> {
         if bg == Bg::Light {
             return Err(
                 "its frames are meok's only (pale ink on the dark ground), and this cut is hanji's".into()
@@ -205,10 +211,10 @@ impl Art {
                         BOX.1 * MADE
                     ));
                 }
-                Ok(video::shrunk(&f, 1.0 / MADE as f32))
+                Ok(video::shrunk(&f, scale.k() as f32 / MADE as f32))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Art { poses, dir })
+        Ok(Art { poses, dir, scale })
     }
 
     pub(crate) fn picture(&self, p: Pose) -> &Rgba {
@@ -227,18 +233,19 @@ impl Art {
     }
 }
 
-/// The mascot for `cut` (its frames in `dir`), placed under a screen drawn at `x0`, `pw` wide, its cells ending at
-/// `cells_bottom` — or why there's none, as `cut.txt` says it.
+/// The mascot for `cut` (its frames in `dir`) at `s`, placed under a screen drawn at `x0`, `pw` wide, its cells ending
+/// at `cells_bottom` — or why there's none, as `cut.txt` says it.
 pub(crate) fn found(
     cut: &Cut,
     dir: Option<PathBuf>,
     screen: (usize, usize),
     cells_bottom: usize,
+    s: Scale,
 ) -> std::result::Result<(Art, Place), String> {
     if !cut.mascot {
         return Err("the mascot: none (mascot = false)".into());
     }
-    let got = Art::load(cut.bg, dir).and_then(|a| Ok((place(&a, screen, cells_bottom)?, a)));
+    let got = Art::load(cut.bg, dir, s).and_then(|a| Ok((place(&a, screen, cells_bottom)?, a)));
     got.map(|(p, a)| (a, p)).map_err(|e| format!("the mascot: none — {e}; the cut is made without it"))
 }
 
@@ -258,20 +265,23 @@ pub(crate) struct Place {
     pub(crate) marks_right: usize,
 }
 
-/// The box placed under a screen drawn at `x0`, `pw` wide, its cells ending at `cells_bottom` (px): right on the rule's
-/// end, its foot `FOOT` over the frame's — refused (said) where it would rise over a cell.
+/// The box placed under a screen drawn at `x0`, `pw` wide, its cells ending at `cells_bottom` (px, at the art's scale):
+/// right on the rule's end, its foot `FOOT` over the frame's — refused (said) where it would rise over a cell.
 pub(crate) fn place(art: &Art, (x0, pw): (usize, usize), cells_bottom: usize) -> Result<Place> {
-    let (x, y) = (x0 + pw - PAD - BOX.0, H - FOOT - BOX.1);
+    let s = art.scale;
+    let (bw, bh) = box_at(s);
+    let (pad, h) = (s.px(PAD), s.px(H));
+    let (x, y) = (x0 + pw - pad - bw, h - s.px(FOOT) - bh);
     if y < cells_bottom {
         return Err(format!(
             "its box would rise {} px over the screen's last row of cells",
             cells_bottom - y
         ));
     }
-    let rule = H - BAND;
-    let rule_end = match (rule >= y).then(|| art.ink_from(rule - y, 3)).flatten() {
-        Some(ink) => (x + ink).saturating_sub(RULE_GAP),
-        None => x0 + pw - PAD,
+    let rule = h - s.px(BAND);
+    let rule_end = match (rule >= y).then(|| art.ink_from(rule - y, s.px(3))).flatten() {
+        Some(ink) => (x + ink).saturating_sub(s.px(RULE_GAP)),
+        None => x0 + pw - pad,
     };
-    Ok(Place { x, y, rule_end, marks_right: x - GAP + PAD })
+    Ok(Place { x, y, rule_end, marks_right: x - s.px(GAP) + pad })
 }

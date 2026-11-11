@@ -394,8 +394,8 @@ fn the_sheet_takes_each_picture_once_its_part_has_come_up() {
 fn the_videos_first_frame_shows_the_swing() {
     let (bg, look) = (Bg::Dark, video::look(Bg::Dark));
     let fonts = crate::shot::Fonts::load(1).unwrap();
-    let Ok(intro) = video::WideIntro::new(bg, &look, &fonts) else { return };
-    let px = intro.frame(0, &look, (video::W, video::H));
+    let Ok(intro) = video::WideIntro::new(bg, &look, &fonts, video::Scale::HD) else { return };
+    let px = intro.frame(0, &look);
     let inked = px.chunks(3).filter(|p| **p != look.ground).count();
     assert!(inked > 100, "the first frame: {inked} pixels off the ground ({} empty left out)", intro.skipped);
 }
@@ -660,15 +660,14 @@ fn by_hand_the_opening_s_stills() {
     let said = told(87 * 60_000 + 12_000, 603_000_000);
     for bg in [Bg::Dark, Bg::Light] {
         let look = video::look(bg);
-        let px = super::opening::card(&c.opening, &said, bg, &look, &fonts, (video::W, video::H));
+        let px = super::opening::card(&c.opening, &said, bg, &look, &fonts, video::Scale::HD);
         let p = dir.join(format!("built-{}.png", bg.theme()));
         crate::shot::save_png(&p, video::W, video::H, &px).unwrap();
         println!("{}", p.display());
-        if let Ok(intro) = video::WideIntro::new(bg, &look, &fonts) {
+        if let Ok(intro) = video::WideIntro::new(bg, &look, &fonts, video::Scale::HD) {
             for ms in [800, INTRO_MS - 100] {
                 let p = dir.join(format!("intro-{}-{ms}.png", bg.theme()));
-                crate::shot::save_png(&p, video::W, video::H, &intro.frame(ms, &look, (video::W, video::H)))
-                    .unwrap();
+                crate::shot::save_png(&p, video::W, video::H, &intro.frame(ms, &look)).unwrap();
                 println!("{} ({:?} as made, {:?} drawn)", p.display(), intro.made, intro.drawn());
             }
         }
@@ -1601,14 +1600,167 @@ fn the_mascot_watches_after_the_quiet_and_on_a_sped_span_and_never_on_a_card() {
 
 /// Five made-up poses at the box's size, their ink from column `ink` in rows 20 on.
 fn art(ink: usize) -> Art {
-    let (w, h) = mascot::BOX;
+    art_at(ink, video::Scale::HD)
+}
+
+/// `art` at `s`: its box, its ink's column and first row `s` times.
+fn art_at(ink: usize, s: video::Scale) -> Art {
+    let (w, h) = mascot::box_at(s);
     let mut px = vec![0u8; w * h * 4];
-    for y in 20..h {
-        for x in ink..w {
+    for y in s.px(20)..h {
+        for x in s.px(ink)..w {
             px[(y * w + x) * 4..][..4].copy_from_slice(&[200, 200, 200, 255]);
         }
     }
-    Art { poses: vec![(w, h, px); 5], dir: "made-up".into() }
+    Art { poses: vec![(w, h, px); 5], dir: "made-up".into(), scale: s }
+}
+
+/// The layout's figures at 2160p are 1080p's doubled, by the same constants (`Scale`, never a second set): the picture,
+/// the screen's picture and place at each size a take may be, the band's rule and middle, the renderer's margin — and
+/// the renderer draws a screen at 2160p the size the layout says; the mascot's box and place; the intro's swing.
+#[test]
+fn the_layout_at_2160p_is_1080ps_doubled() {
+    use super::draw::layout;
+    use video::Scale;
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let two = |(a, b): (usize, usize)| (2 * a, 2 * b);
+    for size in [(166, 32), (182, 36), (182, 33), (80, 24)] {
+        let (a, b) = (layout(&fonts, size, Scale::HD).unwrap(), layout(&fonts, size, Scale::UHD).unwrap());
+        assert_eq!(a.dims, (1920, 1080));
+        assert_eq!(
+            (b.dims, b.pic, b.at, b.rule, b.mid, b.pad, b.glyph),
+            (two(a.dims), two(a.pic), two(a.at), 2 * a.rule, 2 * a.mid, 2 * a.pad, a.glyph),
+            "{size:?}"
+        );
+        let blank = vt100::Parser::new(size.1, size.0, 0);
+        let drawn = |s: Scale| {
+            let p = crate::shot::render_scaled(blank.screen(), &fonts, a.glyph, s.k());
+            (p.0, p.1)
+        };
+        assert_eq!((drawn(Scale::HD), drawn(Scale::UHD)), (a.pic, b.pic), "{size:?}: the renderer's picture");
+        // (the mascot under that screen)
+        let bottom = |l: &super::draw::Layout| l.at.1 + l.pic.1 - l.pad;
+        let p1 = mascot::place(&art_at(60, Scale::HD), (a.at.0, a.pic.0), bottom(&a));
+        let p2 = mascot::place(&art_at(60, Scale::UHD), (b.at.0, b.pic.0), bottom(&b));
+        match (p1, p2) {
+            (Ok(p1), Ok(p2)) => assert_eq!(
+                (p2.x, p2.y, p2.rule_end, p2.marks_right),
+                (2 * p1.x, 2 * p1.y, 2 * p1.rule_end, 2 * p1.marks_right),
+                "{size:?}: the mascot's place"
+            ),
+            (Err(e1), Err(e2)) => {
+                let px = |e: &str| e.split_whitespace().find_map(|w| w.parse::<usize>().ok());
+                assert_eq!(px(&e2), px(&e1).map(|n| 2 * n), "{size:?}: {e1} / {e2}");
+            }
+            (p1, p2) => panic!("{size:?}: the mascot placed at one size only: {p1:?} {p2:?}"),
+        }
+    }
+    assert_eq!(mascot::box_at(Scale::UHD), two(mascot::BOX));
+    // (the swing: made at each size from its source, drawn twice as tall — where main's frames are there)
+    let (bg, look) = (Bg::Dark, video::look(Bg::Dark));
+    if let (Ok(i1), Ok(i2)) = (
+        video::WideIntro::new(bg, &look, &fonts, Scale::HD),
+        video::WideIntro::new(bg, &look, &fonts, Scale::UHD),
+    ) {
+        let ((n1, d1, ink1), (n2, d2, ink2)) = (i1.drawn(), i2.drawn());
+        assert_eq!((i2.made, n2, d2.1), (two(i1.made), n1, 2 * d1.1), "the swing as made and drawn");
+        assert!(d2.0.abs_diff(2 * d1.0) <= 1, "its width: {d1:?} {d2:?}");
+        assert!(ink2.0.abs_diff(2 * ink1.0) <= 2 && ink2.1.abs_diff(2 * ink1.1) <= 2, "{ink1:?} {ink2:?}");
+        assert_eq!(i2.frame(INTRO_MS, &look).len(), 3840 * 2160 * 3);
+    }
+}
+
+/// `big` (a 2160p frame) halved against `small` (1080p's) over 1080p's `rows`, where either has ink (off `ground` by
+/// more than 24): the mean difference of a channel (of 255), the share of pixels a channel of which is more than `FAR`
+/// apart, and the box each one's ink covers (columns, rows).
+fn halved_against(
+    big: &[u8],
+    small: &[u8],
+    rows: std::ops::Range<usize>,
+    ground: crate::shot::Rgb,
+) -> (f64, f64, [usize; 4], [usize; 4]) {
+    const FAR: u8 = 96;
+    let (w, h) = (video::W, video::H);
+    let half = video::half(big, (2 * w, 2 * h)).2;
+    let (mut sum, mut far, mut n) = (0u64, 0u64, 0u64);
+    let mut boxes = [[usize::MAX, usize::MAX, 0, 0]; 2];
+    for y in rows {
+        for x in 0..w {
+            let (a, b) = (&half[(y * w + x) * 3..][..3], &small[(y * w + x) * 3..][..3]);
+            let inked = |p: &[u8]| p.iter().zip(ground).any(|(c, g)| c.abs_diff(g) > 24);
+            for (k, _) in [a, b].into_iter().enumerate().filter(|(_, p)| inked(p)) {
+                let bx = &mut boxes[k];
+                *bx = [bx[0].min(x), bx[1].min(y), bx[2].max(x), bx[3].max(y)];
+            }
+            if !inked(a) && !inked(b) {
+                continue;
+            }
+            let d: Vec<u8> = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).collect();
+            sum += d.iter().map(|&d| u64::from(d)).sum::<u64>();
+            far += u64::from(d.iter().any(|&d| d > FAR));
+            n += 1;
+        }
+    }
+    (sum as f64 / (3 * n.max(1)) as f64, far as f64 / n.max(1) as f64, boxes[0], boxes[1])
+}
+
+/// A frame at 2160p halved is the 1080p frame, within what drawing glyphs at twice their size then averaging them
+/// allows: at the cells (a screen of code, colours, a selected row, box lines), the band (the clock, the speed's mark, a
+/// caption, the rule) and a card (what's built: all drawn text) — the same ink in the same place to a pixel, a small
+/// mean difference where there's ink, few pixels far apart (a glyph's edge); the rule two rows thick. (Measured
+/// 2026-11-11: means 0.35 at the cells, 0.49–0.77 at the band, 1.37 on the card; far 0.06 % at most.)
+#[test]
+fn a_frame_at_2160p_halved_is_the_1080p_frame() {
+    use super::draw::{Stage, Words, layout};
+    use video::Scale;
+    let size = (166, 32);
+    let mut screen = vt100::Parser::new(size.1, size.0, 0);
+    screen.process(
+        b"\x1b[?25l\x1b[48;2;11;14;20m\x1b[2J\x1b[1;1H\x1b[38;2;230;180;80mfn\x1b[38;2;191;189;182m main() {",
+    );
+    screen.process(b"\x1b[2;5H\x1b[38;2;170;217;76mlet\x1b[38;2;191;189;182m x = \x1b[38;2;149;230;203m\"a task\"\x1b[38;2;191;189;182m;");
+    screen.process(b"\x1b[3;1H\x1b[48;2;34;40;52m\x1b[1m  selected row, bold  \x1b[0m\x1b[48;2;11;14;20m");
+    screen.process(
+        "\x1b[5;100H\x1b[38;2;81;84;92m╭────────╮\x1b[6;100H│ chat │\x1b[7;100H╰────────╯".as_bytes(),
+    );
+    screen.process(b"\x1b[31;1H\x1b[38;2;92;103;115mtest result: ok. 3 passed");
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let look = video::look(Bg::Dark);
+    let frames =
+        [("the clock and the speed", at_take(&p, 5_000, 0)), ("a caption", at_take(&p, 12_000, 600))];
+    let drawn = |s: Scale, f: &Frame| {
+        let fonts = crate::shot::Fonts::load(s.k()).unwrap();
+        let lay = layout(&fonts, size, s).unwrap();
+        let pic = crate::shot::render_scaled(screen.screen(), &fonts, lay.glyph, s.k());
+        let stage = Stage::new(lay, &look, &c, None);
+        (stage.take_frame(&pic, None, f, None, &mut Words::new(&fonts, look.ground, s)), lay)
+    };
+    for (what, f) in &frames {
+        assert!(f.clock.is_some(), "{what}: {f:?}");
+        let ((small, lay), (big, _)) = (drawn(Scale::HD, f), drawn(Scale::UHD, f));
+        for (part, rows) in [("the cells", 0..lay.rule - 1), ("the band", lay.rule..video::H)] {
+            within(&format!("{what}, {part}"), halved_against(&big, &small, rows, look.ground));
+        }
+        let (x, w) = (lay.at.0 + 2 * lay.pad, 2 * video::W);
+        for y in [2 * lay.rule, 2 * lay.rule + 1] {
+            assert_eq!(&big[(y * w + 2 * x) * 3..][..3], &look.faint, "{what}: the rule's row {y} at 2160p");
+        }
+    }
+    let card = |s: Scale| {
+        let fonts = crate::shot::Fonts::load(s.k()).unwrap();
+        let told = "a real session: 1h 27m of work, shown in 10m 03s";
+        super::opening::card(&c.opening, told, Bg::Dark, &look, &fonts, s)
+    };
+    within("the card", halved_against(&card(Scale::UHD), &card(Scale::HD), 0..video::H, look.ground));
+}
+
+/// `halved_against`'s figures within what resampling allows: the ink in the same place to a pixel, a mean difference of
+/// at most 3 of 255, at most 0.5 % of pixels far apart.
+fn within(what: &str, (mean, far, big, small): (f64, f64, [usize; 4], [usize; 4])) {
+    let said = format!("{what}: mean {mean:.2}, far {:.3} %, ink {big:?} against {small:?}", far * 100.0);
+    assert!(big.iter().zip(small).all(|(a, b)| a.abs_diff(b) <= 1), "the ink's place — {said}");
+    assert!(mean <= 3.0 && far <= 0.005, "{said}");
 }
 
 #[test]
@@ -1633,10 +1785,11 @@ fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_
     let look = video::look(Bg::Dark);
     let c = cut(CUT).unwrap();
     let p = Program::new(&c);
+    let lay = super::draw::layout(&fonts, (166, 32), video::Scale::HD).unwrap();
     for f in [at_take(&p, 5_000, 0), p.frame(7_000_000)] {
         let mut px = look.ground.repeat(video::W * video::H);
-        let mut words = super::draw::Words::new(&fonts, look.ground);
-        super::draw::band(&mut px, &f, &c, (x0, place.marks_right), &look, &mut words);
+        let mut words = super::draw::Words::new(&fonts, look.ground, video::Scale::HD);
+        super::draw::band(&mut px, &lay, &f, &c, (x0, place.marks_right), &look, &mut words);
         let inked = |xs: std::ops::Range<usize>| {
             (video::H - video::BAND..video::H)
                 .any(|y| xs.clone().any(|x| px[(y * video::W + x) * 3..][..3] != look.ground))
@@ -1661,17 +1814,18 @@ fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_
 fn no_frames_no_mascot_and_it_says_so() {
     let c = cut(CUT).unwrap();
     let s = tarae_testkit::scratch::Scratch::new("xtask-cut-mascot");
-    let e = mascot::found(&c, Some(s.join("none")), (33, 1854), 870).err().unwrap();
+    let hd = video::Scale::HD;
+    let e = mascot::found(&c, Some(s.join("none")), (33, 1854), 870, hd).err().unwrap();
     assert!(e.starts_with("the mascot: none — ") && e.ends_with("; the cut is made without it"), "{e}");
     assert!(e.contains("frame-up.png"), "{e}");
-    let e = mascot::found(&c, None, (33, 1854), 870).err().unwrap();
+    let e = mascot::found(&c, None, (33, 1854), 870, hd).err().unwrap();
     assert!(e.contains("no main checkout found"), "{e}");
     let off = cut(&format!("mascot = false\n{CUT}")).unwrap();
     assert_eq!(
-        mascot::found(&off, Some(s.join("none")), (33, 1854), 870).err().unwrap(),
+        mascot::found(&off, Some(s.join("none")), (33, 1854), 870, hd).err().unwrap(),
         "the mascot: none (mascot = false)"
     );
     let light = cut(&format!("bg = \"light\"\n{CUT}")).unwrap();
-    assert!(mascot::found(&light, None, (33, 1854), 870).err().unwrap().contains("meok's only"));
+    assert!(mascot::found(&light, None, (33, 1854), 870, hd).err().unwrap().contains("meok's only"));
     assert!(cut(&format!("mascot = 1\n{CUT}")).unwrap_err().contains("mascot: true or false"));
 }

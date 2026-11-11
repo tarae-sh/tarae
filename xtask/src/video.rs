@@ -145,6 +145,64 @@ const LANDS_MS: u64 = 150;
 /// A step of the writing that changed more rows than this is the view moving (follow's jump, a scroll), not writing.
 const WRITING_ROWS_MAX: usize = 2;
 
+/// The wide picture's size (`cut --size`, V4): 1080p, or 2160p — the same picture drawn at twice its scale: every
+/// figure in px times `k` (this file's, the cut's, the opening's, the mascot's), the cells, their margin and lines by
+/// the renderer's own scale (`shot::render_scaled`, glyphs at twice their px), the pictures made again from their
+/// sources at twice their size (`seal`, `intro_frames`) — never a 1080p frame scaled up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Scale(usize);
+
+impl Scale {
+    pub(crate) const HD: Scale = Scale(1);
+    pub(crate) const UHD: Scale = Scale(2);
+
+    pub(crate) fn k(self) -> usize {
+        self.0
+    }
+
+    /// `n` px at 1080p, at this size.
+    pub(crate) fn px(self, n: usize) -> usize {
+        n * self.0
+    }
+
+    /// A glyph's or a length's px at 1080p, at this size.
+    pub(crate) fn f(self, v: f32) -> f32 {
+        v * self.0 as f32
+    }
+
+    /// Where a picture `len` px long starts, centred in `room` (both drawn at this scale): centred at 1080p, then
+    /// scaled — never a half pixel apart from 1080p's place where a length is odd there.
+    pub(crate) fn centre(self, room: usize, len: usize) -> usize {
+        self.px((room / self.0).saturating_sub(len / self.0) / 2)
+    }
+
+    /// Half of `len` (drawn at this scale) as 1080p halves it, scaled.
+    pub(crate) fn half(self, len: usize) -> usize {
+        self.px(len / self.0 / 2)
+    }
+
+    /// The picture (px).
+    pub(crate) fn dims(self) -> (usize, usize) {
+        (W * self.0, H * self.0)
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self.0 {
+            1 => "1080p",
+            _ => "2160p",
+        }
+    }
+
+    /// `1080p` or `2160p`.
+    pub(crate) fn parse(s: &str) -> Result<Scale> {
+        match s {
+            "1080p" => Ok(Scale::HD),
+            "2160p" => Ok(Scale::UHD),
+            _ => Err(format!("--size {s}: 1080p or 2160p")),
+        }
+    }
+}
+
 /// Which picture a video is: the wide one, or a Short.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Form {
@@ -1297,19 +1355,47 @@ pub(crate) fn seal(bg: Bg) -> Result<Rgba> {
     rgba(&root().join(format!("docs/brand/seal-{}-96.png", bg.theme())))
 }
 
-/// Where a Short's intro frames are (made once, `.sb/shorts-intro/make.sh`): `TARAE_SHORTS_INTRO`, else main's
-/// `.sb/youtube/shorts-intro` — the main checkout's, by the repository's common git folder: outside git, where `cargo
+/// The seal at `s`: 1080p's `seal`; 2160p's made from the same SVG at twice its size (main's `.sb/v4-pictures-2x.sh`:
+/// `TARAE_SEAL_2X`, else main's `.sb/youtube/seal/seal-<theme>-192.png`, found as the intro's frames are).
+pub(crate) fn seal_at(bg: Bg, s: Scale) -> Result<Rgba> {
+    if s == Scale::HD {
+        return seal(bg);
+    }
+    let dir = match std::env::var_os("TARAE_SEAL_2X") {
+        Some(d) => PathBuf::from(d),
+        None => main_youtube("seal").ok_or("no main checkout found")?,
+    };
+    rgba(&dir.join(format!("seal-{}-{}.png", bg.theme(), 96 * s.k())))
+}
+
+/// Main's `.sb/youtube/<sub>` — the main checkout's, by the repository's common git folder: outside git, where `cargo
 /// clean` can't take it, the same from every checkout.
+fn main_youtube(sub: &str) -> Option<PathBuf> {
+    Some(crate::linux::git_folder(&root())?.parent()?.join(".sb/youtube").join(sub))
+}
+
+/// Where a Short's intro frames are (made once, `.sb/shorts-intro/make.sh`): `TARAE_SHORTS_INTRO`, else main's
+/// `.sb/youtube/shorts-intro`.
 fn intro_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TARAE_SHORTS_INTRO") {
         return Some(PathBuf::from(dir));
     }
-    Some(crate::linux::git_folder(&root())?.parent()?.join(".sb/youtube/shorts-intro"))
+    main_youtube("shorts-intro")
 }
 
 /// The intro's frames for `bg`'s theme, in order (`<theme>/NNN.png`).
 fn intro_frames(bg: Bg) -> Result<Vec<Rgba>> {
-    let dir = intro_dir().ok_or("no main checkout found")?.join(bg.theme());
+    intro_paths(bg, Scale::HD)?.iter().map(|p| rgba(p)).collect()
+}
+
+/// The intro's frames' files for `bg`'s theme at `s`, in order: `<theme>/NNN.png` (880×960), at 2160p
+/// `<theme>-2x/NNN.png` (the same page rendered at device scale 2, 1760×1920: `.sb/v4-pictures-2x.sh`).
+fn intro_paths(bg: Bg, s: Scale) -> Result<Vec<PathBuf>> {
+    let folder = match s {
+        Scale::HD => bg.theme().to_string(),
+        _ => format!("{}-{}x", bg.theme(), s.k()),
+    };
+    let dir = intro_dir().ok_or("no main checkout found")?.join(folder);
     let listed = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut paths: Vec<PathBuf> =
         listed.flatten().map(|e| e.path()).filter(|p| p.extension() == Some(OsStr::new("png"))).collect();
@@ -1317,12 +1403,12 @@ fn intro_frames(bg: Bg) -> Result<Vec<Rgba>> {
     if paths.is_empty() {
         return Err(format!("{}: no frames", dir.display()));
     }
-    paths.iter().map(|p| rgba(p)).collect()
+    Ok(paths)
 }
 
 /// The swing's height on the wide video's 1080p frame (px). Its frames are made 960 tall for a Short's width and shrunk
-/// here; a 2160p frame wants them made again at twice this (V4) — never a frame stretched.
-const WIDE_INTRO_PX: usize = 560;
+/// here; a 2160p frame's are made 1,920 tall (`intro_frames`) and shrunk to twice this — never a frame stretched.
+pub(crate) const WIDE_INTRO_PX: usize = 560;
 
 /// The wide video's intro (the full video's opening, `cut`'s `[opening]`): the Shorts' swing (`intro_frames`) made
 /// `WIDE_INTRO_PX` tall, `t a r a e` rising in under it as on a Short's end card (`NAME_RISE`), the two centred on the
@@ -1333,20 +1419,33 @@ pub(crate) struct WideIntro {
     frames: Vec<Rgba>,
     name: Picture,
     inked: (usize, usize),
+    scale: Scale,
     pub(crate) made: (usize, usize),
     pub(crate) skipped: usize,
 }
 
 impl WideIntro {
-    /// `bg`'s swing (meok's only: hanji has no frames — refused, said by the caller).
-    pub(crate) fn new(bg: Bg, look: &Look, fonts: &Fonts) -> Result<WideIntro> {
-        let mut frames = intro_frames(bg)?;
-        let made = frames.first().map_or((0, 0), |f| (f.0, f.1));
-        let skipped = frames.iter().position(|(_, _, px)| px.chunks(4).any(|p| p[3] > 8)).unwrap_or(0);
-        frames.drain(..skipped);
-        let k = (WIDE_INTRO_PX as f32 / made.1.max(1) as f32).min(1.0);
-        let frames = if k < 1.0 { frames.iter().map(|f| shrunk(f, k)).collect() } else { frames };
-        let name = text("t a r a e", INTRO_NAME_PX, look.accent, look.ground, true, fonts);
+    /// `bg`'s swing at `s` (meok's only: hanji has no frames — refused, said by the caller; 2160p's only where they're
+    /// made at its size, `intro_frames`).
+    pub(crate) fn new(bg: Bg, look: &Look, fonts: &Fonts, s: Scale) -> Result<WideIntro> {
+        // (each frame shrunk as it's read: 49 of 2160p's as made are 660 MB)
+        let (mut frames, mut made, mut skipped) = (Vec::new(), (0, 0), 0);
+        for p in intro_paths(bg, s)? {
+            let f = rgba(&p)?;
+            if made == (0, 0) {
+                made = (f.0, f.1);
+            }
+            if frames.is_empty() && !f.2.chunks(4).any(|p| p[3] > 8) {
+                skipped += 1;
+                continue;
+            }
+            let k = (s.px(WIDE_INTRO_PX) as f32 / made.1.max(1) as f32).min(1.0);
+            frames.push(if k < 1.0 { shrunk(&f, k) } else { f });
+        }
+        if frames.is_empty() {
+            return Err("the swing's frames are all empty".into());
+        }
+        let name = text_at("t a r a e", INTRO_NAME_PX, look.accent, look.ground, true, fonts, s);
         let rows = |(w, _, px): &Rgba| -> Vec<usize> {
             (px.chunks(w * 4).enumerate())
                 .filter(|(_, row)| row.chunks(4).any(|p| p[3] > 8))
@@ -1356,7 +1455,7 @@ impl WideIntro {
         let all: Vec<usize> = frames.last().map(rows).unwrap_or_default();
         let h = frames.first().map_or(0, |f| f.1);
         let inked = (all.iter().copied().min().unwrap_or(0), all.iter().copied().max().map_or(h, |y| y + 1));
-        Ok(WideIntro { frames, name, inked, made, skipped })
+        Ok(WideIntro { frames, name, inked, scale: s, made, skipped })
     }
 
     /// How far into the swing as made it starts (µs): the empty frames left out.
@@ -1369,22 +1468,25 @@ impl WideIntro {
         (self.frames.len(), self.frames.first().map_or((0, 0), |f| (f.0, f.1)), self.inked)
     }
 
-    /// The intro `ms` in, `dims` px: the swing's frame then (the last held), the name rising under it.
-    pub(crate) fn frame(&self, ms: u64, look: &Look, dims: (usize, usize)) -> Vec<u8> {
+    /// The intro `ms` in, its scale's picture: the swing's frame then (the last held), the name rising under it.
+    pub(crate) fn frame(&self, ms: u64, look: &Look) -> Vec<u8> {
+        let s = self.scale;
+        let dims = s.dims();
         let (w, h) = dims;
         let mut out = look.ground.repeat(w * h);
         let k = ((ms * INTRO_FPS / 1000) as usize).min(self.frames.len() - 1);
         let f = &self.frames[k];
         let (top, bottom) = self.inked;
-        let tall = bottom - top + INTRO_GAP + self.name.1;
+        let gap = s.px(INTRO_GAP);
+        let tall = bottom - top + gap + self.name.1;
         // (the frame's top over the column's by its empty rows; never above the picture's)
-        let y = (h.saturating_sub(tall) / 2).saturating_sub(top);
-        stamp(&mut out, dims, f, (w.saturating_sub(f.0) / 2, y));
+        let y = s.centre(h, tall).saturating_sub(top);
+        stamp(&mut out, dims, f, (s.centre(w, f.0), y));
         let up = camera::ease_out(ms.saturating_sub(NAME_RISE.0) as f32 / (NAME_RISE.1 - NAME_RISE.0) as f32)
             * f32::from(ms >= NAME_RISE.0);
         if up > 0.0 {
-            let x = w.saturating_sub(self.name.0) / 2;
-            let y = y + bottom + INTRO_GAP + ((1.0 - up) * INTRO_RISE_PX) as usize;
+            let x = s.centre(w, self.name.0);
+            let y = y + bottom + gap + ((1.0 - up) * s.f(INTRO_RISE_PX)) as usize;
             blit(&mut out, dims, &self.name, x, y, (up * 255.0) as u8);
         }
         out
@@ -1420,13 +1522,26 @@ pub(crate) fn rgba(path: &Path) -> Result<Rgba> {
 
 /// `text` in one row of cells at `px`, `fg` on `ground` (bold: `bold`), by the shots' renderer — its margin the ground.
 pub(crate) fn text(text: &str, px: f32, fg: Rgb, ground: Rgb, bold: bool, fonts: &Fonts) -> Picture {
+    text_at(text, px, fg, ground, bold, fonts, Scale::HD)
+}
+
+/// `text` drawn at `s`: 1080p's `px` layout, `s` times (`shot::render_scaled`).
+pub(crate) fn text_at(
+    text: &str,
+    px: f32,
+    fg: Rgb,
+    ground: Rgb,
+    bold: bool,
+    fonts: &Fonts,
+    s: Scale,
+) -> Picture {
     let cols = text.chars().count().max(1) as u16;
     let mut p = vt100::Parser::new(1, cols, 0);
     let [r, g, b] = fg;
     let [gr, gg, gb] = ground;
     let weight = if bold { "1;" } else { "" };
     p.process(format!("\x1b[?25l\x1b[{weight}38;2;{r};{g};{b};48;2;{gr};{gg};{gb}m{text}").as_bytes());
-    shot::render_px(p.screen(), fonts, px, None)
+    shot::render_scaled(p.screen(), fonts, px, s.k())
 }
 
 /// The end card's name: `t a r a e` in the accent, the address `tarae.sh` under it in ink (the user, 2026-11-05: where to
@@ -1475,6 +1590,9 @@ fn caption_text(lines: &[String], fonts: &Fonts) -> Picture {
     shot::render_px(p.screen(), fonts, CAPTION_SHORT_PX, None)
 }
 
+/// The air between a card's words and its seal (px at 1080p).
+const CARD_GAP: usize = 48;
+
 /// A card's frame, `dims` px: `lines` (text, size, colour, bold) one under another, centred, the seal stamped under
 /// them.
 pub(crate) fn card(
@@ -1484,20 +1602,32 @@ pub(crate) fn card(
     fonts: &Fonts,
     dims: (usize, usize),
 ) -> Vec<u8> {
+    card_at(lines, seal, look, fonts, dims, Scale::HD)
+}
+
+/// `card` drawn at `s` on a picture of `dims` (`seal` the one made at `s`: `seal_at`).
+pub(crate) fn card_at(
+    lines: &[(&str, f32, Rgb, bool)],
+    seal: &(usize, usize, Vec<u8>),
+    look: &Look,
+    fonts: &Fonts,
+    dims: (usize, usize),
+    s: Scale,
+) -> Vec<u8> {
     let (w, h) = dims;
     let mut px = look.ground.repeat(w * h);
     let pictures: Vec<Picture> = (lines.iter().filter(|l| !l.0.is_empty()))
-        .map(|&(t, size, fg, bold)| text(t, size, fg, look.ground, bold, fonts))
+        .map(|&(t, size, fg, bold)| text_at(t, size, fg, look.ground, bold, fonts, s))
         .collect();
-    let gap = 48;
+    let gap = s.px(CARD_GAP);
     let tall = pictures.iter().map(|p| p.1).sum::<usize>() + gap + seal.1;
-    let mut y = h.saturating_sub(tall) / 2;
+    let mut y = s.centre(h, tall);
     for p in &pictures {
-        blit(&mut px, dims, p, (w - p.0.min(w)) / 2, y, 255);
+        blit(&mut px, dims, p, s.centre(w, p.0.min(w)), y, 255);
         y += p.1;
     }
     let (sw, sh, rgba) = seal;
-    let (x0, y0) = ((w - sw) / 2, y + gap);
+    let (x0, y0) = (s.centre(w, *sw), y + gap);
     for sy in 0..*sh {
         for sx in 0..*sw {
             let s = &rgba[(sy * sw + sx) * 4..][..4];
@@ -2416,8 +2546,12 @@ fn encoder_command(
         let rate = form.aac_rate();
         cmd.arg("-i").arg(wav).args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", rate]);
     }
-    cmd.args(["-c:v", "libx264", "-preset", "slow", "-crf", "20"])
-        .args(["-tune", "animation", "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"])
+    cmd.args(["-c:v", "libx264", "-preset", "slow", "-crf", "20"]);
+    if h > H {
+        // (2160p, what YouTube asks of a 4K upload: High, at a level that allows 3840×2160 at 30 frames)
+        cmd.args(["-profile:v", "high", "-level:v", "5.1"]);
+    }
+    cmd.args(["-tune", "animation", "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"])
         .args(["-colorspace", "bt709", "-color_range", "tv", "-movflags", "+faststart"])
         // (the primaries and transfer written into the stream itself: the filter's frames leave them unspecified,
         // whatever `-color_primaries` says)

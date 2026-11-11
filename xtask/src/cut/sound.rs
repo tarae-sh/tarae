@@ -839,7 +839,9 @@ pub(crate) fn make(
     ));
     // (each chapter's loudness and true peak)
     for (i, c) in cut.chapters.iter().enumerate() {
-        let (a, b) = ranges[i + 1];
+        // (a range's end rounded to samples may be one past the sound's: V4 met it on the made-up 90 minutes)
+        let n = yl.len().min(yr.len());
+        let (a, b) = (ranges[i + 1].0.min(n), ranges[i + 1].1.min(n));
         let tp = lv.chapter_peaks[i];
         said.push(format!(
             "  chapter {} “{}” {}–{}: {} LUFS, {} dBTP",
