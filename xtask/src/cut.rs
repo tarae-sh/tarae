@@ -107,8 +107,11 @@ pub(crate) const CHAPTER_MS: u64 = 2_000;
 /// A chapter with no card: its number and title stand in the band this long (of the video), fading in and out over
 /// `FADE_MS`, as the take goes on.
 pub(crate) const CHAPTER_BAND_MS: u64 = 3_000;
-/// A caption's longest (one line in the band, between the clock and the speed's mark).
-pub(crate) const CAPTION_MAX: usize = 60;
+/// A caption's longest (one line in the band, centred between the clock and the speed's mark): what a centred caption
+/// has under the widest speed mark (seven characters, `▸▸ ×1.3`) with the key pops' lane right of it — about 800 px
+/// at 1080p, 40 of `video::CAPTION_PX`'s cells (`draw::caption_room`; the design session's, 2026-11-12, after V5's lane
+/// left 43 beside a `▸▸ ×2`). Every caption is still checked against the mark under it (`draw::captions_clear`).
+pub(crate) const CAPTION_MAX: usize = 40;
 /// The jump's mark stands this long (then fades), and comes in and goes out over `FADE_MS` — a caption's too.
 pub(crate) const JUMP_MS: u64 = 1_000;
 /// A jump's mark is as loud as the jump is far (the design session's, 2026-11-12): under `JUMP_QUIET_MS` none — a skip

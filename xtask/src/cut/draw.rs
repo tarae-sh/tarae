@@ -779,13 +779,26 @@ fn sheet_picture(px: &[u8], lay: &Layout) -> Picture {
     p
 }
 
+/// The width of `t`'s ink at `px` (1080p's), its picture's padding left out.
+pub(crate) fn letters(t: &str, px: f32, fonts: &Fonts) -> usize {
+    video::text(t, px, [255; 3], [0; 3], false, fonts).0.saturating_sub(2 * PAD)
+}
+
+/// The width a caption centred in the band has (px at 1080p) with the marks' pictures ending at `right`: to that end,
+/// or short of `mark` (the widest speed mark shown over it) by `mascot::GAP` — and as much again on its left.
+pub(crate) fn caption_room(fonts: &Fonts, right: usize, mark: Option<&str>) -> usize {
+    let end = right - PAD;
+    let limit = mark.map_or(end, |t| end.saturating_sub(letters(t, MARK_PX, fonts) + mascot::GAP));
+    (2 * limit).saturating_sub(W)
+}
+
 /// Each caption clear of the band's right end (the marks' pictures ending at `right`; `boxed`: the mascot's box after
-/// them): of the widest speed mark shown over its stretch by `mascot::GAP`, else of that end. One that would reach it is
-/// refused with its line and the width left there.
+/// them): of the widest speed mark shown over its stretch by `mascot::GAP`, else of that end (`caption_room`). Checked
+/// before a frame is drawn; every one that would reach it is refused at once, each with its line and the room there.
 pub(crate) fn captions_clear(cut: &Cut, fonts: &Fonts, (right, boxed): (usize, bool)) -> Result<()> {
     let map = &cut.map;
-    let letters =
-        |t: &str, px: f32| video::text(t, px, [255; 3], [0; 3], false, fonts).0.saturating_sub(2 * PAD);
+    let letters = |t: &str, px: f32| letters(t, px, fonts);
+    let mut refused = Vec::new();
     for c in &cut.captions {
         let (m0, m1) = (map.video(c.at), map.video(c.at) + c.len * 1000);
         let widest = (0..map.segs().len())
@@ -796,9 +809,7 @@ pub(crate) fn captions_clear(cut: &Cut, fonts: &Fonts, (right, boxed): (usize, b
             })
             .map(|t| (letters(&t, MARK_PX), t))
             .max();
-        let end = right - PAD;
-        let limit = widest.as_ref().map_or(end, |(w, _)| end.saturating_sub(w + mascot::GAP));
-        let room = (2 * limit).saturating_sub(W);
+        let room = caption_room(fonts, right, widest.as_ref().map(|(_, t)| t.as_str()));
         let w = letters(&c.text, video::CAPTION_PX);
         if w > room {
             let what = match (&widest, boxed) {
@@ -806,7 +817,7 @@ pub(crate) fn captions_clear(cut: &Cut, fonts: &Fonts, (right, boxed): (usize, b
                 (None, true) => "the mascot's box".to_string(),
                 (None, false) => "the screen's right edge".to_string(),
             };
-            return Err(format!(
+            refused.push(format!(
                 "{}:{}: caption: {w} px wide, centred it reaches {what} — {room} px left there (about {} characters)",
                 cut.file,
                 c.line,
@@ -814,7 +825,11 @@ pub(crate) fn captions_clear(cut: &Cut, fonts: &Fonts, (right, boxed): (usize, b
             ));
         }
     }
-    Ok(())
+    match refused.len() {
+        0 => Ok(()),
+        1 => Err(refused.remove(0)),
+        n => Err(format!("{n} captions don't fit the band:\n  {}", refused.join("\n  "))),
+    }
 }
 
 /// `on` looked for on `scan`'s screen from the take's `at` until `until` (ms): when it's first there, and its region.

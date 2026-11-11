@@ -2064,17 +2064,61 @@ fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_
         assert!(inked(place.x - mascot::GAP - 60..place.x - mascot::GAP), "the mark drawn: {f:?}");
         assert!(!inked(place.x - mascot::GAP..video::W), "clear of the box: {f:?}");
     }
-    // (a caption: clear of the widest speed mark over it, else of the box; one that would reach it refused)
-    let boxed = (place.marks_right, true);
+    // (`CAPTION_MAX`'s reason: under the widest speed mark — seven characters, `▸▸ ×1.3` — with the pops' lane, a
+    // centred caption has room for `CAPTION_MAX` characters and not one more)
+    let widest = sped(1.3).unwrap();
+    for i in 11..1000 {
+        let k = f64::from(i) / 10.0;
+        assert!(sped(k).unwrap().chars().count() <= widest.chars().count(), "{k}");
+    }
+    let laned = mascot::place(&art(60), (x0, pw), 870, true).unwrap();
+    let room = super::draw::caption_room(&fonts, laned.marks_right, Some(&widest));
+    let width = |n: usize| super::draw::letters(&"x".repeat(n), video::CAPTION_PX, &fonts);
+    assert!(width(CAPTION_MAX) <= room && room < width(CAPTION_MAX + 1), "{room} px");
+    // (a caption: clear of the widest speed mark over it, else of the box; in the band with the lane, one of
+    // `CAPTION_MAX` anywhere)
+    let boxed = (laned.marks_right, true);
     assert_eq!(super::draw::captions_clear(&c, &fonts, boxed), Ok(()));
-    let long = format!("[[caption]]\nat = \"5s\"\nfor = \"1s\"\ntext = \"{}\"\n", "x".repeat(60));
-    let text = CUT.replacen("[[caption]]", &format!("{long}\n[[caption]]"), 1);
-    let e = super::draw::captions_clear(&cut(&text).unwrap(), &fonts, boxed).unwrap_err();
-    let line = text.lines().position(|l| l.starts_with("[[caption]]")).unwrap() + 1;
-    assert!(e.starts_with(&format!("cut.toml:{line}: caption:")), "{e}");
-    assert!(e.contains("reaches the speed's mark `▸▸ ×4`") && e.contains("px left there"), "{e}");
-    let fits = text.replacen(&"x".repeat(60), &"x".repeat(40), 1);
-    assert_eq!(super::draw::captions_clear(&cut(&fits).unwrap(), &fonts, boxed), Ok(()));
+    let caption =
+        |at: &str| format!("[[caption]]\nat = \"{at}\"\nfor = \"1s\"\ntext = \"{}\"\n", "x".repeat(40));
+    let text = (CUT.replacen("[[caption]]", &format!("{}\n[[caption]]", caption("2s")), 1)).replacen(
+        "text = \"A card.\"\n",
+        &format!("text = \"A card.\"\n\n{}", caption("52s")),
+        1,
+    );
+    let two = cut(&text).unwrap();
+    assert_eq!(super::draw::captions_clear(&two, &fonts, boxed), Ok(()));
+    // (a band with less room — its marks ending 100 px nearer —: both that reach their marks named in one refusal,
+    // each at its line, before any frame; the one that fits not)
+    let e = super::draw::captions_clear(&two, &fonts, (laned.marks_right - 100, true)).unwrap_err();
+    let lines: Vec<usize> = (text.lines().enumerate())
+        .filter(|(_, l)| l.starts_with("[[caption]]"))
+        .map(|(i, _)| i + 1)
+        .collect();
+    assert_eq!(lines.len(), 3);
+    assert!(e.starts_with("2 captions don't fit the band:\n"), "{e}");
+    for (line, mark) in [(lines[0], "▸▸ ×4"), (lines[2], "▸▸ ×2")] {
+        let said = format!(
+            "\n  cut.toml:{line}: caption: 800 px wide, centred it reaches the speed's mark `{mark}`"
+        );
+        assert!(e.contains(&said), "{said}\n  in: {e}");
+    }
+    assert!(!e.contains(&format!("cut.toml:{}:", lines[1])), "{e}");
+}
+
+/// A caption is one line of `CAPTION_MAX` (40) characters at most: a 41st is refused at its line as the file is read.
+#[test]
+fn a_caption_of_41_characters_is_refused_at_its_line() {
+    let of = |n: usize| CUT.replacen("text = \"A card.\"", &format!("text = \"{}\"", "x".repeat(n)), 1);
+    assert!(cut(&of(40)).is_ok());
+    let text = of(41);
+    let line = text.lines().position(|l| l.starts_with("text = \"xxx")).unwrap() + 1;
+    let e = cut(&text).unwrap_err();
+    assert!(
+        e.starts_with(&format!("cut.toml:{line}: caption: one line of 1 to 40 characters (41 here)")),
+        "{e}"
+    );
+    assert_eq!(CAPTION_MAX, 40);
 }
 
 #[test]
