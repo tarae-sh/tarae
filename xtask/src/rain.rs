@@ -401,10 +401,10 @@ const NONE: Layers =
 
 /// SplitMix64: one stream a use (`stream`), so a layer alone is the same as it is in the whole.
 #[derive(Clone)]
-struct Rng(u64);
+pub(crate) struct Rng(u64);
 
 impl Rng {
-    fn new(seed: u64, stream: u64) -> Rng {
+    pub(crate) fn new(seed: u64, stream: u64) -> Rng {
         Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) ^ stream.wrapping_mul(0x9E37_79B9_7F4A_7C15))
     }
 
@@ -421,7 +421,7 @@ impl Rng {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    fn range(&mut self, a: f64, b: f64) -> f64 {
+    pub(crate) fn range(&mut self, a: f64, b: f64) -> f64 {
         a + (b - a) * self.f()
     }
 

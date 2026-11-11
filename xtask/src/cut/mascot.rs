@@ -11,16 +11,21 @@
 //!   eyes raised to the screen. Every change of pose snaps; nothing else moves.
 //! - **Where**: on the take's frames and where it ends, never on a card; its box's right edge at the band's rule's end,
 //!   its foot `FOOT` above the frame's, its head over the rule — the rule stopping short of its ink (`RULE_GAP`) — and
-//!   never over a cell (`place`). The band's marks keep `GAP` from its box.
+//!   never over a cell (`place`). The band's marks keep `GAP` from its box — from the key pops' lane where they're on.
+//! - **Its motions beyond typing** (`motions.rs`, V5: blink, glance, surprise, stretch, brush swing — none broken off)
+//!   and **the key pops** beside it (`pops.rs`), each switched in the edit list's `[mascot]` (`Switches`). Every picture
+//!   it can show is a `Pic`: hands and a face, or a frame of a whole-body motion; only those its switches use are loaded.
 
 use std::path::PathBuf;
 
-use super::sound::KEYS_MAX_SPEED;
-use super::{Cut, Frame, Program};
+use super::{Cut, Program};
 use crate::Result;
 use crate::scenes::docshots::Bg;
 use crate::shot::PAD;
 use crate::video::{self, BAND, FPS, H, Rgba, Scale};
+
+pub(crate) mod motions;
+pub(crate) mod pops;
 
 /// The box at 1080p (px): the frames are made at four times it — at 2160p (twice it) still shrunk, by half.
 pub(crate) const BOX: (usize, usize) = (213, 165);
@@ -35,8 +40,10 @@ const RULE_GAP: usize = 26;
 pub(crate) const HOLD_MS: u64 = 90;
 /// No key heard this long: watching.
 pub(crate) const QUIET_MS: u64 = 1_500;
-/// The pictures, in `Pose`'s order (`frame-NAME.png`).
-const NAMES: [&str; 5] = ["up", "left", "right", "both", "watch"];
+/// The key pops' lane (`pops.rs`): this wide (px), its right edge at the box's left; the pops start at the paws' height,
+/// `PAWS` under the box's top.
+pub(crate) const LANE: usize = 150;
+pub(crate) const PAWS: usize = 120;
 
 /// What the mascot shows: both hands up, the left down (the viewer's left), the right, both, or watching the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -46,6 +53,193 @@ pub(crate) enum Pose {
     Right,
     Both,
     Watch,
+}
+
+/// The arms in a picture: typing (both up over the keys, the viewer's left down, the right, both) or resting (watching).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Arms {
+    Up,
+    Left,
+    Right,
+    Both,
+    Rest,
+}
+
+/// The face over the arms: open (on the keys), closed (a blink), half-raised (the turn), raised (on the screen), wide (a
+/// surprise over typing hands, no hop).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Face {
+    Open,
+    Closed,
+    Half,
+    Raised,
+    Wide,
+}
+
+/// Every picture the mascot can show: arms and a face (resting arms only raised, half or closed; open and wide over
+/// typing ones), or the `n`th frame of the surprise (2), the stretch (5) or the swing (5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Pic {
+    At(Arms, Face),
+    Surprise(u8),
+    Stretch(u8),
+    Swing(u8),
+}
+
+const ARMS: [Arms; 5] = [Arms::Up, Arms::Left, Arms::Right, Arms::Both, Arms::Rest];
+const TYPING: [Arms; 4] = [Arms::Up, Arms::Left, Arms::Right, Arms::Both];
+
+impl Pic {
+    /// How many there are (`index`'s range).
+    pub(crate) const COUNT: usize = 5 + 5 + 5 + 4 + 4 + 2 + 5 + 5;
+    pub(crate) const WATCH: Pic = Pic::At(Arms::Rest, Face::Raised);
+
+    /// V4's five poses as pictures.
+    #[cfg(test)]
+    pub(crate) fn of(p: Pose) -> Pic {
+        match p {
+            Pose::Up => Pic::At(Arms::Up, Face::Open),
+            Pose::Left => Pic::At(Arms::Left, Face::Open),
+            Pose::Right => Pic::At(Arms::Right, Face::Open),
+            Pose::Both => Pic::At(Arms::Both, Face::Open),
+            Pose::Watch => Pic::WATCH,
+        }
+    }
+
+    /// Its place in `Art`'s list: the five first (in `Pose`'s order), then the closed, half, raised and wide faces, the
+    /// surprise, the stretch, the swing.
+    pub(crate) fn index(self) -> usize {
+        let arm = |a: Arms| ARMS.iter().position(|&x| x == a).unwrap_or(0);
+        match self {
+            Pic::At(Arms::Rest, Face::Raised) => 4,
+            Pic::At(a, Face::Open) => arm(a),
+            Pic::At(a, Face::Closed) => 5 + arm(a),
+            Pic::At(a, Face::Half) => 10 + arm(a),
+            Pic::At(a, Face::Raised) => 15 + arm(a),
+            Pic::At(a, Face::Wide) => 19 + arm(a).min(3),
+            Pic::Surprise(n) => 23 + usize::from(n.min(1)),
+            Pic::Stretch(n) => 25 + usize::from(n.min(4)),
+            Pic::Swing(n) => 30 + usize::from(n.min(4)),
+        }
+    }
+
+    /// Its file's name (`frame-NAME.png`): round 1's, but the revised mouths (main's `decisions/showcase.md`, "The
+    /// mascot's mouths, revised").
+    pub(crate) fn name(self) -> String {
+        let arm =
+            |a: Arms| ["up", "left", "right", "both", "rest"][ARMS.iter().position(|&x| x == a).unwrap_or(0)];
+        match self {
+            Pic::At(Arms::Rest, Face::Raised) => "watch".into(),
+            Pic::At(a, Face::Open) => arm(a).into(),
+            Pic::At(a, Face::Closed) => format!("{}-closed", arm(a)),
+            Pic::At(a, Face::Half) => format!("{}-half", arm(a)),
+            Pic::At(a, Face::Raised) => format!("{}-raised", arm(a)),
+            Pic::At(a, Face::Wide) => format!("{}-wide-r3", arm(a)),
+            Pic::Surprise(0) => "surprise-1-r3".into(),
+            Pic::Surprise(_) => "surprise-2-r2".into(),
+            Pic::Stretch(n) => {
+                ["stretch-1", "stretch-2-r3", "stretch-3-r3-square", "stretch-4-r3", "stretch-5"]
+                    [usize::from(n.min(4))]
+                .into()
+            }
+            Pic::Swing(n) => {
+                ["swing-1", "swing-2", "swing-3-r3", "swing-4", "swing-5"][usize::from(n.min(4))].into()
+            }
+        }
+    }
+
+    /// Every picture, in `index`'s order.
+    pub(crate) fn all() -> Vec<Pic> {
+        let mut v: Vec<Pic> = TYPING.iter().map(|&a| Pic::At(a, Face::Open)).collect();
+        v.push(Pic::WATCH);
+        v.extend(ARMS.iter().map(|&a| Pic::At(a, Face::Closed)));
+        v.extend(ARMS.iter().map(|&a| Pic::At(a, Face::Half)));
+        v.extend(TYPING.iter().map(|&a| Pic::At(a, Face::Raised)));
+        v.extend(TYPING.iter().map(|&a| Pic::At(a, Face::Wide)));
+        v.extend((0..2).map(Pic::Surprise));
+        v.extend((0..5).map(Pic::Stretch));
+        v.extend((0..5).map(Pic::Swing));
+        v
+    }
+
+    /// The pictures a cut with `sw` can show: the five always; the half faces where anything moves (the turn); each
+    /// motion's own.
+    pub(crate) fn needed(sw: &Switches) -> Vec<Pic> {
+        (Pic::all().into_iter())
+            .filter(|p| match p {
+                Pic::At(_, Face::Open) | Pic::At(Arms::Rest, Face::Raised) => true,
+                Pic::At(_, Face::Half) => sw.moves(),
+                Pic::At(_, Face::Closed) => sw.blink,
+                Pic::At(_, Face::Raised) => sw.glance,
+                Pic::At(_, Face::Wide) | Pic::Surprise(_) => sw.surprise,
+                Pic::Stretch(_) => sw.stretch,
+                Pic::Swing(_) => sw.swing,
+            })
+            .collect()
+    }
+}
+
+/// The key pops (`[mascot] keys`): every key heard, the commands only, or none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Keys {
+    All,
+    Commands,
+    Off,
+}
+
+/// The edit list's mascot: there or not (`mascot = false`), and its `[mascot]` switches — each motion and the key pops,
+/// all on by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Switches {
+    pub(crate) on: bool,
+    pub(crate) blink: bool,
+    pub(crate) glance: bool,
+    pub(crate) surprise: bool,
+    pub(crate) stretch: bool,
+    pub(crate) swing: bool,
+    pub(crate) keys: Keys,
+}
+
+impl Default for Switches {
+    fn default() -> Switches {
+        Switches {
+            on: true,
+            blink: true,
+            glance: true,
+            surprise: true,
+            stretch: true,
+            swing: true,
+            keys: Keys::All,
+        }
+    }
+}
+
+impl Switches {
+    /// These switches changed by `f`.
+    #[cfg(test)]
+    pub(crate) fn with(mut self, f: fn(&mut Switches)) -> Switches {
+        f(&mut self);
+        self
+    }
+
+    /// Whether any motion is on — the face's turn through its half-raised picture with them: every one off is V4's
+    /// mascot, picture for picture.
+    pub(crate) fn moves(&self) -> bool {
+        self.blink || self.glance || self.surprise || self.stretch || self.swing
+    }
+
+    /// The switches in words, for `cut.txt`.
+    pub(crate) fn said(&self) -> String {
+        let on = |b: bool| if b { "on" } else { "off" };
+        format!(
+            "blink {}, glance {}, surprise {}, stretch {}, swing {}",
+            on(self.blink),
+            on(self.glance),
+            on(self.surprise),
+            on(self.stretch),
+            on(self.swing)
+        )
+    }
 }
 
 /// The hand a key asks for: the side of a QWERTY it's on, both, or (the space bar) the hand that didn't tap last.
@@ -144,6 +338,11 @@ impl Hands {
         self.taps.len()
     }
 
+    /// Every tap's frame, in order.
+    pub(crate) fn tap_frames(&self) -> &[u64] {
+        &self.taps
+    }
+
     /// The pose at frame `k`; `fast` where its span is too fast for its keys to be heard.
     pub(crate) fn pose(&self, k: u64, fast: bool) -> Pose {
         let down = |h: usize| {
@@ -172,9 +371,10 @@ pub(crate) fn box_at(s: Scale) -> (usize, usize) {
     (s.px(BOX.0), s.px(BOX.1))
 }
 
-/// The five pictures at the box's size at `scale`, in `Pose`'s order, and where they were found.
+/// The pictures at the box's size at `scale`, by `Pic::index` (those the cut's switches use; None the rest), and where
+/// they were found.
 pub(crate) struct Art {
-    pub(crate) poses: Vec<Rgba>,
+    pub(crate) pics: Vec<Option<Rgba>>,
     pub(crate) dir: PathBuf,
     pub(crate) scale: Scale,
 }
@@ -189,16 +389,18 @@ pub(crate) fn dir() -> Option<PathBuf> {
 }
 
 impl Art {
-    /// The frames for `bg` in `dir`, at `scale`'s box: meok's only.
-    pub(crate) fn load(bg: Bg, dir: Option<PathBuf>, scale: Scale) -> Result<Art> {
+    /// The frames `want` for `bg` in `dir`, at `scale`'s box: meok's only.
+    pub(crate) fn load(bg: Bg, dir: Option<PathBuf>, scale: Scale, want: &[Pic]) -> Result<Art> {
         if bg == Bg::Light {
             return Err(
                 "its frames are meok's only (pale ink on the dark ground), and this cut is hanji's".into()
             );
         }
         let dir = dir.ok_or("no main checkout found")?;
-        let poses = (NAMES.iter())
-            .map(|n| {
+        let mut pics = vec![None; Pic::COUNT];
+        for &pic in want {
+            pics[pic.index()] = Some({
+                let n = pic.name();
                 let p = dir.join(format!("frame-{n}.png"));
                 let f = video::rgba(&p)?;
                 if (f.0, f.1) != (BOX.0 * MADE, BOX.1 * MADE) {
@@ -211,19 +413,45 @@ impl Art {
                         BOX.1 * MADE
                     ));
                 }
-                Ok(video::shrunk(&f, scale.k() as f32 / MADE as f32))
+                video::shrunk(&f, scale.k() as f32 / MADE as f32)
+            });
+        }
+        Ok(Art { pics, dir, scale })
+    }
+
+    /// A loaded picture (the plan shows only those its switches loaded).
+    pub(crate) fn picture(&self, p: Pic) -> &Rgba {
+        self.pics[p.index()].as_ref().unwrap_or_else(|| panic!("frame-{}.png not loaded", p.name()))
+    }
+
+    /// The loaded pictures whose ink reaches their box's edge (alpha over a tenth on its outer row or column) — the box
+    /// would cut it: each with where, in words (each edge's pixels and its strongest alpha, of 255).
+    pub(crate) fn cut_ink(&self) -> Vec<(String, String)> {
+        (Pic::all().into_iter())
+            .filter_map(|p| {
+                let (w, h, px) = self.pics[p.index()].as_ref()?;
+                let a = |x: usize, y: usize| px[(y * w + x) * 4 + 3];
+                let edges: [(&str, Vec<u8>); 4] = [
+                    ("top", (0..*w).map(|x| a(x, 0)).collect()),
+                    ("bottom", (0..*w).map(|x| a(x, h - 1)).collect()),
+                    ("left", (0..*h).map(|y| a(0, y)).collect()),
+                    ("right", (0..*h).map(|y| a(w - 1, y)).collect()),
+                ];
+                let said: Vec<String> = (edges.iter())
+                    .filter_map(|(name, line)| {
+                        let inked: Vec<u8> = line.iter().copied().filter(|&v| v > 25).collect();
+                        let most = inked.iter().max()?;
+                        Some(format!("{name} {} px, alpha at most {most}", inked.len()))
+                    })
+                    .collect();
+                (!said.is_empty()).then(|| (p.name(), said.join(", ")))
             })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Art { poses, dir, scale })
+            .collect()
     }
 
-    pub(crate) fn picture(&self, p: Pose) -> &Rgba {
-        &self.poses[p as usize]
-    }
-
-    /// The leftmost ink of any pose within `rows` of the box's row `row` (alpha over a tenth), from its left.
+    /// The leftmost ink of any loaded picture within `rows` of the box's row `row` (alpha over a tenth), from its left.
     fn ink_from(&self, row: usize, rows: usize) -> Option<usize> {
-        (self.poses.iter())
+        (self.pics.iter().flatten())
             .filter_map(|(w, h, px)| {
                 (row.saturating_sub(rows)..(row + rows + 1).min(*h))
                     .filter_map(|y| (0..*w).find(|x| px[(y * w + x) * 4 + 3] > 25))
@@ -242,32 +470,38 @@ pub(crate) fn found(
     cells_bottom: usize,
     s: Scale,
 ) -> std::result::Result<(Art, Place), String> {
-    if !cut.mascot {
+    if !cut.mascot.on {
         return Err("the mascot: none (mascot = false)".into());
     }
-    let got = Art::load(cut.bg, dir, s).and_then(|a| Ok((place(&a, screen, cells_bottom)?, a)));
+    let lane = cut.mascot.keys != Keys::Off;
+    let got = (Art::load(cut.bg, dir, s, &Pic::needed(&cut.mascot)))
+        .and_then(|a| Ok((place(&a, screen, cells_bottom, lane)?, a)));
     got.map(|(p, a)| (a, p)).map_err(|e| format!("the mascot: none — {e}; the cut is made without it"))
 }
 
-/// The pose on frame `k` showing `f`: none on a card; watching where its span is too fast for its keys to be heard.
-pub(crate) fn pose_at(hands: &Hands, k: u64, f: &Frame) -> Option<Pose> {
-    let fast = f.speed.is_some_and(|s| s > KEYS_MAX_SPEED + 1e-6);
+/// The pose on frame `k` showing `f` (V4's, before the motions): none on a card; watching where its span is too fast
+/// for its keys to be heard.
+#[cfg(test)]
+pub(crate) fn pose_at(hands: &Hands, k: u64, f: &super::Frame) -> Option<Pose> {
+    let fast = f.speed.is_some_and(|s| s > super::sound::KEYS_MAX_SPEED + 1e-6);
     f.card.is_none().then(|| hands.pose(k, fast))
 }
 
-/// Where the mascot sits on a frame: its box's top left, where the rule stops, and where the band's right marks end
-/// (their pictures', margin and all).
+/// Where the mascot sits on a frame: its box's top left, where the rule stops, where the band's right marks end (their
+/// pictures', margin and all), and the key pops' lane (left and right edges, px) where they're on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Place {
     pub(crate) x: usize,
     pub(crate) y: usize,
     pub(crate) rule_end: usize,
     pub(crate) marks_right: usize,
+    pub(crate) lane: Option<(usize, usize)>,
 }
 
 /// The box placed under a screen drawn at `x0`, `pw` wide, its cells ending at `cells_bottom` (px, at the art's scale):
-/// right on the rule's end, its foot `FOOT` over the frame's — refused (said) where it would rise over a cell.
-pub(crate) fn place(art: &Art, (x0, pw): (usize, usize), cells_bottom: usize) -> Result<Place> {
+/// right on the rule's end, its foot `FOOT` over the frame's — refused (said) where it would rise over a cell; with
+/// `lane`, the pops' lane `LANE` wide just left of it, the marks `GAP` from the lane.
+pub(crate) fn place(art: &Art, (x0, pw): (usize, usize), cells_bottom: usize, lane: bool) -> Result<Place> {
     let s = art.scale;
     let (bw, bh) = box_at(s);
     let (pad, h) = (s.px(PAD), s.px(H));
@@ -283,5 +517,7 @@ pub(crate) fn place(art: &Art, (x0, pw): (usize, usize), cells_bottom: usize) ->
         Some(ink) => (x + ink).saturating_sub(s.px(RULE_GAP)),
         None => x0 + pw - pad,
     };
-    Ok(Place { x, y, rule_end, marks_right: x - s.px(GAP) + pad })
+    let lane = lane.then(|| (x - s.px(LANE), x));
+    let left = lane.map_or(x, |l| l.0);
+    Ok(Place { x, y, rule_end, marks_right: left - s.px(GAP) + pad, lane })
 }

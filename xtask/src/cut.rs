@@ -16,6 +16,14 @@
 //! default = 8                             # what no span names: a speed, or "out"
 //! mascot = false                          # no mascot at the keys in the band (`mascot.rs`; there if left out)
 //!
+//! [mascot]                                # or there, its motions and key pops switched (each on if left out):
+//! blink = true                            # `mascot/motions.rs` — every one off is V4's mascot, picture for picture
+//! glance = true
+//! surprise = true
+//! stretch = true
+//! swing = true
+//! keys = "all"                            # the key pops beside it (`mascot/pops.rs`): "all", "commands" or false
+//!
 //! [opening]                               # the video's first seconds (`Program`): the intro — the brush's swing
 //!                                         # and `t a r a e`, `INTRO_MS` —, the card of what's built (`BUILT_MS`),
 //!                                         # where it ends; then the take. Every word on the card is from here.
@@ -576,7 +584,10 @@ pub(crate) const LOOP_MIN: u64 = 2_000;
 pub(crate) struct Cut {
     pub(crate) file: String,
     pub(crate) bg: Bg,
-    pub(crate) mascot: bool,
+    pub(crate) mascot: mascot::Switches,
+    /// The list's own seed (the FNV-1a of what it says, but its `[mascot]`): the mascot's blinks, glances and pops' steps
+    /// aside — the same list, the same video.
+    pub(crate) seed: u64,
     pub(crate) map: Map,
     pub(crate) opening: Opening,
     pub(crate) chapters: Vec<Chapter>,
@@ -691,10 +702,48 @@ impl Cut {
             "bg", "default", "mascot", "opening", "span", "chapter", "caption", "zoom", "music", "sound",
         ])?;
         let mascot = match top.get("mascot") {
-            None => true,
-            Some(toml::Value::Boolean(b)) => *b,
-            Some(_) => return Err(root.err("mascot", "mascot: true or false")),
+            None => mascot::Switches::default(),
+            Some(toml::Value::Boolean(b)) => mascot::Switches { on: *b, ..Default::default() },
+            Some(toml::Value::Table(t)) => {
+                const KEYS: [&str; 6] = ["blink", "glance", "surprise", "stretch", "swing", "keys"];
+                let e = Entry { t, line: src.header("mascot", None), src: &src, name: "mascot" };
+                e.keys(&KEYS)?;
+                let on = |key: &str| -> Result<bool> {
+                    match t.get(key) {
+                        None => Ok(true),
+                        Some(toml::Value::Boolean(b)) => Ok(*b),
+                        Some(_) => Err(e.err(key, format!("mascot: {key} = true or false"))),
+                    }
+                };
+                let keys = match t.get("keys") {
+                    None => mascot::Keys::All,
+                    Some(toml::Value::String(s)) if s == "all" => mascot::Keys::All,
+                    Some(toml::Value::String(s)) if s == "commands" => mascot::Keys::Commands,
+                    Some(toml::Value::Boolean(false)) => mascot::Keys::Off,
+                    Some(_) => return Err(e.err("keys", "mascot: keys = \"all\", \"commands\" or false")),
+                };
+                mascot::Switches {
+                    on: true,
+                    blink: on("blink")?,
+                    glance: on("glance")?,
+                    surprise: on("surprise")?,
+                    stretch: on("stretch")?,
+                    swing: on("swing")?,
+                    keys,
+                }
+            }
+            Some(_) => {
+                return Err(root.err(
+                    "mascot",
+                    "mascot: true or false, or a table ([mascot]: blink, glance, surprise, stretch, swing, keys)",
+                ));
+            }
         };
+        // (the list as read, but its `[mascot]`: switching a motion or the pops reshuffles no blink)
+        let mut seeded = top.clone();
+        seeded.remove("mascot");
+        let seed = (toml::to_string(&seeded).unwrap_or_default().bytes())
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
         let bg = match root.text("bg")? {
             None | Some("dark") => Bg::Dark,
             Some("light") => Bg::Light,
@@ -1016,6 +1065,7 @@ impl Cut {
             file: file.to_string(),
             bg,
             mascot,
+            seed,
             map,
             opening,
             chapters,

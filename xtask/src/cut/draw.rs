@@ -21,7 +21,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-use super::mascot::{self, Art, Hands, Place};
+use super::mascot::motions::{self, Plan};
+use super::mascot::pops::{self, Pops};
+use super::mascot::{self, Art, Hands, Pic, Place};
 use super::{
     Card, Cut, Frame, Marks, Pace, Program, What, clock, factor, jumped, opening, sped, told, video_time,
 };
@@ -103,7 +105,8 @@ struct Key {
     screen: (bool, u64),
     region: Region,
     cross: Option<u8>,
-    pose: Option<mascot::Pose>,
+    pose: Option<Pic>,
+    pops: Vec<(usize, u64)>,
 }
 
 /// `text` at `px` (1080p's) in `fg`, drawn at `scale`, kept: the band's words repeat.
@@ -111,7 +114,7 @@ pub(crate) struct Words<'f> {
     fonts: &'f Fonts,
     ground: Rgb,
     scale: Scale,
-    kept: HashMap<(String, u32, Rgb), Picture>,
+    kept: HashMap<(String, u32, Rgb, bool), Picture>,
 }
 
 impl<'f> Words<'f> {
@@ -120,12 +123,17 @@ impl<'f> Words<'f> {
     }
 
     fn get(&mut self, text: &str, px: f32, fg: Rgb) -> &Picture {
+        self.word(text, px, fg, false)
+    }
+
+    /// `text` at `px` in `fg`, bold or not.
+    fn word(&mut self, text: &str, px: f32, fg: Rgb, bold: bool) -> &Picture {
         if self.kept.len() > 512 {
             self.kept.clear();
         }
         let (fonts, ground, s) = (self.fonts, self.ground, self.scale);
-        (self.kept.entry((text.to_string(), px as u32, fg)))
-            .or_insert_with(|| video::text_at(text, px, fg, ground, false, fonts, s))
+        (self.kept.entry((text.to_string(), px as u32, fg, bold)))
+            .or_insert_with(|| video::text_at(text, px, fg, ground, bold, fonts, s))
     }
 }
 
@@ -200,13 +208,14 @@ impl<'a> Stage<'a> {
     }
 
     /// The take's frame `f`: the screen's picture `pic` (drawn at the layout's glyph, or through `view` at the camera's),
-    /// the band's rule (a line `scale` px thick), the band, the mascot in `pose`.
+    /// the band's rule (a line `scale` px thick), the band, the mascot in `pose` and the key pops up (`up`: of `pops`,
+    /// with their age in frames) in its lane.
     pub(crate) fn take_frame(
         &self,
         pic: &Picture,
         view: Option<&video::View>,
         f: &Frame,
-        pose: Option<mascot::Pose>,
+        (pose, pops, up): (Option<Pic>, &Pops, &[(usize, u64)]),
         words: &mut Words,
     ) -> Vec<u8> {
         let lay = &self.lay;
@@ -227,6 +236,32 @@ impl<'a> Stage<'a> {
         if let (Some((art, place)), Some(p)) = (&self.mascot, pose) {
             let t = Instant::now();
             video::stamp(&mut px, lay.dims, art.picture(p), (place.x, place.y));
+            if let Some((left, _)) = place.lane {
+                let s = lay.scale;
+                for &(i, age) in up {
+                    let pop = &pops.list[i];
+                    let (rise, a) = pops::motion(age, pop.life);
+                    // (a typed letter at birth as strong as the clock: the ink at the quiet marks' strength)
+                    let (size, a) = match pop.command {
+                        true => (pops::COMMAND_PX, a),
+                        false => (pops::TYPED_PX, (u32::from(a) * u32::from(QUIET) / 255) as u8),
+                    };
+                    let fg = self.look.ink;
+                    let word = words.word(&pop.text, size, fg, pop.command);
+                    // (its ink at its place in the lane: the picture's margin before it)
+                    let x = (left + s.px(pop.x)).saturating_sub(lay.pad);
+                    let mid =
+                        place.y + s.px(mascot::PAWS) - (rise * s.px(pops::RISE) as f32).round() as usize;
+                    pops::ink(
+                        &mut px,
+                        lay.dims,
+                        word,
+                        (x, mid.saturating_sub(word.1 / 2)),
+                        (fg, self.look.ground),
+                        a,
+                    );
+                }
+            }
             self.stamping.set(self.stamping.get() + t.elapsed());
         }
         px
@@ -303,8 +338,26 @@ pub(crate) fn make(
         true => crate::record::read_log(&dir.join("keys.bin"))?,
         false => Vec::new(),
     };
-    let taps = super::sound::sounds(&prog, &keys, marks).taps;
+    let heard = super::sound::sounds(&prog, &keys, marks);
+    let taps = heard.taps;
     let hands = Hands::new(&taps);
+    // (the mascot's key pops and motions, laid on knowing every key: before the frames)
+    let planned = Instant::now();
+    let (pops, plan) = match mascot {
+        None => (Pops::default(), None),
+        Some(_) => {
+            let regions = pops::Regions::read(dir)?;
+            // (a text's width in the lane at 1080p: the renderer's cells, a command's and a letter's size)
+            let cw = |px: f32| shot::cell(&fonts, px).0;
+            let (cmd_w, typed_w) = (cw(pops::COMMAND_PX), cw(pops::TYPED_PX));
+            let width = |t: &str, command: bool| t.chars().count() * if command { cmd_w } else { typed_w };
+            let pops = pops::pops(&heard.struck, &regions, cut.mascot.keys, &width);
+            let causes = motions::causes(&prog, marks);
+            let plan = Plan::new(&prog, &hands, &causes, &pops.busy(), &cut.mascot, cut.seed);
+            (pops, Some(plan))
+        }
+    };
+    let planned = planned.elapsed();
     // (the seal made at the picture's size, else 1080p's — smaller, never stretched —, said)
     let seal = match video::seal_at(cut.bg, scale) {
         Ok(s) => s,
@@ -458,7 +511,7 @@ pub(crate) fn make(
     let mut sheet: Vec<Picture> = Vec::new();
     let mut pages = 0;
     let all = Region::all(size);
-    let mut posed = [0u64; 5];
+    let mut posed: HashMap<Pic, u64> = HashMap::new();
     for k in 0..frames {
         let v = Program::time_of(k);
         let f = prog.frame(v);
@@ -491,10 +544,14 @@ pub(crate) fn make(
             true => (true, ends.shown),
             false => (false, replay.shown),
         };
-        let pose = mascot.as_ref().and_then(|_| mascot::pose_at(&hands, k, &f));
+        let pose = plan.as_ref().and_then(|p| p.pic(k));
         if let Some(p) = pose {
-            posed[p as usize] += 1;
+            *posed.entry(p).or_default() += 1;
         }
+        let up = match pose {
+            Some(_) => pops.at(k),
+            None => Vec::new(),
+        };
         let key = Key {
             card: f.card,
             secs: f.clock.map(|t| t / 1000),
@@ -507,6 +564,7 @@ pub(crate) fn make(
             region,
             cross: share,
             pose,
+            pops: up,
         };
         if last.as_ref().is_none_or(|l| l.0 != key) {
             let mut px = match f.card {
@@ -527,7 +585,7 @@ pub(crate) fn make(
                         drawn += 1;
                     }
                     let p = &pic.as_ref().expect("drawn").1;
-                    stage.take_frame(p, view.as_ref(), &f, pose, &mut words)
+                    stage.take_frame(p, view.as_ref(), &f, (pose, &pops, &key.pops), &mut words)
                 }
             };
             if let (Some(p), Some((from, _, through))) = (share, &cross) {
@@ -553,35 +611,93 @@ pub(crate) fn make(
             }
         }
     }
-    if let Some((art, place)) = mascot {
+    if let (Some((art, place)), Some(plan)) = (mascot, &plan) {
         let (bw, bh) = mascot::box_at(scale);
         let of = |s: mascot::Side| taps.iter().filter(|t| t.1 == s).count();
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+        let n = |p: Pic| posed.get(&p).copied().unwrap_or(0);
+        let face = |f: mascot::Face| {
+            posed.iter().filter(|(p, _)| matches!(p, Pic::At(_, x) if *x == f)).map(|e| e.1).sum::<u64>()
+        };
+        let body = |k: fn(&Pic) -> bool| posed.iter().filter(|(p, _)| k(p)).map(|e| e.1).sum::<u64>();
+        let open = |a: mascot::Arms| n(Pic::At(a, mascot::Face::Open));
+        let cut_ink = match art.cut_ink() {
+            v if v.is_empty() => "no picture's ink reaches its box's edge".to_string(),
+            v => format!(
+                "the box cuts ink of {}",
+                v.iter().map(|(n, k)| format!("{n} ({k})")).collect::<Vec<_>>().join("; ")
+            ),
+        };
         said.push(format!(
             "the mascot at the keys ({}): {} taps — {} left, {} right, {} both (returns, stamps), {} on the space bar; on {} \
-             frames: up {}, left {}, right {}, both {}, watching {}; its box {}×{} at ({}, {}), the rule stopping at x {}, \
-             the marks ending at x {}; it cost {:.0} ms to load and shrink, {:.0} ms to stamp",
+             frames: up {}, left {}, right {}, both {}, watching {}, the face half-turned {}, closed {}, raised over typing {}, \
+             wide {}, surprised {}, stretching {}, swinging {}; its box {}×{} at ({}, {}), the rule stopping at x {}, the \
+             marks ending at x {}{}; {} of {} pictures loaded, {cut_ink}; it cost {:.0} ms to load and shrink, {:.0} ms to lay \
+             out its motions and pops, {:.0} ms to stamp",
             art.dir.display(),
             hands.taps(),
             of(mascot::Side::Left),
             of(mascot::Side::Right),
             of(mascot::Side::Both),
             of(mascot::Side::Space),
-            posed.iter().sum::<u64>(),
-            posed[0],
-            posed[1],
-            posed[2],
-            posed[3],
-            posed[4],
+            posed.values().sum::<u64>(),
+            open(mascot::Arms::Up),
+            open(mascot::Arms::Left),
+            open(mascot::Arms::Right),
+            open(mascot::Arms::Both),
+            n(Pic::WATCH),
+            face(mascot::Face::Half),
+            face(mascot::Face::Closed),
+            face(mascot::Face::Raised) - n(Pic::WATCH),
+            face(mascot::Face::Wide),
+            body(|p| matches!(p, Pic::Surprise(_))),
+            body(|p| matches!(p, Pic::Stretch(_))),
+            body(|p| matches!(p, Pic::Swing(_))),
             bw,
             bh,
             place.x,
             place.y,
             place.rule_end,
             marks_right - lay.pad,
+            place.lane.map_or(String::new(), |(l, r)| format!(", the pops' lane x {l} to {r}")),
+            art.pics.iter().flatten().count(),
+            Pic::COUNT,
             ms(loaded),
+            ms(planned),
             ms(stage.stamping.get()),
         ));
+        said.extend(plan.said(&cut.mascot));
+        said.push(match cut.mascot.keys {
+            mascot::Keys::Off => "the key pops: none (keys = false)".to_string(),
+            k => {
+                // (every frame: no two pops up at once meet — their cells' boxes, risen as they rise)
+                let met = pops.meets(shot::cell(&fonts, pops::COMMAND_PX).1);
+                let met = match met.first() {
+                    None => "no two up at once ever meet (every frame checked)".to_string(),
+                    Some(&(k, i, j)) => format!(
+                        "{} pairs MEET, the first at {}: “{}” and “{}”",
+                        met.len(),
+                        clock(Program::time_of(k) / 1000),
+                        pops.list[i].text,
+                        pops.list[j].text
+                    ),
+                };
+                format!(
+                    "the key pops (keys = {}): {} — {} commands begun, {} joined to the one up, {} a held key's count, {} \
+                     typed ({} ended early for room); {met}; {} spaces in typed text pop nothing, none on a sped span; \
+                     the names drawn: {}",
+                    if k == mascot::Keys::All { "\"all\"" } else { "\"commands\"" },
+                    pops.list.len(),
+                    pops.commands,
+                    pops.joined,
+                    pops.held,
+                    pops.typed,
+                    pops.made_room,
+                    pops.spaces,
+                    pops.names.join(" ")
+                )
+            }
+        });
     }
     if !sheet.is_empty() {
         pages += 1;

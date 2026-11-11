@@ -120,6 +120,7 @@ pub(crate) fn stroke(b: &[u8]) -> Option<char> {
 pub(crate) struct Sounds {
     pub(crate) list: Vec<(Duration, Heard)>,
     pub(crate) taps: Vec<(u64, Side)>,
+    pub(crate) struck: Vec<Struck>,
     pub(crate) keys: usize,
     pub(crate) fast: usize,
     pub(crate) out: usize,
@@ -129,14 +130,29 @@ pub(crate) struct Sounds {
     pub(crate) intro: Option<u64>,
 }
 
+/// A key heard, for the mascot's pops: where in the video (µs), the take's ms, its bytes, whether it answered a card
+/// (the stamp's — a command wherever the keys were).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Struck {
+    pub(crate) v: u64,
+    pub(crate) t: u64,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) answer: bool,
+}
+
 /// The cut's sounds from the take's input log (`keys`) and its landmarks.
 pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
     let answered: Vec<u64> = marks.of("card-answered").map(ms_of).collect();
     let mut s = Sounds::default();
     let us = Duration::from_micros;
+    // (the key each answer was, its stamp's pop)
+    let mut answer_key: Vec<(u64, Vec<u8>)> = Vec::new();
     for r in keys.iter().filter(|r| super::init::is_key(r)) {
         let t = r.us / 1000;
-        if answered.iter().any(|&a| a >= t && a - t <= STAMP_KEY_MS) {
+        if let Some(&a) = answered.iter().find(|&&a| a >= t && a - t <= STAMP_KEY_MS) {
+            if stroke(&r.bytes).is_some() {
+                answer_key.push((a, r.bytes.clone()));
+            }
             continue;
         }
         let Some(c) = stroke(&r.bytes) else { continue };
@@ -144,6 +160,7 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
             Where::At(vs) => {
                 s.keys += vs.len();
                 s.taps.extend(vs.iter().map(|&v| (v, side(&r.bytes))));
+                (s.struck).extend(vs.iter().map(|&v| Struck { v, t, bytes: r.bytes.clone(), answer: false }));
                 s.list.extend(vs.into_iter().map(|v| (us(v), Heard::Key(c))));
             }
             Where::Fast => s.fast += 1,
@@ -155,6 +172,9 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
             Where::At(vs) => {
                 s.stamps += vs.len();
                 s.taps.extend(vs.iter().map(|&v| (v, Side::Both)));
+                if let Some((_, b)) = answer_key.iter().rev().find(|k| k.0 == a) {
+                    (s.struck).extend(vs.iter().map(|&v| Struck { v, t: a, bytes: b.clone(), answer: true }));
+                }
                 s.list.extend(vs.into_iter().map(|v| (us(v), Heard::Stamp)));
             }
             _ => s.stamps_missed += 1,
@@ -164,6 +184,7 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
     s.intro = prog.parts.iter().find(|p| p.what == What::Intro).map(|p| p.at);
     s.list.sort_by_key(|h| h.0);
     s.taps.sort_by_key(|t| t.0);
+    s.struck.sort_by_key(|k| k.v);
     s
 }
 

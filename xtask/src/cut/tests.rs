@@ -1795,7 +1795,7 @@ fn art_at(ink: usize, s: video::Scale) -> Art {
             px[(y * w + x) * 4..][..4].copy_from_slice(&[200, 200, 200, 255]);
         }
     }
-    Art { poses: vec![(w, h, px); 5], dir: "made-up".into(), scale: s }
+    Art { pics: vec![Some((w, h, px)); mascot::Pic::COUNT], dir: "made-up".into(), scale: s }
 }
 
 /// The layout's figures at 2160p are 1080p's doubled, by the same constants (`Scale`, never a second set): the picture,
@@ -1823,8 +1823,8 @@ fn the_layout_at_2160p_is_1080ps_doubled() {
         assert_eq!((drawn(Scale::HD), drawn(Scale::UHD)), (a.pic, b.pic), "{size:?}: the renderer's picture");
         // (the mascot under that screen)
         let bottom = |l: &super::draw::Layout| l.at.1 + l.pic.1 - l.pad;
-        let p1 = mascot::place(&art_at(60, Scale::HD), (a.at.0, a.pic.0), bottom(&a));
-        let p2 = mascot::place(&art_at(60, Scale::UHD), (b.at.0, b.pic.0), bottom(&b));
+        let p1 = mascot::place(&art_at(60, Scale::HD), (a.at.0, a.pic.0), bottom(&a), true);
+        let p2 = mascot::place(&art_at(60, Scale::UHD), (b.at.0, b.pic.0), bottom(&b), true);
         match (p1, p2) {
             (Ok(p1), Ok(p2)) => assert_eq!(
                 (p2.x, p2.y, p2.rule_end, p2.marks_right),
@@ -1917,7 +1917,8 @@ fn a_frame_at_2160p_halved_is_the_1080p_frame() {
         let lay = layout(&fonts, size, s).unwrap();
         let pic = crate::shot::render_scaled(screen.screen(), &fonts, lay.glyph, s.k());
         let stage = Stage::new(lay, &look, &c, None);
-        (stage.take_frame(&pic, None, f, None, &mut Words::new(&fonts, look.ground, s)), lay)
+        let none = (None, &mascot::pops::Pops::default(), &[][..]);
+        (stage.take_frame(&pic, None, f, none, &mut Words::new(&fonts, look.ground, s)), lay)
     };
     for (what, f) in &frames {
         assert!(f.clock.is_some(), "{what}: {f:?}");
@@ -1950,7 +1951,7 @@ fn within(what: &str, (mean, far, big, small): (f64, f64, [usize; 4], [usize; 4]
 fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_cell() {
     use crate::shot::PAD;
     let (x0, pw) = (33, video::W - 66);
-    let place = mascot::place(&art(60), (x0, pw), 870).unwrap();
+    let place = mascot::place(&art(60), (x0, pw), 870, false).unwrap();
     let right = x0 + pw - PAD;
     let (y, bottom) = (video::H - 14 - mascot::BOX.1, video::H - 14);
     assert_eq!(
@@ -1961,7 +1962,7 @@ fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_
     assert_eq!(place.rule_end, place.x + 60 - 26, "the rule stops short of its ink");
     assert_eq!(place.marks_right - PAD + mascot::GAP, place.x);
     assert!(y < video::H - video::BAND && bottom < video::H, "its head over the rule");
-    let e = mascot::place(&art(60), (x0, pw), y + 49).unwrap_err();
+    let e = mascot::place(&art(60), (x0, pw), y + 49, false).unwrap_err();
     assert!(e.contains("49 px over the screen's last row of cells"), "{e}");
     // (the marks drawn: ink left of the gap, none from it to the frame's edge — a sped span's, where it ends')
     let fonts = crate::shot::Fonts::load(1).unwrap();
@@ -2011,4 +2012,559 @@ fn no_frames_no_mascot_and_it_says_so() {
     let light = cut(&format!("bg = \"light\"\n{CUT}")).unwrap();
     assert!(mascot::found(&light, None, (33, 1854), 870, hd).err().unwrap().contains("meok's only"));
     assert!(cut(&format!("mascot = 1\n{CUT}")).unwrap_err().contains("mascot: true or false"));
+}
+
+// ── The mascot's motions and its key pops ──
+
+use super::mascot::motions::{self, Cause, Causes, Kind, Plan};
+use super::mascot::pops::{self, Place, Pop, Regions};
+use super::mascot::{Arms, Face, Keys, Pic, Switches};
+use super::sound::Struck;
+
+/// The made-up take at 1× all through: chapter 2's card at `front fix` (50 s); `rest` added to its list.
+fn moving(rest: &str) -> String {
+    format!(
+        "default = 1\n{rest}\n[opening]\nname = \"halil\"\nline = \"A task manager.\"\nat = \"card 2 shown\"\nfor = \"3s\"\n\n\
+         [[chapter]]\nat = \"start\"\ntitle = \"One\"\n\n[[chapter]]\nat = \"front fix\"\ntitle = \"Two\"\n"
+    )
+}
+
+/// Where the take part shows the take's `ms` (µs).
+fn take_at(p: &Program, ms: u64) -> u64 {
+    p.video_of(p.cut.map.video(ms)).unwrap()
+}
+
+/// The motions with taps at `taps` (video µs, the left hand), seeded 7.
+fn plan_of(p: &Program, taps: &[u64], causes: &Causes, busy: &[(u64, u64)], sw: Switches) -> (Plan, Hands) {
+    let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left)).collect::<Vec<_>>());
+    (Plan::new(p, &hands, causes, busy, &sw, 7), hands)
+}
+
+const STILL: Switches = Switches {
+    on: true,
+    blink: false,
+    glance: false,
+    surprise: false,
+    stretch: false,
+    swing: false,
+    keys: Keys::All,
+};
+
+/// Seconds as µs.
+fn s(ms: u64) -> u64 {
+    ms * 1000
+}
+
+/// Every whole-body motion clear of every key: none of its frames, from the turn before it to the hands back over the
+/// keys, at a key's frame.
+fn clear_of_keys(plan: &Plan, taps: &[u64]) {
+    let margin = motions::frames(motions::MARGIN_MS);
+    for m in plan.placed.iter().filter(|m| m.kind != Kind::Surprise) {
+        for &t in taps {
+            let k = Program::frame_at(t);
+            assert!(
+                !(m.from - motions::TURN <= k && k < m.from + m.len + margin),
+                "{m:?} against a key at frame {k}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_whole_body_motion_fits_whole_before_the_next_key_or_is_never_begun() {
+    let c = cut(&moving("")).unwrap();
+    let p = Program::new(&c);
+    let v0 = take_at(&p, 0);
+    let frame = Program::frame_at;
+    let stretch = STILL.with(|s| s.stretch = true);
+    // (a wait that turns out too short: the stretch 10 s in would end 0.1 s short of the margin before the key — never
+    // begun; 10 s after the key it is, whole, and the hands come back over the keys)
+    let quiet = motions::STRETCH_QUIET_MS;
+    let key = v0 + s(quiet + 1_400);
+    let (pl, _) = plan_of(&p, &[key], &Causes::default(), &[], stretch);
+    // (and one more past chapter 2's card, in its own quiet)
+    let froms: Vec<u64> = pl.placed.iter().map(|m| m.from).collect();
+    let at = frame(key) + motions::frames(motions::STRETCH_QUIET_MS);
+    assert_eq!(froms.first(), Some(&at), "{:?}", pl.placed);
+    assert!(
+        froms[1..]
+            .iter()
+            .all(|&k| Program::time_of(k) > p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap().at)
+    );
+    clear_of_keys(&pl, &[key]);
+    let len = pl.placed[0].len;
+    assert_eq!(
+        (pl.pic(at), pl.pic(at + len - 1), pl.pic(at + len)),
+        (Some(Pic::Stretch(0)), Some(Pic::Stretch(4)), Some(Pic::At(Arms::Up, Face::Open)))
+    );
+    // (a key 0.4 s further on: the first one fits)
+    let (pl, _) = plan_of(&p, &[v0 + s(quiet + 1_800)], &Causes::default(), &[], stretch);
+    assert_eq!(
+        pl.placed.first().map(|m| m.from),
+        Some(frame(v0) + motions::frames(motions::STRETCH_QUIET_MS))
+    );
+
+    // (the swing before chapter 2's card: alone, at its moment — its end the margin before the card)
+    let swing = STILL.with(|s| s.swing = true);
+    let cs = motions::causes(&p, &marks());
+    let card2 = p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap().at;
+    let ideal = cs.swing.iter().find(|c| c.said.starts_with("chapter 1's end")).unwrap().v;
+    assert_eq!(ideal, card2 - s(1_200));
+    let mine = |pl: &Plan| pl.placed.iter().find(|m| m.cause.starts_with("chapter 1's end")).cloned();
+    let (pl, _) = plan_of(&p, &[], &cs, &[], swing);
+    assert_eq!(mine(&pl).map(|m| (m.from, m.moved)), Some((frame(ideal), 0)));
+    // (a key in its way: moved before it, whole)
+    let key = card2 - s(900);
+    let (pl, _) = plan_of(&p, &[key], &cs, &[], swing);
+    let m = mine(&pl).unwrap();
+    assert!(m.moved < 0 && m.moved >= -(motions::frames(motions::SWING_MOVE_MS) as i64), "{m:?}");
+    clear_of_keys(&pl, &[key]);
+    // (keys all round it: left out, and said)
+    let keys: Vec<u64> = (0..12).map(|i| card2 - s(5_500) + s(500) * i).collect();
+    let (pl, _) = plan_of(&p, &keys, &cs, &[], swing);
+    assert_eq!(mine(&pl), None);
+    assert!(
+        pl.left_out.iter().any(|l| l.starts_with("swing left out") && l.contains("chapter 1's end")),
+        "{:?}",
+        pl.left_out
+    );
+    assert!(pl.said(&swing).iter().any(|l| l.contains("swing left out")));
+    clear_of_keys(&pl, &keys);
+    // (a bring's swing waits for the key pops to go, its trail beside their lane — later, the nearest; a second in 30 s
+    // has no room)
+    let bring = |v: u64| Cause { v, t: 0, said: "a bring landed: fix".into() };
+    let at = v0 + s(10_000);
+    let two = Causes { surprise: Vec::new(), swing: vec![bring(at), bring(at + s(10_000))] };
+    let tap = Program::time_of(frame(at) - 5);
+    let (pl, _) = plan_of(&p, &[tap], &two, &[(frame(at) - 5, frame(at) + 10)], swing);
+    assert_eq!(pl.placed.iter().map(|m| (m.from, m.moved)).collect::<Vec<_>>(), [(frame(at) + 10, 10)]);
+    assert!(pl.left_out.iter().any(|l| l.contains("(the swing at ")), "{:?}", pl.left_out);
+}
+
+#[test]
+fn a_failed_run_surprises_once_in_twenty_seconds_and_a_passed_one_never() {
+    for (run, step, want) in [
+        ("claude's run: cargo build", "exit 101", true),
+        ("claude's tests: src/due.rs", "failed, exit 101", true),
+        ("preflight: fmt, clippy, test", "exit 1", true),
+        ("tests: src/task.rs", "failed", true),
+        ("task: build", "exit 2", true),
+        ("claude's run again: cargo test", "exit 1", true),
+        ("claude's run: cargo build", "exit 0", false),
+        ("claude's tests: src/task.rs", "passed", false),
+        ("claude's run: cargo build --offline", "not run: ~/.cargo/registry is a place no card opens", false),
+        ("claude's run: cargo fmt --check", "dropped before its end", false),
+        ("tarae's git: git rebase main", "exit 1", false),
+        ("restart's build: cargo build", "exit 101", false),
+        ("install: rust-analyzer", "exit 1", false),
+    ] {
+        assert_eq!(motions::fails(run, step), want, "{run} — {step}");
+    }
+    let ended = |ms: u64, run: &str, step: &str| json!({ "what": "run-ended", "ms": ms, "id": format!("run#{ms}"), "run": run, "step": step });
+    let mut list = marks().list;
+    list.extend([
+        ended(15_000, "claude's tests: src/due.rs", "failed, exit 101"),
+        ended(16_000, "claude's run: cargo build", "exit 101"), // within 20 s of it: none
+        ended(17_000, "claude's tests: src/task.rs", "passed"),
+        ended(18_000, "tarae's git: git rebase main", "exit 1"),
+        ended(40_000, "claude's run: cargo build", "exit 101"), // keys inside it: the wide face
+        ended(65_000, "claude's run: cargo build", "exit 101"), // left out: nothing
+        ended(100_000, "preflight: fmt, clippy, test", "exit 1"), // at 8×: still its half second
+    ]);
+    let m = Marks::new(list, 120_000);
+    let text = moving(
+        "\n[[span]]\nfrom = \"60s\"\nto = \"70s\"\nout = true\n\n[[span]]\nfrom = \"80s\"\nto = \"120s\"\nspeed = 8\n",
+    );
+    let c = Cut::parse(&text, "cut.toml", &m).unwrap();
+    let p = Program::new(&c);
+    let cs = motions::causes(&p, &m);
+    assert_eq!(cs.surprise.iter().map(|c| c.t).collect::<Vec<_>>(), [15_000, 16_000, 40_000, 100_000]);
+    let typing: Vec<u64> = (0..10).map(|i| take_at(&p, 39_800) + s(100) * i).collect();
+    let (pl, _) = plan_of(&p, &typing, &cs, &[], STILL.with(|s| s.surprise = true));
+    let placed: Vec<(u64, bool)> = pl.placed.iter().map(|m| (m.t, m.typing)).collect();
+    assert_eq!(placed, [(15_000, false), (40_000, true), (100_000, false)]);
+    assert!(
+        pl.left_out.iter().any(|l| l.contains("within 20 s") && l.contains("cargo build")),
+        "{:?}",
+        pl.left_out
+    );
+    let k = |ms: u64| Program::frame_at(take_at(&p, ms));
+    assert_eq!((pl.pic(k(15_000)), pl.pic(k(15_000) + 14)), (Some(Pic::Surprise(0)), Some(Pic::Surprise(1))));
+    assert!(
+        matches!(pl.pic(k(40_000)), Some(Pic::At(Arms::Left | Arms::Up, Face::Wide))),
+        "{:?}",
+        pl.pic(k(40_000))
+    );
+    assert_eq!(pl.pic(k(100_000)), Some(Pic::Surprise(0)));
+    assert!(p.frame(take_at(&p, 100_000)).speed.is_some_and(|x| x > 2.0));
+    let said = pl.said(&STILL.with(|s| s.surprise = true));
+    assert!(said.iter().any(|l| l.contains("surprise at ") && l.contains("failed, exit 101")), "{said:?}");
+}
+
+#[test]
+fn the_blinks_and_glances_are_seeded_by_the_list_the_same_cut_the_same_video() {
+    let c = cut(&moving("")).unwrap();
+    let p = Program::new(&c);
+    let v0 = take_at(&p, 0);
+    // (a typing streak of 10 s)
+    let taps: Vec<u64> = (0..67).map(|i| v0 + s(2_000) + s(150) * i).collect();
+    let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left)).collect::<Vec<_>>());
+    let all = Switches::default();
+    let one = Plan::new(&p, &hands, &Causes::default(), &[], &all, c.seed);
+    let again = Plan::new(&p, &hands, &Causes::default(), &[], &all, c.seed);
+    let other = Plan::new(&p, &hands, &Causes::default(), &[], &all, c.seed ^ 1);
+    let n = p.frames();
+    assert!((0..n).all(|k| one.pic(k) == again.pic(k)), "the same list, the same poses");
+    assert!((0..n).any(|k| one.pic(k) != other.pic(k)), "another seed, others");
+    let other_list = moving("\n[[span]]\nfrom = \"60s\"\nto = \"70s\"\nspeed = 2\n");
+    assert_ne!(cut(&other_list).unwrap().seed, c.seed);
+    let pops_only = moving("# the pops: commands only\n[mascot]\nkeys = \"commands\"\nblink = true\n");
+    assert_eq!(cut(&pops_only).unwrap().seed, c.seed, "its [mascot] and comments aside");
+    // (the blinks: every 4 s at the soonest, two frames)
+    let closed = |k: u64| matches!(one.pic(k), Some(Pic::At(_, Face::Closed)));
+    let starts: Vec<u64> = (1..n).filter(|&k| closed(k) && !closed(k - 1)).collect();
+    assert_eq!(starts.len(), one.blinks);
+    assert!(one.blinks >= 10, "{} blinks in {} s", one.blinks, n / video::FPS);
+    assert!(starts.windows(2).all(|w| w[1] - w[0] >= motions::frames(motions::BLINK_MS.0)), "{starts:?}");
+    assert!(starts.iter().all(|&k| closed(k + 1) && !closed(k + 2)));
+    // (the glance: inside the streak, the face raised while the hands tap, turning through the half each way)
+    assert!(one.glances >= 1);
+    let raised = |k: u64| matches!(one.pic(k), Some(Pic::At(a, Face::Raised)) if a != Arms::Rest);
+    let first = (0..n).find(|&k| raised(k)).unwrap();
+    assert!(first > Program::frame_at(taps[0]) && first < Program::frame_at(*taps.last().unwrap()));
+    assert!(matches!(one.pic(first - 1), Some(Pic::At(_, Face::Half))), "{:?}", one.pic(first - 1));
+    assert!((first..first + 13).any(|k| matches!(one.pic(k), Some(Pic::At(Arms::Left, Face::Raised)))));
+}
+
+#[test]
+fn every_motion_off_is_v4s_mascot_picture_for_picture() {
+    let mut list = marks().list;
+    list.push(json!({ "what": "run-ended", "ms": 30_000, "run": "claude's run: x", "step": "exit 1" }));
+    list.push(json!({ "what": "bring", "ms": 70_000, "how": "landed", "name": "fix" }));
+    let m = Marks::new(list, 120_000);
+    let c = Cut::parse(&moving(""), "cut.toml", &m).unwrap();
+    let p = Program::new(&c);
+    let v0 = take_at(&p, 0);
+    let mut taps: Vec<u64> = (0..40).map(|i| v0 + s(1_000) + s(150) * i).collect();
+    taps.push(v0 + s(12_000));
+    let cs = motions::causes(&p, &m);
+    let (pl, hands) = plan_of(&p, &taps, &cs, &[], STILL);
+    for k in 0..p.frames() {
+        let v4 = mascot::pose_at(&hands, k, &p.frame(Program::time_of(k))).map(Pic::of);
+        assert_eq!(pl.pic(k), v4, "frame {k}");
+    }
+    assert!(pl.placed.is_empty() && pl.blinks == 0 && pl.glances == 0);
+    let five = ["up", "left", "right", "both", "watch"];
+    assert_eq!(Pic::needed(&STILL).iter().map(|p| p.name()).collect::<Vec<_>>(), five);
+    // (each one alone changes the video)
+    let each: [fn(&mut Switches); 5] = [
+        |s| s.blink = true,
+        |s| s.glance = true,
+        |s| s.surprise = true,
+        |s| s.stretch = true,
+        |s| s.swing = true,
+    ];
+    for on in each {
+        let sw = STILL.with(on);
+        let (alone, _) = plan_of(&p, &taps, &cs, &[], sw);
+        assert!((0..p.frames()).any(|k| alone.pic(k) != pl.pic(k)), "{}", sw.said());
+    }
+    // (keys = false: no lane, the marks where V4 had them)
+    let a = art(60);
+    let off = mascot::place(&a, (33, video::W - 66), 870, false).unwrap();
+    assert_eq!((off.lane, off.marks_right + mascot::GAP - crate::shot::PAD), (None, off.x));
+}
+
+#[test]
+fn the_face_turns_through_its_half_and_only_a_surprise_starts_abruptly() {
+    let mut list = marks().list;
+    list.push(json!({ "what": "run-ended", "ms": 30_000, "run": "claude's run: x", "step": "exit 1" }));
+    let m = Marks::new(list, 120_000);
+    let c = Cut::parse(&moving(""), "cut.toml", &m).unwrap();
+    let p = Program::new(&c);
+    let v0 = take_at(&p, 0);
+    // (typing, a watch, a key; typing, a long watch — a stretch, a surprise —, typing)
+    let mut taps: Vec<u64> = (0..30).map(|i| v0 + s(1_000) + s(150) * i).collect();
+    let after = v0 + s(9_000);
+    taps.push(after);
+    taps.extend((0..30).map(|i| v0 + s(36_000) + s(150) * i));
+    let (pl, _) = plan_of(&p, &taps, &motions::causes(&p, &m), &[], Switches::default());
+    assert!(
+        pl.placed.iter().any(|m| m.kind == Kind::Stretch)
+            && pl.placed.iter().any(|m| m.kind == Kind::Surprise)
+    );
+    let up = |q: Pic| matches!(q, Pic::At(_, Face::Raised));
+    let held = |q: Pic| matches!(q, Pic::At(_, Face::Raised | Face::Half | Face::Closed));
+    for k in 1..p.frames() {
+        let (Some(a), Some(b)) = (pl.pic(k - 1), pl.pic(k)) else { continue };
+        assert!(!up(b) || held(a), "frame {k}: {a:?} straight to {b:?}");
+        let abrupt = matches!(b, Pic::Surprise(_) | Pic::At(_, Face::Wide) | Pic::At(_, Face::Closed));
+        assert!(!up(a) || held(b) || abrupt, "frame {k}: {a:?} straight to {b:?}");
+    }
+    // (after the watch, the face comes down two frames before the key, the arms over the keys)
+    let k = Program::frame_at(after);
+    assert_eq!(
+        (pl.pic(k - 3), pl.pic(k - 2), pl.pic(k - 1), pl.pic(k)),
+        (
+            Some(Pic::WATCH),
+            Some(Pic::At(Arms::Up, Face::Half)),
+            Some(Pic::At(Arms::Up, Face::Half)),
+            Some(Pic::At(Arms::Left, Face::Open))
+        )
+    );
+    clear_of_keys(&pl, &taps);
+}
+
+#[test]
+fn a_pop_for_every_heard_key_none_on_a_sped_span_a_chord_one_a_held_key_counted() {
+    for (b, want) in [
+        (&b"j"[..], Some("j")),
+        (b"J", Some("J")),
+        (b"\x11", Some("C-q")),
+        (b"\x1b", Some("esc")),
+        (b"\r", Some("enter")),
+        (b" ", Some("space")),
+        (b"\t", Some("tab")),
+        (b"\x7f", Some("backspace")),
+        (b"-", Some("-")),
+        (b"\x1b[D", Some("←")),
+        (b"\x1bx", Some("A-x")),
+        (b"\x1c", Some("C-\\")),
+        (b"\x1b[106;5u", Some("C-j")),
+        (b"\x1b[27u", Some("esc")),
+        (b"\x1b[106;1:3u", None),
+        (b"up", Some("up")),
+    ] {
+        assert_eq!(pops::name(b).as_deref(), want, "{:?}", String::from_utf8_lossy(b));
+    }
+    // (from the sound's own list: none at the default's 4×, one each at 1×)
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let keys =
+        [key(5_000, b"f"), key(14_000, b"a"), key(14_300, b"\x11"), key(14_600, b"\r"), key(30_000, b"d")];
+    let heard = sounds(&p, &keys, &marks());
+    // (commands 0.3 s apart: one pop, its words a sequence — until they'd outgrow the lane: `a C-q enter`, 176 px)
+    let ps = pops::pops(&heard.struck, &Regions::default(), Keys::All, &cells);
+    assert_eq!(ps.list.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["a", "a C-q", "enter"]);
+    assert_eq!(
+        ps.list.iter().map(|q| q.from).collect::<Vec<_>>(),
+        // (card 1's stamp has no key: answered with no key heard, it pops nothing)
+        heard
+            .taps
+            .iter()
+            .filter(|t| t.0 > 10_000_000)
+            .take(3)
+            .map(|t| Program::frame_at(t.0))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(heard.taps.len(), heard.struck.len() + 2, "the two stamps with no key");
+    assert!(ps.list.iter().all(|q| q.command));
+    // (a held key: one pop, restarted with its count, never two up at once)
+    let held: Vec<Struck> = (0..12)
+        .map(|i| Struck { v: s(20_000) + s(80) * i, t: 0, bytes: b"j".to_vec(), answer: false })
+        .collect();
+    let ps = pops::pops(&held, &Regions::default(), Keys::All, &cells);
+    assert_eq!((ps.commands, ps.held), (1, 11));
+    assert_eq!(ps.list.last().map(|q| q.text.as_str()), Some("j ×12"));
+    let k0 = Program::frame_at(s(20_000));
+    assert!((k0..k0 + 60).all(|k| ps.at(k).len() <= 1));
+    assert!(ps.list.windows(2).all(|w| w[0].until == w[1].from));
+    // (typed text: the letter, faint; a space nothing; enter and a chord commands; an answer a command)
+    let typed = Regions::of(vec![(0, Place::Text)]);
+    let at = |i: u64, b: &[u8], answer: bool| Struck {
+        v: s(30_000) + s(200) * i,
+        t: 1,
+        bytes: b.to_vec(),
+        answer,
+    };
+    let line = [
+        at(0, b"a", false),
+        at(1, b" ", false),
+        at(2, b"b", false),
+        at(3, b"\r", false),
+        at(4, b"\x11", false),
+        at(5, b"y", true),
+    ];
+    let ps = pops::pops(&line, &typed, Keys::All, &cells);
+    let got: Vec<(&str, bool)> = ps.list.iter().map(|q| (q.text.as_str(), q.command)).collect();
+    assert_eq!(got, [("a", false), ("b", false), ("enter", true), ("enter C-q", true), ("y", true)]);
+    assert_eq!(ps.spaces, 1);
+    let ps = pops::pops(&line, &typed, Keys::Commands, &cells);
+    let texts: Vec<&str> = ps.list.iter().map(|q| q.text.as_str()).collect();
+    assert_eq!(texts, ["enter", "enter C-q", "y"]);
+    assert!(pops::pops(&line, &typed, Keys::Off, &cells).list.is_empty());
+    // (where the keys went: the last `keys` event at or before the key)
+    let r = Regions::of(vec![(1_000, Place::Text), (2_000, Place::Commands)]);
+    let t = |ms: u64| r.typed(ms, "x", false);
+    assert_eq!((t(999), t(1_000), t(1_999), t(2_500)), (false, true, true, false));
+    // (at a card: its answer a command, a letter it didn't take the typing it swallowed, a named key a command)
+    let card = Regions::of(vec![(0, Place::Card)]);
+    assert_eq!(
+        (card.typed(5, "y", true), card.typed(5, "S", false), card.typed(5, "esc", false)),
+        (false, true, false)
+    );
+    // (at the edit review, take 1's 34:15.8: `s / S h` each refused — "does nothing in the review", said a few ms
+    // after — the swallowed typing; `a` taken ("a takes all": the change accepted), its own key, a command)
+    let review = Regions {
+        places: vec![(2_055_793, Place::Review), (2_056_293, Place::Text)],
+        refused: [(2_055_977, "s"), (2_056_101, "/"), (2_056_130, "S"), (2_056_227, "h")]
+            .map(|(ms, k)| (ms, k.to_string()))
+            .to_vec(),
+    };
+    let at = [(2_055_960, "s"), (2_056_090, "/"), (2_056_130, "S"), (2_056_220, "h"), (2_056_290, "a")];
+    let typed: Vec<bool> = at.iter().map(|&(ms, k)| review.typed(ms, k, false)).collect();
+    assert_eq!(typed, [true, true, true, true, false]);
+    assert!(!review.typed(2_055_960, "h", false), "a refusal is the key's own name's");
+    // (it moves: full, rising and slowing, then fading over its last 0.35 s)
+    let (r0, a0) = pops::motion(0, 18);
+    let (r7, a7) = pops::motion(7, 18);
+    let (r12, a12) = pops::motion(12, 18);
+    let (r17, a17) = pops::motion(17, 18);
+    assert_eq!((r0, a0, a7), (0.0, 255, 255));
+    assert!(r7 > 0.4 && r12 - r7 < r7 && a12 < 255 && a17 < a12 && r17 > 0.9, "{r7} {r12} {a12} {a17}");
+}
+
+/// A made-up lane's widths: a command's character 16 px, a typed letter's 12.
+fn cells(t: &str, command: bool) -> usize {
+    t.chars().count() * if command { 16 } else { 12 }
+}
+
+/// No two pops up at once ever meet, and a sequence reads in its order: commands pressed in a row are one pop, its
+/// words in the order pressed (`space l`, take 1's 0:16.4); three commands within a second (`S`, `a`, `h`, its 0:20.9)
+/// one pop; a row of commands that outgrows the lane begins a new pop; a burst of typing at 11 keys a second, a
+/// command in the middle of it and a long one, letters left to right from the lane's left.
+#[test]
+fn no_two_pops_ever_meet_and_a_sequence_reads_in_its_order() {
+    let st = |ms: u64, b: &[u8]| Struck { v: s(ms), t: ms, bytes: b.to_vec(), answer: false };
+    let mut keys = vec![st(1_000, b" "), st(1_360, b"l"), st(3_000, b"S"), st(3_150, b"a"), st(3_300, b"h")];
+    // (a row of commands too long for the lane)
+    keys.extend((0..20).map(|i| st(5_000 + 120 * i, if i % 2 == 0 { b"w" } else { b"b" })));
+    // (typing at 90 ms a key for 4 s, `C-q` and a long command among it, then typing again)
+    let typed_from = 10_000;
+    let word = b"read crate sources from cargo home not the dot cargo folder";
+    keys.extend(word.iter().enumerate().map(|(i, c)| st(typed_from + 90 * i as u64, &[*c])));
+    keys.push(st(typed_from + 1_500 + 45, b"\x11"));
+    keys.push(st(typed_from + 3_000 + 45, b"\x1b[6~"));
+    // (`C-e` held among the typing: `C-e ×N`, 112 px, leaves the letters two places)
+    keys.extend((0..6).map(|i| st(typed_from + 3_500 + 45 + 300 * i, b"\x05")));
+    let regions = Regions::of(vec![(0, Place::Commands), (typed_from - 1, Place::Text)]);
+    let ps = pops::pops(&keys, &regions, Keys::All, &cells);
+    assert_eq!(ps.meets(31), [], "{:#?}", ps.list);
+    let texts: Vec<&str> = ps.list.iter().map(|q| q.text.as_str()).collect();
+    assert!(texts.starts_with(&["space", "space l", "S", "S a", "S a h"]), "{texts:?}");
+    // (the long row: every pop inside the lane, and more than one)
+    let rows: Vec<&Pop> = ps.list.iter().filter(|q| q.text.starts_with("w")).collect();
+    assert!(rows.iter().all(|q| q.w <= mascot::LANE && q.x + q.w == mascot::LANE));
+    assert!(rows.iter().filter(|q| q.text == "w").count() >= 2, "{texts:?}");
+    // (the burst: its first letters left to right from the lane's left, each up while the next lands)
+    let letters: Vec<&Pop> = ps.list.iter().filter(|q| !q.command).collect();
+    assert_eq!(letters[0].x, 0);
+    assert!(letters[..6].windows(2).all(|w| w[1].x > w[0].x && w[0].until > w[1].from), "{letters:#?}");
+    // (a letter steps back to the left only where there was no room right of the one before, up then: the lane, or
+    // the command up's left less its 8 px of air; 4 px between letters)
+    for w in letters.windows(2).filter(|w| w[1].x < w[0].x && w[0].until > w[1].from) {
+        let k = w[1].from;
+        let limit = (ps.list.iter())
+            .filter(|q| q.command && q.from <= k && k < q.until)
+            .map(|q| q.x.saturating_sub(8))
+            .fold(mascot::LANE, usize::min);
+        assert!(
+            w[0].x + w[0].w + 4 + w[1].w > limit,
+            "back to the left with room: {:?} then {:?}",
+            w[0],
+            w[1]
+        );
+    }
+    assert!(letters.len() > 40 && ps.made_room > 0, "{} letters, {} made room", letters.len(), ps.made_room);
+    // (typing as the cut shows it, at 2× — 20 keys a second — with no command up: every letter lives its whole life)
+    let burst: Vec<Struck> = (0..60).map(|i| st(50 * i, b"e")).collect();
+    let ps = pops::pops(&burst, &Regions::of(vec![(0, Place::Text)]), Keys::All, &cells);
+    assert_eq!((ps.typed, ps.made_room), (60, 0));
+    assert_eq!(ps.meets(31), []);
+}
+
+#[test]
+fn a_pop_stays_in_its_lane_clear_of_the_mascots_ink_the_cells_and_the_marks() {
+    use super::draw::{Stage, Words, layout};
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let look = video::look(Bg::Dark);
+    let lay = layout(&fonts, (166, 32), video::Scale::HD).unwrap();
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let place = mascot::place(&art(60), (lay.at.0, lay.pic.0), lay.at.1 + lay.pic.1 - lay.pad, true).unwrap();
+    let (left, right) = place.lane.unwrap();
+    assert_eq!((right, place.marks_right - crate::shot::PAD + mascot::GAP), (place.x, left));
+    let stage = Stage::new(lay, &look, &c, Some((art(60), place)));
+    let screen = vt100::Parser::new(32, 166, 0);
+    let pic = crate::shot::render_scaled(screen.screen(), &fonts, lay.glyph, 1);
+    // (laid out by the cut's own widths: a long command at the lane's right, typed letters from its left)
+    let cw = |px: f32| crate::shot::cell(&fonts, px).0;
+    let width = |t: &str, command: bool| {
+        t.chars().count() * cw(if command { pops::COMMAND_PX } else { pops::TYPED_PX })
+    };
+    let st = |ms: u64, b: &[u8]| Struck { v: s(ms), t: ms, bytes: b.to_vec(), answer: false };
+    let keys = [st(0, b"x"), st(20, b"\x7f"), st(40, b"q"), st(60, b"\x05"), st(80, b"\x05")];
+    let mut pops = pops::pops(&keys, &Regions::of(vec![(0, Place::Text)]), Keys::All, &width);
+    for q in &mut pops.list {
+        q.from = 0;
+        q.until = 18;
+    }
+    let texts: Vec<&str> = pops.list.iter().map(|q| q.text.as_str()).collect();
+    assert_eq!(texts, ["x", "backspace", "q", "C-e", "C-e ×2"]);
+    pops.list.remove(3);
+    let f = at_take(&p, 5_000, 0);
+    let mut words = Words::new(&fonts, look.ground, video::Scale::HD);
+    let without = stage.take_frame(&pic, None, &f, (Some(Pic::WATCH), &pops, &[]), &mut words);
+    // (the marks: none of their ink from the gap before the lane to the box)
+    for y in lay.rule + 1..video::H {
+        for x in left - mascot::GAP..place.x {
+            assert_eq!(&without[(y * video::W + x) * 3..][..3], &look.ground, "a mark at ({x}, {y})");
+        }
+    }
+    for age in [0, 6, 12, 17] {
+        let up: Vec<(usize, u64)> = (0..pops.list.len()).map(|i| (i, age)).collect();
+        let with = stage.take_frame(&pic, None, &f, (Some(Pic::WATCH), &pops, &up), &mut words);
+        let mut changed = 0;
+        for y in 0..video::H {
+            for x in 0..video::W {
+                let at = (y * video::W + x) * 3;
+                if with[at..at + 3] != without[at..at + 3] {
+                    changed += 1;
+                    assert!(
+                        (left..right).contains(&x) && y > lay.rule && y < video::H,
+                        "age {age}: a pop's ink at ({x}, {y}), the lane {left}..{right} under the rule {}",
+                        lay.rule
+                    );
+                }
+            }
+        }
+        assert!(changed > 0, "age {age}: drawn");
+    }
+    // (each pop's ink inside its place, `x` and `w` — what `meets` measures; a typed letter at birth as strong as the
+    // clock: the ink at 170 of 255, a command at full)
+    for (i, q) in pops.list.iter().enumerate() {
+        let with = stage.take_frame(&pic, None, &f, (Some(Pic::WATCH), &pops, &[(i, 0)]), &mut words);
+        let (mut lo, mut hi, mut most) = (usize::MAX, 0, 0u8);
+        for y in lay.rule + 1..video::H {
+            for x in left..right {
+                let at = (y * video::W + x) * 3;
+                if with[at..at + 3] != without[at..at + 3] {
+                    (lo, hi, most) = (lo.min(x), hi.max(x), most.max(with[at]));
+                }
+            }
+        }
+        assert!(lo + 1 >= left + q.x && hi <= left + q.x + q.w, "{q:?}: ink {lo}..={hi}");
+        let want = |a: u32| {
+            let (g, k) = (u32::from(look.ground[0]), u32::from(look.ink[0]));
+            (g + (k - g) * a / 255) as u8
+        };
+        let strength = if q.command { 255 } else { 170 };
+        assert!(
+            most.abs_diff(want(strength)) <= 6,
+            "{q:?}: its strongest red {most}, not {}",
+            want(strength)
+        );
+    }
+    // (the box cutting a picture's ink is said: the made-up art's reaches its right and bottom edges)
+    assert!(art(60).cut_ink().iter().any(|(n, _)| n == "up"));
 }
