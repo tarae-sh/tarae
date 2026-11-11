@@ -21,7 +21,8 @@
 //!   `share.rs`), `quiescent = { method, capability, field, health, message }`, `symbol-params`, `hide-lines`;
 //!   how it starts beyond `args` (`args-add`, `args-unless`, `init`); `progress = { method, kind, text, done,
 //!   done-text, error }`, `virtual = { scheme, fetch, language, title-join }` (`virtualdoc.rs`),
-//!   `client-commands`; `hold-saves` (a didSave waits out that progress's first run); `runs-project-code` (it waits for the repository's trust — `codetrust.rs`) and, only with
+//!   `client-commands`; `hold-saves` (a didSave waits out that progress's first run); `watched-files` (told tarae
+//!   watches its files — `lspwatch.rs`); `runs-project-code` (it waits for the repository's trust — `codetrust.rs`) and, only with
 //!   it, `[[…agents]]` = `{ name, files, uses, version, jars, at-least, arg, unless }`: what's loaded into it where the
 //!   project uses it (`lspagent.rs`).
 //! - `config-files = { toml = [...], json = [...] }`: files checked for parse errors before a save (`disk.rs`;
@@ -526,6 +527,7 @@ pub(crate) const SERVER_KEYS: &[&str] = &[
     "runs-project-code",
     "agents",
     "hold-saves",
+    "watched-files",
 ];
 
 fn server_of(e: &Entry) -> Result<(ServerSpec, ServerTraits), String> {
@@ -671,6 +673,10 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
         runs_project_code,
         agents,
         hold_saves: string(t, "hold-saves")?,
+        watched_files: match t.get("watched-files") {
+            None => false,
+            Some(v) => v.as_bool().ok_or("`watched-files` is true or false")?,
+        },
     })
 }
 
@@ -864,6 +870,9 @@ mod tests {
             }
             if let Some(h) = &t.hold_saves {
                 said.push(format!("hold-saves: during its first {h}"));
+            }
+            if t.watched_files {
+                said.push("watched-files: tarae watches its files".to_string());
             }
             for a in &t.agents {
                 let version: Vec<&str> = a.version.iter().map(regex::Regex::as_str).collect();

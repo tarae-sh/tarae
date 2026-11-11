@@ -157,6 +157,8 @@ pub struct LspState {
     pub(crate) clock: Clock,
     /// One server for a repository's checkouts, and swapping it (`share.rs`).
     pub(crate) share: crate::share::Shares,
+    /// tarae as the servers' file watcher: the tree watch, the registrations (`lspwatch.rs`).
+    pub(crate) watch: crate::lspwatch::State,
     /// (tests: the trace lines written — the log writes nothing in tests)
     #[cfg(test)]
     pub traced: Vec<String>,
@@ -758,11 +760,27 @@ impl Editor {
         if let Some(key) = checks.filter(|_| checks_off || asked) {
             options = crate::share::checks_held(options, key);
         }
+        // (its pack's `watched-files`: its writer thread waits for the tree watch's yes — `lspwatch.rs`)
+        let gate = self.lsp_watch_gate(&server, roots);
+        if let Some(g) = &gate {
+            let ask = self.lsp_watch_ask();
+            let (g, name) = (std::sync::Arc::clone(g), server.name.clone());
+            options = crate::lspwatch::gated(options, g, roots.to_vec(), name, Some(ask));
+        }
         // (a test's stand-in, no process: `share::StandIn`)
         #[cfg(test)]
         if let Some(make) = self.lsp.share.start {
             let mut c = make(self, cid, &server, roots);
             c.checks_off = checks_off;
+            // (what its writer thread would do before `initialize`, on a worker: the stand-in has none)
+            if gate.is_some() {
+                let watched = std::sync::Arc::clone(&c.watched);
+                self.events.shared_jobs().spawn(move || {
+                    let _ = watched.set(options().watched);
+                    move |ed: &mut Editor| ed.lsp_watch_initialized(cid)
+                });
+                self.lsp_watch_started(cid, roots);
+            }
             self.lsp.clients.push(c);
             crate::share::served_moved();
             self.lsp_own_serve(cid);
@@ -777,6 +795,9 @@ impl Editor {
                 // (started again after it exited: no longer the status line's red dot)
                 self.lsp.failed.remove(&server.name);
                 self.lsp.clients.push(c);
+                if gate.is_some() {
+                    self.lsp_watch_started(cid, roots);
+                }
                 crate::share::served_moved();
                 // (what its project uses and wasn't there: looked for again once its import is done)
                 if !agents.missing.is_empty() {
@@ -785,6 +806,10 @@ impl Editor {
                 Some(cid)
             }
             Err(e) => {
+                // (asked for its folders: the tree's roots go back to the others')
+                if gate.is_some() {
+                    self.lsp_watch_request(&[]);
+                }
                 self.lsp.failed.insert(server.name.clone(), e.clone());
                 crate::log::Session::of(root).line(&server.name, "error", &format!("couldn't start: {e}"));
                 self.set_error(format!("{} couldn't start: {e} · :log-open", server.name));
@@ -1113,6 +1138,8 @@ impl Editor {
                 if id == 0 {
                     let Some(c) = self.client_mut(cid) else { return };
                     c.on_initialized(&msg["result"]);
+                    self.lsp_watch_initialized(cid);
+                    let Some(c) = self.client_mut(cid) else { return };
                     let (name, took) = (c.name.clone(), crate::term::run_duration(c.started.elapsed()));
                     // Now the encoding is known — edits from here on carry UTF-16 columns if it needs them
                     let u16 = c.encoding == Encoding::Utf16;
@@ -1264,6 +1291,15 @@ impl Editor {
                             json!({ "uri": lsp::uri(r), "name": name })
                         };
                         Value::Array(roots.iter().map(folder).collect())
+                    }
+                    // Its watched files (`lspwatch.rs`); other registrations get the null they always got
+                    "client/registerCapability" => {
+                        self.lsp_watch_register(cid, &msg["params"]);
+                        Value::Null
+                    }
+                    "client/unregisterCapability" => {
+                        self.lsp_watch_unregister(cid, &msg["params"]);
+                        Value::Null
                     }
                     // Many code action commands send their edits this way.
                     // (answered once its files are read and it's applied — always answered: `apply_workspace_edits_then`)
@@ -2352,9 +2388,16 @@ impl Editor {
         for edit in &edits {
             let changes = edit["changes"].as_object().filter(|_| edit["documentChanges"].is_null());
             paths.extend(changes.into_iter().flat_map(|m| m.keys()).filter_map(|u| lsp::path_from_uri(u)));
-            for dc in edit["documentChanges"].as_array().into_iter().flatten() {
-                paths.extend(uri(&dc["textDocument"]["uri"]).or_else(|| uri(&dc["oldUri"])));
-            }
+        }
+        let mut looked = paths.clone();
+        for dc in edits.iter().flat_map(|e| e["documentChanges"].as_array().into_iter().flatten()) {
+            paths.extend(uri(&dc["textDocument"]["uri"]).or_else(|| uri(&dc["oldUri"])));
+            // (what it makes, moves and deletes on disk: the watched servers hear it — `lspwatch.rs`)
+            looked.extend(
+                [&dc["textDocument"]["uri"], &dc["uri"], &dc["oldUri"], &dc["newUri"]]
+                    .into_iter()
+                    .filter_map(uri),
+            );
         }
         // (a file missing now is one the edit makes: `edit_file` takes it as it comes)
         self.read_then(paths, move |ed, _| {
@@ -2362,9 +2405,13 @@ impl Editor {
             for edit in &edits {
                 match ed.apply_workspace_edit(cid, edit) {
                     Ok(k) => n += k,
-                    Err(e) => return then(ed, Err(e)),
+                    Err(e) => {
+                        ed.lsp_look(looked);
+                        return then(ed, Err(e));
+                    }
                 }
             }
+            ed.lsp_look(looked);
             then(ed, Ok(n))
         });
     }
@@ -3853,6 +3900,7 @@ impl Editor {
         let i = self.lsp.clients.iter().position(|c| c.id == cid)?;
         let name = self.lsp.clients.remove(i).name.clone();
         crate::share::served_moved();
+        self.lsp_watch_gone(cid);
         // Its diagnostics in closed files go; the other servers' stay
         for list in self.lsp.elsewhere.values_mut() {
             list.retain(|d| d.0 != cid);

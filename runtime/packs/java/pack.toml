@@ -134,6 +134,8 @@ leave-out = { init = "settings.java.import.exclusions", each = ["**/{rel}", "**/
 # project from scratch (minutes each). One given in its args stays.
 args-add = ["-data", "{cache}/jdtls/{root-name}-{root-hash}"]
 args-unless = "-data"
+# Told tarae watches its files (docs/languages.md, the probe of 2026-11-10): its sources and build files by name
+watched-files = true
 # Says what it's doing while it starts (importing the project, indexing) — done at "Started", "ServiceReady",
 # "ProjectStatus" (says nothing of progress), or a last "100% Starting …" after "Started" (1.61 sends one)
 progress = { method = "language/status", kind = "type", text = "message", done = ["Started", "ServiceReady", "ProjectStatus"], done-text = '^100%', error = ["Error"] }

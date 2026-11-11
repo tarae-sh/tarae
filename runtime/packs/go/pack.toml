@@ -87,6 +87,9 @@ steps = [
 # `build.directoryFilters` was refused ("setting option "build": unexpected setting").
 [server.gopls]
 leave-out = { init = "directoryFilters", each = "-{rel}", keep = ["-**/node_modules"] }
+# Told tarae watches its files (docs/languages.md, the probe of 2026-11-10): `**/*.{mod,work}` and its folder's
+# `**/*.{go,mod,sum,work}`
+watched-files = true
 
 # `go install` puts it in $GOBIN, else $GOPATH/bin, else ~/go/bin — often not on PATH
 [install.gopls]

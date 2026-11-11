@@ -97,6 +97,7 @@ mod toasts;
 mod turnsheld;
 mod warm;
 mod watchers;
+mod watchgate;
 mod weave;
 mod web;
 mod weblinks;

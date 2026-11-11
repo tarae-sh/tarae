@@ -2964,6 +2964,10 @@ impl Editor {
             match result {
                 Bringing::Brought(b) => {
                     let what = format!("{} of {}, now at {}", commits(b.count), b.branch, b.tip);
+                    // (the base's checkout moved forward: the watched servers hear it, compared — `lspwatch.rs`)
+                    let bases = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+                    let bases = bases.filter(|l| l.git_branch.as_deref() == Some(b.base.as_str()));
+                    ed.lsp_look(bases.map(|l| l.root.clone()).collect());
                     // A child its parent's Claude started is done once it's in: its end offered at once, carded
                     // even with nothing to lose (orchestra §7) — yours to answer; nothing did it before. Not idle
                     // yet (its Claude answering, a rebase, a file unsaved): once it is, said here

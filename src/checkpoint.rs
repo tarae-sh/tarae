@@ -875,6 +875,7 @@ fn put_blobs(ed: &mut Editor, blobs: Vec<(PathBuf, Option<String>, Option<String
     }
     let root = ed.workspace.root.clone();
     ed.workspace.claude.checkpoints.putting = true;
+    let looked: Vec<std::path::PathBuf> = blobs.iter().map(|(p, ..)| root.join(p)).collect();
     ed.events.jobs().spawn(move || {
         let problems: Vec<String> = blobs
             .iter()
@@ -882,6 +883,7 @@ fn put_blobs(ed: &mut Editor, blobs: Vec<(PathBuf, Option<String>, Option<String
             .collect();
         move |ed: &mut Editor| {
             ed.workspace.claude.checkpoints.putting = false;
+            ed.lsp_look(looked);
             if !problems.is_empty() {
                 ed.set_warning(format!("not taken back: {}", problems.join("; ")));
             }
@@ -930,6 +932,7 @@ pub(crate) fn file(
         }
         .map_err(|e| format!("{shown}: {e}"))?;
         ed.close_doc(id);
+        ed.lsp_look(vec![path.to_path_buf()]);
         return Ok((true, 0));
     }
     if target == now {
@@ -971,6 +974,7 @@ pub(crate) fn file(
         }
         ed.lsp_did_save(id);
         ed.undo_persist(id);
+        ed.lsp_look(vec![path.to_path_buf()]);
     }
     Ok((true, kept))
 }

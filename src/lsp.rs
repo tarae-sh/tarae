@@ -68,6 +68,9 @@ pub struct ServerTraits {
     /// `hold-saves`: the `$/progress` title during whose first run a didSave waits for its end (rust-analyzer's
     /// `Roots Scanned`: a save then panics it — `Client::holds_saves`).
     pub hold_saves: Option<String>,
+    /// `watched-files`: told at its start that tarae watches its files (`lspwatch.rs`) — for a server a probe
+    /// showed asking only for what tarae can give (docs/languages.md). Off: it watches them itself.
+    pub watched_files: bool,
 }
 
 /// A pack's `progress = { … }`: a server's own notification of what it's doing, shown as progress.
@@ -220,6 +223,7 @@ pub static NO_TRAITS: ServerTraits = ServerTraits {
     runs_project_code: None,
     agents: Vec::new(),
     hold_saves: None,
+    watched_files: false,
 };
 
 /// The names `spec` goes by in the packs: its own, then the built-in servers whose command it runs (`[lsp.py]
@@ -494,6 +498,22 @@ pub(crate) fn nested_skips(name: &str) -> bool {
 /// to `root`. Measured on this repo: rust-analyzer scanned 40 GB of `.claude/worktrees` twice before it
 /// could answer `gr` (222 s cold). Disk work: the server's writer thread.
 pub fn nested_checkouts(root: &Path) -> Vec<String> {
+    nested_walk(root).checkouts
+}
+
+/// What `nested_walk` finds below a root.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Nested {
+    /// `nested_checkouts`' answer: relative to the root.
+    pub checkouts: Vec<String>,
+    /// The folders named as tools' output (`nested_skips`, `.git` aside) it passed by below the root's own
+    /// children, each with its depth (1: a child's child) — whole paths, in the walk's order: by depth, then by
+    /// path. The tree watch keeps those git ignores (`lspwatch::walked`).
+    pub outputs: Vec<(usize, PathBuf)>,
+}
+
+/// `nested_checkouts`' walk, and the output folders it passes by on the way (`Nested.outputs`).
+pub fn nested_walk(root: &Path) -> Nested {
     let submodules: Vec<String> = std::fs::read_to_string(root.join(".gitmodules"))
         .unwrap_or_default()
         .lines()
@@ -502,6 +522,7 @@ pub fn nested_checkouts(root: &Path) -> Vec<String> {
         .collect();
     let mut found: Vec<String> =
         WORKTREE_HOMES.iter().filter(|h| root.join(h).is_dir()).map(|h| h.to_string()).collect();
+    let mut outputs = Vec::new();
     let mut queue = std::collections::VecDeque::from([(root.to_path_buf(), 0)]);
     let mut seen = 0;
     while let Some((dir, depth)) = queue.pop_front() {
@@ -523,12 +544,17 @@ pub fn nested_checkouts(root: &Path) -> Vec<String> {
             let Some(rel) = path.strip_prefix(root).ok().map(|r| r.to_string_lossy().into_owned()) else {
                 continue;
             };
-            if nested_skips(&e.file_name().to_string_lossy()) || WORKTREE_HOMES.contains(&rel.as_str()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if nested_skips(&name) || WORKTREE_HOMES.contains(&rel.as_str()) {
+                // (a root's own are the tree's always, there or not: only the deeper ones are collected)
+                if depth > 0 && name != ".git" && nested_skips(&name) {
+                    outputs.push((depth, path));
+                }
                 continue;
             }
             seen += 1;
             if seen > NESTED_BUDGET {
-                return found;
+                return Nested { checkouts: found, outputs };
             }
             if path.join(".git").exists() && !submodules.contains(&rel) {
                 found.push(rel);
@@ -537,14 +563,17 @@ pub fn nested_checkouts(root: &Path) -> Vec<String> {
             }
         }
     }
-    found
+    Nested { checkouts: found, outputs }
 }
 
-/// What a server is told at its start: `initializationOptions` (its pack's `init`, and more), and the settings
-/// `workspace/configuration` is answered from (`section`).
+/// What a server is told at its start: `initializationOptions` (its pack's `init`, and more), the settings
+/// `workspace/configuration` is answered from (`section`), and whether it's told tarae watches its files
+/// (`lspwatch::gated`, which fills it).
+#[derive(Default)]
 pub struct Options {
     pub init: Value,
     pub config: Value,
+    pub watched: crate::lspwatch::Watched,
 }
 
 /// Made on the server's writer thread: its pack is read and the project walked (disk work).
@@ -560,16 +589,14 @@ pub fn options_for(spec: &ServerSpec, roots: &[PathBuf]) -> MakeOptions {
     let init = traits(spec).init.clone();
     let (roots, name) = (roots.to_vec(), spec.name.clone());
     Box::new(move || {
-        let mut o = Options { init, config: Value::Null };
+        let mut o = Options { init, ..Options::default() };
         let Some(leave) = names.iter().find_map(|n| crate::packs::leave_out(n)) else { return o };
-        let found: Vec<String> = roots
-            .iter()
-            .enumerate()
-            .flat_map(|(i, r)| {
-                nested_checkouts(r)
-                    .into_iter()
-                    .map(move |rel| if i == 0 { rel } else { r.join(rel).display().to_string() })
-            })
+        // (the tree watch leaves them out too, for every watched server: its own walk, `lspwatch::walk_left_out`)
+        let nested: Vec<(usize, &PathBuf, String)> = (roots.iter().enumerate())
+            .flat_map(|(i, r)| nested_checkouts(r).into_iter().map(move |rel| (i, r, rel)))
+            .collect();
+        let found: Vec<String> = (nested.into_iter())
+            .map(|(i, r, rel)| if i == 0 { rel } else { r.join(rel).display().to_string() })
             .collect();
         if found.is_empty() {
             return o;
@@ -811,6 +838,9 @@ pub struct Client {
     /// The settings `workspace/configuration` is answered from (`Options.config`, set on the writer thread
     /// before `initialize` is written).
     pub config: std::sync::Arc<std::sync::OnceLock<Value>>,
+    /// Whether it was told tarae watches its files, and its folders' real paths (set on the writer thread before
+    /// `initialize` is written — `lspwatch.rs`).
+    pub watched: std::sync::Arc<std::sync::OnceLock<crate::lspwatch::Watched>>,
     /// tarae's own, in this process (`Client::own`): no program, no folder — a server's life (its process, its idle
     /// stop, its restart) isn't its.
     pub own: bool,
@@ -979,6 +1009,7 @@ impl Client {
             started: std::time::Instant::now(),
             ready_at: None,
             config: Default::default(),
+            watched: Default::default(),
             own: false,
             own_io: None,
         };
@@ -1063,10 +1094,17 @@ impl Client {
         // Its settings are in place before `initialize` goes, so before the server can ask for them.
         let config = std::sync::Arc::clone(&client.config);
         let init_sent = std::sync::Arc::clone(&client.init_sent);
+        let watched = std::sync::Arc::clone(&client.watched);
         let _ = client.tx.send(Out::Lazy(Box::new(move || {
+            // (its pack's `watched-files`: here waits for the tree watch's yes — `lspwatch::gated`)
             let o = options();
             let _ = config.set(o.config);
             let _ = init_sent.set(o.init.clone());
+            if o.watched.declared {
+                let cap = json!({ "dynamicRegistration": true, "relativePatternSupport": true });
+                put(&mut init["params"]["capabilities"], "workspace.didChangeWatchedFiles", cap);
+            }
+            let _ = watched.set(o.watched);
             init["params"]["initializationOptions"] = o.init;
             init.to_string()
         })));
@@ -1112,6 +1150,7 @@ impl Client {
             started: crate::clock::now(),
             ready_at: None,
             config: Default::default(),
+            watched: Default::default(),
             own: true,
             own_io: Some(OwnIo { rx, serve: std::sync::Arc::new(std::sync::Mutex::new(serve)) }),
         };

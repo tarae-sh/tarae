@@ -355,6 +355,12 @@ pub(crate) fn landed(
     whose: Whose,
     row: Option<&str>,
 ) {
+    // (the watched servers hear it, whatever the stream says — `lspwatch.rs`)
+    let mut looked = vec![f.path.clone()];
+    if let Op::Move { to, .. } = &f.op {
+        looked.push(to.clone());
+    }
+    ed.lsp_look(looked);
     let saw = |ed: &mut Editor, p: &Path| {
         if let Whose::Claude(g) | Whose::Ask(g) = whose {
             crate::edittool::saw(ed, g, p, stamp)

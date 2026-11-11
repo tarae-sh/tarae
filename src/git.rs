@@ -417,6 +417,9 @@ impl Editor {
     /// blame of the one in view is asked again (it's kept per text version, which a commit doesn't change: a
     /// rebased line said "not committed yet" — a shot, 2026-10-04).
     pub fn git_reload_bases_in(&mut self, dir: &Path) {
+        // (a checkout whose HEAD moved — a rebase, a base move, git outside: the watched servers hear what it
+        // wrote, compared — `lspwatch.rs`)
+        self.lsp_look(vec![dir.to_path_buf()]);
         let ids = self.git_load_bases_in(dir);
         if self.blame.of.is_some_and(|(id, _)| ids.contains(&id)) {
             self.blame.of = None;

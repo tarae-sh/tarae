@@ -37,6 +37,8 @@ bundle = true
 # A linter and formatter with a server of its own
 [server.ruff]
 args = ["server"]
+# Told tarae watches its files (docs/languages.md, the probe of 2026-11-10): its three config files' names
+watched-files = true
 
 [test]
 query = "tests.scm"

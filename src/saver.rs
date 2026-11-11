@@ -410,6 +410,8 @@ impl Editor {
     }
 
     fn saves_finish(&mut self, done: Vec<Done>) {
+        // (the watched servers hear what was written, whatever the stream says — `lspwatch.rs`)
+        self.lsp_look(done.iter().filter(|d| d.result.is_ok()).map(|d| d.path.clone()).collect());
         let (mut saved, mut auto, mut failed) = (Vec::new(), Vec::new(), Vec::new());
         let mut why = "";
         for d in done {

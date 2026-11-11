@@ -103,6 +103,9 @@ client-commands = { "gleam.applyEdit" = "apply-edit" }
 # The `$/progress` title during whose first run a save would crash it: each file's didSave waits for its end (the
 # newest of each file then; nothing held past an exit) — rust-analyzer's `Roots Scanned`
 hold-saves = "Indexing"
+# Told at its start that tarae watches its files (below): only for a server a probe has shown asking for what
+# tarae can give — off, it watches them itself
+watched-files = true
 # It runs the project's code as it starts or works — its build script, its build's plugins: it waits for the
 # repository's trust (one card, every checkout's and server root's answer — `:code-trust`, `:code-untrust`), these words on the card
 runs-project-code = "its gleam.toml's build scripts"
@@ -127,6 +130,27 @@ unless = "lombok"
 [server.gleam.init]                  # its initializationOptions, as TOML
 checkOnSave = true                   # what the server reads as it starts
 ```
+
+- **Watched files.** A server told `watched-files` hears from tarae of every change to a file it registers for,
+  below the folders it serves (`workspace/didChangeWatchedFiles`), and doesn't set up a watch of its own
+  (rust-analyzer's took 141.5 s on a large checkout; told, 0.5 s). A base outside those folders is watched only
+  below the project's own output folders, as its pack's `[builds]` names them (a shared build folder's
+  generated code); any other isn't, and is said once in the log. A file is said changed only for a reason: an
+  event named it, its stamp (time and size) moved, or events were lost over it while its stamp was too fresh to
+  tell. A file made in one batch, its own event landing in the next with its stamp the same, is said once, not
+  made and then changed. So a write that keeps the very stamp (the same size, within the clock's grain of the last
+  one) whose event the system lost without saying so isn't seen. A server gets the key with its probe's row, in the same change. The probe of
+  2026-11-10 (each server on a scratch project, the capability declared):
+
+  | Server | Registers | Globs | Again later | `watched-files` |
+  |---|---|---|---|---|
+  | rust-analyzer 1.99 | after its first Fetching | its folder + `**/*.rs`, `**/Cargo.{lock,toml}`, `**/rust-analyzer.toml`, `**/*.md`; its user config folder (outside: not watched); `<crate>/Cargo.toml` | the same id, with each build script's output folder too | on |
+  | gopls | when "Setting up workspace" ends | `**/*.{mod,work}`; its folder + `**/*.{go,mod,sum,work}` | no | on |
+  | ruff | at once | `**/.ruff.toml`, `**/ruff.toml`, `**/pyproject.toml` | no | on |
+  | jdtls | 5 s in | `**/*.java`, `**/.project`, `**/.classpath`, `**/.settings/*.prefs`, `**/src/**`, `**/*.gradle`, `**/*.gradle.kts`, `**/gradle.properties`, `**/pom.xml` | no | on |
+  | pyright | at once | `**` (every file); then Python's stdlib and site-packages (outside the project) | a new id, then the first unregistered | off |
+  | clangd, pylsp, typescript-language-server, taplo, marksman, yaml-language-server, bash-language-server, helm_ls | nothing | | | off |
+  | basedpyright, lua-language-server, nil, zls | not probed | | | off |
 
 - **Pinned.** The built-in packs' languages are pinned in
   [`src/snapshots/languages.txt`](../src/snapshots/languages.txt): a change shows there.

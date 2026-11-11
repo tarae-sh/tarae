@@ -122,6 +122,7 @@ mod log;
 mod lsp;
 mod lsp_editor;
 mod lspagent;
+mod lspwatch;
 mod markdown;
 mod mcp;
 mod relay;
@@ -235,6 +236,8 @@ mod tokens;
 mod tools;
 mod trace;
 mod transaction;
+// (its one user, the language servers' side — W1b — lands with it)
+mod treewatch;
 mod trust;
 mod turnmap;
 mod tutor;

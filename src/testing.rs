@@ -764,8 +764,10 @@ impl Editor {
             let done = move |ed: &mut Editor| {
                 // (a host its proxy holds for it has no one left to ask for — its card goes)
                 crate::hosts::run_ended(ed, run_id);
-                // (it may have made, removed or moved files: the chat's names are found again — `places.rs`)
+                // (it may have made, removed or moved files: the chat's names are found again — `places.rs`; the
+                // watched servers hear them, its checkout compared — `lspwatch.rs`)
                 ed.workspace.listing += 1;
+                ed.lsp_look(vec![ed.workspace.root.clone()]);
                 let session = ed.workspace.log();
                 let Some(r) = ed.workspace.test_run.as_mut().filter(|r| r.generation == generation) else {
                     return;

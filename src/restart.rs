@@ -2326,7 +2326,11 @@ mod tests {
             ("Sock", "plugin/io.rs"),
             ("StandInGuard", "sandbox/refused.rs"),
             ("StartOut", "event.rs"),
+            // (the tree watch and its stream: the LSP side's, `LspState.watch` — never in a document, a turn, an output
+            // or a transcript)
+            ("Stream", "treewatch.rs"),
             ("Terminal", "terminal.rs"),
+            ("TreeWatch", "treewatch.rs"),
             ("TestRun", "testing.rs"),
             ("Turn", "storewrite.rs"),
             ("Watch", "sandbox.rs"),

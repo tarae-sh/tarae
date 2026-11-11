@@ -17,6 +17,11 @@
 
 mod harness;
 
+// tarae as rust-analyzer's file watcher (W1b): the tree watch is macOS's
+#[cfg(target_os = "macos")]
+#[path = "live/watched.rs"]
+mod watched;
+
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};

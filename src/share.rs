@@ -854,9 +854,10 @@ impl Editor {
         let gone: Vec<Value> = c.roots.iter().filter(|r| !want.contains(r)).map(|r| lsp::folder(r)).collect();
         let event = json!({ "event": { "added": [], "removed": gone } });
         c.notify("workspace/didChangeWorkspaceFolders", event);
-        c.roots = want;
+        c.roots = want.clone();
         served_moved();
         let name = c.name.clone();
+        self.lsp_watch_roots(a, &want);
         crate::log::line(&name, "share", &format!("{why} — told it the folders that went; no restart"));
         self.share_unpark();
     }

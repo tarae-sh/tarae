@@ -21,9 +21,9 @@ const BACKSTOP: Duration = crate::test_results::PATIENCE.saturating_mul(2);
 /// …and when they can't: the poll interval from before watching.
 const POLL: Duration = Duration::from_millis(500);
 /// A burst of writes (a truncate-then-write save, a checkout) is over after this much quiet…
-const QUIET: Duration = Duration::from_millis(50);
+pub(crate) const QUIET: Duration = Duration::from_millis(50);
 /// …or after this long — a file written to non-stop (a log) is looked at twice a second, as before.
-const BURST_MAX: Duration = Duration::from_millis(500);
+pub(crate) const BURST_MAX: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Woke {
@@ -217,12 +217,12 @@ pub fn statfs(dir: &Path) -> Option<libc::statfs> {
 
 /// Whether the kernel hears of every write to files in `dir` (not so on a network file system).
 #[cfg(target_os = "macos")]
-fn is_local(dir: &Path) -> bool {
+pub(crate) fn is_local(dir: &Path) -> bool {
     statfs(dir).is_none_or(|st| st.f_flags & libc::MNT_LOCAL as u32 != 0)
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn is_local(dir: &Path) -> bool {
+pub(crate) fn is_local(dir: &Path) -> bool {
     /// statfs's `f_type` of file systems that other machines (or a VM's host) write to.
     const REMOTE: [u32; 12] = [
         0x6969,      // NFS
@@ -242,7 +242,7 @@ fn is_local(dir: &Path) -> bool {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
-fn is_local(dir: &Path) -> bool {
+pub(crate) fn is_local(dir: &Path) -> bool {
     let _ = statfs;
     let _ = dir;
     true

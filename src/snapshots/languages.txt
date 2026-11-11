@@ -386,21 +386,27 @@
   roots: CMakeLists.txt Cargo.toml build.gradle build.gradle.kts compile_commands.json go.mod go.work jsconfig.json package.json pom.xml pyproject.toml settings.gradle settings.gradle.kts setup.cfg setup.py tsconfig.json
 
 [servers]
+  gopls
+    watched-files: tarae watches its files
   jdtls
     args-add: -data {cache}/jdtls/{root-name}-{root-hash} (unless -data)
     init: {"extendedClientCapabilities":{"advancedGenerateAccessorsSupport":false,"advancedOrganizeImportsSupport":false,"classFileContentsSupport":true,"generateToStringPromptSupport":false,"overrideMethodsPromptSupport":false,"progressReportProvider":false,"resolveAdditionalTextEditsSupport":true},"settings":{"java":{"eclipse":{"downloadSources":true},"inlayHints":{"parameterNames":{"enabled":"all"},"parameterTypes":{"enabled":true},"variableTypes":{"enabled":true}},"maven":{"downloadSources":true},"signatureHelp":{"enabled":true}}}}
     progress: language/status · type message · done Started ServiceReady ProjectStatus or ^100% · error Error
     virtual: jdt:// by java/classFileContents in java · titles joined by "."
     client-command: java.apply.workspaceEdit → ApplyEdit
+    watched-files: tarae watches its files
     agent Lombok: --jvm-arg=-javaagent:{jar} (unless lombok) · where pom.xml */pom.xml */*/pom.xml build.gradle build.gradle.kts */build.gradle */build.gradle.kts */*/build.gradle */*/build.gradle.kts gradle/libs.versions.toml buildSrc/build.gradle buildSrc/build.gradle.kts buildSrc/src/main/*/*.gradle buildSrc/src/main/*/*.gradle.kts says org\.projectlombok|io\.freefair\.lombok
       its version: org\.projectlombok:lombok:(?P<v>[0-9][0-9A-Za-z.\-]*)  <artifactId>lombok</artifactId>\s*<version>\s*(?P<v>[0-9][^<\s]*)\s*</version>  <lombok\.version>\s*(?P<v>[0-9][^<\s]*)\s*</lombok\.version>  (?m)^\s*lombok\s*=\s*"(?P<v>[0-9][^"]*)" · at least 1.18.4
       its jars: {gradle}/caches/modules-2/files-2.1/org.projectlombok/lombok/{v}/*/lombok-{v}.jar ~/.m2/repository/org/projectlombok/lombok/{v}/lombok-{v}.jar
+  ruff
+    watched-files: tarae watches its files
   rust-analyzer
     share: toolchain rust-toolchain.toml rust-toolchain · checks checkOnSave · check rust-analyzer/runFlycheck · reload-progress Fetching
     quiescent: experimental/serverStatus (asked: experimental.serverStatusNotification) · quiescent health message
     symbol-params: {"searchKind":"allSymbols","searchScope":"workspace"}
     hide-lines: ^`#\[.*on by default$
     hold-saves: during its first Roots Scanned
+    watched-files: tarae watches its files
 
 [builds]
   rust: Cargo: when Cargo.toml · ask cargo metadata --no-deps --offline --format-version 1 · target_directory build_directory · home CARGO_HOME else ~/.cargo · setting build.build-dir in .cargo/config.toml .cargo/config / home config.toml config (CARGO_BUILD_BUILD_DIR) per checkout {workspace-path-hash} {workspace-root} · remove build depth 2 · cache tag "# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n" · macos xattr com.apple.metadata:com_apple_backup_excludeItem=62706c69737430305f1011636f6d2e6170706c652e6261636b75706408000000000000010100000000000000010000000000000000000000000000001c · macos xattr com.apple.fileprovider.ignore#P=31 · keep registry git · warm debug under .cargo-build-lock · deps build .fingerprint by .fingerprint · own: Cargo.lock [[package]] name without source + asked packages[].name

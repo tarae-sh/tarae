@@ -610,6 +610,13 @@ impl Editor {
         if !b.open.is_empty() {
             return;
         }
+        // (what git wrote in that checkout: the watched servers hear it, compared — `lspwatch.rs`)
+        let session = b.session;
+        let root = std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == session);
+        self.lsp_look(root.map(|l| l.root.clone()).into_iter().collect());
+        let Some(b) = self.disk_batch.iter_mut().find(|b| b.open.is_empty() && b.session == session) else {
+            return;
+        };
         // (no watch running — tests, a simulation — no reload to wait for: said now, never a watch started)
         if self.disk_round.is_none() {
             b.after = Some(self.disk_poll_gen);
@@ -737,6 +744,8 @@ impl Editor {
             // Check now — so changes show the moment focus returns (this round carries the watch on)
             self.disk_poll(false);
             self.git_reload_bases();
+            // (what changed while away, whatever the tree watch's stream said: every root compared — `lspwatch.rs`)
+            self.lsp_look_roots();
         } else if self.config.auto_save != "off" {
             self.auto_save("");
         }
