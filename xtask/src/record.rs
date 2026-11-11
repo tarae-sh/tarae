@@ -14,7 +14,7 @@
 //!   `TARAE_BACKGROUND`). While it runs, the driver's hands reach it by a way in of its own (`hands.rs`): a socket in a
 //!   folder made new for the take, said as it starts and named in `DIR/way-in`, gone when it ends.
 //! - `record type --to WHERE [--send] WORDS`, `record key [--to WHERE] KEY …`, `record wait WHAT`, `record state`,
-//!   `record mark WORDS` — the hands, through that way in (`hands.rs`).
+//!   `record mark WORDS`, `record chapter WORDS` — the hands, through that way in (`hands.rs`).
 //! - `record take --out DIR --cwd FOLDER …` — the full video's take with its surroundings (a copy of your config with
 //!   `llm.cost = false`, git's stand-in name and mail, a state home of its own); `record dry [OUT]` — V3's dry run of
 //!   its motions on the stand-in Claude (`take.rs`).
@@ -36,7 +36,7 @@
 //! - `events.jsonl` — what tarae's UI state socket said (`{"watch":[]}`), `{"ms":…,"event":{…}}` a line, and the
 //!   part of a snapshot asked after some of them (`{"ms":…,"state":{front, workspaces, cards}}`).
 //! - `landmarks.jsonl` — the cut's landmarks drawn from those (`landmarks.rs`), `{"ms":…,"what":…,…}` a line, and the
-//!   driver's marks (`record mark`).
+//!   driver's marks and chapters (`record mark`, `record chapter`).
 //! - `way-in` — the way in's socket while the take runs (removed as it ends).
 //!
 //! The logs are written by a worker: the pass-through hands each chunk on and goes back to reading, so recording never
@@ -77,7 +77,7 @@ pub(crate) const TERMINAL: u8 = 1;
 pub(crate) const SCRIPT: u8 = 2;
 
 const USAGE: &str = "usage: cargo xtask record [--size 120x34] --out DIR [--cwd DIR] [--keys FILE] [--state DIR] \
-                     [--headless] -- COMMAND … | record type|key|wait|state|mark … (the hands) | record take --out DIR --cwd \
+                     [--headless] -- COMMAND … | record type|key|wait|state|mark|chapter … (the hands) | record take --out DIR --cwd \
                      FOLDER [--size 166x32] [--config FILE] [--tarae BIN] | record dry [OUT] | record draw DIR [--bg dark|light] [--title T] | record still DIR OUT.png [--at S] | \
                      record check DIR | record spike [OUT] | record sizes [OUT]";
 
@@ -88,7 +88,9 @@ pub fn run(args: &[String]) -> Result<()> {
         Some("still") => return still_cmd(&args[1..]),
         Some("spike") => return spike::run(&args[1..]),
         Some("sizes") => return spike::sizes(&args[1..]),
-        Some(v @ ("type" | "key" | "wait" | "state" | "mark")) => return hands::client(v, &args[1..]),
+        Some(v @ ("type" | "key" | "wait" | "state" | "mark" | "chapter")) => {
+            return hands::client(v, &args[1..]);
+        }
         Some("take") => return take::take(&args[1..]),
         Some("dry") => return take::dry(&args[1..]),
         _ => {}
@@ -237,7 +239,8 @@ enum Log {
     Key(Instant, u8, Vec<u8>),
     Told(Instant, Value),
     State(Instant, Value),
-    Mark(Instant, String),
+    /// The driver's landmark: `mark` (a note) or `chapter` (where one starts), and its words.
+    Mark(Instant, &'static str, String),
     End,
 }
 
@@ -597,9 +600,9 @@ fn worker(
                     landmarks += 1;
                 }
             }
-            Log::Mark(at, words) => {
+            Log::Mark(at, what, words) => {
                 let ms = us(at) / 1000;
-                writeln!(f.landmarks, "{}", landmarks::line((ms, json!({ "what": "mark", "said": words }))))
+                writeln!(f.landmarks, "{}", landmarks::line((ms, json!({ "what": what, "said": words }))))
                     .map_err(said)?;
                 landmarks += 1;
             }

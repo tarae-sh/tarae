@@ -19,7 +19,8 @@
 //!   other wait, said: it's answered at once, never waited past. Gives up at its patience (`PATIENCE` unless `--for`); what's in front said
 //!   either way.
 //! - `record state` — tarae's state as its text form, a fact a line (`tarae state`'s).
-//! - `record mark WORDS` — a landmark `mark` at that moment, the words with it (`mark N` in an edit list).
+//! - `record mark WORDS` — a landmark `mark` at that moment, the words with it (`mark N` in an edit list): a note.
+//! - `record chapter WORDS` — a landmark `chapter`: a chapter starts here, the words its title (`cut init` puts it).
 //!
 //! Each finds the way in by `--via` (the socket, or the take's folder) or `$TARAE_RECORD`, and prints the line it's
 //! answered; its exit is `code`'s: 0 held, 2 refused (the keys elsewhere), 3 a card came first, 4 gave up, 1 else.
@@ -361,13 +362,15 @@ fn act(req: &Value, ctx: &Ctx) -> (i32, String) {
             Ok(v) => (code::HELD, v["text"].as_str().unwrap_or_default().trim_end().to_string()),
             Err(e) => (code::ERROR, format!("tarae's state: {e}")),
         },
-        "mark" => {
+        what @ ("mark" | "chapter") => {
             let at = Instant::now();
-            let _ = ctx.tx.send(Log::Mark(at, text.to_string()));
+            let what = if what == "chapter" { "chapter" } else { "mark" };
+            let _ = ctx.tx.send(Log::Mark(at, what, text.to_string()));
             let ms = at.saturating_duration_since(ctx.started).as_millis() as u64;
-            (code::HELD, format!("marked at {} — {text}", crate::cut::clock(ms)))
+            let said = if what == "chapter" { "a chapter from" } else { "marked at" };
+            (code::HELD, format!("{said} {} — {text}", crate::cut::clock(ms)))
         }
-        other => (code::ERROR, format!("{other:?}: type, key, wait, state or mark")),
+        other => (code::ERROR, format!("{other:?}: type, key, wait, state, mark or chapter")),
     }
 }
 
@@ -697,9 +700,9 @@ pub(crate) fn wait(
 
 const USAGE: &str = "usage: cargo xtask record type --to WHERE [--send] WORDS | record key [--to WHERE] KEY … | record \
                      wait turn [SESSION]|card [KIND]|keys WHERE|run|bring [--for SECS] | record state | record mark \
-                     WORDS — each with --via SOCKET|TAKE, else $TARAE_RECORD";
+                     WORDS (a note) | record chapter WORDS (where a chapter starts, its title) — each with --via SOCKET|TAKE, else $TARAE_RECORD";
 
-/// `record type|key|wait|state|mark …`: the request made through the way in, its line printed, its exit the process's.
+/// `record type|key|wait|state|mark|chapter …`: the request made through the way in, its line printed, its exit the process's.
 pub(crate) fn client(verb: &str, args: &[String]) -> Result<()> {
     let (req, via) = request(verb, args)?;
     let sock = way_in(via.as_deref())?;
@@ -743,7 +746,7 @@ pub(crate) fn request(verb: &str, args: &[String]) -> Result<(Value, Option<Path
             json!({ "do": "wait", "what": words[0], "arg": arg, "for_ms": patience })
         }
         "state" if words.is_empty() => json!({ "do": "state" }),
-        "mark" if !words.is_empty() => json!({ "do": "mark", "text": words.join(" ") }),
+        "mark" | "chapter" if !words.is_empty() => json!({ "do": verb, "text": words.join(" ") }),
         _ => return Err(USAGE.into()),
     };
     Ok((req, via))

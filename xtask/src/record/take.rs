@@ -3,8 +3,9 @@
 //! - `cargo xtask record take --out DIR --cwd FOLDER [--size 166x32] [--config FILE] [--tarae BIN]` — the take, with
 //!   its surroundings (`surroundings`) in a home made new for it under `/tmp` (`/tmp/tarae-take-<uid>-<n>`, 0700): a copy
 //!   of your tarae config (`FILE`, else `$XDG_CONFIG_HOME/tarae/config.toml` or `~/.config/tarae/config.toml`) with
-//!   `llm.cost = false`, the rest of that folder (themes, plugins) linked beside it; a state home of its own (nothing of
-//!   yours listed: no recent files, no sessions, and a UI socket's path well under `sun_path`); git's name and mail the
+//!   `llm.cost = false`, `llm.auto-cards = "off"` and `workspace.worktrees` outside the home (`TAKE_WORKTREES`, made
+//!   where it isn't, refused where it holds anything), the rest of that folder (themes, plugins) linked beside it; a
+//!   state home of its own (nothing of yours listed: no recent files, no sessions, and a UI socket's path well under `sun_path`); git's name and mail the
 //!   stand-ins (`GIT_NAME`, `GIT_MAIL`) by `GIT_CONFIG_GLOBAL` and the author and committer variables — the floor
 //!   every run of tarae's sandbox keeps (`src/sandbox/runenv.rs`), so tarae's git, `:sh` and Claude's runs all commit
 //!   as them. `FOLDER` (the take's `~/Workspace/halil`) is made where it isn't, refused where it holds anything. Your
@@ -29,6 +30,11 @@ use crate::{Result, root, shot};
 /// The take's size: 166×32 (the design session's, 2026-11-11).
 pub(crate) const TAKE_SIZE: (u16, u16) = (166, 32);
 
+/// Where the take's other checkouts go (`[workspace] worktrees` in its config copy): outside the home, as its folder is
+/// (the user's choice) — else `dates`' and `board`'s builds print a path under it, cargo's every `Compiling`. Absent or
+/// empty before a take (`record take` refuses one that holds anything); removed after it (the runbook).
+pub(crate) const TAKE_WORKTREES: &str = "/Users/Shared/halil-checkouts";
+
 /// Git's name and mail in a take: stand-ins, never yours.
 pub(crate) const GIT_NAME: &str = "halil dev";
 pub(crate) const GIT_MAIL: &str = "dev@halil.invalid";
@@ -36,12 +42,14 @@ pub(crate) const GIT_MAIL: &str = "dev@halil.invalid";
 const USAGE: &str = "usage: cargo xtask record take --out DIR --cwd FOLDER [--size 166x32] [--config FILE] [--tarae BIN] | record dry [OUT]";
 
 /// The take's surroundings in `home` (a folder of the take's own): tarae's config there — `config` (your config's
-/// text; None: none) with `llm.cost = false`, and every other entry of `linked` (your config's folder) linked beside it
-/// — and a git config of the stand-ins'. The variables that give them to the take.
+/// text; None: none) with `llm.cost = false`, `llm.auto-cards = "off"` and, given one, `workspace.worktrees =
+/// worktrees` (None: the config's own), and every other entry of `linked` (your config's folder) linked beside it — and
+/// a git config of the stand-ins'. The variables that give them to the take.
 pub(crate) fn surroundings(
     home: &Path,
     config: Option<&str>,
     linked: Option<&Path>,
+    worktrees: Option<&Path>,
 ) -> Result<Vec<(&'static str, OsString)>> {
     let mut t: toml::Table = match config {
         Some(text) => text.parse().map_err(|e| format!("your tarae config isn't TOML tarae reads: {e}"))?,
@@ -50,6 +58,13 @@ pub(crate) fn surroundings(
     let llm = t.entry("llm").or_insert_with(|| toml::Value::Table(toml::Table::new()));
     let llm = llm.as_table_mut().ok_or("your tarae config's llm isn't a table")?;
     llm.insert("cost".into(), toml::Value::Boolean(false));
+    // (no second claude reading each card on camera: yours may be "shadow", whose record is your state home's anyway)
+    llm.insert("auto-cards".into(), toml::Value::String("off".into()));
+    if let Some(at) = worktrees {
+        let ws = t.entry("workspace").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        let ws = ws.as_table_mut().ok_or("your tarae config's workspace isn't a table")?;
+        ws.insert("worktrees".into(), toml::Value::String(at.to_string_lossy().into_owned()));
+    }
     let dir = home.join("config/tarae");
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -58,7 +73,16 @@ pub(crate) fn surroundings(
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     let text = toml::to_string(&t).map_err(|e| format!("the take's config: {e}"))?;
     let file = dir.join("config.toml");
-    let head = "# The take's copy of your tarae config (cargo xtask record take): llm.cost = false, nothing else changed.\n";
+    let head = match worktrees {
+        Some(_) => {
+            "# The take's copy of your tarae config (cargo xtask record take): llm.cost = false, llm.auto-cards = \
+                    \"off\" and workspace.worktrees outside the home, nothing else changed.\n"
+        }
+        None => {
+            "# The take's copy of your tarae config (cargo xtask record take): llm.cost = false and llm.auto-cards = \
+                 \"off\", nothing else changed.\n"
+        }
+    };
     std::fs::write(&file, format!("{head}{text}")).map_err(|e| format!("{}: {e}", file.display()))?;
     if let Some(from) = linked
         && let Ok(entries) = std::fs::read_dir(from)
@@ -138,6 +162,8 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     let out = out.ok_or_else(|| format!("--out DIR: where the take goes — {USAGE}"))?;
     let cwd = cwd.ok_or_else(|| format!("--cwd FOLDER: the take's folder (~/Workspace/halil) — {USAGE}"))?;
     folder_for_a_take(&cwd)?;
+    let worktrees = Path::new(TAKE_WORKTREES);
+    folder_for_a_take(worktrees)?;
     let config = config.or_else(|| your_config_dir().map(|d| d.join("config.toml")));
     let text = match &config {
         Some(f) => match std::fs::read_to_string(f) {
@@ -149,7 +175,7 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     };
     let home = hands::fresh_folder(Path::new("/tmp"), "tarae-take")?;
     let linked = config.as_deref().and_then(Path::parent);
-    let mut env = surroundings(&home, text.as_deref(), linked)?;
+    let mut env = surroundings(&home, text.as_deref(), linked, Some(worktrees))?;
     let state = home.join("state");
     std::fs::DirBuilder::new().mode(0o700).create(&state).map_err(|e| format!("{}: {e}", state.display()))?;
     env.push(("XDG_STATE_HOME", state.clone().into()));
@@ -159,8 +185,8 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     cmd.env_remove("CLAUDECODE");
     without_cargo_runs(&mut cmd);
     eprintln!(
-        "record take: its home {} — your config copied with llm.cost = false, git as {GIT_NAME} <{GIT_MAIL}>, a state \
-         of its own; tarae in {}",
+        "record take: its home {} — your config copied with llm.cost = false, auto-cards off and the checkouts in \
+         {TAKE_WORKTREES}, git as {GIT_NAME} <{GIT_MAIL}>, a state of its own; tarae in {}",
         home.display(),
         cwd.display()
     );
@@ -283,11 +309,12 @@ pub(super) fn dry(args: &[String]) -> Result<()> {
     let me = std::env::current_exe().map_err(|e| format!("this xtask: {e}"))?;
     let live = scenes::live("record-dry", "nine", Bg::Dark, &bin, &me, true)?;
     let mut cmd = shot::command(&live.setup, &live.state, &live.homes)?;
-    // (the take's surroundings, the stand-in's config standing for yours)
+    // (the take's surroundings, the stand-in's config standing for yours — its checkouts where the scene keeps them,
+    // in its own folder: a dry run writes nothing in /Users/Shared)
     let home = hands::fresh_folder(Path::new("/tmp"), "tarae-take")?;
     let file = live.setup.config.join("tarae/config.toml");
     let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let env = surroundings(&home, Some(&text), None)?;
+    let env = surroundings(&home, Some(&text), None, None)?;
     cmd.envs(env.iter().map(|(k, v)| (k, v)));
     without_cargo_runs(&mut cmd);
     let take = out.join("take");
@@ -350,7 +377,7 @@ fn ui_pid(state: &Path) -> Option<i32> {
 fn steps(d: &mut Driver) {
     d.note("tarae up, the keys in the code");
     d.run("wait keys code --for 60");
-    d.run("mark one ask, one run");
+    d.run("chapter one ask, one run");
     d.run("key space l");
     d.run("wait keys chat --for 10");
     d.run("type --to chat --send run the tests");
@@ -359,8 +386,9 @@ fn steps(d: &mut Driver) {
     d.note("the chat-input check: after the card's answer and the turn's end, are the keys back in the chat's input?");
     d.run("wait keys chat --for 0");
     d.run("state");
+    docked_input(d);
 
-    d.run("mark two at once");
+    d.run("chapter two at once");
     d.command("session-new");
     d.run("wait keys session-name --for 10");
     d.run("type --to session-name --send dates");
@@ -390,7 +418,7 @@ fn steps(d: &mut Driver) {
     d.run("key 2");
     d.run("state");
 
-    d.run("mark the bring");
+    d.run("chapter the bring");
     d.command("workspace-bring");
     let (_, said) = d.through("wait bring --for 120");
     if said.contains("not brought") {
@@ -402,7 +430,7 @@ fn steps(d: &mut Driver) {
     }
     d.run("state");
 
-    d.run("mark the blame, by the stand-ins");
+    d.run("chapter the blame, by the stand-ins");
     d.command("open README.md");
     d.run("key g e");
     d.run("state");
@@ -410,4 +438,40 @@ fn steps(d: &mut Driver) {
     d.run("mark the end");
     d.command("q!");
     d.through("wait card --for 5");
+}
+
+/// The chat-input check, docked (calls #1): the chat's panel shown (`space L`: the ask line closed on its `enter`, so the
+/// chat is out of sight and comes back as the docked column), the keys in its input, a message sent; then where the
+/// keys are at once, and again after the turn (its cards answered).
+fn docked_input(d: &mut Driver) {
+    d.run("mark the docked input");
+    d.note("the chat-input check, docked: the chat's panel shown by space L, the keys in its input, a message sent");
+    d.back_to_code();
+    d.run("key space L");
+    if d.run("wait keys chat --for 5").0 != code::HELD {
+        d.note("space L didn't give the chat's input the keys: once more (it was in sight, and hid)");
+        d.run("key space L");
+        d.run("wait keys chat --for 5");
+    }
+    d.run("state");
+    d.run("type --to chat --send explain the run");
+    d.note("the docked input, the moment after its enter");
+    d.run("wait keys chat --for 0");
+    // (its edit turned down: main's checkout stays clean for the bring, which refuses one with changes in what it brings)
+    for _ in 0..8 {
+        let (c, said) = d.run("wait turn --for 120");
+        match c {
+            code::CARD if said.contains("its review up") => {
+                if d.run("key --to edit-review n").0 == code::REFUSED {
+                    d.run("key C-q");
+                    d.run("key --to edit-review n");
+                }
+            }
+            code::CARD => d.answer(&said),
+            _ => break,
+        }
+    }
+    d.note("the docked input, after the turn");
+    d.run("wait keys chat --for 0");
+    d.run("state");
 }

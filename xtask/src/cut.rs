@@ -61,8 +61,8 @@
 //! A time in the take: `start`, `end`, a clock (`1:02:03.5`, `37:12`), a length from the start (`72.5s`), or a landmark
 //! (`landmarks.jsonl`) — `turn N start|end`, `[KIND] card N shown|answered` (`run card 2 shown`: the second card of kind
 //! `run`), `run N start|end`, `review N`, `front N` or `front NAME` (when that workspace came to the front), `bring N`
-//! (a bring ended), `mark "WORDS"` (the driver's `record mark WORDS`, its words whole) or `mark N` —, `N` from 1 or
-//! `last`; any of them `+ 2s` or `- 500ms`. A landmark the take doesn't have, or a time past its end, is refused
+//! (a bring ended), `mark "WORDS"` (the driver's `record mark WORDS`, its words whole) or `mark N`, `chapter "WORDS"`
+//! (the driver's `record chapter WORDS`) or `chapter N` —, `N` from 1 or `last`; any of them `+ 2s` or `- 500ms`. A landmark the take doesn't have, or a time past its end, is refused
 //! with its line. A length: `3s`, `2.5s`, `500ms`, `1m 30s`.
 //!
 //! Every list is in the take's order and spans don't overlap: a file that reorders anything is refused with the line.
@@ -310,15 +310,19 @@ impl Marks {
     }
 
     fn point(&self, base: &str) -> std::result::Result<u64, String> {
-        if let Some(w) = base.strip_prefix("mark ").map(str::trim)
-            && let Some(w) = w.strip_prefix('"').and_then(|w| w.strip_suffix('"'))
-        {
-            let at: Vec<u64> = self.of("mark").filter(|v| v["said"] == w).map(ms_of).collect();
-            return match at[..] {
-                [ms] => Ok(ms),
-                [] => Err(format!("the take has no mark “{w}”")),
-                _ => Err(format!("the take has {} marks “{w}” — one's words, or another time", at.len())),
-            };
+        for what in ["mark", "chapter"] {
+            if let Some(w) = base.strip_prefix(what).and_then(|w| w.strip_prefix(' ')).map(str::trim)
+                && let Some(w) = w.strip_prefix('"').and_then(|w| w.strip_suffix('"'))
+            {
+                let at: Vec<u64> = self.of(what).filter(|v| v["said"] == w).map(ms_of).collect();
+                return match at[..] {
+                    [ms] => Ok(ms),
+                    [] => Err(format!("the take has no {what} “{w}”")),
+                    _ => {
+                        Err(format!("the take has {} {what}s “{w}” — one's words, or another time", at.len()))
+                    }
+                };
+            }
         }
         let words: Vec<&str> = base.split_whitespace().collect();
         let plural = |n: usize, noun: &str| format!("{n} {noun}{}", if n == 1 { "" } else { "s" });
@@ -372,6 +376,7 @@ impl Marks {
             ["review", n] => Ok(ms_of(&nth(self.of("review-opened").collect(), n, "review")?)),
             ["bring", n] => Ok(ms_of(&nth(self.of("bring").collect(), n, "bring")?)),
             ["mark", n] => Ok(ms_of(&nth(self.of("mark").collect(), n, "mark")?)),
+            ["chapter", n] => Ok(ms_of(&nth(self.of("chapter").collect(), n, "chapter")?)),
             ["front", n] if *n == "last" || n.parse::<usize>().is_ok() => {
                 Ok(ms_of(&nth(self.of("front").collect(), n, "front")?))
             }
@@ -379,7 +384,7 @@ impl Marks {
                 .map(ms_of)
                 .ok_or(format!("no workspace {name} came to the front in the take")),
             _ => Err("not a time: start, end, a clock (37:12), a length (72.5s) or a landmark (turn 2 end, card 1 \
-                      shown, run card 2 answered, run 1 start, review 1, front fix, bring 1, mark \"the board\"), \
+                      shown, run card 2 answered, run 1 start, review 1, front fix, bring 1, mark \"the board\", chapter 2), \
                       maybe + 2s"
                 .into()),
         }

@@ -290,6 +290,8 @@ fn the_way_in_is_its_users_alone_its_keys_and_marks_land_and_it_goes_with_the_ta
     until(&mut seen, "got:hi;");
     let (c, said) = ask(&sock, &json!({ "do": "mark", "text": "a friction" })).unwrap();
     assert_eq!(c, code::HELD, "{said}");
+    let (c, said) = ask(&sock, &json!({ "do": "chapter", "text": "The empty folder" })).unwrap();
+    assert_eq!(c, code::HELD, "{said}");
     // (without tarae's socket a wait still ends where it can, and says why it can't look)
     let (c, said) = ask(&sock, &json!({ "do": "state" })).unwrap();
     assert_eq!((c, said.as_str()), (code::ERROR, "tarae's state: no UI socket watched (record --state)"));
@@ -311,6 +313,8 @@ fn the_way_in_is_its_users_alone_its_keys_and_marks_land_and_it_goes_with_the_ta
     let marks = std::fs::read_to_string(take.join("landmarks.jsonl")).unwrap();
     let mark: Value = serde_json::from_str(marks.lines().next().unwrap()).unwrap();
     assert_eq!((&mark["what"], &mark["said"]), (&json!("mark"), &json!("a friction")));
+    let chapter: Value = serde_json::from_str(marks.lines().nth(1).unwrap()).unwrap();
+    assert_eq!((&chapter["what"], &chapter["said"]), (&json!("chapter"), &json!("The empty folder")));
     let ms = mark["ms"].as_u64().unwrap();
     assert!(ret_ms <= ms && ms <= bye_ms, "at its time: {ret_ms} ≤ {ms} ≤ {bye_ms}");
     let about: Value =
@@ -318,25 +322,36 @@ fn the_way_in_is_its_users_alone_its_keys_and_marks_land_and_it_goes_with_the_ta
     assert_eq!(about["cwd"], json!(cwd.display().to_string()));
 }
 
-/// The take's surroundings: your config copied with `llm.cost = false` and nothing else changed (yours untouched), the
-/// rest of its folder linked beside it, git's stand-in name and mail — and the variables that give them.
+/// The take's surroundings: your config copied with `llm.cost = false`, `llm.auto-cards = "off"` and its checkouts
+/// where the take says (yours under the home replaced) and nothing else changed (yours untouched), the rest of its
+/// folder linked beside it, git's stand-in name and mail — and the variables that give them.
 #[test]
-fn a_takes_surroundings_copy_your_config_with_cost_off_and_name_git_the_stand_ins() {
+fn a_takes_surroundings_copy_your_config_with_cost_and_auto_cards_off_and_name_git_the_stand_ins() {
     let dir = Scratch::new("xtask-take-around");
     let (yours, home) = (dir.join("yours"), dir.join("home"));
     std::fs::create_dir_all(yours.join("themes")).unwrap();
-    let text = "[llm]\ncommand = \"stand-in\"\ncost = true\n\n[editor]\nlsp = false\n";
+    let text = "[llm]\ncommand = \"stand-in\"\ncost = true\nauto-cards = \"shadow\"\n\n[editor]\nlsp = false\n\n\
+                [workspace]\nworktrees = \"/Users/u/checkouts\"\nsync = \"off\"\n";
     std::fs::write(yours.join("config.toml"), text).unwrap();
     std::fs::create_dir(&home).unwrap();
-    let env = crate::record::take::surroundings(&home, Some(text), Some(&yours)).unwrap();
+    let take = std::path::Path::new(crate::record::take::TAKE_WORKTREES);
+    let env = crate::record::take::surroundings(&home, Some(text), Some(&yours), Some(take)).unwrap();
 
     let copy: toml::Table =
         std::fs::read_to_string(home.join("config/tarae/config.toml")).unwrap().parse().unwrap();
     assert_eq!(copy["llm"]["cost"].as_bool(), Some(false));
+    assert_eq!(copy["llm"]["auto-cards"].as_str(), Some("off"), "yours says shadow");
     assert_eq!(
         (copy["llm"]["command"].as_str(), copy["editor"]["lsp"].as_bool()),
         (Some("stand-in"), Some(false))
     );
+    // (the take's checkouts outside the home, as its folder: cargo prints their paths whole)
+    assert_eq!(
+        copy["workspace"]["worktrees"].as_str(),
+        Some("/Users/Shared/halil-checkouts"),
+        "yours is home's"
+    );
+    assert_eq!(copy["workspace"]["sync"].as_str(), Some("off"));
     assert_eq!(std::fs::read_to_string(yours.join("config.toml")).unwrap(), text, "yours untouched");
     assert_eq!(std::fs::read_link(home.join("config/tarae/themes")).unwrap(), yours.join("themes"));
     let git = std::fs::read_to_string(home.join("gitconfig")).unwrap();
@@ -364,10 +379,19 @@ fn a_takes_surroundings_copy_your_config_with_cost_off_and_name_git_the_stand_in
     // (no config of yours: one of its own, cost off all the same)
     let bare = dir.join("bare");
     std::fs::create_dir(&bare).unwrap();
-    crate::record::take::surroundings(&bare, None, None).unwrap();
+    crate::record::take::surroundings(&bare, None, None, Some(take)).unwrap();
     let copy: toml::Table =
         std::fs::read_to_string(bare.join("config/tarae/config.toml")).unwrap().parse().unwrap();
     assert_eq!(copy["llm"]["cost"].as_bool(), Some(false));
+    assert_eq!(copy["llm"]["auto-cards"].as_str(), Some("off"));
+    assert_eq!(copy["workspace"]["worktrees"].as_str(), Some("/Users/Shared/halil-checkouts"));
+    // (the dry run's: none given, the scene's own folder kept)
+    let dry = dir.join("dry");
+    std::fs::create_dir(&dry).unwrap();
+    crate::record::take::surroundings(&dry, Some("[workspace]\nworktrees = \"/w\"\n"), None, None).unwrap();
+    let copy: toml::Table =
+        std::fs::read_to_string(dry.join("config/tarae/config.toml")).unwrap().parse().unwrap();
+    assert_eq!(copy["workspace"]["worktrees"].as_str(), Some("/w"));
 }
 
 #[test]

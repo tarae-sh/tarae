@@ -425,6 +425,146 @@ fn a_mark_s_words_resolve_as_a_time() {
     assert_eq!(Cut::parse(&file, "cut.toml", &m).unwrap().opening.from, 58_000);
 }
 
+/// A mark resolves by its number too (`mark 3`, `mark last`), and a chapter the driver said by its words and its number,
+/// apart from the marks: a mark's words aren't a chapter's.
+#[test]
+fn a_mark_resolves_by_its_number_and_a_chapter_by_its_words_and_number() {
+    let mut list = marks().list;
+    list.push(json!({ "what": "mark", "said": "a friction", "ms": 30_000 }));
+    list.push(json!({ "what": "chapter", "said": "The empty folder", "ms": 5_000 }));
+    list.push(json!({ "what": "mark", "said": "stuck", "ms": 45_000 }));
+    list.push(json!({ "what": "chapter", "said": "Two at once", "ms": 60_000 }));
+    list.push(json!({ "what": "mark", "said": "the board", "ms": 90_000 }));
+    let m = Marks::new(list, 120_000);
+    assert_eq!(m.time("mark 1"), Ok(30_000));
+    assert_eq!(m.time("mark 3"), Ok(90_000));
+    assert_eq!(m.time("mark last - 1s"), Ok(89_000));
+    let e = m.time("mark 4").unwrap_err();
+    assert!(e.contains("the take has 3 marks"), "{e}");
+    assert_eq!(m.time("chapter 2"), Ok(60_000));
+    assert_eq!(m.time("chapter \"The empty folder\" + 2s"), Ok(7_000));
+    let e = m.time("chapter \"stuck\"").unwrap_err();
+    assert!(e.contains("the take has no chapter “stuck”"), "{e}");
+    let e = m.time("mark \"Two at once\"").unwrap_err();
+    assert!(e.contains("the take has no mark “Two at once”"), "{e}");
+}
+
+/// `cut init`'s chapters: where the driver said them (`record chapter`), titled by their words, spans apart at each, and
+/// the front's changes not one; the list reads back to them.
+#[test]
+fn cut_init_puts_its_chapters_where_the_driver_said_them() {
+    let mut list = marks().list;
+    list.push(json!({ "what": "chapter", "said": "The \"empty\" folder", "ms": 3_000 }));
+    list.push(json!({ "what": "mark", "said": "a note", "ms": 20_000 }));
+    list.push(json!({ "what": "chapter", "said": "The bring", "ms": 52_000 }));
+    let m = Marks::new(list, 120_000);
+    let facts = Facts::of(&m, &[], Vec::new());
+    let at: Vec<(u64, &str, &str)> =
+        facts.chapters.iter().map(|c| (c.0, c.1.as_str(), c.2.as_str())).collect();
+    assert_eq!(at, [(3_000, "chapter 1", "The \"empty\" folder"), (52_000, "chapter 2", "The bring")]);
+    let edges: Vec<u64> = rules(&facts).iter().map(|(s, _)| s.from).collect();
+    assert!(edges.contains(&3_000) && edges.contains(&52_000) && !edges.contains(&50_000), "{edges:?}");
+    let (text, said) = written(&facts, std::path::Path::new("take"));
+    assert!(text.contains("at = \"chapter 2\"") && !text.contains("front 2"), "{text}");
+    assert!(said.contains("2 chapters (the driver's)"), "{said}");
+    let text = (text.replacen("name = \"\"", "name = \"halil\"", 1)).replacen(
+        "line = \"\"",
+        "line = \"A tool.\"",
+        1,
+    );
+    let back = Cut::parse(&text, "init.toml", &m).unwrap();
+    assert_eq!(
+        back.chapters.iter().map(|c| (c.at, c.title.as_str())).collect::<Vec<_>>(),
+        [(3_000, "The \"empty\" folder"), (52_000, "The bring")]
+    );
+}
+
+/// `cargo xtask cut init` end to end on a made-up take with the driver's chapters and marks: it writes its list (the
+/// opening's words empty, its read-back standing in for them); then `cargo xtask cut` on that list is refused only for
+/// those words, each by its line and what to fill — the list's every time read back by the cut itself.
+#[test]
+fn cut_init_on_a_take_writes_a_list_the_cut_refuses_only_for_the_openings_words() {
+    let s = tarae_testkit::scratch::Scratch::new("xtask-cut-init-e2e");
+    let dir = s.join("take");
+    std::fs::create_dir(&dir).unwrap();
+    let about = json!({ "v": 1, "size": [80, 24], "ms": 120_000, "started_unix_ms": 0, "made_up": true });
+    std::fs::write(dir.join("take.json"), about.to_string()).unwrap();
+    let mut screen = Vec::new();
+    for (ms, b) in [(0u64, "\x1b[H\x1b[2Jhalil"), (30_000, "\x1b[2;1Hcargo build"), (90_000, "\x1b[3;1Hdone")]
+    {
+        crate::record::put(&mut screen, ms * 1000, SCREEN, b.as_bytes()).unwrap();
+    }
+    std::fs::write(dir.join("screen.bin"), screen).unwrap();
+    let mut list = marks().list;
+    list.push(json!({ "what": "chapter", "said": "The empty folder", "ms": 2_000 }));
+    list.push(json!({ "what": "mark", "said": "a friction", "ms": 20_000 }));
+    list.push(json!({ "what": "chapter", "said": "The bring", "ms": 52_000 }));
+    list.push(json!({ "what": "bring", "ms": 58_000 }));
+    let lines: String = list.iter().map(|m| m.to_string() + "\n").collect();
+    std::fs::write(dir.join("landmarks.jsonl"), lines).unwrap();
+    let arg = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+    run(&["init".into(), arg(&dir)]).unwrap();
+    let init = dir.join("init.toml");
+    let text = std::fs::read_to_string(&init).unwrap();
+    assert!(text.contains("at = \"chapter 2\"") && text.contains("title = \"The bring\""), "{text}");
+    let e = run(&["init".into(), arg(&dir)]).unwrap_err();
+    assert!(e.contains("init.toml is there already"), "{e}");
+
+    // (the cut on it: refused for the opening's name, then its line, each said with its line in the list)
+    let line_of = |text: &str, key: &str| 1 + text.lines().position(|l| l.starts_with(key)).unwrap();
+    let e = run(&[arg(&init)]).unwrap_err();
+    let at = format!(
+        "init.toml:{}: opening: its name, one line of 1 to {NAME_MAX} characters (0 here)",
+        line_of(&text, "name = ")
+    );
+    assert!(e.ends_with(&at), "{e}");
+    let named = text.replacen("name = \"\"", "name = \"halil\"", 1);
+    std::fs::write(&init, &named).unwrap();
+    let e = run(&[arg(&init)]).unwrap_err();
+    let at = format!(
+        "init.toml:{}: opening: its line, one line of 1 to {LINE_MAX} characters (0 here)",
+        line_of(&named, "line = ")
+    );
+    assert!(e.ends_with(&at), "{e}");
+    // (with them written, the list reads back whole — the cut's own read, before it draws)
+    let filled = named.replacen("line = \"\"", "line = \"A tool.\"", 1);
+    let marks = Marks::read(&dir, 120_000).unwrap();
+    let back = Cut::parse(&filled, "init.toml", &marks).unwrap();
+    assert_eq!(
+        back.chapters.iter().map(|c| (c.at, c.title.as_str())).collect::<Vec<_>>(),
+        [(2_000, "The empty folder"), (52_000, "The bring")]
+    );
+}
+
+/// A take with no chapter said: by the front, counting only a workspace that stays ten seconds or more — the start
+/// first, by the first such one's name, then each by another name: a switch away and back within ten seconds isn't one.
+#[test]
+fn cut_init_by_the_front_never_puts_two_chapters_under_ten_seconds_apart() {
+    let front = |ms: u64, name: &str| json!({ "what": "front", "name": name, "ms": ms });
+    let m = Marks::new(
+        vec![
+            front(1_000, "fix"),    // 3 s at the start: the start's title is the next one's
+            front(4_000, "main"),   // the start
+            front(30_000, "dates"), // 4 s: a look
+            front(34_000, "main"),  // back: no chapter
+            front(50_000, "dates"), // 5 s, then
+            front(55_000, "board"), // stays: a chapter
+            front(80_000, "main"),  // a chapter
+            front(100_000, "main"), // the same name again: none
+        ],
+        120_000,
+    );
+    let facts = Facts::of(&m, &[], Vec::new());
+    let at: Vec<(u64, &str, &str)> =
+        facts.chapters.iter().map(|c| (c.0, c.1.as_str(), c.2.as_str())).collect();
+    assert_eq!(at, [(0, "start", "main"), (55_000, "front 6", "board"), (80_000, "front 7", "main")]);
+    let gaps = facts.chapters.windows(2).map(|w| w[1].0 - w[0].0);
+    assert!(gaps.clone().all(|g| g >= 10_000), "{:?}", gaps.collect::<Vec<_>>());
+    let (_, said) = written(&facts, std::path::Path::new("take"));
+    assert!(said.contains("3 chapters (by the front: the driver said none)"), "{said}");
+}
+
 #[test]
 fn the_opening_is_the_intro_the_card_then_where_it_ends_and_a_list_without_it_is_refused() {
     let c = cut(CUT).unwrap();

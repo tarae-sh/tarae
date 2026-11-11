@@ -10,8 +10,11 @@
 //!   but for its first `STILL_KEPT`, shown at 1×;
 //! - a turn: sped so what's left of it takes at most `TURN_MAX` on screen, never under `TURN_MIN`×;
 //! - the rest: `DEFAULT`×, the file's `default`;
-//! - a chapter where the take starts and wherever the workspace in front changes, titled with its name (to fill in).
-//!   A bring's end (`bring N`) and the driver's marks (`mark "WORDS"`, `mark N`) are landmarks to place one at by hand;
+//! - a chapter at each of the driver's `chapter` landmarks (`record chapter WORDS`), titled by its words. Only a take
+//!   with none falls back to the workspace in front, counting only one that stays there `CHAPTER_GAP` or more (so no
+//!   two chapters come closer; a switch that comes back within it isn't one): a chapter where the take starts, titled
+//!   with the first such workspace's name (to fill in), then one wherever such a one by another name comes to the front. A bring's end
+//!   (`bring N`) and the driver's marks (`mark "WORDS"`, `mark N`: notes) are landmarks to place one at by hand;
 //!   none is placed for them by rule;
 //! - the opening: where it ends the take's last `ENDS_FOR` from `ENDS_BEFORE` before its end, the card's words left
 //!   empty — the cut refuses them so until they're written.
@@ -39,6 +42,8 @@ pub(crate) const STILL_KEPT: u64 = 500;
 pub(crate) const TURN_MAX: u64 = 20_000;
 pub(crate) const TURN_MIN: f64 = 4.0;
 pub(crate) const DEFAULT: f64 = 4.0;
+/// The least a workspace stays in front to be a chapter where the driver said none: so the least two are apart.
+pub(crate) const CHAPTER_GAP: u64 = 10_000;
 
 const USAGE: &str = "usage: cargo xtask cut init TAKE [--out FILE]";
 
@@ -62,8 +67,10 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     };
     let facts = Facts::of(&marks, &keys, stills(&take.screen, take.size, take.ms()));
     let (text, said) = written(&facts, &dir);
-    // (what it wrote reads back: every edge resolves to the same ms)
-    Cut::parse(&text, &out.display().to_string(), &marks)
+    // (what it wrote reads back: every edge resolves to the same ms — the opening's words, left for you to fill in and
+    // refused empty by the cut, stood in for)
+    let filled = (text.replacen("name = \"\"", "name = \"-\"", 1)).replacen("line = \"\"", "line = \"-\"", 1);
+    Cut::parse(&filled, &out.display().to_string(), &marks)
         .map_err(|e| format!("cut init wrote a list it can't read back — {e}"))?;
     std::fs::write(&out, &text).map_err(|e| format!("{}: {e}", out.display()))?;
     println!("{}\n{said}", out.display());
@@ -167,8 +174,10 @@ pub(crate) fn sends(keys: &[Rec]) -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// What the rules read from a take: its end; its turns, cards and front changes from the landmarks (each edge with the
+/// What the rules read from a take: its end; its turns, cards and chapters from the landmarks (each edge with the
 /// landmark it is, as the file says one); what was typed, each send, and the still stretches.
+///
+/// A chapter: where (ms), its edge as the file says it, its title, and whether the driver said it (else the front's).
 #[derive(Debug, Default)]
 pub(crate) struct Facts {
     pub(crate) end: u64,
@@ -177,7 +186,7 @@ pub(crate) struct Facts {
     pub(crate) typed: Vec<(u64, u64)>,
     pub(crate) sent: Vec<(u64, u64)>,
     pub(crate) stills: Vec<(u64, u64)>,
-    pub(crate) fronts: Vec<(u64, String, String)>,
+    pub(crate) chapters: Vec<(u64, String, String, bool)>,
 }
 
 impl Facts {
@@ -202,17 +211,42 @@ impl Facts {
                 ((ms_of(v), format!("card {n} shown")), (to.0.min(end), to.1))
             })
             .collect();
-        let fronts = (marks.of("front").enumerate())
+        let said: Vec<(u64, String, String, bool)> = (marks.of("chapter").enumerate())
             .map(|(i, v)| {
-                let name = v["name"].as_str().or(v["to"].as_str()).unwrap_or("?").to_string();
-                match i {
-                    0 => (0, "start".to_string(), name),
-                    _ => (ms_of(v), format!("front {}", i + 1), name),
-                }
+                let title = v["said"].as_str().unwrap_or_default().to_string();
+                (ms_of(v), format!("chapter {}", i + 1), title, true)
             })
             .collect();
-        Facts { end, turns, cards, typed: typing(keys), sent: sends(keys), stills, fronts }
+        let chapters = match said.is_empty() {
+            false => said,
+            true => by_the_front(marks, end),
+        };
+        Facts { end, turns, cards, typed: typing(keys), sent: sends(keys), stills, chapters }
     }
+}
+
+/// A take's chapters where the driver said none: by the workspace in front (the module's doc).
+fn by_the_front(marks: &Marks, end: u64) -> Vec<(u64, String, String, bool)> {
+    let fronts: Vec<(u64, String)> = (marks.of("front"))
+        .map(|v| (ms_of(v), v["name"].as_str().or(v["to"].as_str()).unwrap_or("?").to_string()))
+        .collect();
+    let mut out: Vec<(u64, String, String, bool)> = Vec::new();
+    // (each one kept is followed by the next change `CHAPTER_GAP` or more after it: never two closer)
+    for (i, (ms, name)) in fronts.iter().enumerate() {
+        let stays = fronts.get(i + 1).map_or(end, |n| n.0).saturating_sub(*ms);
+        match out.last() {
+            _ if stays < CHAPTER_GAP => {}
+            None => out.push((0, "start".to_string(), name.clone(), false)),
+            Some(last) if *name == last.2 => {}
+            Some(_) => out.push((*ms, format!("front {}", i + 1), name.clone(), false)),
+        }
+    }
+    if out.is_empty()
+        && let Some((_, name)) = fronts.first()
+    {
+        out.push((0, "start".to_string(), name.clone(), false));
+    }
+    out
 }
 
 /// Which rule a moment of the take falls to, the first that holds it.
@@ -241,7 +275,7 @@ pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
         put(a, (a + STILL_KEPT).min(b));
         put(a, b);
     }
-    let chapters: Vec<u64> = f.fronts.iter().map(|c| c.0).collect();
+    let chapters: Vec<u64> = f.chapters.iter().map(|c| c.0).collect();
     edges.extend(&chapters);
     edges.sort_unstable();
     edges.dedup();
@@ -306,7 +340,7 @@ pub(crate) fn rules(f: &Facts) -> Vec<(Seg, String)> {
     out
 }
 
-/// The list's text, its spans those `rules` gives but the default's (the file's `default`), its chapters the fronts; and
+/// The list's text, its spans those `rules` gives but the default's (the file's `default`), its chapters; and
 /// what the rules gave, said: the take's length, the video's, the spans by kind.
 pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
     let spans = rules(f);
@@ -318,7 +352,7 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
         label(a);
         label(b);
     });
-    for (ms, edge, _) in &f.fronts {
+    for (ms, edge, ..) in &f.chapters {
         labels.entry(*ms).or_insert_with(|| edge.clone());
     }
     labels.insert(0, "start".into());
@@ -344,11 +378,14 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
         if ends == 0 { "start".to_string() } else { format!("end - {}ms", f.end - ends) },
         ENDS_FOR.min(f.end - ends)
     );
-    for (ms, edge, name) in &f.fronts {
+    for (ms, edge, title, said) in &f.chapters {
         let edge = if *edge == "start" || *ms == 0 { "start".to_string() } else { edge.clone() };
-        t += &format!(
-            "\n[[chapter]]\nat = \"{edge}\"\ntitle = \"{name}\"   # to fill in: {name} came to the front\n"
-        );
+        let why = match said {
+            true => "the driver's".to_string(),
+            false => format!("to fill in: {title} came to the front"),
+        };
+        let title = toml::Value::String(title.clone());
+        t += &format!("\n[[chapter]]\nat = \"{edge}\"\ntitle = {title}   # {why}\n");
     }
     let (mut one, mut fast, mut gone) = ((0, 0u64), (0, 0u64), (0, 0u64));
     let mut video = 0.0;
@@ -390,7 +427,7 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
     };
     let said = format!(
         "the take {} → about {:.1} s of the take part (cards not counted); spans: {} at 1× ({:.1} s), {} sped ({:.1} s), \
-         {} left out ({:.1} s); {} chapters{short}",
+         {} left out ({:.1} s); {} chapters {}{short}",
         clock(f.end),
         video / 1e3,
         one.0,
@@ -399,7 +436,11 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
         s(fast.1),
         gone.0,
         s(gone.1),
-        f.fronts.len()
+        f.chapters.len(),
+        match f.chapters.first() {
+            Some((.., true)) => "(the driver's)",
+            _ => "(by the front: the driver said none)",
+        }
     );
     (t, said)
 }
