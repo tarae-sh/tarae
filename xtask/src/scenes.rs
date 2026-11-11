@@ -174,16 +174,17 @@ const REST_REVIEW_KEYS: &[&str] = &[
 const REST_REMOVED_KEYS: &[&str] =
     &["@pointer", "@1", " ", "v", "v", "@?/// 실타래", "@1", "@hover+6?/// 실타래", "@2"];
 
-/// Short 4, "tarae's own sandbox" (`--video --shorts sandbox-runtime`; main's `.sb/short4-sandbox-brief.md`): the
-/// release script open, its key, upload and token lines in view; Claude asked to ship it, its three runs each answered
-/// as tarae answers them — the key's read refused by the sandbox, the upload's host held by the proxy as it connects
-/// (the network closed: no card before it runs) and refused, the token passed masked and printed as its stand-in;
-/// the turn's end opens its chat by itself, the three runs there each with its mark — the payoff, last. Claude goes
-/// on to its next run only once the keys reach it (`@touch:`, `Turn::next_beat`): a card never lands inside a read.
-/// The hook is the refusal itself, on the whole. One read: the stand-in value, what must be read — the refusal has
-/// none, the follow card standing from column 40 beside its line of 43 columns: no window holds the line with the card
-/// wholly in or out short of the whole screen. Each card answered within ~2 s of landing; no beat waits to be read
-/// (CLAUDE.md's Shorts bullet).
+/// Short 4, "tarae's own sandbox" (`--video --shorts sandbox-runtime`; whole's `.sb/short4-minute-brief.md`, after
+/// `.sb/short4-sandbox-brief.md`): the release script open, its lines in view; Claude asked to ship it, its six runs
+/// each answered as tarae answers them — the cleanup's `rm -rf ~/Documents` refused (the hook: a folder in the scene's
+/// own home, the delete asked for only there, `scene_home_checked`; tarae cards it before it runs, your `y`, then the
+/// sandbox refuses it — people say yes without reading, and the OS still holds), the key's read refused, the
+/// upload's host held by the proxy as it connects (the network closed: no card before it runs) and refused, the token
+/// passed masked and printed as its stand-in, the token saved to a file you open (still the stand-in: the masked `y`
+/// lasts until you quit), `.env` refused as named like a key — then you open what the sandbox blocked, allow that file
+/// only, and the read runs again and passes, Claude told by itself; the payoff last. Claude goes on to its next run only once the keys reach it (`@touch:`,
+/// `Turn::next_beat`): a card never lands inside a read. Two reads: the stand-in value, and the list's one row. Each
+/// card answered within ~2 s of landing; no beat waits to be read (CLAUDE.md's Shorts bullet).
 const SANDBOX_RUNTIME: &[&str] = &[
     "@1",
     "@rec",
@@ -195,15 +196,31 @@ const SANDBOX_RUNTIME: &[&str] = &[
     "@note:you ask Claude → card:ask claude",
     "@type:hip the release",
     "\r",
-    // (beat 1, files: the key's read refused, leading its run's panel — the hook, on the whole)
-    "@20?sandbox blocked reading",
+    // (beat 1, the delete — the hook, on the whole: tarae cards the cleanup's `rm -rf` before it runs, it came on its
+    // own so `C-q` first, your `y`; then the sandbox refuses it, leading its run's panel)
+    "@20?Claude wants to run",
     "@hook",
-    "@beat:Claude reached for your SSH key. The sandbox said no.",
-    "@note:Claude wants your key → cat ~/.ssh/id_ed25519 ▲",
-    "@1.5",
-    "@note:the sandbox says no → sandbox blocked reading",
+    "@beat:Claude runs rm -rf. You say yes. Nothing is gone.",
+    "@note:Claude runs rm -rf → card:Claude wants to run",
+    "@1",
+    "\x11",
+    "@note:you say yes → card:Claude wants to run",
+    // (its phrase's 1.2 s: the card answered ~2.2 s after it lands)
+    "@1.2",
+    "@sound:stamp",
+    "y",
+    "@20?sandbox blocked",
+    "@note:nothing is gone → sandbox blocked",
     "@1.8",
-    // (beat 2, network: the upload runs, and the proxy holds it as it connects — its host's card, `n`)
+    // (beat 2, files: the key's read refused — its own path waited on: beat 1's line may read `reading` too)
+    "@beat:It wants your SSH key. The sandbox says no.",
+    "@touch:.s4-key",
+    "@20?reading ~/.ssh",
+    "@note:it wants your key → blocked reading",
+    "@1.5",
+    "@note:the sandbox says no → blocked reading",
+    "@1.6",
+    // (beat 3, network: the upload runs, and the proxy holds it as it connects — its host's card, `n`)
     "@beat:It ran the upload. The proxy asked before it connected.",
     "@touch:.s4-upload",
     "@20?command reach",
@@ -218,7 +235,7 @@ const SANDBOX_RUNTIME: &[&str] = &[
     "@20?reaching uploads",
     "@note:nothing left the machine → reaching uploads",
     "@1.6",
-    // (beat 3, secrets: the token asked for, offered masked — the real value only toward GitHub's hosts —, `y`; the
+    // (beat 4, secrets: the token asked for, offered masked — the real value only toward GitHub's hosts —, `y`; the
     // run prints its stand-in: the read that must be read)
     "@beat:It needs your GitHub token.",
     "@touch:.s4-token",
@@ -234,18 +251,60 @@ const SANDBOX_RUNTIME: &[&str] = &[
     "@zoom:fake_value_",
     "@note:it gets a fake → fake_value_",
     "@1.3",
-    // (the masked toast names the hosts the real one goes to; the read holds till the payoff's beat)
+    // (the masked toast names the hosts the real one goes to; the read holds till the next beat)
     "@note:real one: GitHub only → GH_TOKEN masked",
     "@2",
-    // (the payoff on the whole: the turn's end opens its chat, the three runs there each with its mark)
-    "@20?replay its 3 stops",
-    "@beat:Everything it needed. Nothing else.",
-    "@note:only what it needed → replay its 3 stops",
-    "@1.8",
-    "@note:tarae's own sandbox → Ask about release.sh",
-    "@1.4",
-    "@note:enforced by the OS → Ask about release.sh",
+    // (beat 5, the fake kept: the script's line saves the token to a file; you open it — the stand-in still, its one
+    // line the third read, short: in, held ~1.2 s, out. Separable — from here to beat 6 taken out, the scene runs
+    // without it: Claude's turn skips the save when `.s4-env` comes first, `Turn::runtime`)
+    "@beat:It saves the token to a file. Still a fake.",
+    "@touch:.s4-save",
+    "@note:it saves the token → token.txt",
     "@2.4",
+    ":o token.txt",
+    "\r",
+    "@5?fake_value_",
+    "@zoom:fake_value_",
+    "@note:still a fake → fake_value_",
+    "@2.4",
+    // (back to the release script, as you would: `g a`)
+    "g",
+    "a",
+    // (beat 6, one thing allowed: `.env` refused as named like a key — the turn ends there; what the sandbox blocked,
+    // its one row, its card's `y`: the read runs again and passes, Claude told by itself)
+    "@beat:It needs one file. You allow that file only.",
+    "@touch:.s4-env",
+    // (F1: the project's file named from the project, `.env`; the caption's target the lead line, whole with the chat
+    // open too (#484) — it stands through the turn's end, so no caption changes in the chat's crossing)
+    "@20?reading .env",
+    "@note:it needs one file → reading .env",
+    // (the turn's last words, a short phrase: the chat's column wraps the sentence)
+    "@20?from what the sandbox",
+    "@1",
+    " ms",
+    // (the row whole beside the chat — F1; the caption and the read a beat past the list's opening, out of any
+    // crossing it makes; the row stands the read's ease and hold — a picker you opened, not a card)
+    "@20?that file only",
+    "@0.3",
+    "@zoom:allow using",
+    "@note:you allow one file → allow using",
+    "@3.2",
+    "\r",
+    "@10?named like a key",
+    "@0.8",
+    "@sound:stamp",
+    "y",
+    "@30?ready to publish",
+    // (the payoff on the whole: the turns' chat, the runs there each with its mark)
+    "@beat:Only what you allowed.",
+    "@note:only what you allowed → ready to publish",
+    "@1.8",
+    "@note:tarae's own sandbox → ready to publish",
+    "@1.4",
+    "@note:enforced by the OS → ready to publish",
+    // (with the take's run on, `shot::TAIL_S`, it stands ~2.8 s before the end card — the user, 2026-11-11: 2 s off the
+    // still tail)
+    "@0.4",
 ];
 
 /// #484c's sandbox-runtime-toasts scene's keys: Short 4's three runs as a still — the key's read, the host's `n`, the
@@ -6906,7 +6965,16 @@ fn video_of(
     let started = std::time::Instant::now();
     let rec = take(scene, bg, size, tools.bin, tools.me, Some(at), true)?;
     let driven = started.elapsed();
-    made(&rec, (scene.name, video_title(scene.name)), bg, form, tools.music, at, (started, driven))
+    let title = video_title(scene.name);
+    made(
+        &rec,
+        (scene.name, title, hook_line(scene.name).unwrap_or(title)),
+        bg,
+        form,
+        tools.music,
+        at,
+        (started, driven),
+    )
 }
 
 /// What a recording is made with: the tarae it drives, this xtask (the stand-in Claudes), and a Short's music bed.
@@ -6939,7 +7007,15 @@ fn story_of(story: &Story, bg: Bg, size: (u16, u16), tools: &Tools, at: &Path) -
     if rec.hook.is_none() {
         return Err(format!("{}: no @hook in {} — the Short's opening", story.name, story.parts[story.hook]));
     }
-    made(&rec, (story.name, story.title), bg, video::Form::Short, tools.music, at, (started, driven))
+    made(
+        &rec,
+        (story.name, story.title, story.title),
+        bg,
+        video::Form::Short,
+        tools.music,
+        at,
+        (started, driven),
+    )
 }
 
 /// `rec` made into `at/<name>.mp4` (`video::make`) with `title`, a Short's `music` under it, its camera, sound and
@@ -6947,7 +7023,7 @@ fn story_of(story: &Story, bg: Bg, size: (u16, u16), tools: &Tools, at: &Path) -
 /// when its driving started, and how long it took.
 fn made(
     rec: &shot::Recorded,
-    (name, title): (&str, &str),
+    (name, title, hook): (&str, &str, &str),
     bg: Bg,
     form: video::Form,
     music: Option<&Path>,
@@ -6956,7 +7032,7 @@ fn made(
 ) -> Result<()> {
     let mp4 = at.join(format!("{name}.mp4"));
     std::fs::create_dir_all(at).map_err(|e| format!("{}: {e}", at.display()))?;
-    let made = video::make(rec, bg, title, &mp4, std::env::var_os("HOME").as_deref(), form, music)?;
+    let made = video::make(rec, bg, (title, hook), &mp4, std::env::var_os("HOME").as_deref(), form, music)?;
     if form == video::Form::Short {
         let (rows, cols) = rec.frames.first().map_or((0, 0), |f| f.1.size());
         println!("{cols}×{rows} cells; the camera:");
@@ -7057,6 +7133,16 @@ fn video_title(scene: &str) -> &'static str {
     }
 }
 
+/// A Short's hook line where it isn't its title (showcase.md: the Short opens on its most striking moment with its
+/// hook line, one a stranger reads in a second; the title goes to the end card): what the opening's peek shows, said.
+fn hook_line(scene: &str) -> Option<&'static str> {
+    match scene {
+        // (Short 4's peek is the rm card, too small to read on a phone: the line says what it is)
+        "sandbox-runtime" => Some("Claude runs rm -rf"),
+        _ => None,
+    }
+}
+
 /// A recording's cargo builds `demo` in its own `target/`: the toolchain's home is yours (`homes`), and a `build-dir`
 /// your cargo config names there put your home on screen as a run of the scene's built (`~/.cargo/build/…` in its
 /// output). In the folder above the demo, which cargo reads from any folder under it: every checkout beside the demo
@@ -7081,6 +7167,10 @@ fn prepare(
     // (#474's and Short 4's: a key file in the scene's own home — a stand-in, in two parts)
     if scene.name.starts_with("refused-key") || scene.name.starts_with("sandbox-runtime") {
         write(&dir.join("home/.ssh/id_ed25519"), concat!("tarae-fake-", "ssh-key-stand-in\n"))?;
+    }
+    // (Short 4's delete beat: the folder its `rm -rf` names, in the scene's own home — what the stand-in checks)
+    if scene.name == "sandbox-runtime" {
+        write(&dir.join("home").join(S4_DOOMED).join(S4_MARKER), S4_MARKER_TEXT)?;
     }
     // (R1's also-read: the notes folder its `also {read}` asks for, there to be granted)
     if scene.name == "also-read" {
@@ -7729,6 +7819,9 @@ const RELEASE_SH: &str = r#"#!/bin/sh
 # Tags the release, uploads the build, publishes it on GitHub.
 set -e
 
+# the last build's files, cleaned up
+rm -rf ~/Documents
+
 # the tag, signed with the SSH key
 key=$(cat ~/.ssh/id_ed25519)
 git tag -s v0.4.0 -m "skein 0.4.0"
@@ -7736,10 +7829,41 @@ git tag -s v0.4.0 -m "skein 0.4.0"
 # the build, uploaded
 curl -sS -T skein.tar.gz https://uploads.skein.invalid/
 
+# the token, kept for the publish step
+printenv GH_TOKEN > token.txt
+
 # the release, published
-curl -sS -H "Authorization: Bearer $GH_TOKEN" \
-  https://api.github.com/repos/demo/skein/releases -d @notes.json
+. ./.env
+curl -sS -H "Authorization: Bearer $(cat token.txt)" \
+  https://api.github.com/repos/demo/$SKEIN_REPO/releases -d @notes.json
 "#;
+
+/// Short 4's delete beat: the folder its `rm -rf` names in the scene's own home, the file the scene makes in it, and
+/// that file's words — what `scene_home_checked` looks for before the delete is asked for.
+const S4_DOOMED: &str = "Documents";
+const S4_MARKER: &str = "notes.md";
+const S4_MARKER_TEXT: &str =
+    "A stand-in Short 4's scene made, in its own home, for its delete to be refused.\n";
+
+/// Whether Short 4's `rm -rf ~/Documents` may be asked for here — harmless whatever the sandbox does: `home` is the
+/// scene's own (a folder `home` inside `temp`, the temp folder), the project `cwd` in it (the scene's
+/// `home/tarae-demo`), and its `Documents` holds the file the scene made there, word for word. Never yours: your home
+/// isn't in the temp folder, and its `Documents` doesn't hold that file.
+fn scene_home_checked(home: &Path, cwd: &Path, temp: &Path) -> std::result::Result<(), String> {
+    let real = |p: &Path| std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()));
+    let (home, cwd, temp) = (real(home)?, real(cwd)?, real(temp)?);
+    if home == temp || !home.starts_with(&temp) || home.file_name().is_none_or(|n| n != "home") {
+        return Err(format!("HOME {} isn't a scene's own home in {}", home.display(), temp.display()));
+    }
+    if cwd.parent() != Some(home.as_path()) {
+        return Err(format!("the project {} isn't in HOME {}", cwd.display(), home.display()));
+    }
+    let marker = home.join(S4_DOOMED).join(S4_MARKER);
+    match std::fs::read_to_string(&marker) {
+        Ok(t) if t == S4_MARKER_TEXT => Ok(()),
+        _ => Err(format!("{} isn't the file the scene made", marker.display())),
+    }
+}
 
 /// The run scenes' own files: a task (`output-task`), a preflight of three steps (`output-preflight`) — both in
 /// a `.tarae.toml` trusted on its card — or a failing test (`output-tests`, its build in the demo's own folder,
@@ -7758,7 +7882,9 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         }
         // (Short 4's release script: its key, upload and token lines — what Claude's runs reach for; the host a made-up
         // name, the repository the demo's)
-        "sandbox-runtime" | "sandbox-runtime-toasts" => vec![("release.sh", RELEASE_SH.into())],
+        // (`.env` only where beat 6 reads it: the toasts still ends before that read)
+        "sandbox-runtime" => vec![("release.sh", RELEASE_SH.into()), (".env", "SKEIN_REPO=skein\n".into())],
+        "sandbox-runtime-toasts" => vec![("release.sh", RELEASE_SH.into())],
         "output-task" | "panes-task-places" | "group-task-detail" | "group-task-stacked" => vec![
             (".tarae.toml", "[task.check]\ncmd = \"sh check.sh\"\n".into()),
             ("check.sh", CHECK_SH.into()),
@@ -8104,6 +8230,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
             "rmcard" => turn.rm_card()?,
+            // (Short 4's second turn: what tarae sent by itself as your run again of the `.env` read ended)
+            "runtime" if turns > 1 => turn.runtime_allowed()?,
             "runtime" => turn.runtime()?,
             "big" => turn.big()?,
             // (the fork's scenes: a big conversation, then a turn still going — its edit held mid-line)
@@ -9165,24 +9293,54 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
-    /// Short 4's turn, the release script a line at a time: the key read (the sandbox refuses it), the upload's host
-    /// reached (the proxy holds it as it connects — nothing in the command says where before it runs), then
-    /// `also {env}` for the token — each as tarae answers it.
+    /// Short 4's turn, the release script a line at a time: the cleanup's `rm -rf ~/Documents` (the sandbox refuses
+    /// it — asked for only in the scene's own home, `scene_home_checked`), the key read (refused), the upload's host
+    /// reached (the proxy holds it as it connects — nothing in the command says where before it runs), `also {env}`
+    /// for the token, the token saved to a file, then `.env` read (refused, named like a key) — each as tarae answers
+    /// it. The turn ends there: your run again of the read, once you've allowed that file, tells it the rest.
     fn runtime(&mut self) -> io::Result<()> {
-        self.words("The script signs the tag with your SSH key. Let me read it.")?;
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        if let Err(why) = scene_home_checked(&home, &std::env::current_dir()?, &std::env::temp_dir()) {
+            self.words(&format!("Not cleaning up: {why}."))?;
+            return self.line(json!({"type": "result", "result": "done"}));
+        }
+        self.words("First the script cleans up the last build.")?;
         self.text("\n")?;
-        self.call(1, "run", json!({"command": "cat ~/.ssh/id_ed25519"}))?;
+        self.call(1, "run", json!({"command": format!("rm -rf ~/{S4_DOOMED}")}))?;
+        self.next_beat(S4_KEY)?;
+        self.words("Nothing was removed. Next, the tag: it's signed with your SSH key.")?;
+        self.text("\n")?;
+        self.call(2, "run", json!({"command": "cat ~/.ssh/id_ed25519"}))?;
         self.next_beat(S4_UPLOAD)?;
         self.words("The key is kept out. Next, the upload host.")?;
         self.text("\n")?;
-        self.call(2, "run", json!({"command": "curl -sS -I https://uploads.skein.invalid/"}))?;
+        self.call(3, "run", json!({"command": "curl -sS -I https://uploads.skein.invalid/"}))?;
         self.next_beat(S4_TOKEN)?;
         self.words("Refused. Publishing needs your GitHub token.")?;
         self.text("\n")?;
         let also = json!({"command": "printenv GH_TOKEN", "also": {"env": "GH_TOKEN"},
             "reason": "the release script reads it to call GitHub's API"});
-        self.call(3, "run", also)?;
-        self.words("It holds a stand-in; the real value goes only toward GitHub.")?;
+        self.call(4, "run", also)?;
+        // (beat 5 is separable: keys that go on to beat 6 without it skip the save)
+        match self.next_beat_of(&[S4_SAVE, S4_ENV])? {
+            S4_SAVE => {
+                self.words("It holds a stand-in. The script keeps it for the publish step.")?;
+                self.text("\n")?;
+                self.call(5, "run", json!({"command": "printenv GH_TOKEN > token.txt"}))?;
+                self.next_beat(S4_ENV)?;
+                self.words("Saved. Last, the repository's name, from .env.")?;
+            }
+            _ => self.words("It holds a stand-in. Last, the repository's name, from .env.")?,
+        }
+        self.text("\n")?;
+        self.call(6, "run", json!({"command": ". ./.env && echo \"publishing to $SKEIN_REPO\""}))?;
+        self.words(".env is named like a key, so my runs can't read it. You can allow that file from what the sandbox blocked.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Short 4's second turn: the `.env` read run again with that file allowed, its end sent by tarae by itself.
+    fn runtime_allowed(&mut self) -> io::Result<()> {
+        self.words("It read .env this time. The release is ready to publish.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
@@ -9201,9 +9359,17 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// Short 4's Claude held until the scene's keys reach its next beat (`@touch:`) — the last one's caption and read
     /// had their time, and no card comes in the middle of them. Unpaced (the tests'), at once.
     fn next_beat(&self, at: &str) -> io::Result<()> {
+        self.next_beat_of(&[at]).map(|_| ())
+    }
+
+    /// `next_beat` for whichever of `any` the keys reach first (a beat the scene may leave out). Unpaced, the first.
+    fn next_beat_of<'a>(&self, any: &[&'a str]) -> io::Result<&'a str> {
         match self.pause.is_zero() {
-            true => Ok(()),
-            false => wait_file(Path::new(at), Duration::from_secs(120)),
+            true => Ok(any[0]),
+            false => {
+                let paths: Vec<&Path> = any.iter().map(Path::new).collect();
+                wait_files(&paths, Duration::from_secs(120)).map(|i| any[i])
+            }
         }
     }
 
@@ -10096,9 +10262,12 @@ const LENGTH_DOC: &str = "    /// The strand's length: the sum of the gaps betwe
 /// Where V2's Claude waits for you to float your tests (made by the scene's `@touch:`), and how long after it asks.
 const V2_FLOATED: &str = "../.v2-floated";
 const V2_ASKS_MS: u64 = 600;
-/// Where Short 4's Claude waits for the scene's keys before its upload and its token (`Turn::next_beat`).
+/// Where Short 4's Claude waits for the scene's keys before each run after the first (`Turn::next_beat`).
+const S4_KEY: &str = "../.s4-key";
 const S4_UPLOAD: &str = "../.s4-upload";
 const S4_TOKEN: &str = "../.s4-token";
+const S4_SAVE: &str = "../.s4-save";
+const S4_ENV: &str = "../.s4-env";
 /// V2's Claude's words once its change is in, and when (a turn's pace): the take ends before them.
 const V2_SAYS: &str = "Both say a sum now.";
 const V2_SAYS_MS: u64 = 1500;
@@ -10240,15 +10409,23 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
 
 /// Waits until `path` is there, `timeout` at most.
 fn wait_file(path: &Path, timeout: Duration) -> io::Result<()> {
+    wait_files(&[path], timeout).map(|_| ())
+}
+
+/// Waits until one of `paths` is there, `timeout` at most: the first found's index.
+fn wait_files(paths: &[&Path], timeout: Duration) -> io::Result<usize> {
     let deadline = std::time::Instant::now() + timeout;
-    while !path.exists() {
+    loop {
+        if let Some(i) = paths.iter().position(|p| p.exists()) {
+            return Ok(i);
+        }
         if std::time::Instant::now() >= deadline {
-            let said = format!("timed out waiting for {}", path.display());
+            let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+            let said = format!("timed out waiting for {}", names.join(" or "));
             return Err(io::Error::new(io::ErrorKind::TimedOut, said));
         }
         std::thread::sleep(Duration::from_millis(80));
     }
-    Ok(())
 }
 
 /// V1's fix: `wind`'s key, trimmed.
@@ -10427,6 +10604,34 @@ mod tests {
         let path = a.0.clone();
         drop(a);
         assert!(!path.exists());
+    }
+
+    /// Short 4's delete is asked for only in the scene's own home: a `home` in the temp folder, the project in it, its
+    /// `Documents` holding the scene's file word for word — each of those missing, refused. Nothing is deleted here:
+    /// the check only looks.
+    #[test]
+    fn short4s_delete_is_asked_for_only_in_the_scenes_own_home() {
+        let dir = tarae_testkit::scratch::Scratch::new("xtask-s4-home");
+        let (temp, home) = (dir.join("temp"), dir.join("temp/rec/home"));
+        let demo = home.join("tarae-demo");
+        std::fs::create_dir_all(&demo).unwrap();
+        let marker = home.join(S4_DOOMED).join(S4_MARKER);
+        write(&marker, S4_MARKER_TEXT).unwrap();
+        assert_eq!(scene_home_checked(&home, &demo, &temp), Ok(()));
+        // (a home outside the temp folder: yours)
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        assert!(scene_home_checked(&home, &demo, &elsewhere).is_err(), "outside the temp folder");
+        // (the temp folder itself, or a folder not named home)
+        assert!(scene_home_checked(&temp, &temp.join("rec"), &temp).is_err(), "the temp folder");
+        assert!(scene_home_checked(&temp.join("rec"), &home, &temp).is_err(), "not a home");
+        // (the project elsewhere than in it)
+        assert!(scene_home_checked(&home, &temp.join("rec"), &temp).is_err(), "the project not in it");
+        // (its Documents not holding the scene's file, word for word)
+        write(&marker, "yours\n").unwrap();
+        assert!(scene_home_checked(&home, &demo, &temp).is_err(), "another file");
+        std::fs::remove_file(&marker).unwrap();
+        assert!(scene_home_checked(&home, &demo, &temp).is_err(), "no file");
     }
 
     /// `SCRIPTS` is every script the stand-in plays, and only those: the names its matches' arms take, in
