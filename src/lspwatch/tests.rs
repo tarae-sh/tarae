@@ -511,7 +511,7 @@ impl Fake {
 
     pub fn hand(&self, batch: Batch) {
         if let Some(out) = lock(&self.out).as_mut() {
-            out(Said { batch });
+            out(Said { batch, record: Vec::new() });
         }
     }
 

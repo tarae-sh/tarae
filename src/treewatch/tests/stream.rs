@@ -53,7 +53,26 @@ fn armed(rx: &Receiver<Batch>, root: &Path) {
     until(rx, |h| h.iter().any(|(p, _)| *p == marker));
 }
 
-/// Whatever comes for a burst's length after the last thing awaited — what a stream gone wrong would still say.
+/// The words a watch said in their order, each with what it stood on (`Said::record`) — for a judge by path (#502).
+type Words = Arc<std::sync::Mutex<Vec<(PathBuf, Kind, Option<Record>)>>>;
+
+/// `watching`, its words also recorded — each in `Words` before its batch is sent.
+fn watching_recorded(roots: &[&Path]) -> (TreeWatch, Receiver<Batch>, Words) {
+    let (tx, rx) = mpsc::channel();
+    let words = Words::default();
+    let kept = Arc::clone(&words);
+    let w = TreeWatch::start(given(roots, vec![]), move |s: Said| {
+        let said = s.batch.iter().cloned().zip(s.record).map(|((p, k), r)| (p, k, r));
+        kept.lock().unwrap().extend(said);
+        drop(tx.send(s.batch))
+    })
+    .expect("the stream starts");
+    (w, rx, words)
+}
+
+/// Whatever comes for a burst's length after the last thing awaited — what a stream gone wrong would still say. A net
+/// for a late or doubled word, not a deadline: a word that lands past it, in what's awaited next, is judged the same
+/// where a test judges by path (`five_thousand_…`, #502), whichever half it lands in.
 fn late(rx: &Receiver<Batch>) -> Vec<(PathBuf, Kind)> {
     let end = Instant::now() + BURST_MAX + QUIET * 2;
     let mut heard = Vec::new();
@@ -425,12 +444,13 @@ fn a_set_changing_one_root_restarts_one_stream() {
 /// A checkout's burst of kept files arrives whole (the design session, 2026-11-11: "a big burst of kept files must
 /// arrive whole before the commit"): 5,000 `.rs` in 50 folders made, then the 50 folders removed in one `rm -r`, as
 /// a checkout takes a branch's files and their folders. Exactly 5,000 said created and then 5,000 said deleted,
-/// each path once each way, nothing else of theirs (a burst's length after the last awaited, for one late or
-/// doubled). A look at the root right after each half (as the LSP side's looks come at a run's end, git's moment):
-/// 0 changed in all — a compare within `disk::RACY` of the files' make says nothing of them (W1b step 3, round 5's
-/// extra 5,000).
-/// (One said changed would be a file FSEvents named again in a later delivery than its make — a reason, but none
-/// was seen in round 5's runs: failed, for a look.)
+/// each path once each way, judged by path across both halves: created, then deleted, nothing missing or doubled,
+/// nothing else of theirs (a burst's length after the last awaited, for one late or doubled). A look at the root
+/// right after each half (as the LSP side's looks come at a run's end, git's moment). A changed is allowed only where
+/// its record proves a reason (#502's calls, `Record::reason`): lost events, an event past its mark, a look's debt
+/// past `disk::RACY`, an event on an entry an event put in an earlier burst (a make split by a burst's end — at load
+/// the make runs for seconds, cut every `BURST_MAX`), the stamp moved. One with none is round 5's bug (a compare
+/// saying changed for no reason: its extra 5,000): printed as "no reason", failed. On a quiet machine: 0 changed.
 #[test]
 fn five_thousand_kept_files_made_and_removed_with_their_folders_arrive_whole() {
     if skipped("five_thousand_kept_files_made_and_removed_with_their_folders_arrive_whole") {
@@ -439,7 +459,7 @@ fn five_thousand_kept_files_made_and_removed_with_their_folders_arrive_whole() {
     const FILES: usize = 5_000;
     let (_s, root) = scratch("stream-whole");
     let many = root.join("many");
-    let (w, rx) = watching(&[&root], vec![]);
+    let (w, rx, words) = watching_recorded(&[&root]);
     armed(&rx, &root);
     let dirs: Vec<PathBuf> = (0..50).map(|d| many.join(format!("d{d}"))).collect();
     let files: Vec<PathBuf> = (0..FILES).map(|i| dirs[i / 100].join(format!("f{i}.rs"))).collect();
@@ -474,31 +494,47 @@ fn five_thousand_kept_files_made_and_removed_with_their_folders_arrive_whole() {
             of(h, Kind::Changed)
         )
     };
+    // (by path, across both halves: each word of a file below `many`, in order, with its record)
+    let mut by_path: BTreeMap<PathBuf, Vec<(Kind, Option<Record>)>> = BTreeMap::new();
+    for (p, k, r) in words.lock().unwrap().iter().filter(|(p, _, _)| p.starts_with(&many)) {
+        by_path.entry(p.clone()).or_default().push((*k, *r));
+    }
+    let (mut wrong, mut changed, mut reasons) = (Vec::new(), Vec::new(), BTreeMap::<String, usize>::new());
+    for f in &files {
+        let said = by_path.remove(f).unwrap_or_default();
+        let shape = said.len() >= 2
+            && said[0].0 == Kind::Created
+            && said[said.len() - 1].0 == Kind::Deleted
+            && said[1..said.len() - 1].iter().all(|(k, _)| *k == Kind::Changed);
+        if !shape {
+            wrong.push(format!("{}: {:?}", f.display(), said.iter().map(|(k, _)| *k).collect::<Vec<_>>()));
+        }
+        for (_, r) in said.iter().filter(|(k, _)| *k == Kind::Changed) {
+            let reason = r.and_then(|r| r.reason());
+            *reasons.entry(reason.map_or("no reason".into(), |r| format!("{r:?}"))).or_default() += 1;
+            let line = r.map_or("no reason: no record".into(), |r| r.line());
+            changed.push((reason.is_none(), format!("{}: {line}", f.display())));
+        }
+    }
+    wrong.extend(by_path.keys().map(|p| format!("{}: not a file made", p.display())));
     eprintln!(
-        "TREEWATCH whole: made, all heard in {made_in:?}: {} · removed, all heard in {gone_in:?}: {}",
+        "TREEWATCH whole: made, all heard in {made_in:?}: {} · removed, all heard in {gone_in:?}: {} · changed by \
+         reason {reasons:?}",
         line(&made),
         line(&gone)
     );
-    let all = |h: &[(PathBuf, Kind)], k: Kind| files.iter().all(|f| has(h, f, k));
-    assert!(all(&made, Kind::Created), "each file said created");
-    assert_eq!(
-        (of(&made, Kind::Created), distinct(&made, Kind::Created)),
-        (FILES, FILES),
-        "made, none twice"
+    let first = |list: &[String]| list.iter().take(50).cloned().collect::<Vec<_>>().join("\n  ");
+    assert!(
+        wrong.is_empty(),
+        "{} files not created then deleted once each:\n  {}",
+        wrong.len(),
+        first(&wrong)
     );
-    assert_eq!(of(&made, Kind::Deleted), 0, "made: nothing said deleted");
-    assert!(all(&gone, Kind::Deleted), "each file said deleted");
-    assert_eq!(
-        (of(&gone, Kind::Deleted), distinct(&gone, Kind::Deleted)),
-        (FILES, FILES),
-        "removed, none twice"
-    );
-    assert_eq!(of(&gone, Kind::Created), 0, "removed: nothing said created");
-    assert_eq!(
-        (of(&made, Kind::Changed), of(&gone, Kind::Changed)),
-        (0, 0),
-        "nothing said changed, made or removed, the looks after each included"
-    );
+    // (a changed with no reason the record proves: each changed printed, those first)
+    crate::sorting::by_key(&mut changed, |(none, _)| !*none);
+    let lines: Vec<String> = changed.iter().map(|(_, l)| l.clone()).collect();
+    let none = changed.iter().filter(|(none, _)| *none).count();
+    assert_eq!(none, 0, "{none} changed with no reason, of {}:\n  {}", changed.len(), first(&lines));
 }
 
 /// By hand: a root below a folder left out. The watch says a write there (that folder holds a root, so it isn't

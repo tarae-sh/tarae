@@ -60,6 +60,11 @@ fn kinds(list: &[(&str, Kind)]) -> Vec<(String, Kind)> {
     list.iter().map(|(p, k)| (p.to_string(), *k)).collect()
 }
 
+/// The reason the last step's record proves for what it said of `p` (#502).
+fn reason(t: &Tree, p: &Path) -> Option<Reason> {
+    t.record.get(p).expect("said, so recorded").reason()
+}
+
 /// Made, written in place and removed: said once each with its kind — decided by one stat and the table, so a
 /// server hears `Created` for a file it never had and `Deleted` for one it had.
 #[test]
@@ -224,6 +229,7 @@ fn an_event_made_file_compared_after_lost_events_is_said_changed() {
             _ => vec![(root.clone(), DIR), (src, flag::MUST_SCAN_SUB_DIRS)],
         };
         assert_eq!(said(t.step(&events), &root), kinds(&[("src/a.rs", Kind::Changed)]), "{case}");
+        assert_eq!(reason(&t, &a), Some(Reason::Lost), "{case}");
         crate::clock::release();
     }
 }
@@ -264,6 +270,39 @@ fn a_second_event_after_the_mark_is_taken_says_changed() {
     crate::clock::release();
 }
 
+/// Friction #502's diagnosis: a make by `fs::write` is two operations on its name (the open that creates it, the write
+/// that fills it), so a burst that ends between them (`BURST_MAX`'s cut, or a writer stalled past `QUIET` — a loaded
+/// machine) splits it. The event said it created; what comes for it after says changed: its write's own event, the
+/// stamp the same ("written, then named again") or moved ("stat between open and write"), or a look's compare where
+/// the stamp moved ("the look after"). (Lost events over it, the third source: `an_event_made_file_compared_after_…`.)
+#[test]
+fn a_make_split_by_a_bursts_end_says_changed_after_created() {
+    for case in ["written, then named again", "stat between open and write", "the look after"] {
+        let (_s, root) = scratch("split-make");
+        let mut t = tree(&root, &[]);
+        let a = root.join("pkg/a.rs");
+        write(&a, if case == "written, then named again" { "pub fn f() {}\n" } else { "" });
+        crate::clock::hold();
+        let first = [(root.join("pkg"), CREATED_DIR), (a.clone(), CREATED)];
+        assert_eq!(said(t.step(&first), &root), kinds(&[("pkg/a.rs", Kind::Created)]), "{case}");
+        if case != "written, then named again" {
+            fs::write(&a, "pub fn f() {}\n").unwrap();
+        }
+        let then = match case {
+            "the look after" => (root.clone(), flag::LOOKED),
+            _ => (a.clone(), CREATED | MODIFIED),
+        };
+        assert_eq!(said(t.step(&[then]), &root), kinds(&[("pkg/a.rs", Kind::Changed)]), "{case}");
+        // (the record proves it: an event on an entry an event put in an earlier step, or the stamp moved)
+        let (want, unmoved) = match case {
+            "written, then named again" => (Reason::Named, [0, 1]),
+            _ => (Reason::Moved, [0, 0]),
+        };
+        assert_eq!((reason(&t, &a), t.unmoved), (Some(want), unmoved), "{case}");
+        crate::clock::release();
+    }
+}
+
 /// A first event whose stamp moved since the compare is a write after the make: changed, mark or not.
 #[test]
 fn a_first_event_with_a_moved_stamp_says_changed() {
@@ -295,8 +334,9 @@ fn a_late_event_after_the_marks_window_says_changed() {
     write(&a, "fn b() {}");
     fs::File::options().write(true).open(&a).unwrap().set_modified(mtime).unwrap();
     crate::clock::advance(MARKED_FOR);
-    assert_eq!(said(t.step(&[(a, MODIFIED)]), &root), kinds(&[("pkg/a.rs", Kind::Changed)]));
+    assert_eq!(said(t.step(&[(a.clone(), MODIFIED)]), &root), kinds(&[("pkg/a.rs", Kind::Changed)]));
     assert!(t.marked.is_empty());
+    assert_eq!((reason(&t, &a), t.unmoved), (Some(Reason::PastMark), [1, 0]), "counted past the window");
     crate::clock::release();
 }
 
@@ -396,6 +436,95 @@ fn a_file_the_fill_found_fresh_is_said_changed_once_when_it_can_be_judged() {
     crate::clock::advance(Duration::from_secs(1));
     assert_eq!(t.step(&[(root.clone(), flag::LOOKED)]), [], "never again");
     crate::clock::release();
+}
+
+/// Friction #502's path 3: a file a compare found (its folder's event; its own not come yet), too fresh to judge, is
+/// owed; a look's compare past `disk::RACY` with no event for it before says it changed — the debt judged, once.
+/// Its own event first, the look says nothing: an event stood for it, nothing is owed.
+#[test]
+fn a_compares_find_judged_at_a_look_says_changed_once_unless_its_event_came_first() {
+    for event_first in [false, true] {
+        let (_s, root) = scratch("debt-look");
+        let mut t = tree(&root, &[]);
+        let b = root.join("pkg/b.rs");
+        write(&b, "fn b() {}");
+        crate::clock::hold();
+        let made = said(t.step(&[(root.join("pkg"), CREATED_DIR)]), &root);
+        assert_eq!(made, kinds(&[("pkg/b.rs", Kind::Created)]), "a compare's own find");
+        if event_first {
+            assert_eq!(t.step(&[(b.clone(), CREATED | MODIFIED)]), [], "its own event takes the mark");
+        }
+        crate::clock::advance(crate::disk::RACY);
+        let looked = said(t.step(&[(root.clone(), flag::LOOKED)]), &root);
+        if event_first {
+            assert_eq!(looked, [], "an event stood for it: nothing owed");
+        } else {
+            assert_eq!(looked, kinds(&[("pkg/b.rs", Kind::Changed)]), "the debt judged at the look");
+            assert_eq!(reason(&t, &b), Some(Reason::Debt));
+            assert_eq!(t.step(&[(root.clone(), flag::LOOKED)]), [], "once");
+        }
+        crate::clock::release();
+    }
+}
+
+/// The record proves a reason or none (#502's calls): a changed with the stamp the same by a folder's compare, a look
+/// with no debt or one still too fresh, an event inside its mark's window, on the fill's entry or on one an event put
+/// in the same step, lost events over a sure stamp — round 5's bug and its kin — has none; each reason's own has it.
+#[test]
+fn a_changed_word_has_a_reason_only_where_the_record_proves_one() {
+    let now = Instant::now();
+    let stamp: Stamp = (SystemTime::UNIX_EPOCH + Duration::from_secs(100), 10);
+    let s = Duration::from_secs;
+    let r = |why, by, (sure, owed), mark: Option<Duration>, age: Duration| Record {
+        why,
+        step: 2,
+        held: Some(Held {
+            stamp,
+            sure,
+            owed,
+            unnamed: mark.map(|_| now),
+            put: Some(Put { by, at: now, step: 1 }),
+        }),
+        stamp: Some(stamp),
+        age: Some(age),
+        mark,
+    };
+    let cases = [
+        ("a folder's compare", r(Why::Folder, By::Compare, (false, false), Some(s(1)), s(3)), None),
+        ("a look, nothing owed", r(Why::Look, By::Compare, (true, false), Some(s(1)), s(3)), None),
+        ("a look's debt too fresh", r(Why::Look, By::Compare, (false, true), Some(s(1)), s(1)), None),
+        ("a debt an event put", r(Why::Look, By::Event, (false, true), None, s(3)), None),
+        ("an event inside the window", r(Why::Event, By::Compare, (false, false), Some(s(1)), s(1)), None),
+        ("an event on the fill's entry", r(Why::Event, By::Fill, (true, false), None, s(60)), None),
+        ("lost over a sure stamp", r(Why::Lost, By::Event, (true, false), None, s(60)), None),
+        (
+            "an event in its put's step",
+            Record { step: 1, ..r(Why::Event, By::Event, (false, false), None, s(0)) },
+            None,
+        ),
+        ("lost", r(Why::Lost, By::Event, (false, false), None, s(1)), Some(Reason::Lost)),
+        (
+            "past the mark",
+            r(Why::Event, By::Compare, (false, false), Some(MARKED_FOR), s(5)),
+            Some(Reason::PastMark),
+        ),
+        ("a compare's debt", r(Why::Look, By::Compare, (false, true), Some(s(2)), s(2)), Some(Reason::Debt)),
+        ("the fill's debt", r(Why::Look, By::Fill, (false, true), None, s(2)), Some(Reason::Debt)),
+        ("named again", r(Why::Event, By::Event, (false, false), None, s(0)), Some(Reason::Named)),
+        (
+            "moved",
+            Record { stamp: Some((stamp.0, 11)), ..r(Why::Folder, By::Compare, (true, false), None, s(9)) },
+            Some(Reason::Moved),
+        ),
+    ];
+    for (case, record, want) in cases {
+        assert_eq!(record.reason(), want, "{case}: {}", record.line());
+    }
+    let none = r(Why::Folder, By::Compare, (false, false), None, s(3)).line();
+    assert!(
+        none.starts_with("no reason: by Folder in step 2; put by Some(Compare) in step Some(1)"),
+        "{none}"
+    );
 }
 
 /// Events dropped (by FSEvents' client side or the kernel): whatever path comes with the flag, every root is
@@ -994,13 +1123,18 @@ fn a_batch_is_said_with_its_counts_and_where_it_came_from() {
         (p("/r"), DIR | flag::MUST_SCAN_SUB_DIRS),
         (p("/r/b.rs"), REMOVED | flag::KERNEL_DROPPED),
     ];
-    let line = said_files(&batch, [1, 2, 1, 0], &events, None);
-    let want = "a batch said 1 created, 2 deleted, 1 changed, said by 1 an event, 2 a folder's compare, 0 a look, 1 \
-                lost events, from 3 events (1 must scan below, 1 dropped, 0 root changed)";
+    let line = said_files(&batch, ([1, 2, 1, 0], [0, 0]), &events, None);
+    let want = "a batch said 1 created, 2 deleted, 1 changed, said by 1 an event (changed with the stamp the same: 0 \
+                past a mark's window, 0 with no mark), 2 a folder's compare, 0 a look, 1 lost events, from 3 events \
+                (1 must scan below, 1 dropped, 0 root changed)";
     assert!(line.starts_with(want), "{line}");
-    let line = said_files(&batch[3..], [0, 0, 0, 1], &events[..1], None);
-    let want = "a batch said 0 created, 0 deleted, 1 changed, said by 0 an event, 0 a folder's compare, 1 a look, 0 \
-                lost events, from 1 events";
+    let line = said_files(&batch[3..], ([0, 0, 0, 1], [0, 0]), &events[..1], None);
+    let want = "a batch said 0 created, 0 deleted, 1 changed, said by 0 an event (changed with the stamp the same: 0 \
+                past a mark's window, 0 with no mark), 0 a folder's compare, 1 a look, 0 lost events, from 1 events";
+    assert!(line.starts_with(want), "changes only: {line}");
+    let line = said_files(&batch[3..], ([0, 0, 1, 0], [2, 3]), &events[..1], None);
+    let want = "a batch said 0 created, 0 deleted, 1 changed, said by 1 an event (changed with the stamp the same: 2 \
+                past a mark's window, 3 with no mark), 0 a folder's compare";
     assert!(line.starts_with(want), "changes only: {line}");
 }
 

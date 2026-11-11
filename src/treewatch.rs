@@ -71,6 +71,9 @@ pub type Batch = Vec<(PathBuf, Kind)>;
 /// own running total, `Tree.missed`, logged as it doubles.)
 pub struct Said {
     pub batch: Batch,
+    /// Tests: what each word of `batch` stood on, in its order (#502: a changed is judged by its reason).
+    #[cfg(test)]
+    pub(crate) record: Vec<Option<Record>>,
 }
 
 /// A change a look's compare finds with a stamp at least this old is one the stream should have said by then.
@@ -228,12 +231,112 @@ impl Burst {
 /// rewrite that keeps mtime and size (a reproducible build's), said changed (calls 7).
 /// The fill marks nothing, sure or not: it told the server nothing, and a sure entry has no event coming — an event
 /// naming one is a write (a reproducible build's rewrite keeps the very mtime and size), said changed.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Held {
     stamp: Stamp,
     sure: bool,
     owed: bool,
     unnamed: Option<Instant>,
+    /// Tests: who put this stamp in the table (a compare that saw it unmoved keeps the one before).
+    #[cfg(test)]
+    put: Option<Put>,
+}
+
+/// Tests: who put a held stamp in the table — an event, a compare (a look's too), the fill —, when, and in which
+/// step (`Tree.steps`).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Put {
+    by: By,
+    at: Instant,
+    step: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum By {
+    Event,
+    Compare,
+    Fill,
+}
+
+/// Tests: what a said path's word stood on (#502) — the step's `Why`, the entry as held before (its stamp, sureness,
+/// debt, mark and who put it), the stamp now (none: gone), the stamp's age at the stat and the mark's then.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Record {
+    why: Why,
+    step: u64,
+    held: Option<Held>,
+    stamp: Option<Stamp>,
+    age: Option<Duration>,
+    mark: Option<Duration>,
+}
+
+/// Tests: the reasons a file may be said changed, each one the record proves (#502's calls).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reason {
+    /// 1. A lost-events compare (`Why::Lost`), the held stamp not sure.
+    Lost,
+    /// 2. An event past its mark's `MARKED_FOR`, the stamp the same.
+    PastMark,
+    /// 3. A look's compare judging a debt (`Held::owed`) past `disk::RACY`, put by no event.
+    Debt,
+    /// 4. An event on an entry an event put in an earlier step, the stamp the same: a make split by a burst's end —
+    ///    or a rewrite that kept size and mtime, which only an event tells (never talked out of by a stamp).
+    Named,
+    /// 5. The stamp moved since the entry was put.
+    Moved,
+}
+
+#[cfg(test)]
+impl Record {
+    /// Why a changed word was said, if the record proves a reason — none: round 5's bug, a changed with no reason.
+    pub(crate) fn reason(&self) -> Option<Reason> {
+        let (h, stamp) = (self.held?, self.stamp?);
+        let by = |by: By| h.put.is_some_and(|p| p.by == by && p.step < self.step);
+        match self.why {
+            _ if h.stamp != stamp => Some(Reason::Moved),
+            Why::Lost if !h.sure => Some(Reason::Lost),
+            Why::Event if h.unnamed.is_some() && self.mark.is_some_and(|m| m >= MARKED_FOR) => {
+                Some(Reason::PastMark)
+            }
+            Why::Event if by(By::Event) => Some(Reason::Named),
+            Why::Look
+                if h.owed
+                    && (by(By::Compare) || by(By::Fill))
+                    && self.age.is_some_and(|a| a >= crate::disk::RACY) =>
+            {
+                Some(Reason::Debt)
+            }
+            _ => None,
+        }
+    }
+
+    /// For a failure's message: the reason, or "no reason", and what it stood on.
+    pub(crate) fn line(&self) -> String {
+        let reason = self.reason().map_or("no reason".to_string(), |r| format!("{r:?}"));
+        let ms = |d: Option<Duration>| d.map_or("—".to_string(), |d| format!("{}ms", d.as_millis()));
+        let size = |s: Option<Stamp>| s.map_or("—".to_string(), |s| s.1.to_string());
+        let held = self.held;
+        let put = held.and_then(|h| h.put);
+        format!(
+            "{reason}: by {:?} in step {}; put by {:?} in step {:?}; stamp {} (size {} → {}), {} old at the stat; \
+             held sure {:?}, owed {:?}; mark {} old",
+            self.why,
+            self.step,
+            put.map(|p| p.by),
+            put.map(|p| p.step),
+            if held.map(|h| h.stamp) == self.stamp { "the same" } else { "moved" },
+            size(held.map(|h| h.stamp)),
+            size(self.stamp),
+            ms(self.age),
+            held.map(|h| h.sure),
+            held.map(|h| h.owed),
+            ms(self.mark),
+        )
+    }
 }
 
 impl Held {
@@ -403,6 +506,16 @@ struct Tree {
     by: [usize; 4],
     /// The last step's events that took the mark (`Held::unnamed`), their flags: said in the log (`marked_line`).
     marked: Vec<u32>,
+    /// The last step's files an event said changed with the stamp the same, no mark honored: past its mark's
+    /// `MARKED_FOR`, and with none (an entry an event or the fill put: a make split by a burst's end, a rewrite that
+    /// kept size and mtime — a build's generated files) — the batch line's count, before any rule moves (#502).
+    unmoved: [usize; 2],
+    /// Tests: the steps so far — the record's (`Put`, `Record`) "which step".
+    #[cfg(test)]
+    steps: u64,
+    /// Tests: the last step's record, by path (the first said wins, as in `Saying`).
+    #[cfg(test)]
+    record: BTreeMap<PathBuf, Record>,
     /// Tests: the stats `look` made.
     #[cfg(test)]
     stats: usize,
@@ -430,6 +543,11 @@ impl Tree {
             many_said: false,
             by: [0; 4],
             marked: Vec::new(),
+            unmoved: [0; 2],
+            #[cfg(test)]
+            steps: 0,
+            #[cfg(test)]
+            record: BTreeMap::new(),
             #[cfg(test)]
             stats: 0,
             #[cfg(test)]
@@ -475,6 +593,8 @@ impl Tree {
     /// marked (`Held::unnamed`). The links to folders met (not followed).
     fn fill(&mut self, dirs: &[PathBuf]) -> usize {
         let taken = crate::clock::system();
+        #[cfg(test)]
+        let put = Some(Put { by: By::Fill, at: crate::clock::now(), step: self.steps });
         let (mut found, mut links) = (BTreeMap::new(), 0);
         for d in dirs {
             self.walk(d, &mut found, &mut links);
@@ -482,7 +602,15 @@ impl Tree {
         for (p, stamp) in found {
             let sure = crate::disk::sure(&stamp, taken);
             // (not marked: the fill told the server nothing — an event naming the file says it changed)
-            self.table.entry(p).or_insert(Held { stamp, sure, owed: !sure, unnamed: None });
+            let held = Held {
+                stamp,
+                sure,
+                owed: !sure,
+                unnamed: None,
+                #[cfg(test)]
+                put,
+            };
+            self.table.entry(p).or_insert(held);
         }
         links
     }
@@ -575,13 +703,25 @@ impl Tree {
             );
             crate::log::line("tree-watch", "warn", &what);
         }
-        (!batch.is_empty()).then_some(Said { batch })
+        #[cfg(test)]
+        let record = batch.iter().map(|(p, _)| self.record.remove(p)).collect();
+        (!batch.is_empty()).then_some(Said {
+            batch,
+            #[cfg(test)]
+            record,
+        })
     }
 
     /// The batch; what it said by each `Why` left in `by`.
     fn step(&mut self, events: &[(PathBuf, u32)]) -> Batch {
         let mut said = Saying::new();
         self.marked.clear();
+        self.unmoved = [0; 2];
+        #[cfg(test)]
+        {
+            self.steps += 1;
+            self.record.clear();
+        }
         let (mut files, mut scans, mut whole) = (Vec::new(), Vec::new(), false);
         let by_look = |looked: bool| if looked { Why::Look } else { Why::Folder };
         // (a root that wasn't there and is now, named by any event or look at or below it: compared, its files created)
@@ -710,39 +850,88 @@ impl Tree {
         } else {
             // (a folder gone, or replaced by a file: what it held is gone)
             for p in self.below(path) {
-                self.table.remove(&p);
-                said.entry(p).or_insert((Kind::Deleted, why));
+                let held = self.table.remove(&p);
+                self.say(said, &p, (Kind::Deleted, why), held, None, (taken, now));
             }
         }
         match file.filter(|_| (self.keep)(path)) {
             None => {
-                if self.table.remove(path).is_some() {
-                    said.entry(path.to_path_buf()).or_insert((Kind::Deleted, why));
+                if let Some(held) = self.table.remove(path) {
+                    self.say(said, path, (Kind::Deleted, why), Some(held), None, (taken, now));
                 }
             }
             Some(m) => {
                 let stamp = stamp_of(&m);
                 let sure = crate::disk::sure(&stamp, taken);
                 if why != Why::Event {
-                    let (kind, now) = judged(self.table.get(path).copied(), stamp, sure, why, now);
-                    self.table.insert(path.to_path_buf(), now);
+                    let held = self.table.get(path).copied();
+                    let (kind, new) = judged(held, stamp, sure, why, now);
+                    self.put(path, new, now);
                     if let Some(kind) = kind {
-                        said.entry(path.to_path_buf()).or_insert((kind, why));
+                        self.say(said, path, (kind, why), held, Some(stamp), (taken, now));
                     }
                     return false;
                 }
                 // (an event stood for it: owed nothing, named)
-                let held = Held { stamp, sure, owed: false, unnamed: None };
-                let kind = match self.table.insert(path.to_path_buf(), held) {
+                let new = Held {
+                    stamp,
+                    sure,
+                    owed: false,
+                    unnamed: None,
+                    #[cfg(test)]
+                    put: Some(Put { by: By::Event, at: now, step: self.steps }),
+                };
+                let held = self.table.insert(path.to_path_buf(), new);
+                let kind = match held {
                     // (the make a compare already said, its own event landed late: the mark taken)
                     Some(h) if h.marked(now) && h.stamp == stamp => return true,
                     Some(_) => Kind::Changed,
                     None => Kind::Created,
                 };
-                said.entry(path.to_path_buf()).or_insert((kind, why));
+                self.say(said, path, (kind, why), held, Some(stamp), (taken, now));
             }
         }
         false
+    }
+
+    /// A compare's entry (`judged`) in the table — in tests, put by this compare where it has no one's yet (made or
+    /// moved here).
+    fn put(&mut self, path: &Path, new: Held, now: Instant) {
+        #[cfg(test)]
+        let new = Held { put: new.put.or(Some(Put { by: By::Compare, at: now, step: self.steps })), ..new };
+        #[cfg(not(test))]
+        let _ = now;
+        self.table.insert(path.to_path_buf(), new);
+    }
+
+    /// `p` said with its kind and why, unless said already this step (the first said wins): `held` its entry
+    /// before, `stamp` now (none: gone), `at` the clocks read before the stat. An event's changed with the stamp the
+    /// same is counted (`unmoved`); in tests, what the word stood on is recorded (`Record`).
+    fn say(
+        &mut self,
+        said: &mut Saying,
+        p: &Path,
+        (kind, why): (Kind, Why),
+        held: Option<Held>,
+        stamp: Option<Stamp>,
+        at: (SystemTime, Instant),
+    ) {
+        if said.contains_key(p) {
+            return;
+        }
+        said.insert(p.to_path_buf(), (kind, why));
+        if let Some(h) = held.filter(|h| why == Why::Event && kind == Kind::Changed && Some(h.stamp) == stamp)
+        {
+            self.unmoved[usize::from(h.unnamed.is_none())] += 1;
+        }
+        #[cfg(test)]
+        {
+            let age = stamp.and_then(|s| at.0.duration_since(s.0).ok());
+            let mark = held.and_then(|h| h.unnamed).map(|m| at.1.saturating_duration_since(m));
+            self.record.insert(p.to_path_buf(), Record { why, step: self.steps, held, stamp, age, mark });
+        }
+        #[cfg(not(test))]
+        let _ = at;
     }
 
     /// A folder walked and compared with the table by stamp: a file not held is created, one held and not found
@@ -761,19 +950,20 @@ impl Tree {
         self.walk(dir, &mut found, &mut 0);
         for p in self.below(dir) {
             if !found.contains_key(&p) {
-                self.table.remove(&p);
-                said.entry(p).or_insert((Kind::Deleted, why));
+                let held = self.table.remove(&p);
+                self.say(said, &p, (Kind::Deleted, why), held, None, (taken, at));
             }
         }
         for (p, stamp) in found {
-            let (kind, now) =
-                judged(self.table.get(&p).copied(), stamp, crate::disk::sure(&stamp, taken), why, at);
-            let moved = self.table.insert(p.clone(), now).is_none_or(|h| h.stamp != stamp);
+            let held = self.table.get(&p).copied();
+            let (kind, new) = judged(held, stamp, crate::disk::sure(&stamp, taken), why, at);
+            self.put(&p, new, at);
+            let moved = held.is_none_or(|h| h.stamp != stamp);
             let Some(kind) = kind else { continue };
             // (one an event named was looked at first: its stamp is held already, so it never comes here)
             let old = taken.duration_since(stamp.0).is_ok_and(|age| age >= MISSED_AFTER);
             self.missed += usize::from(why == Why::Look && moved && old);
-            said.entry(p).or_insert((kind, why));
+            self.say(said, &p, (kind, why), held, Some(stamp), (taken, at));
         }
     }
 
@@ -839,7 +1029,16 @@ fn judged(held: Option<Held>, stamp: Stamp, sure: bool, why: Why, now: Instant) 
     let moved = held.is_none_or(|h| h.stamp != stamp);
     let still = kind.is_none() && held.is_some_and(|h| h.owed);
     let unnamed = if moved { Some(now) } else { held.and_then(|h| h.unnamed) };
-    (kind, Held { stamp, sure, owed: !sure && (moved || still), unnamed })
+    let new = Held {
+        stamp,
+        sure,
+        owed: !sure && (moved || still),
+        unnamed,
+        // (made or moved here: the compare puts it, `Tree::put`)
+        #[cfg(test)]
+        put: held.filter(|_| !moved).and_then(|h| h.put),
+    };
+    (kind, new)
 }
 
 /// The events a step's mark took, for the log: how many, and their flags, each set with its count, the most first —
@@ -864,9 +1063,11 @@ fn marked_line(flags: &[u32]) -> String {
 /// folder's compare, a look, lost events); from how many events, those that asked for more than a look (a scan
 /// below, dropped events, a root's own change); and how long after its burst's first. Every batch, changes only too
 /// (a save): a checkout's whole count, and anything said again, is read from these lines (W1b step 3, rounds 5–6).
+/// Of an event's, the changed with the stamp the same (`Tree.unmoved`): past a mark's window, and with no mark —
+/// counted before any rule moves (#502).
 fn said_files(
     batch: &[(PathBuf, Kind)],
-    by: [usize; 4],
+    (by, unmoved): ([usize; 4], [usize; 2]),
     events: &[(PathBuf, u32)],
     first: Option<Instant>,
 ) -> String {
@@ -881,10 +1082,13 @@ fn said_files(
     );
     let after = first.map_or_else(|| "—".to_string(), |f| crate::term::run_duration(crate::clock::since(f)));
     format!(
-        "a batch said {made} created, {gone} deleted, {changed} changed, said by {} an event, {} a folder's compare, \
-         {} a look, {} lost events, from {} events ({scan} must scan below, {dropped} dropped, {root} root changed), \
-         {after} after its burst's first",
+        "a batch said {made} created, {gone} deleted, {changed} changed, said by {} an event (changed with \
+         the stamp the same: {} past a mark's window, {} with no mark), {} a folder's compare, {} a look, {} lost \
+         events, from {} events ({scan} must scan below, {dropped} dropped, {root} root changed), {after} after its \
+         burst's first",
         n(Why::Event),
+        unmoved[0],
+        unmoved[1],
         n(Why::Folder),
         n(Why::Look),
         n(Why::Lost),
@@ -1248,7 +1452,7 @@ mod mac {
                     let first = std::mem::take(&mut burst).first;
                     let events = std::mem::take(&mut pending);
                     if let Some(said) = tree.settle(&events) {
-                        let what = super::said_files(&said.batch, tree.by, &events, first);
+                        let what = super::said_files(&said.batch, (tree.by, tree.unmoved), &events, first);
                         crate::log::line("tree-watch", "info", &what);
                         out(said);
                     }
