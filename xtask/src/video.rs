@@ -1267,19 +1267,23 @@ const WIDE_INTRO_PX: usize = 560;
 /// The wide video's intro (the full video's opening, `cut`'s `[opening]`): the Shorts' swing (`intro_frames`) made
 /// `WIDE_INTRO_PX` tall, `t a r a e` rising in under it as on a Short's end card (`NAME_RISE`), the two centred on the
 /// frame by the pose that stays (`inked`: the rows the last frame covers, not its box — the brush swings higher on
-/// the way, and has the room); the frames' size as made, said.
+/// the way, and has the room); the frames' size as made, said. Its first frame is the first that shows something (a
+/// file's first frame is what a preview shows): the empty ones before it are left out (`skipped`).
 pub(crate) struct WideIntro {
     frames: Vec<Rgba>,
     name: Picture,
     inked: (usize, usize),
     pub(crate) made: (usize, usize),
+    pub(crate) skipped: usize,
 }
 
 impl WideIntro {
     /// `bg`'s swing (meok's only: hanji has no frames — refused, said by the caller).
     pub(crate) fn new(bg: Bg, look: &Look, fonts: &Fonts) -> Result<WideIntro> {
-        let frames = intro_frames(bg)?;
+        let mut frames = intro_frames(bg)?;
         let made = frames.first().map_or((0, 0), |f| (f.0, f.1));
+        let skipped = frames.iter().position(|(_, _, px)| px.chunks(4).any(|p| p[3] > 8)).unwrap_or(0);
+        frames.drain(..skipped);
         let k = (WIDE_INTRO_PX as f32 / made.1.max(1) as f32).min(1.0);
         let frames = if k < 1.0 { frames.iter().map(|f| shrunk(f, k)).collect() } else { frames };
         let name = text("t a r a e", INTRO_NAME_PX, look.accent, look.ground, true, fonts);
@@ -1292,7 +1296,12 @@ impl WideIntro {
         let all: Vec<usize> = frames.last().map(rows).unwrap_or_default();
         let h = frames.first().map_or(0, |f| f.1);
         let inked = (all.iter().copied().min().unwrap_or(0), all.iter().copied().max().map_or(h, |y| y + 1));
-        Ok(WideIntro { frames, name, inked, made })
+        Ok(WideIntro { frames, name, inked, made, skipped })
+    }
+
+    /// How far into the swing as made it starts (µs): the empty frames left out.
+    pub(crate) fn skipped_us(&self) -> u64 {
+        self.skipped as u64 * 1_000_000 / INTRO_FPS
     }
 
     /// How many frames, their size as drawn, and the rows they ink (from, to).

@@ -20,8 +20,10 @@
 //! name = "halil"                          # the card's name, large; chapters.txt's 0:00, over the three parts
 //! line = "A task manager for the terminal."    # what it is, to someone who has never heard of it
 //! code = ["halil add \"pay rent friday 9am +home !high\"", "halil board"]   # up to two lines, drawn as code
-//! at = "end - 6s"                         # where it ends: this much of the take at 1×, its keys heard; a zoom
-//! for = "4s"                              # whose `at` falls in it is the camera there too
+//! at = "end - 6s"                         # where it ends: this much of the take at 1×, its keys heard
+//! for = "4s"
+//! zoom = "card:Run these checks"           # the camera there, on a target as a [[zoom]]'s: eased in from where
+//!                                         # it ends' start, held to its end (a [[zoom]] is the take's alone)
 //!
 //! [[span]]                                # in the take's order, apart; the rest takes `default`
 //! from = "turn 1 start - 4s"
@@ -38,7 +40,8 @@
 //! for = "3s"                              # of the video's time
 //! text = "One ask: what the tool is."
 //!
-//! [[zoom]]                                # the camera on what must be read, eased in and back out
+//! [[zoom]]                                # the camera on what must be read, eased in and back out — in the
+//!                                         # take, never where it ends, whatever its time
 //! at = "card 1 shown + 0.5s"
 //! for = "2s"                              # held, of the video's time
 //! on = "card:wants to run"                # a target as the Shorts' camera reads one (`camera::target`)
@@ -56,8 +59,9 @@
 //!
 //! A time in the take: `start`, `end`, a clock (`1:02:03.5`, `37:12`), a length from the start (`72.5s`), or a landmark
 //! (`landmarks.jsonl`) — `turn N start|end`, `[KIND] card N shown|answered` (`run card 2 shown`: the second card of kind
-//! `run`), `run N start|end`, `review N`, `front N` or `front NAME` (when that workspace came to the front) —, `N` from 1
-//! or `last`; any of them `+ 2s` or `- 500ms`. A landmark the take doesn't have, or a time past its end, is refused
+//! `run`), `run N start|end`, `review N`, `front N` or `front NAME` (when that workspace came to the front),
+//! `mark "WORDS"` (the driver's `record mark WORDS`, its words whole) —, `N` from 1 or `last`; any of them `+ 2s` or
+//! `- 500ms`. A landmark the take doesn't have, or a time past its end, is refused
 //! with its line. A length: `3s`, `2.5s`, `500ms`, `1m 30s`.
 //!
 //! Every list is in the take's order and spans don't overlap: a file that reorders anything is refused with the line.
@@ -280,7 +284,12 @@ impl Marks {
     /// landmark or the time falls outside it.
     pub(crate) fn time(&self, said: &str) -> std::result::Result<u64, String> {
         let s = said.trim();
-        let cut = [" + ", " - "].iter().filter_map(|p| s.rfind(p).map(|i| (i, *p))).max_by_key(|c| c.0);
+        // (an offset only past a mark's words: they may hold " - ")
+        let after = s.rfind('"').map_or(0, |i| i + 1);
+        let cut = [" + ", " - "]
+            .iter()
+            .filter_map(|p| s[after..].rfind(p).map(|i| (after + i, *p)))
+            .max_by_key(|c| c.0);
         let (base, by) = match cut {
             Some((i, p)) => {
                 let d = length(&s[i + 3..]).map_err(|e| format!("\"{said}\": {e}"))? as i64;
@@ -299,6 +308,16 @@ impl Marks {
     }
 
     fn point(&self, base: &str) -> std::result::Result<u64, String> {
+        if let Some(w) = base.strip_prefix("mark ").map(str::trim)
+            && let Some(w) = w.strip_prefix('"').and_then(|w| w.strip_suffix('"'))
+        {
+            let at: Vec<u64> = self.of("mark").filter(|v| v["said"] == w).map(ms_of).collect();
+            return match at[..] {
+                [ms] => Ok(ms),
+                [] => Err(format!("the take has no mark “{w}”")),
+                _ => Err(format!("the take has {} marks “{w}” — one's words, or another time", at.len())),
+            };
+        }
         let words: Vec<&str> = base.split_whitespace().collect();
         let plural = |n: usize, noun: &str| format!("{n} {noun}{}", if n == 1 { "" } else { "s" });
         let nth = |list: Vec<&'_ Value>, n: &str, noun: &str| -> std::result::Result<Value, String> {
@@ -356,7 +375,7 @@ impl Marks {
                 .map(ms_of)
                 .ok_or(format!("no workspace {name} came to the front in the take")),
             _ => Err("not a time: start, end, a clock (37:12), a length (72.5s) or a landmark (turn 2 end, card 1 \
-                      shown, run card 2 answered, run 1 start, review 1, front fix), maybe + 2s"
+                      shown, run card 2 answered, run 1 start, review 1, front fix, mark \"the board\"), maybe + 2s"
                 .into()),
         }
     }
@@ -461,7 +480,7 @@ impl Map {
 // ── The file ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The opening's words and where it ends: the card's name, line and lines of code; then this much (`len`) of the take
-/// from `from` (ms), at 1×.
+/// from `from` (ms), at 1×, the camera on `zoom`'s target there (its line) where it's given.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Opening {
     pub(crate) name: String,
@@ -469,6 +488,7 @@ pub(crate) struct Opening {
     pub(crate) code: Vec<String>,
     pub(crate) from: u64,
     pub(crate) len: u64,
+    pub(crate) zoom: Option<(String, usize)>,
 }
 
 impl Opening {
@@ -497,16 +517,14 @@ pub(crate) struct Caption {
     pub(crate) line: usize,
 }
 
-/// A zoom: held `len` ms of the video on `on`, moving in and out `camera::DRIFT_MS` each way; where it ends too when its
-/// `at` is in that stretch (`ends`), and in the take part where that shows it (`shown`: not left out).
+/// A zoom: held `len` ms of the video on `on`, moving in and out `camera::DRIFT_MS` each way — in the take part only
+/// (where it ends has the opening's own, `Opening::zoom`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Zoom {
     pub(crate) at: u64,
     pub(crate) len: u64,
     pub(crate) on: String,
     pub(crate) line: usize,
-    pub(crate) ends: bool,
-    pub(crate) shown: bool,
 }
 
 /// A music bed: from chapter `chapter` (its index) on, its `file` as the edit list says it, repeating between `looped`'s
@@ -828,8 +846,7 @@ impl Cut {
         for e in list("zoom")? {
             e.keys(&["at", "for", "on"])?;
             let (at, len, on) = (e.time("at", marks)?, e.length("for")?, e.needed("on")?.to_string());
-            let (ends, shown) = (opening.ends(at), !map.left_out(at));
-            if !shown && !ends {
+            if map.left_out(at) {
                 return Err(e.err("at", format!("zoom: at {}, inside a span left out", clock(at))));
             }
             if let Some(b) = zooms.last() {
@@ -852,7 +869,7 @@ impl Cut {
                     ));
                 }
             }
-            zooms.push(Zoom { at, len, on, line: e.line, ends, shown });
+            zooms.push(Zoom { at, len, on, line: e.line });
         }
 
         let mut beds: Vec<Bed> = Vec::new();
@@ -958,15 +975,14 @@ impl Cut {
     /// The file's `[opening]`: the card's words, each one line within its longest, and where it ends — refused, naming
     /// what's missing, where it isn't there.
     fn opening(top: &toml::Table, src: &Src, marks: &Marks) -> Result<Opening> {
-        const WHAT: &str =
-            "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for";
+        const WHAT: &str = "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for (and zoom)";
         let t = match top.get("opening") {
             Some(toml::Value::Table(t)) => t,
             Some(_) => return Err(src.at(src.key(0, "opening"), "opening: a table, as [opening]")),
             None => return Err(src.at(1, format!("no [opening]: {WHAT}"))),
         };
         let e = Entry { t, line: src.header("opening", None), src, name: "opening" };
-        e.keys(&["name", "line", "code", "at", "for"])?;
+        e.keys(&["name", "line", "code", "at", "for", "zoom"])?;
         let missing: Vec<&str> =
             ["name", "line", "at", "for"].into_iter().filter(|k| !t.contains_key(*k)).collect();
         if !missing.is_empty() {
@@ -1002,7 +1018,12 @@ impl Cut {
                 format!("opening: where it ends runs past the take's end, {}", clock(marks.end)),
             ));
         }
-        Ok(Opening { name, line, code, from, len })
+        let zoom = match e.text("zoom")?.map(str::trim) {
+            None => None,
+            Some("") => return Err(e.err("zoom", "opening: zoom = \"card:Run these checks\", a target")),
+            Some(on) => Some((on.to_string(), e.line("zoom"))),
+        };
+        Ok(Opening { name, line, code, from, len, zoom })
     }
 }
 
@@ -1221,12 +1242,14 @@ impl<'c> Program<'c> {
         }
     }
 
-    /// Where the video crosses from one picture to the next (µs): each part's start past the first, and each jump.
-    pub(crate) fn crossings(&self) -> Vec<u64> {
-        let mut out: Vec<u64> = self.parts.iter().skip(1).map(|p| p.at).collect();
-        out.extend(self.jumps.iter().filter_map(|j| self.video_of(j.0)));
-        out.sort_unstable();
-        out.dedup();
+    /// Where the video crosses from one picture to the next (µs), and whether through the ground (`through`): each
+    /// part's start past the first, through it — never one part's words over the next's —; each jump, the take's two
+    /// screens over each other (where a part starts too: through the ground).
+    pub(crate) fn crossings(&self) -> Vec<(u64, bool)> {
+        let mut out: Vec<(u64, bool)> = self.parts.iter().skip(1).map(|p| (p.at, true)).collect();
+        out.extend(self.jumps.iter().filter_map(|j| self.video_of(j.0)).map(|v| (v, false)));
+        out.sort_unstable_by_key(|c| (c.0, !c.1));
+        out.dedup_by_key(|c| c.0);
         out
     }
 

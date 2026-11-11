@@ -418,13 +418,14 @@ struct Levels {
 
 /// The cut's sound into `wav`: what's heard (`sounds`), the beds read with ffmpeg from `dir` (the edit list's folder),
 /// laid, levelled and limited — the limiter's ceiling moved until the AAC comes out under `video::AAC_PEAK_DB`. What it
-/// made, said (cut.txt's lines).
+/// made, said (cut.txt's lines). The intro's swing starts `swing_skip` µs into its frames as made (the empty ones left
+/// out): its brush the same, its head (a silence) cut by as much.
 pub(crate) fn make(
     prog: &Program,
     dir: &Path,
     keys: &[Rec],
     marks: &Marks,
-    ffmpeg: &Path,
+    (ffmpeg, swing_skip): (&Path, u64),
     wav: &Path,
 ) -> Result<Vec<String>> {
     let cut = prog.cut;
@@ -495,7 +496,8 @@ pub(crate) fn make(
     let made = |ceiling: f32| -> (Vec<f32>, Levels) {
         let mut keys = sound::track(&heard.list, length, brush, ceiling, None);
         if let (Some(b), Some(i)) = (heard.brush, heard.intro) {
-            intro_brush(&mut keys.samples, samples(b), samples(i), brush_len);
+            let skip = samples(swing_skip).min(brush_len);
+            intro_brush(&mut keys.samples, samples(b) + skip, samples(i), brush_len - skip);
         }
         let loud = Some(keys.lufs).filter(|l| l.is_finite()).unwrap_or(sound::SHORT_LUFS);
         let (x, depth) = bed_gains(loud, cut.mix);

@@ -6,10 +6,12 @@
 //! - The camera: the whole, but for a zoom — its target found on the screen at its time (`camera::target`, or within
 //!   `FIND_MS` after), widened to the screen's shape (`wide_window`, never nearer than `ZOOM_MAX`), eased in and out
 //!   as the Shorts' camera moves (`camera::Path`), drawn through `video::view` so a zoom never steps.
-//!   Where it ends has its own path, on its own clock, from the zooms whose time falls in it (`paths`).
+//!   Where it ends has its own path, on its own clock, from the opening's `zoom` (`paths`); a `[[zoom]]` is the take's.
 //! - Crossings (`camera::CROSS_MS`, never a cut): where a part begins (the card of what's built, where it ends, a
-//!   chapter's card, the take after them, the end card), where time is left out, and where most of the cells change at
-//!   once (`camera::CROSS`).
+//!   chapter's card, the take after them, the end card) through the ground — the part going out fades to it, then the
+//!   next comes up (`cross_px`) —; where time is left out, and where most of the cells change at once
+//!   (`camera::CROSS`), the two screens over each other.
+//! - The sheet (`sheet_picks`): each picture taken once its part has come up, never inside a crossing.
 //! - The band (`band`): the clock, the jump's mark, the speed's mark or `where it ends`, the caption.
 
 use std::collections::{BTreeMap, HashMap};
@@ -138,9 +140,12 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
         Ok(i) => {
             let (n, (w, h), _) = i.drawn();
             said.push(format!(
-                "the intro: the brush's swing, {n} frames made {}×{} and drawn {w}×{h}, then `t a r a e` risen, held to {:.1} s",
+                "the intro: the brush's swing, {n} frames made {}×{} and drawn {w}×{h} (from its first that shows \
+                 something: {} empty left out, its brush's head cut by {:.2} s), then `t a r a e` risen, held to {:.1} s",
                 i.made.0,
                 i.made.1,
+                i.skipped,
+                i.skipped_us() as f64 / 1e6,
                 super::INTRO_MS as f64 / 1e3
             ));
             Ok(i)
@@ -171,18 +176,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let mut found_at = Vec::new();
     let mut scan = Replay::new(&take.screen, size);
     for z in &cut.zooms {
-        scan.to(z.at);
-        let mut found = camera::target(&Cells::of(scan.screen()), &z.on);
-        let mut when = z.at;
-        while found.is_none() {
-            match scan.next() {
-                Some(ms) if ms <= z.at + FIND_MS => {
-                    found = camera::target(&Cells::of(scan.screen()), &z.on);
-                    when = ms;
-                }
-                _ => break,
-            }
-        }
+        let (when, found) = find(&mut scan, z.at, z.at + FIND_MS, &z.on);
         found_at.push(when);
         let target = found.ok_or_else(|| {
             format!(
@@ -197,13 +191,8 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
         let window = wide_window(target, size);
         windows.push(window);
         said.push(format!(
-            "zoom at {}{} on \"{}\": {:.0}×{:.0} cells at ({:.0}, {:.0}), {:.2}× the whole",
+            "zoom at {} on \"{}\": {:.0}×{:.0} cells at ({:.0}, {:.0}), {:.2}× the whole",
             clock(z.at),
-            match (z.ends, z.shown) {
-                (true, true) => " (where it ends, and in its place)",
-                (true, false) => " (where it ends only)",
-                _ => "",
-            },
             z.on,
             window.w,
             window.h,
@@ -213,20 +202,41 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
         ));
     }
     drop(scan);
+    // (where it ends: the opening's own zoom, its target looked for from that stretch's start to its end)
+    let o = &cut.opening;
+    let ends_zoom = match &o.zoom {
+        None => None,
+        Some((on, line)) => {
+            let mut scan = Replay::new(&take.screen, size);
+            let (when, found) = find(&mut scan, o.from, o.from + o.len, on);
+            let target = found.ok_or_else(|| {
+                format!(
+                    "{}:{line}: opening: zoom on \"{on}\": not on the screen where it ends ({} to {})",
+                    cut.file,
+                    clock(o.from),
+                    clock(o.from + o.len)
+                )
+            })?;
+            let w = wide_window(target, size);
+            said.push(format!(
+                "where it ends: zoom on \"{on}\" from {}: {:.0}×{:.0} cells at ({:.0}, {:.0}), {:.2}× the whole",
+                clock(when),
+                w.w,
+                w.h,
+                w.x,
+                w.y,
+                f32::from(size.0) / w.w
+            ));
+            Some((when - o.from, w))
+        }
+    };
     let reads = take_reads(cut, &windows);
     let lost = lost_zooms(cut, take, &prog, &reads, &found_at);
-    let paths = paths(cut, &windows, size);
+    let paths = paths(cut, &windows, ends_zoom, size);
 
     // (the sheet's pictures: which frames, and what each is marked with)
     let frames = prog.frames();
-    let mut picks: BTreeMap<u64, Vec<String>> = BTreeMap::new();
-    let every = SHEET_EVERY_US.max(prog.total / SHEET_REGULAR);
-    for v in (0..prog.total).step_by(every as usize) {
-        picks.entry(Program::frame_at(v).min(frames - 1)).or_default();
-    }
-    for (v, mark) in sheet_marks(&prog) {
-        picks.entry(Program::frame_at(v).min(frames - 1)).or_default().push(mark);
-    }
+    let picks = sheet_picks(&prog);
 
     let mp4 = out.join("cut.mp4");
     let ffmpeg = video::ffmpeg();
@@ -238,7 +248,8 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
                 true => crate::record::read_log(&dir.join("keys.bin"))?,
                 false => Vec::new(),
             };
-            Some(super::sound::make(&prog, dir, &keys, marks, f, &wav)?)
+            let skip = intro.as_ref().map_or(0, video::WideIntro::skipped_us);
+            Some(super::sound::make(&prog, dir, &keys, marks, (f, skip), &wav)?)
         }
         None => None,
     };
@@ -253,7 +264,7 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     let mut words = Words { fonts: &fonts, ground: look.ground, kept: HashMap::new() };
     let mut pic: Option<((bool, u64, u32), Picture)> = None;
     let mut last: Option<(Key, Vec<u8>)> = None;
-    let mut cross: Option<(Vec<u8>, u64)> = None;
+    let mut cross: Option<(Vec<u8>, u64, bool)> = None;
     let mut seen: Option<Cells> = None;
     let (mut differ, mut drawn, mut wrote) = (0u64, 0u64, Ok(()));
     let mut sheet: Vec<Picture> = Vec::new();
@@ -271,21 +282,19 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
                 if seen.as_ref().is_some_and(|s| camera::changed(s, &cells) > camera::CROSS)
                     && let Some((_, px)) = &last
                 {
-                    cross = Some((px.clone(), v));
+                    cross = Some((px.clone(), v, false));
                 }
                 seen = Some(cells);
             }
         }
-        while next_cross < crossings.len() && crossings[next_cross] <= v {
+        while next_cross < crossings.len() && crossings[next_cross].0 <= v {
             if let Some((_, px)) = &last {
-                cross = Some((px.clone(), crossings[next_cross]));
+                let (at, through) = crossings[next_cross];
+                cross = Some((px.clone(), at, through));
             }
             next_cross += 1;
         }
-        let share = cross.as_ref().map(|(_, began)| {
-            let a = camera::ease_in_out((v - began) as f32 / (camera::CROSS_MS * 1000) as f32);
-            (a * 255.0).round() as u8
-        });
+        let share = cross.as_ref().map(|(_, began, _)| cross_share(v, *began));
         if share == Some(255) {
             cross = None;
         }
@@ -340,8 +349,8 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
                     px
                 }
             };
-            if let (Some(a), Some((from, _))) = (share, &cross) {
-                crossed(from, &mut px, a);
+            if let (Some(p), Some((from, _, through))) = (share, &cross) {
+                cross_px(from, &mut px, look.ground, p, *through);
             }
             differ += u64::from(last.as_ref().is_none_or(|l| l.1 != px));
             last = Some((key, px));
@@ -429,31 +438,47 @@ pub(crate) fn make(cut: &Cut, take: &Take, (dir, marks): (&Path, &Marks), out: &
     Ok(head.join("\n") + "\n")
 }
 
-/// The take part's camera reads (the map's ms: from, to, window), one for each zoom (`windows`, the zooms' order) — a
-/// zoom the take part leaves out (shown only where it ends) at no length.
+/// `on` looked for on `scan`'s screen from the take's `at` until `until` (ms): when it's first there, and its region.
+fn find(scan: &mut Replay, at: u64, until: u64, on: &str) -> (u64, Option<Region>) {
+    scan.to(at);
+    let mut found = camera::target(&Cells::of(scan.screen()), on);
+    let mut when = at;
+    while found.is_none() {
+        match scan.next() {
+            Some(ms) if ms <= until => {
+                found = camera::target(&Cells::of(scan.screen()), on);
+                when = ms;
+            }
+            _ => break,
+        }
+    }
+    (when, found)
+}
+
+/// The take part's camera reads (the map's ms: from, to, window), one for each zoom (`windows`, the zooms' order).
 pub(crate) fn take_reads(cut: &Cut, windows: &[Region]) -> Vec<(u64, u64, Region)> {
     (cut.zooms.iter().zip(windows))
         .map(|(z, &w)| {
             let m = cut.map.video(z.at) / 1000;
-            (m, if z.shown { m + camera::DRIFT_MS + z.len } else { m }, w)
+            (m, m + camera::DRIFT_MS + z.len, w)
         })
         .collect()
 }
 
-/// The camera's two paths from each zoom's window (`windows`): the take part's, on the map's ms, from the zooms it
-/// shows; where it ends', on its own ms from its start, from the zooms whose time falls in it.
-pub(crate) fn paths(cut: &Cut, windows: &[Region], size: (u16, u16)) -> (camera::Path, camera::Path) {
-    let reads: Vec<_> = (take_reads(cut, windows).into_iter().zip(&cut.zooms))
-        .filter(|(_, z)| z.shown)
-        .map(|(r, _)| r)
-        .collect();
+/// The camera's two paths: the take part's, on the map's ms, from each `[[zoom]]`'s window (`windows`); where it
+/// ends', on its own ms from its start, from the opening's zoom (`ends`: where its target is first there, its window) —
+/// eased in from then and held to that stretch's end, a crossing through the ground after it.
+pub(crate) fn paths(
+    cut: &Cut,
+    windows: &[Region],
+    ends: Option<(u64, Region)>,
+    size: (u16, u16),
+) -> (camera::Path, camera::Path) {
+    let reads = take_reads(cut, windows);
     let take =
         camera::Path::of(&camera::aims(&reads, size), size, cut.map.len() / 1000 + 2 * camera::DRIFT_MS);
     let o = &cut.opening;
-    let reads: Vec<_> = (cut.zooms.iter().zip(windows))
-        .filter(|(z, _)| z.ends)
-        .map(|(z, &w)| (z.at - o.from, z.at - o.from + camera::DRIFT_MS + z.len, w))
-        .collect();
+    let reads: Vec<_> = ends.into_iter().map(|(from, w)| (from, o.len.max(from + 1), w)).collect();
     let ends = camera::Path::of(&camera::aims(&reads, size), size, o.len + 2 * camera::DRIFT_MS);
     (take, ends)
 }
@@ -481,9 +506,6 @@ pub(crate) fn lost_zooms(
     let mut chk = Replay::new(&take.screen, take.size);
     let step = 1_000_000 / video::FPS;
     for ((z, &(m0, m1, _)), &found) in cut.zooms.iter().zip(reads).zip(found_at) {
-        if !z.shown {
-            continue;
-        }
         let mut v = (m0 * 1000).max(cut.map.video(found));
         let mut first = true;
         while v < m1 * 1000 {
@@ -514,6 +536,52 @@ fn crossed(from: &[u8], to: &mut [u8], a: u8) {
     for (d, s) in to.iter_mut().zip(from) {
         *d = ((u32::from(*s) * (255 - a) + u32::from(*d) * a + 127) / 255) as u8;
     }
+}
+
+/// How far through a crossing begun at `began` the video's `v` is (µs), of 255, linear (`cross_px` eases it).
+pub(crate) fn cross_share(v: u64, began: u64) -> u8 {
+    ((v.saturating_sub(began) as f32 / (camera::CROSS_MS * 1000) as f32).min(1.0) * 255.0).round() as u8
+}
+
+/// A crossing's frame `p` of 255 of the way through it (linear), from the picture `from` to `to` (drawn in `to`): the
+/// two eased over each other, or (`through`) through the `ground` — `from` fading to it over the first half, `to`
+/// coming up from it over the second, each eased: never a pixel of both.
+pub(crate) fn cross_px(from: &[u8], to: &mut [u8], ground: Rgb, p: u8, through: bool) {
+    let p = f32::from(p) / 255.0;
+    if !through {
+        return crossed(from, to, (camera::ease_in_out(p) * 255.0).round() as u8);
+    }
+    let g: Vec<u8> = ground.repeat(to.len() / 3);
+    match p < 0.5 {
+        true => {
+            to.copy_from_slice(&g);
+            crossed(from, to, (camera::ease_in_out(p * 2.0) * 255.0).round() as u8);
+        }
+        false => crossed(&g, to, (camera::ease_in_out(p * 2.0 - 1.0) * 255.0).round() as u8),
+    }
+}
+
+/// The sheet's pictures: which frames, and what each is marked with (`sheet_marks`) — one every `SHEET_EVERY_US`
+/// besides; each taken once its picture has come up, never inside a crossing (its label would name a part its picture
+/// doesn't show yet).
+pub(crate) fn sheet_picks(prog: &Program) -> BTreeMap<u64, Vec<String>> {
+    let frames = prog.frames();
+    let crossings = prog.crossings();
+    let up = |mut v: u64| {
+        while let Some(c) = crossings.iter().find(|c| c.0 <= v && v < c.0 + camera::CROSS_MS * 1000) {
+            v = c.0 + camera::CROSS_MS * 1000;
+        }
+        Program::frame_at(v).min(frames - 1)
+    };
+    let mut picks: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    let every = SHEET_EVERY_US.max(prog.total / SHEET_REGULAR);
+    for v in (0..prog.total).step_by(every as usize) {
+        picks.entry(up(v)).or_default();
+    }
+    for (v, mark) in sheet_marks(prog) {
+        picks.entry(up(v)).or_default().push(mark);
+    }
+    picks
 }
 
 /// The band under the screen (its picture at `x0`, `pw` wide): the take's clock at the left with the jump's mark after

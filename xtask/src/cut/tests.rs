@@ -329,8 +329,100 @@ fn the_parts_cross_and_chapters_txt_says_each_card_s_time() {
     // (each part's start crosses, and the jump at 20 s does — where `fix`'s card stands, one crossing)
     let crossings = p.crossings();
     for x in &p.parts[1..] {
-        assert!(crossings.contains(&x.at), "{x:?} in {crossings:?}");
+        assert!(crossings.iter().any(|c| c.0 == x.at), "{x:?} in {crossings:?}");
     }
+}
+
+/// A change of part goes through the ground — the part going out fades to it, then the next comes up, in the crossing's
+/// time —: no frame of it has both parts' pixels. A crossing in the take (a jump, a screen mostly changed) stays the two
+/// screens over each other.
+#[test]
+fn a_change_of_part_goes_through_the_ground_never_one_part_over_the_other() {
+    use super::draw::{cross_px, cross_share};
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let crossings = p.crossings();
+    for x in &p.parts[1..] {
+        assert!(crossings.contains(&(x.at, true)), "{x:?} through the ground: {crossings:?}");
+    }
+    let (from, to, ground) = ([200u8, 0, 0].repeat(4), [0u8, 200, 0].repeat(4), [10u8, 10, 10]);
+    let step = 1_000_000 / video::FPS;
+    for &(at, through) in &crossings {
+        let (mut v, mut seen) = (at, (0, 0));
+        while v < at + camera::CROSS_MS * 1000 {
+            let mut px = to.clone();
+            cross_px(&from, &mut px, ground, cross_share(v, at), through);
+            let (out, up) = (px[0] > ground[0], px[1] > ground[1]);
+            assert!(!(out && up), "{} into the crossing at {}: both parts, {:?}", v - at, at, &px[..3]);
+            seen = (seen.0 + usize::from(out), seen.1 + usize::from(up));
+            v += step;
+        }
+        assert!(seen.0 > 0 && seen.1 > 0, "the crossing at {at}: one, then the other ({seen:?})");
+    }
+    // (in the take: halfway, the two over each other)
+    let mut px = to.clone();
+    cross_px(&from, &mut px, ground, 128, false);
+    assert!(px[0] > 10 && px[1] > 10, "{:?}", &px[..3]);
+}
+
+/// The sheet's pictures are taken once their part has come up — never inside a crossing, where the label would name a
+/// part the picture doesn't show yet (V1b's 0:06.0, the card under `where it ends`).
+#[test]
+fn the_sheet_takes_each_picture_once_its_part_has_come_up() {
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let picks = super::draw::sheet_picks(&p);
+    let crossings = p.crossings();
+    for (&k, marks) in &picks {
+        let v = Program::time_of(k);
+        assert!(
+            !crossings.iter().any(|c| c.0 <= v && v < c.0 + camera::CROSS_MS * 1000),
+            "{} {marks:?}: inside a crossing",
+            video_time(v)
+        );
+    }
+    let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap().at;
+    assert_eq!(ends, 6_000_000, "a regular picture's time");
+    assert!(!picks.contains_key(&Program::frame_at(ends)), "{:?}", picks.keys().collect::<Vec<_>>());
+    assert!(picks.contains_key(&Program::frame_at(ends + camera::CROSS_MS * 1000)));
+}
+
+/// The video's first frame shows the swing, not the ground: its empty frames as made are left out (a file's first frame
+/// is what a preview shows). Where main's swing frames aren't there, nothing to check.
+#[test]
+fn the_videos_first_frame_shows_the_swing() {
+    let (bg, look) = (Bg::Dark, video::look(Bg::Dark));
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let Ok(intro) = video::WideIntro::new(bg, &look, &fonts) else { return };
+    let px = intro.frame(0, &look, (video::W, video::H));
+    let inked = px.chunks(3).filter(|p| **p != look.ground).count();
+    assert!(inked > 100, "the first frame: {inked} pixels off the ground ({} empty left out)", intro.skipped);
+}
+
+/// A mark's words resolve as a time, as the driver wrote them (`record mark WORDS`): whole, an offset after them, one
+/// the take lacks or has twice refused in words; and so through the file.
+#[test]
+fn a_mark_s_words_resolve_as_a_time() {
+    let mut list = marks().list;
+    for (ms, said) in [
+        (58_000, "the board, for the opening"),
+        (70_000, "a friction - again"),
+        (80_000, "twice"),
+        (90_000, "twice"),
+    ] {
+        list.push(json!({ "what": "mark", "said": said, "ms": ms }));
+    }
+    let m = Marks::new(list, 120_000);
+    assert_eq!(m.time("mark \"the board, for the opening\""), Ok(58_000));
+    assert_eq!(m.time("mark \"the board, for the opening\" - 2s"), Ok(56_000));
+    assert_eq!(m.time("mark \"a friction - again\""), Ok(70_000));
+    assert_eq!(m.time("mark \"a friction - again\" + 500ms"), Ok(70_500));
+    let e = m.time("mark \"the board\"").unwrap_err();
+    assert!(e.contains("the take has no mark “the board”"), "{e}");
+    let e = m.time("mark \"twice\"").unwrap_err();
+    assert!(e.contains("the take has 2 marks “twice”"), "{e}");
+    let file = CUT.replace("at = \"card 2 shown\"", "at = 'mark \"the board, for the opening\"'");
+    assert_eq!(Cut::parse(&file, "cut.toml", &m).unwrap().opening.from, 58_000);
 }
 
 #[test]
@@ -443,7 +535,7 @@ fn by_hand_the_opening_s_stills() {
 }
 
 #[test]
-fn where_it_ends_is_marked_so_its_zoom_applies_and_its_keys_sound_there_and_in_their_place() {
+fn where_it_ends_is_marked_and_zoomed_by_the_opening_alone() {
     // (no `from later` left anywhere the cut says a word)
     for (name, src) in [
         ("cut.rs", include_str!("../cut.rs")),
@@ -455,33 +547,47 @@ fn where_it_ends_is_marked_so_its_zoom_applies_and_its_keys_sound_there_and_in_t
         assert!(!src.contains(concat!("from ", "later")), "{name}");
     }
     assert_eq!(super::draw::ENDS, "where it ends");
-    // (a zoom whose time falls where it ends: the camera there too, on that stretch's own clock)
-    let zoomed =
-        CUT.to_string() + "\n[[zoom]]\nat = \"card 2 shown + 0.5s\"\nfor = \"1s\"\non = \"card:rebased\"\n";
-    let c = cut(&zoomed).unwrap();
-    assert_eq!(c.zooms.iter().map(|z| (z.ends, z.shown)).collect::<Vec<_>>(), [(false, true), (true, true)]);
-    let p = Program::new(&c);
     let size = (40, 10);
     let all = Region::all(size);
     let near = Region { x: 20.0, y: 5.0, w: 20.0, h: 5.0 };
-    let paths = super::draw::paths(&c, &[all, near], size);
-    let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap().at;
+    let close = |r: Region| (r.w - near.w).abs() < 1.0 && (r.x - near.x).abs() < 1.0;
+    // (the opening's zoom: the camera there, on that stretch's own clock — eased in from its start, held to its end)
+    let line = CUT.lines().position(|l| l == "for = \"3s\"").unwrap() + 2;
+    let c = cut(&CUT.replace("for = \"3s\"\n", "for = \"3s\"\nzoom = \"card:rebased\"\n")).unwrap();
+    assert_eq!(c.opening.zoom, Some(("card:rebased".to_string(), line)));
+    let p = Program::new(&c);
+    let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap();
+    let paths = super::draw::paths(&c, &[all], Some((0, near)), size);
     let region = |v: u64| super::draw::region(&p.frame(v), &c, &paths, size);
-    assert_eq!(region(ends + 100_000), all, "before the zoom: the whole");
-    let held = region(ends + (500 + camera::DRIFT_MS + 500) * 1000);
-    assert!((held.w - near.w).abs() < 1.0 && (held.x - near.x).abs() < 1.0, "held on its target: {held:?}");
-    // (one where it ends only, its time left out of the take part: taken there, never in the take's camera)
+    assert_eq!(region(ends.at), all, "at its start: the whole");
+    let held = region(ends.at + (camera::DRIFT_MS + 300) * 1000);
+    assert!(close(held), "eased in, held on its target: {held:?}");
+    let last = region(ends.at + ends.len - 1_000_000 / video::FPS);
+    assert!(close(last), "held to its end: {last:?}");
+    assert_eq!(region(p.chapter_at(1) + CHAPTER_MS * 1000 + 100_000), all, "never in the take");
+    let e = cut(&CUT.replace("for = \"3s\"\n", "for = \"3s\"\nzoom = \" \"\n")).unwrap_err();
+    assert!(e.starts_with(&format!("cut.toml:{line}: opening: zoom = ")), "{e}");
+    // (a [[zoom]] whose time falls where it ends: nothing there, the take's alone)
+    let zoomed =
+        CUT.to_string() + "\n[[zoom]]\nat = \"card 2 shown + 0.5s\"\nfor = \"1s\"\non = \"card:rebased\"\n";
+    let c = cut(&zoomed).unwrap();
+    let p = Program::new(&c);
+    let paths = super::draw::paths(&c, &[all, near], None, size);
+    let region = |v: u64| super::draw::region(&p.frame(v), &c, &paths, size);
+    let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap();
+    let step = 1_000_000 / video::FPS;
+    for v in (ends.at..ends.at + ends.len).step_by(step as usize) {
+        assert_eq!(region(v), all, "{} where it ends: the whole", video_time(v));
+    }
+    let m = p.video_of(c.map.video(55_500)).unwrap();
+    let held = region(m + (camera::DRIFT_MS + 500) * 1000);
+    assert!(close(held), "in the take: {held:?}");
+    // (one in a span left out: refused, wherever it ends falls)
     let only = zoomed
         .replace("at = \"card 2 shown\"\nfor = \"3s\"", "at = \"25s\"\nfor = \"3s\"")
         .replace("card 2 shown + 0.5s", "25.5s");
-    let c = cut(&only).unwrap();
-    assert!(!c.zooms[1].shown);
-    assert_eq!(
-        super::draw::take_reads(&c, &[all, near])[1].0,
-        super::draw::take_reads(&c, &[all, near])[1].1
-    );
-    let e = cut(&only.replace("at = \"25s\"\nfor = \"3s\"", "at = \"end - 4s\"\nfor = \"3s\"")).unwrap_err();
-    assert!(e.contains("zoom: at 0:00:25, inside a span left out"), "elsewhere, still refused: {e}");
+    let e = cut(&only).unwrap_err();
+    assert!(e.contains("zoom: at 0:00:25, inside a span left out"), "{e}");
 }
 
 #[test]
