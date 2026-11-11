@@ -1193,6 +1193,10 @@ impl E<'_> {
             Fuel(n) => {
                 self.a.alu_ri(Alu::Sub, true, FUEL, n as i32);
                 self.jump(Some(Cc::B), Label::Stub(Stub::Fuel));
+                // The host's interrupt: a word the context points to (outside all the module addresses)
+                self.a.load(true, RAX, ctx(off::INTERRUPT));
+                self.a.alu_mi(Alu::Cmp, false, at(RAX, 0), 0);
+                self.trap_if(Cc::Ne, Trap::Interrupted);
             }
             Jump(to) => {
                 self.flush();

@@ -190,6 +190,83 @@ fn fuel_and_depth_stop_runaway_code() {
     assert!((100..2_000).contains(&used), "fuel tracks work done: {used}");
 }
 
+/// Sets `i`'s interrupt from another thread a little after the call starts (or before: either way the call ends).
+fn interrupt_soon(i: &Instance) -> std::thread::JoinHandle<()> {
+    let stop = i.interrupt();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        stop.set();
+    })
+}
+
+/// The host's interrupt ends a running call wherever fuel is charged — a loop's head, a function's entry — on
+/// both engines, keeps the fuel that was left, and ends every call after it at once.
+#[test]
+fn the_hosts_interrupt_ends_a_running_call() {
+    let wat = r#"(module (memory 1)
+        (func (export "spin") (loop (br 0)))
+        (func $f (param i32) (result i32) (i32.add (local.get 0) (i32.const 1)))
+        (func (export "calls") (local i32) (loop (local.set 0 (call $f (local.get 0))) (br 0)))
+        (func (export "fills") (loop (memory.fill (i32.const 0) (i32.const 7) (i32.const 65536)) (br 0)))
+        (func (export "one") (result i32) (i32.const 1)))"#;
+    let bytes = wat::parse_str(wat).unwrap();
+    // (a run the interrupt didn't stop ends at this fuel, in seconds — not for ever)
+    const BOUND: u64 = 10_000_000_000;
+    for jit in [true, false] {
+        for f in ["spin", "calls", "fills"] {
+            let mut i =
+                Instance::new(Module::new(&bytes).unwrap(), Limits { jit, ..Limits::default() }, BOUND)
+                    .unwrap();
+            let t = interrupt_soon(&i);
+            assert_eq!(call(&mut i, f, &[]), Err(Trap::Interrupted), "{f}, jit {jit}");
+            t.join().unwrap();
+            assert!(i.fuel() > 0, "{f}: the fuel left is kept");
+            assert!(i.interrupt().is_set());
+            let left = i.fuel();
+            assert_eq!(call(&mut i, "one", &[]), Err(Trap::Interrupted), "{f}: set, every call ends at once");
+            assert!(left - i.fuel() < 10, "{f}: nothing ran");
+            // a new interrupt: the instance runs again
+            i.set_interrupt(Interrupt::new());
+            assert_eq!(i32s(&mut i, "one", &[]), Ok(1));
+        }
+    }
+}
+
+/// The interrupt is outside everything a module addresses: setting it changes nothing the module can read (its
+/// memory, globals, table), a set one runs none of its code, and a module overwriting all it can reach every turn —
+/// its whole memory with zeros and ones, every global, its table — can't clear it: the call still ends.
+#[test]
+fn no_module_can_read_or_clear_the_interrupt() {
+    let wat = r#"(module (memory (export "memory") 2) (table 4 funcref)
+        (global $a (export "a") (mut i32) (i32.const 0)) (global $b (export "b") (mut i64) (i64.const 0))
+        (func $nop) (elem declare func $nop)
+        (func (export "clears")
+          (loop
+            (memory.fill (i32.const 0) (i32.const 0) (i32.mul (memory.size) (i32.const 65536)))
+            (memory.fill (i32.const 0) (i32.const 255) (i32.mul (memory.size) (i32.const 65536)))
+            (memory.fill (i32.const 0) (i32.const 0) (i32.mul (memory.size) (i32.const 65536)))
+            (global.set $a (i32.const 0)) (global.set $b (i64.const 0))
+            (table.fill (i32.const 0) (ref.func $nop) (i32.const 4))
+            (table.fill (i32.const 0) (ref.null func) (i32.const 4))
+            (br 0)))
+        (func (export "marks") (i32.store (i32.const 0) (i32.const 1)) (global.set $a (i32.const 1))))"#;
+    let bytes = wat::parse_str(wat).unwrap();
+    let seen = |i: &Instance| (i.memory().to_vec(), i.global("a"), i.global("b"));
+    for jit in [true, false] {
+        let limits = Limits { jit, ..Limits::default() };
+        let mut i = Instance::new(Module::new(&bytes).unwrap(), limits, 10_000_000_000).unwrap();
+        let before = seen(&i);
+        i.interrupt().set();
+        assert!(seen(&i) == before, "setting it wrote nothing the module reads (jit {jit})");
+        assert_eq!(call(&mut i, "marks", &[]), Err(Trap::Interrupted));
+        assert!(seen(&i) == before, "a set one ran none of the module's code (jit {jit})");
+        let mut i = Instance::new(Module::new(&bytes).unwrap(), limits, 10_000_000_000).unwrap();
+        let t = interrupt_soon(&i);
+        assert_eq!(call(&mut i, "clears", &[]), Err(Trap::Interrupted), "jit {jit}");
+        t.join().unwrap();
+    }
+}
+
 #[test]
 fn refuses_what_it_does_not_support() {
     let err = |wat: &str| Module::new(&wat::parse_str(wat).unwrap()).err().map(|e| e.to_string());

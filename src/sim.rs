@@ -38,6 +38,7 @@ mod chatlink;
 mod chatrest;
 mod chatstream;
 mod claudestart;
+mod codeclock;
 mod codetrust;
 mod commit;
 mod confighold;

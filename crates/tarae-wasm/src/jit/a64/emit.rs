@@ -1058,6 +1058,10 @@ impl E<'_> {
                     self.put(subs(true, FUEL, FUEL, T0));
                 }
                 self.trap_if(Cond::Lo, Stub::Fuel);
+                // The host's interrupt: a word the context points to (outside all the module addresses)
+                self.ldst(LDR_X, T0, CTX, off::INTERRUPT);
+                self.ldst(LDR_W, T0, T0, 0);
+                self.branch(cbnz(false, T0, 0), Field::B19, Label::Stub(Stub::Trap(Trap::Interrupted)));
             }
             Jump(to) => {
                 self.flush();

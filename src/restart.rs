@@ -2275,6 +2275,7 @@ mod tests {
         const IN_MEMORY: &[(&str, &str)] = &[
             ("DocPath", "docpaths.rs"),  // a count of moves, this process's
             ("Fetching", "web/page.rs"), // a web read's socket shut: the exec closes it
+            ("Program", "codetool.rs"),  // a code program's watch closed: the exec ends its watchdog's thread
         ];
         // (none of `Memory`'s types holds one: dropped with the rest before the exec, or never in the editor)
         const ELSEWHERE: &[(&str, &str)] = &[

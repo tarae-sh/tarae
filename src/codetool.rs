@@ -12,7 +12,12 @@
 //! - **Limits** (`LIMITS`): steps (work, counted by QuickJS's interrupt handler — the same on every machine and
 //!   under the JIT or the interpreter), 64 calls, 64 MB of memory, fuel as the backstop for work inside the
 //!   engine's own C that the step count doesn't see, and 20 KB of what Claude reads, the cut said (`Ended::answer`).
-//!   Waiting for an answer costs nothing: no clock is read.
+//! - **The clock** (`Watch`), the last net behind the steps and the fuel: a program's running time, summed over its
+//!   `start` and every `resume` — never the waits between, on a card or an answer — is held to `Limits::clock`
+//!   (10 s under the JIT, 60 s under the interpreter) by a watchdog that sets the instance's interrupt
+//!   (`tarae_wasm::Interrupt`, checked wherever the runtime charges fuel). The host can set it at any moment too
+//!   (`Watch::stop`: the user's `esc`, the turn's end). Steps, fuel and the clock each say what stopped the
+//!   program, and the one way out (`REMEDY`).
 //! - **Never on the key or frame path**: loading and every `start` and `resume` run on a worker (`start_job`,
 //!   `answer_job`); the `Program` travels between them and the main loop.
 
@@ -20,16 +25,17 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tarae_wasm::{Instance, Module, Trap, Val};
+use tarae_wasm::{Instance, Interrupt, Module, Trap, Val};
 
 use crate::editor::Editor;
 use crate::event::Jobs;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Where a dev build and the tests find the engine `cargo xtask quickjs` built. How it ships is S3's decision; till
 /// then a release has none.
@@ -50,6 +56,19 @@ pub struct Limits {
     pub output: usize,
     /// Machine code where the runtime has it, else its interpreter.
     pub jit: bool,
+}
+
+/// The running time one program may take under the JIT, and under the interpreter (the user, 2026-11-11): far past
+/// what the step limit lets JavaScript run, so only the work the steps don't see (`JSON.parse`, a comparator's sort,
+/// string building) meets it.
+pub const CLOCK_JIT: Duration = Duration::from_secs(10);
+pub const CLOCK_INTERPRETER: Duration = Duration::from_secs(60);
+
+impl Limits {
+    /// The running time this program may take (`CLOCK_JIT`, `CLOCK_INTERPRETER`).
+    pub fn clock(&self) -> Duration {
+        if self.jit { CLOCK_JIT } else { CLOCK_INTERPRETER }
+    }
 }
 
 /// Calls one program may make — the engine's own limit (`glue.c`'s `MAX_CALLS`), which refuses the 65th with a
@@ -79,8 +98,8 @@ pub const fn limits(steps: u32) -> Limits {
 /// The limits every program runs under, for the design session (`.sb/codemode-s1a-report.md` §2).
 /// - `steps`: ten times the 20,000-line triage's 18 (QuickJS-ng v0.18.0) — 1.8 million loop turns or branches.
 /// - `fuel`: above the steps (`limits`), 1.2×10¹³. Where the steps see nothing (`JSON.parse`, string building,
-///   `indexOf` over megabytes) that is about 710 s at worst under the JIT and 3.8 h under the interpreter: **over the
-///   line** (10 s, 60 s); the last net is the host-set flag (the user's yes, 2026-11-11), built after the re-pin.
+///   `indexOf` over megabytes) that is about 710 s at worst under the JIT and 3.8 h under the interpreter: over the
+///   line, so the clock (`Limits::clock`, `Watch`) is the last net.
 /// - `jit`: machine code only on an arch whose JIT has been fuzzed on QuickJS against the interpreter (S1's call 5:
 ///   until then the interpreter — x86-64 today).
 pub const LIMITS: Limits = limits(180);
@@ -222,9 +241,165 @@ pub enum Next {
     Ended(Ended),
 }
 
+/// A program's clock and its stop. Its running time is summed over its `start` and every `resume` (`Program::step`
+/// stamps each) — never the waits between. Its flag is the instance's interrupt: set by the step's watchdog once
+/// the running time reaches the limit (`watchdog`), or by the host at any moment (`stop`).
+pub struct Watch {
+    flag: Interrupt,
+    limit: Duration,
+    ledger: Mutex<Ledger>,
+    /// Tests: what a step's running is in a simulation (`src/sim/codeclock.rs`) — given the step's number, the
+    /// watch, and the step's work to run. A simulation runs one thread at a time, so the engine's real work can't
+    /// race its clock: the model says how the clock moves while a step runs.
+    #[cfg(test)]
+    model: Option<Model>,
+}
+
+/// A step's running in a simulation (`Watch::model`).
+#[cfg(test)]
+pub type Model = Arc<dyn Fn(u32, &Watch, &mut (dyn FnMut() + Send)) + Send + Sync>;
+
+#[derive(Default)]
+struct Ledger {
+    /// The running time of the steps that ended.
+    ran: Duration,
+    /// When the step running began.
+    since: Option<Instant>,
+    /// Steps begun.
+    steps: u32,
+    /// Who set the flag, and the running time then.
+    why: Option<Why>,
+    at_stop: Option<Duration>,
+    /// The program ended (or was dropped).
+    ended: bool,
+}
+
+/// Who stopped a program through its flag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// Its running time reached the limit.
+    Clock,
+    /// The host, saying why (the user's `esc`, the turn's end: piece c's words).
+    Host(String),
+}
+
+impl Watch {
+    /// A clock at `limits`' limit (`Limits::clock`), its flag unset.
+    pub fn new(limits: &Limits) -> Arc<Watch> {
+        Arc::new(Watch {
+            flag: Interrupt::new(),
+            limit: limits.clock(),
+            ledger: Mutex::default(),
+            #[cfg(test)]
+            model: None,
+        })
+    }
+
+    /// `new`, its steps' running modelled in a simulation (`Watch::model`).
+    #[cfg(test)]
+    pub fn modelled(limits: &Limits, model: Model) -> Arc<Watch> {
+        Arc::new(Watch { model: Some(model), ..Arc::into_inner(Watch::new(limits)).unwrap() })
+    }
+
+    fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
+        self.ledger.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Stops the program, from any thread at any moment: a step running ends at the runtime's next check, a
+    /// program waiting at its next step; its end says `stopped: {why}`.
+    pub fn stop(&self, why: &str) {
+        self.stop_by(&mut self.ledger(), Why::Host(why.into()));
+    }
+
+    /// The flag set, the first reason kept.
+    fn stop_by(&self, l: &mut Ledger, why: Why) {
+        if l.why.is_none() {
+            l.at_stop = Some(l.ran + l.since.map_or(Duration::ZERO, crate::clock::since));
+            l.why = Some(why);
+        }
+        self.flag.set();
+    }
+
+    /// Its running time when it was stopped, if it was.
+    pub fn stopped_at(&self) -> Option<Duration> {
+        self.ledger().at_stop
+    }
+
+    /// Who stopped it, if anyone did.
+    pub fn stopped(&self) -> Option<Why> {
+        self.ledger().why.clone()
+    }
+
+    /// Its running time so far, the step running included.
+    pub fn ran(&self) -> Duration {
+        let l = self.ledger();
+        l.ran + l.since.map_or(Duration::ZERO, crate::clock::since)
+    }
+
+    /// Steps begun.
+    pub fn steps(&self) -> u32 {
+        self.ledger().steps
+    }
+
+    /// A step begins (its number): with no running time left it's stopped before it runs.
+    fn begin(&self) -> u32 {
+        let mut l = self.ledger();
+        l.steps += 1;
+        l.since = Some(crate::clock::now());
+        if l.ran >= self.limit {
+            self.stop_by(&mut l, Why::Clock);
+        }
+        l.steps
+    }
+
+    /// The step running ends: its time added.
+    fn end(&self) {
+        let mut l = self.ledger();
+        if let Some(t) = l.since.take() {
+            l.ran += crate::clock::since(t);
+        }
+    }
+
+    fn close(&self) {
+        self.ledger().ended = true;
+    }
+
+    /// What step `k`'s watchdog does now: sleep this long (the running time left — it can't run out sooner), or
+    /// nothing more (None): its step is over, the program ended or was stopped — or the time ran out, its step
+    /// running, and the flag is set here, under the lock a step's end takes.
+    fn tick(&self, k: u32) -> Option<Duration> {
+        let mut l = self.ledger();
+        let over = l.steps > k || (l.steps == k && l.since.is_none());
+        if l.ended || l.why.is_some() || over {
+            return None;
+        }
+        let running = l.since.filter(|_| l.steps == k);
+        let left = self.limit.saturating_sub(l.ran + running.map_or(Duration::ZERO, crate::clock::since));
+        if !left.is_zero() {
+            return Some(left);
+        }
+        // (not begun yet: its `begin` finds nothing left)
+        if running.is_some() {
+            self.stop_by(&mut l, Why::Clock);
+        }
+        None
+    }
+}
+
+/// Step `k`'s watchdog, the last net behind the steps and the fuel: a job that sleeps the running time left
+/// (`event::sleep`: a simulation moves it), then sets the flag once it ran out with the step still running. It
+/// ends with its step — a program waiting on a card wakes nothing.
+fn watchdog(watch: Weak<Watch>, k: u32) {
+    loop {
+        let Some(left) = watch.upgrade().and_then(|w| w.tick(k)) else { return };
+        crate::event::sleep(left);
+    }
+}
+
 /// A program waiting on its calls: its own instance of the engine.
 pub struct Program {
     inst: Instance,
+    watch: Arc<Watch>,
     fns: Fns,
     /// Calls handed out and not answered yet.
     out: BTreeSet<u32>,
@@ -249,30 +424,64 @@ impl From<Trap> for Stop {
     }
 }
 
+impl Drop for Program {
+    fn drop(&mut self) {
+        self.watch.close();
+    }
+}
+
 impl Program {
-    /// Runs `src` on a fresh instance of `engine` until it waits or ends — a worker's.
+    /// Runs `src` on a fresh instance of `engine` until it waits or ends — a worker's. Its clock runs (`Watch`), but
+    /// with no watchdog nothing holds it to its limit: `start_job` gives it one.
     pub fn start(engine: &Engine, src: &str, limits: Limits) -> Next {
+        Program::start_with(engine, src, limits, Watch::new(&limits))
+    }
+
+    /// `start`, on `watch` — its flag the instance's interrupt.
+    pub fn start_with(engine: &Engine, src: &str, limits: Limits, watch: Arc<Watch>) -> Next {
         let wasm = tarae_wasm::Limits { memory_bytes: limits.memory, jit: limits.jit, ..Default::default() };
-        let inst = match Instance::new(engine.module.clone(), wasm, limits.fuel) {
+        let mut inst = match Instance::new(engine.module.clone(), wasm, limits.fuel) {
             Ok(i) => i,
-            Err(t) => return Next::Ended(Ended::failed(stopped(Stop::Trap(t)))),
+            Err(t) => {
+                watch.close();
+                return Next::Ended(Ended::failed(stopped(Stop::Trap(t), &watch)));
+            }
         };
+        inst.set_interrupt(watch.flag.clone());
         let mut p = Program {
             inst,
+            watch,
             fns: engine.fns,
             out: BTreeSet::new(),
             asked: 0,
             fuel: limits.fuel,
             steps: limits.steps,
         };
-        let reply = (|| {
-            if let Some(init) = engine.init {
+        let (init, bytes, steps) = (engine.init, src.as_bytes(), limits.steps as i32);
+        let reply = p.step(move |p| {
+            if let Some(init) = init {
                 p.inst.call(init, &[])?;
             }
-            let (at, len) = p.put(src.as_bytes())?;
-            p.call(p.fns.start, &[at, len, Val::I32(limits.steps as i32)])
-        })();
+            let (at, len) = p.put(bytes)?;
+            p.call(p.fns.start, &[at, len, Val::I32(steps)])
+        });
         p.next(reply, Some(src))
+    }
+
+    /// One step of the program — its `start` or a `resume` — between its clock's stamps.
+    fn step(&mut self, work: impl FnOnce(&mut Program) -> Result<Val, Stop> + Send) -> Result<Val, Stop> {
+        let watch = self.watch.clone();
+        let _n = watch.begin();
+        #[cfg(test)]
+        if let Some(model) = watch.model.clone() {
+            let (mut work, mut out) = (Some(work), None);
+            model(_n, &watch, &mut || out = work.take().map(|w| w(self)));
+            watch.end();
+            return out.expect("the model ran the step");
+        }
+        let out = work(self);
+        watch.end();
+        out
     }
 
     /// Answers call `id` with `value` (a refused or failed call is the binding's `{ error }`, a value too) and runs
@@ -282,10 +491,10 @@ impl Program {
             return Next::Ended(Ended::failed(format!("the host answered call {id}, which isn't waiting")));
         }
         let text = value.to_string();
-        let reply = (|| {
-            let (at, len) = self.put(text.as_bytes())?;
-            self.call(self.fns.resume, &[Val::I32(id as i32), at, len, Val::I32(0)])
-        })();
+        let reply = self.step(|p| {
+            let (at, len) = p.put(text.as_bytes())?;
+            p.call(p.fns.resume, &[Val::I32(id as i32), at, len, Val::I32(0)])
+        });
         self.next(reply, None)
     }
 
@@ -337,7 +546,7 @@ impl Program {
         let fuel = self.fuel - self.inst.fuel();
         let (head, mut body) = match read {
             Ok(r) => r,
-            Err(s) => return Next::Ended(Ended { fuel, ..Ended::failed(stopped(s)) }),
+            Err(s) => return Next::Ended(Ended { fuel, ..Ended::failed(stopped(s, &self.watch)) }),
         };
         let word = head.split(' ').next().unwrap_or_default();
         match word {
@@ -410,13 +619,26 @@ fn step_limit(limit: u32) -> String {
     format!("stopped at the limit of {limit} steps (a step is 10,000 loop turns and branches): {REMEDY}")
 }
 
+/// The words for a program the clock ended: the limit itself, and the way out.
+pub(crate) fn time_limit(limit: Duration) -> String {
+    format!(
+        "stopped at the limit of one program's time ({} of running): {REMEDY}",
+        crate::term::run_duration(limit)
+    )
+}
+
 /// The words for a step that trapped or broke the protocol: the instance is dropped with it.
-fn stopped(s: Stop) -> String {
+fn stopped(s: Stop, watch: &Watch) -> String {
     match s {
         Stop::Trap(Trap::OutOfFuel) => format!(
             "stopped at the limit of one program's fuel (its work, the steps' and what they don't count: strings, \
              JSON, sorting): {REMEDY}"
         ),
+        Stop::Trap(Trap::Interrupted) => match watch.stopped() {
+            Some(Why::Clock) => time_limit(watch.limit),
+            Some(Why::Host(why)) => format!("stopped: {why}"),
+            None => "the engine stopped: interrupted".into(),
+        },
         Stop::Trap(t) => format!("the engine stopped: {t}"),
         Stop::Engine(why) => format!("the engine {why}"),
     }
@@ -498,22 +720,33 @@ fn blank(src: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Starts `src` on a worker, on the engine `load` gives there (`Engine::here`); `then` takes what comes on the main
-/// loop.
+/// Starts `src` on a worker, on the engine `load` gives there (`Engine::here`), held to `watch` (the host keeps it:
+/// `Watch::stop`); `then` takes what comes on the main loop.
 pub fn start_job(
     jobs: &Jobs,
     load: impl FnOnce() -> Result<Arc<Engine>, String> + Send + 'static,
     src: String,
     limits: Limits,
+    watch: Arc<Watch>,
     then: impl FnOnce(&mut Editor, Next) + Send + 'static,
 ) {
+    watched(jobs, &watch);
     jobs.spawn(move || {
         let next = match load() {
-            Ok(e) => Program::start(&e, &src, limits),
-            Err(why) => Next::Ended(Ended::failed(why)),
+            Ok(e) => Program::start_with(&e, &src, limits, watch),
+            Err(why) => {
+                watch.close();
+                Next::Ended(Ended::failed(why))
+            }
         };
         move |ed: &mut Editor| then(ed, next)
     });
+}
+
+/// The next step's watchdog, beside it (a timer: nothing lands).
+fn watched(jobs: &Jobs, watch: &Arc<Watch>) {
+    let (dog, k) = (Arc::downgrade(watch), watch.steps() + 1);
+    jobs.detached(move || watchdog(dog, k));
 }
 
 /// Answers call `id` of `program` on a worker; `then` takes what comes on the main loop.
@@ -524,6 +757,7 @@ pub fn answer_job(
     value: Value,
     then: impl FnOnce(&mut Editor, Next) + Send + 'static,
 ) {
+    watched(jobs, &program.watch);
     jobs.spawn(move || {
         let next = program.answer(id, &value);
         move |ed: &mut Editor| then(ed, next)

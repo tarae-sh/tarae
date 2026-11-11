@@ -14,6 +14,9 @@
 //!   their length, calls by the locals they zero), and per byte (or element) by the ops that copy, fill or
 //!   grow — so every way to run long pays. Memory, tables, the value stack, and call depth have caps, and so
 //!   does loading (types' arity, locals per module, tables, compiling steps).
+//! - **Interrupt**: a flag only the host sets (`Interrupt`, from any thread), checked wherever fuel is charged —
+//!   the call ends with `Trap::Interrupted`. It lives outside everything a module addresses (its memory,
+//!   globals, tables, the value stack): no module can read or clear it.
 //! - **Plugins** (`plugin`): tarae's plugin API on it — its types, loading and calling one plugin, and the
 //!   thread the editor talks to by messages. The editor's side (commands, the plugins folder, permission cards,
 //!   panels, `tarae plugin`) is tarae's `src/plugin/`; this crate knows nothing of the editor.
@@ -32,6 +35,7 @@ mod read;
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub use module::Module;
 
@@ -139,6 +143,8 @@ pub enum Trap {
     OutOfFuel,
     /// The host called with the wrong arguments, or something that isn't a function.
     BadCall,
+    /// The host set the instance's `Interrupt`.
+    Interrupted,
 }
 
 impl fmt::Display for Trap {
@@ -156,6 +162,7 @@ impl fmt::Display for Trap {
             Trap::StackOverflow => "call stack exhausted",
             Trap::OutOfFuel => "out of fuel",
             Trap::BadCall => "wrong arguments",
+            Trap::Interrupted => "interrupted",
         })
     }
 }
@@ -188,6 +195,32 @@ impl Default for Limits {
     }
 }
 
+/// A stop for a running instance that only the host sets — from any thread, at any moment (a clone is the same
+/// flag). The code checks it wherever it charges fuel (every function entry and loop head, the bulk ops), so a
+/// call it's set during ends at the next of those with `Trap::Interrupted`, and every call after it at once. It
+/// stays set: an instance stopped is done (`Instance::set_interrupt` gives it a new one).
+#[derive(Clone, Debug, Default)]
+pub struct Interrupt(Arc<AtomicU32>);
+
+impl Interrupt {
+    pub fn new() -> Interrupt {
+        Interrupt::default()
+    }
+
+    pub fn set(&self) {
+        self.0.store(1, Ordering::Relaxed);
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0.load(Ordering::Relaxed) != 0
+    }
+
+    /// The word the code reads (the JIT's context holds its address).
+    fn word(&self) -> &AtomicU32 {
+        &self.0
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Frame {
     ret: u32,
@@ -211,6 +244,7 @@ pub struct Instance {
     stack: Vec<u64>,
     frames: Vec<Frame>,
     fuel: u64,
+    interrupt: Interrupt,
 }
 
 fn eval(c: Const, globals: &[u64]) -> u64 {
@@ -265,6 +299,7 @@ impl Instance {
             data_live,
             frames: Vec::new(),
             fuel,
+            interrupt: Interrupt::new(),
         };
         for i in 0..inst.module.elems.len() {
             let e = &inst.module.elems[i];
@@ -304,6 +339,16 @@ impl Instance {
 
     pub fn set_fuel(&mut self, fuel: u64) {
         self.fuel = fuel;
+    }
+
+    /// Its interrupt: a handle the host keeps, to stop a call from another thread.
+    pub fn interrupt(&self) -> Interrupt {
+        self.interrupt.clone()
+    }
+
+    /// Checks `interrupt` from now on — one the host made before the instance (a watchdog armed first).
+    pub fn set_interrupt(&mut self, interrupt: Interrupt) {
+        self.interrupt = interrupt;
     }
 
     pub fn memory(&self) -> &[u8] {

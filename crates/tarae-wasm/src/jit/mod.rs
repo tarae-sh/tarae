@@ -12,7 +12,7 @@
 //! - **Rare ops** (tables, bulk memory, `memory.grow`) and `call_indirect`'s lookup call back into Rust
 //!   (`exec::bulk`, `indirect_helper`), which then refresh the memory base and length.
 //! - Every check the interpreter makes happens here too: memory accesses against the length, calls against
-//!   the value stack and the depth, fuel at every function entry and loop head.
+//!   the value stack and the depth, fuel and the host's interrupt at every function entry and loop head.
 //! - **Executable memory** is never writable and executable at once: MAP_JIT's per-thread switch on Apple
 //!   Silicon, read-write then read-execute elsewhere.
 
@@ -34,6 +34,8 @@ pub(super) struct Out {
     pub funcs: Vec<usize>,
 }
 
+use std::sync::atomic::AtomicU32;
+
 use super::compile::{Op, S};
 use super::exec::{Bulk, bulk};
 use super::module::Module;
@@ -54,7 +56,13 @@ pub(super) struct Ctx {
     pub funcs: *const usize,
     pub bulk: usize,
     pub indirect: usize,
+    /// The instance's `Interrupt`: nonzero once the host set it. Read through this pointer, so it's never in
+    /// anything the module's code addresses.
+    pub interrupt: *const AtomicU32,
 }
+
+const _: () = assert!(std::mem::offset_of!(Ctx, interrupt) == off::INTERRUPT as usize);
+const _: () = assert!(std::mem::offset_of!(Ctx, fuel) == off::FUEL as usize);
 
 #[allow(dead_code)] // the whole layout, whether or not this machine's backend names every field
 mod off {
@@ -68,6 +76,7 @@ mod off {
     pub const TRAP: u32 = 56;
     pub const BULK: u32 = 80;
     pub const INDIRECT: u32 = 88;
+    pub const INTERRUPT: u32 = 96;
 }
 
 /// The IR pcs an op may branch to.
@@ -146,7 +155,7 @@ pub(super) fn trap_code(t: Trap) -> u32 {
 }
 
 fn trap_of(code: u64) -> Trap {
-    const ALL: [Trap; 12] = [
+    const ALL: [Trap; 13] = [
         Trap::Unreachable,
         Trap::MemoryOutOfBounds,
         Trap::TableOutOfBounds,
@@ -159,6 +168,7 @@ fn trap_of(code: u64) -> Trap {
         Trap::StackOverflow,
         Trap::OutOfFuel,
         Trap::BadCall,
+        Trap::Interrupted,
     ];
     debug_assert!(ALL.iter().enumerate().all(|(i, &t)| trap_code(t) == i as u32 + 1));
     ALL.get((code as usize).wrapping_sub(1)).copied().unwrap_or(Trap::Unreachable)
@@ -293,6 +303,7 @@ pub(super) fn run(inst: &mut Instance, f: u32) -> Result<(), Trap> {
     let jit = inst.module.jit.as_ref().expect("compiled");
     let (entry, target, funcs) = (jit.entry, jit.funcs[f as usize], jit.funcs.as_ptr());
     let stack = inst.stack.as_mut_ptr();
+    let interrupt: *const AtomicU32 = inst.interrupt.word();
     let mut ctx = Ctx {
         mem_base: inst.memory.as_mut_ptr(),
         mem_len: inst.memory.len() as u64,
@@ -307,6 +318,7 @@ pub(super) fn run(inst: &mut Instance, f: u32) -> Result<(), Trap> {
         funcs,
         bulk: bulk_helper as *const () as usize,
         indirect: indirect_helper as *const () as usize,
+        interrupt,
     };
     // SAFETY: `entry` is the trampoline `emit::module` generated with this signature; the code only touches
     // what `ctx` points to, within the bounds it checks.
@@ -338,6 +350,8 @@ extern "C" fn bulk_helper(ctx: *mut Ctx, fr: *mut u64, pc: u32) -> u64 {
         data_live: &mut inst.data_live,
         // The code stored its fuel register here before the call, and reloads it after.
         fuel: &mut ctx.fuel,
+        // SAFETY: the instance's own `Interrupt`, alive while it runs.
+        interrupt: unsafe { &*ctx.interrupt },
     };
     let r = bulk(op, fr, env);
     ctx.mem_base = inst.memory.as_mut_ptr();

@@ -896,6 +896,43 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
+    /// The runtime's speed on a plugin under both engines (what the host-set interrupt flag costs is read here,
+    /// `.sb/codemode-s1-flag-report.md`): the demo plugin's `trim-trailing` over 2 MB — its own Rust compiled to
+    /// WebAssembly, the call's JSON both ways. Median of 5; reported only.
+    #[test]
+    fn perf_plugin_trim_2mb() {
+        if crate::test_results::unoptimized("plugin::mod::tests::perf_plugin_trim_2mb") {
+            return;
+        }
+        let text: String =
+            (0..60_000).map(|i| format!("line {i} 타래 fn main() {{ let x = {i}; }}   \n")).collect();
+        assert!(text.len() > 2 << 20);
+        let cx = abi::Context {
+            buffer: abi::Buffer { name: "a.rs".into(), text: Some(text), ..Default::default() },
+            ..Default::default()
+        };
+        for (jit, engine) in [(true, "jit"), (false, "interp")] {
+            let limits = tarae_wasm::Limits { jit, ..Default::default() };
+            let mut p = abi::Plugin::new(DEMO, limits, 1 << 40).unwrap();
+            let mut all: Vec<Duration> = (0..5)
+                .map(|_| {
+                    let t = Instant::now();
+                    let done = p.run("trim-trailing", &cx, 1 << 40).unwrap();
+                    let t = t.elapsed();
+                    assert!(
+                        matches!(&done[0], abi::Action::Success(s) if s == "60000 lines trimmed"),
+                        "{done:?}"
+                    );
+                    t
+                })
+                .collect();
+            all.sort_unstable();
+            let ms = all[all.len() / 2].as_secs_f64() * 1e3;
+            let line = format!("PERF plugin_trim_2mb_{engine}_ms {ms:.2} noise=1\n");
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        }
+    }
+
     #[track_caller]
     fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
         crate::test_results::settle_saying(ed, done, |ed| {

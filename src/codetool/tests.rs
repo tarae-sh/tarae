@@ -2,6 +2,7 @@
 //! it (else those skip, as a grammar's tests do).
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -52,11 +53,11 @@ const STAND_IN: &str = r#"(module
   (func (export "resume") (param $id i32) (param $p i32) (param $n i32) (param $err i32) (result i32)
     (call $reply (local.get $p) (local.get $n))))"#;
 
-fn stand_in() -> Arc<Engine> {
+pub(crate) fn stand_in() -> Arc<Engine> {
     Arc::new(Engine::new(&wat::parse_str(STAND_IN).unwrap()).unwrap())
 }
 
-fn script(replies: &[&str]) -> String {
+pub(crate) fn script(replies: &[&str]) -> String {
     replies.join("\x1e")
 }
 
@@ -301,7 +302,7 @@ fn a_program_runs_as_jobs_and_lands_on_the_main_loop() {
         }
     };
     let s = seen.clone();
-    start_job(&ed.events.jobs(), load, src, SMALL, move |ed, next| {
+    start_job(&ed.events.jobs(), load, src, SMALL, Watch::new(&SMALL), move |ed, next| {
         assert_eq!(std::thread::current().id(), main);
         let (p, calls) = calls(next);
         s.lock().unwrap().push(format!("asked {}", calls[0].name));
@@ -315,10 +316,67 @@ fn a_program_runs_as_jobs_and_lands_on_the_main_loop() {
     assert_eq!(*seen.lock().unwrap(), ["loaded on a worker", "asked x", "returned [1,2]"]);
 }
 
+#[test]
+fn the_clocks_words_say_its_limit_and_the_way_out() {
+    assert_eq!(
+        time_limit(CLOCK_JIT),
+        "stopped at the limit of one program's time (10.0s of running): do less in one program, or split it"
+    );
+    assert_eq!(
+        time_limit(CLOCK_INTERPRETER),
+        "stopped at the limit of one program's time (1m 00s of running): do less in one program, or split it"
+    );
+    assert_eq!(Limits { jit: true, ..LIMITS }.clock(), CLOCK_JIT);
+    assert_eq!(Limits { jit: false, ..LIMITS }.clock(), CLOCK_INTERPRETER);
+}
+
+/// The host's stop (the user's `esc`, the turn's end) ends a program running — at the runtime's next check, from
+/// another thread — or waiting, at its next step; its words say who, and the first reason is kept.
+#[test]
+fn the_hosts_stop_ends_a_program_running_or_waiting() {
+    let e = stand_in();
+    for jit in [true, false] {
+        // (a stop that didn't land ends at this fuel, in seconds)
+        let limits = Limits { jit, fuel: 1 << 36, ..SMALL };
+        let watch = Watch::new(&limits);
+        let run = std::thread::spawn({
+            let (e, watch) = (e.clone(), watch.clone());
+            move || Program::start_with(&e, "!", limits, watch)
+        });
+        crate::event::sleep(Duration::from_millis(20));
+        watch.stop("the turn ended");
+        watch.stop("esc");
+        assert_eq!(error(run.join().unwrap()), "stopped: the turn ended", "running, jit {jit}");
+        assert_eq!(watch.stopped(), Some(Why::Host("the turn ended".into())));
+
+        let watch = Watch::new(&limits);
+        let pending = "pending\n{\"pending\":[{\"id\":0,\"name\":\"x\"}]}";
+        let (p, _) = calls(Program::start_with(&e, &script(&[pending, "@"]), limits, watch.clone()));
+        watch.stop("esc");
+        assert_eq!(error(p.answer(0, &json!(1))), "stopped: esc", "waiting, jit {jit}");
+        assert_eq!(watch.steps(), 2);
+    }
+}
+
+/// A program's running time is its steps' alone: the time a step runs counts, the wait for an answer doesn't.
+#[test]
+fn the_clock_counts_the_steps_not_the_waits() {
+    let e = stand_in();
+    let watch = Watch::new(&SMALL);
+    let pending = "pending\n{\"pending\":[{\"id\":0,\"name\":\"x\"}]}";
+    let (p, _) = calls(Program::start_with(&e, &script(&[pending, "@"]), SMALL, watch.clone()));
+    let first = watch.ran();
+    crate::event::sleep(Duration::from_millis(50));
+    assert_eq!(watch.ran(), first, "waiting adds nothing");
+    assert!(ended(p.answer(0, &json!(1))).result.is_ok());
+    assert!(watch.ran() >= first && watch.ran() < first + Duration::from_millis(50), "{:?}", watch.ran());
+    assert_eq!(watch.steps(), 2);
+}
+
 // —— the real engine ——
 
 /// The engine `cargo xtask quickjs` built, if it's there.
-fn real() -> Option<Arc<Engine>> {
+pub(crate) fn real() -> Option<Arc<Engine>> {
     Path::new(ENGINE_DEV).exists().then(|| Engine::at(Path::new(ENGINE_DEV)).expect("the built engine loads"))
 }
 
@@ -478,6 +536,42 @@ fn the_real_engine_counts_the_same_steps_under_the_jit_and_the_interpreter() {
     assert!(jit.steps > 0, "{jit:?}");
 }
 
+/// The work the steps don't see (the re-pin's §4): each runs for ever, and only the fuel — or the flag — ends it.
+pub const HEAVY: [(&str, &str); 3] = [
+    ("JSON.parse", "const s = JSON.stringify(await tool('o')); for (;;) JSON.parse(s);"),
+    (
+        "a comparator's sort",
+        "await tool('o'); const a = Array.from({length: 200000}, (_, i) => (i * 7919) % 200003); \
+         for (;;) a.slice().sort((x, y) => x - y);",
+    ),
+    ("string building", "await tool('o'); for (;;) 'ab'.repeat(1 << 22).replaceAll('a', 'c').length;"),
+];
+
+/// The host's stop lands inside the work the steps don't see, on both engines: each shape, its second step running
+/// for ever, is stopped from another thread. (In real time: the clock's own test is the simulation's,
+/// `src/sim/codeclock.rs`.)
+#[test]
+fn the_hosts_stop_ends_the_work_the_steps_dont_see() {
+    let Some(e) = real() else { return };
+    let log = test_log(2_000);
+    for jit in [true, false] {
+        for (what, src) in HEAVY {
+            let limits = Limits { jit, ..LIMITS };
+            let watch = Watch::new(&limits);
+            let (p, _) = calls(Program::start_with(&e, src, limits, watch.clone()));
+            let run = std::thread::spawn({
+                let log = log.clone();
+                move || p.answer(0, &json!(log))
+            });
+            crate::event::sleep(Duration::from_millis(50));
+            watch.stop("the turn ended");
+            let end = ended(run.join().unwrap());
+            assert_eq!(end.result, Err("stopped: the turn ended".into()), "{what}, jit {jit}");
+            assert!(end.fuel > 0 && end.fuel < limits.fuel, "{what}: {}", end.fuel);
+        }
+    }
+}
+
 fn ok_with(e: &Engine, src: &str, limits: Limits) -> Ended {
     drive(e, src, limits, |_| json!(null)).0
 }
@@ -490,6 +584,37 @@ fn what_the_real_engine_printed_past_the_limit_is_cut_for_claude() {
     assert!(a.whole > LIMITS.output && a.shown <= LIMITS.output, "{} {}", a.whole, a.shown);
     assert!(a.text.contains("… cut: the first "), "{}", &a.text[a.text.len() - 120..]);
     assert!(end.text().ends_with("line 3999\nreturned:\nend"));
+}
+
+/// QuickJS's dispatch on the runtime under both engines (what the host-set interrupt flag costs is read here,
+/// `.sb/codemode-s1-flag-report.md`): a loop of bytecode alone, and the 20,000-line triage (bytecode, regex,
+/// strings). Median of 5; reported only. Skipped where `cargo xtask quickjs` hasn't built the engine.
+#[test]
+fn perf_code_engine_dispatch() {
+    if crate::test_results::unoptimized("codetool::tests::perf_code_engine_dispatch") {
+        return;
+    }
+    let Some(e) = real() else { return };
+    let log = test_log(20_000);
+    let unbounded = |jit| Limits { jit, steps: u32::MAX, ..LIMITS };
+    let looped = "let s = 0; for (let i = 0; i < 2000000; i++) s = (s * 31 + i) | 0; return s;";
+    for (jit, engine) in [(true, "jit"), (false, "interp")] {
+        for (what, src) in [("loop", looped), ("triage", MEASURED_TASK)] {
+            let mut all: Vec<std::time::Duration> = (0..5)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    let end = drive(&e, src, unbounded(jit), |_| json!(log)).0;
+                    let t = t.elapsed();
+                    assert!(end.result.is_ok(), "{what}: {:?}", end.result);
+                    t
+                })
+                .collect();
+            all.sort_unstable();
+            let ms = all[all.len() / 2].as_secs_f64() * 1e3;
+            let line = format!("PERF code_engine_{what}_{engine}_ms {ms:.2} noise=1\n");
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        }
+    }
 }
 
 /// By hand, the runtime optimized (the rest needn't be):
@@ -627,7 +752,7 @@ print(`${lines.length} lines, ${failed.length} failed`);
 return { failed: failed.slice(0, 3), top: [...byFile].sort((a, b) => b[1] - a[1]).slice(0, 3), kinds };"#;
 
 /// A test run's output: mostly passes, some failures, warnings and errors pointing at files (S0's generator).
-fn test_log(lines: usize) -> String {
+pub(crate) fn test_log(lines: usize) -> String {
     let mut s: u64 = 0x2545_f491_4f6c_dd1d;
     let mut next = move || {
         s ^= s << 13;

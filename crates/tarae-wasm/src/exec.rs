@@ -3,6 +3,8 @@
 //! call stack is explicit (no Rust recursion), so deep wasm recursion is a `StackOverflow` trap rather than
 //! a crashed thread.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use super::compile::Op;
 use super::module::Module;
 use super::{Frame, Instance, NULL, PAGE, Trap};
@@ -170,6 +172,8 @@ pub(super) struct Bulk<'a> {
     pub elems: &'a mut [Vec<u64>],
     pub data_live: &'a mut [bool],
     pub fuel: &'a mut u64,
+    /// The instance's `Interrupt`, checked where fuel is paid.
+    pub interrupt: &'a AtomicU32,
 }
 
 /// The table ops, bulk memory ops, and `memory.grow`: rare enough to live outside the hot loop, and shared
@@ -179,13 +183,16 @@ pub(super) struct Bulk<'a> {
 /// the work — their instruction's fuel alone would let a loop of big copies run for ever.
 #[inline(never)]
 pub(super) fn bulk(op: Op, fr: &mut [u64], env: Bulk) -> Result<(), Trap> {
-    let Bulk { m, mem, memory_max, tables, table_max, elems, data_live, fuel } = env;
+    let Bulk { m, mem, memory_max, tables, table_max, elems, data_live, fuel, interrupt } = env;
     let mut pay = |n: usize| {
         let n = n as u64;
         if *fuel < n {
             return Err(Trap::OutOfFuel);
         }
         *fuel -= n;
+        if interrupt.load(Ordering::Relaxed) != 0 {
+            return Err(Trap::Interrupted);
+        }
         Ok(())
     };
     let s = |x: u16| fr[x as usize];
@@ -296,7 +303,9 @@ impl Instance {
             stack,
             frames,
             fuel,
+            interrupt,
         } = self;
+        let interrupt = interrupt.word();
         let code = &m.code[..];
         let stack: &mut [u64] = stack;
         let depth = limits.call_depth;
@@ -378,6 +387,9 @@ impl Instance {
                             return Err(Trap::OutOfFuel);
                         }
                         *fuel -= n;
+                        if interrupt.load(Ordering::Relaxed) != 0 {
+                            return Err(Trap::Interrupted);
+                        }
                     }
                     Op::Jump(to) => pc = to as usize,
                     Op::JumpIf { c, to } => jump!(u32s!(c) != 0, to),
@@ -454,7 +466,7 @@ impl Instance {
                     | Op::MemoryInit { .. }
                     | Op::DataDrop(_)) => {
                         let env =
-                            Bulk { m, mem, memory_max: *memory_max, tables, table_max, elems, data_live, fuel };
+                            Bulk { m, mem, memory_max: *memory_max, tables, table_max, elems, data_live, fuel, interrupt };
                         bulk(op, fr, env)?;
                     }
                     Op::RefIsNull { dst, a } => s!(dst) = (s!(a) == NULL) as u64,
