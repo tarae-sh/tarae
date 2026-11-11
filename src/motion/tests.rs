@@ -160,6 +160,7 @@ fn an_answered_change_presses_its_stamp_and_it_dries() {
         let id = ed.doc().id;
         let changes = vec![(0, 3, "one".into(), "ONE".into()), (8, 13, "three".into(), "THREE".into())];
         crate::llm::review_with(ed, id, "upper", changes, None);
+        crate::llm::review_focus(ed);
     };
     let mut ed = editor("one\ntwo\nthree\n");
     ed.motion_drawn = true;

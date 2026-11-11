@@ -234,6 +234,7 @@ fn the_review_opens_on_the_same_rows() {
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
     crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
     settle(&mut ed, |ed| ed.workspace.claude.review.is_some());
+    crate::llm::review_focus(&mut ed);
     let review = frame(&mut ed, 100, 30);
     let rows = |f: &[String], t: &str| f.iter().position(|r| r.ends_with(t));
     for t in ["let b = 2;", "let b = 20;", "let c = a + b;", r#"println!("{a} {b}");"#] {
@@ -997,6 +998,7 @@ fn an_edit_accepted_in_its_review_leads_the_cursor_there() {
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
     crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
     settle(&mut ed, |ed| ed.workspace.claude.review.is_some());
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed, 100, 30);
     // (the cursor somewhere else meanwhile, as a reload or your own look may leave it)
     ed.doc_mut().set_selection(crate::selection::Selection::point(0));
@@ -1546,6 +1548,7 @@ fn a_place_found_after_its_review_is_not_drawn() {
     let from = TEXT.find("    let b").unwrap();
     let change = (from, from + 15, "    let b = 2;\n".to_string(), "    let b = 20;\n".to_string());
     crate::llm::review_with(&mut ed, id, "an edit", vec![change], None);
+    crate::llm::review_focus(&mut ed);
     crate::llm::close_review(&mut ed);
     let looked = |ed: &Editor| {
         let c = ed.workspace.claude.chat.as_ref().unwrap();

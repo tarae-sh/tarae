@@ -1227,11 +1227,29 @@ pub struct Review {
     pub own_turn: bool,
     /// The answer's lines wrapped at this width when it lands (a commit message's body at 72 — `wrap_message`).
     pub wrap: Option<usize>,
-    /// It took the keys from the chat (a chat edit asked while you were in it): Esc gives them back there —
-    /// else to the code (#118).
+    /// Focused, it took the keys from the chat: Esc and its last answer give them back there — else to the code
+    /// (#118). Set as it's focused, never as it comes.
     pub from_chat: bool,
-    /// Esc gave the keys back to the code, the change unanswered: they're the editor's until `C-q`.
-    pub away: bool,
+    /// It has the keys (#528): every key is its but `space`, `:`, `C-w` and a sequence under way. Not focused, it
+    /// waits, as a card that came on its own does — no key is its but the way in (`C-q`, a press on it, `C-w w`'s
+    /// last stop: `review_focus`), so no stray key is ever an answer. Lost once the keys leave the code
+    /// (`review_keys_sync`); Esc gives them back.
+    pub focused: bool,
+    /// Waiting, folded to its one-row peek: the keys were on the code as it came, or came onto it since — a waiting
+    /// review never takes the place of what your keys are on. Never unfolds by itself: focusing it does.
+    pub folded: bool,
+    /// A frame drew it in the code area since it came or last folded (`term::render_frame`): focused before that —
+    /// `C-q` on its peek, or with the code hidden on a narrow screen — an answer typed on is refused, said on it, as a
+    /// card's typed before a frame drew it (a `C-q y` never answers a change no frame showed).
+    pub seen: bool,
+    /// Handed the keys by your answer on the one before (the next file of a set, the file after its card's answer —
+    /// as `card_next` hands a card on): focused once a frame has drawn it, its answers refused until then.
+    pub handed: bool,
+    /// A draft's: the input that asked for it (`Events::asked` as it started — `C`, `:commit-draft`, the end card's
+    /// `c`): focused as it lands while that input is still the last one, else it waits (#528, as `space i`'s).
+    pub asked_by: Option<u64>,
+    /// An answer of its refused (typed before it was in sight), said on its change's head until the next key.
+    pub refused: Option<String>,
     /// What a mouse drag selected over it — the file's lines and the ones a change proposes alike, by its rows (the
     /// row, the display column): from the press to the pointer, copied as the button is let go.
     pub marked: Option<((usize, usize), (usize, usize))>,
@@ -1286,11 +1304,31 @@ impl Review {
             own_turn: true,
             wrap: None,
             from_chat: false,
-            away: false,
+            focused: false,
+            folded: false,
+            seen: false,
+            handed: false,
+            asked_by: None,
+            refused: None,
             answers: None,
             marked: None,
             pressed: None,
         }
+    }
+
+    /// It's drawn in the code area (focused, or waiting unfolded) — not its peek.
+    pub fn covers(&self) -> bool {
+        self.ready && !self.folded
+    }
+
+    /// Folded to its peek: what it changes is out of sight until a frame draws it again (`seen`).
+    pub fn fold(&mut self) {
+        (self.folded, self.seen) = (true, false);
+    }
+
+    /// It waits to be focused (`C-q`, a press, `C-w w`): up, its answer ready, without the keys.
+    pub fn waits(&self) -> bool {
+        self.ready && !self.focused
     }
 
     fn next_undecided(&self) -> Option<usize> {
@@ -1387,6 +1425,10 @@ pub fn draft(
     let old = doc.text.byte_slice(from..to).to_string();
     let hunk = Hunk { from, to, old, new: String::new(), decision: Decision::Undecided, conflict: false };
     start(ed, doc_id, label, prompt, hunk)?;
+    let asked = ed.events.asked();
+    if let Some(r) = ed.workspace.claude.review.as_mut() {
+        r.asked_by = asked;
+    }
     // (its time limit: a draft still being written then is stopped, and said)
     let generation = ed.llm_generation;
     ed.events.jobs().spawn(move || {
@@ -1572,6 +1614,74 @@ pub fn review_with(
     // answered nothing: #216)
     rev.current = rev.hunks.iter().position(|h| h.decision == Decision::Undecided).unwrap_or(0);
     ed.workspace.claude.review = Some(rev);
+    // (it comes waiting — the caller focuses it when your input asked for it: the keys on the code, its peek)
+    review_keys_sync(ed);
+}
+
+/// The keys an edit review answers with (`review_answer`): refused while it was handed them but not drawn yet.
+pub const ANSWERS: [char; 4] = ['y', 'n', 'a', 'q'];
+
+/// The edit review up gets the keys (#528): `C-q`, a press on it or its peek, `C-w w`'s last stop, `enter` on its
+/// inbox row, a frame drawing it handed on, your own input asking for it. From wherever they were — the chat
+/// remembered, so its Esc and last answer give them back there. Its file comes to the front of the code it covers
+/// (waiting folded, the pane kept the one your keys were on): answered, you're where its change landed.
+pub fn review_focus(ed: &mut Editor) {
+    let chat = ed.workspace.chat_has_keys();
+    // (in sight if the last frame drew it in the code area — waiting there, read before `C-q`; no frame drawn yet: a
+    // test's editor, nothing to judge by)
+    let seen = ed.frames == 0 || ed.screen.review_area.get().is_some();
+    let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.ready && !r.focused) else { return };
+    (r.focused, r.folded, r.handed, r.from_chat) = (true, false, false, chat);
+    r.seen = seen;
+    let doc = r.doc_id;
+    if let Some(i) = ed.docs.iter().position(|d| d.id == doc) {
+        ed.current = i;
+    }
+    ed.workspace.viewer.keys_to_code();
+}
+
+/// The edit review up was handed the keys by your answer on the one before (`Review.handed`): drawn in the code
+/// area, focused by the frame that draws it (`term::render_frame`).
+pub fn review_hand(ed: &mut Editor) {
+    if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.ready && !r.focused) {
+        (r.handed, r.folded) = (true, false);
+    }
+}
+
+/// `C-q` (or its twin) while this session's edit review waits and is the next up: focused, from wherever the keys
+/// are — the terminal's program too, so beside `card_key`, first in `handle_key` (the way in the same from every
+/// surface). True if the key was its.
+pub fn review_way_in(ed: &mut Editor, key: Key) -> bool {
+    let c_q = key.ctrl && !key.alt && key.code == Code::Char('q');
+    if !c_q || ed.picker.is_some() || ed.prompt.is_some() || !ed.pending.is_empty() {
+        return false;
+    }
+    if !ed.workspace.claude.review.as_ref().is_some_and(Review::waits)
+        || ed.next_up() != crate::inbox::Next::Review
+    {
+        return false;
+    }
+    review_focus(ed);
+    true
+}
+
+/// Every event: the edit review's focus follows the keys. Focused, it lets go once they leave the code (a hop, a
+/// press elsewhere); waiting, it folds to its peek once they're on the code — and stays folded.
+pub fn review_keys_sync(ed: &mut Editor) {
+    let here = ed.workspace.here();
+    // (which-key, a picker, a prompt, a card over the code are the editor's own layers — the `space`, `:` and `C-w` a
+    // focused review lets through: the keys come back to it once they go)
+    let over_code = ed.workspace.docked() == Here::Code && ed.float_front().is_some();
+    let code = here == Here::Code || over_code;
+    // (the side panel and the review rail stand in the code's area: drawn over, the keys there would act unseen)
+    let in_area = matches!(here, Here::Code | Here::Side | Here::Rail);
+    let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.ready) else { return };
+    if r.focused && !code {
+        r.focused = false;
+    }
+    if !r.focused && !r.handed && in_area && !r.folded {
+        r.fold();
+    }
 }
 
 /// A commit message with its body wrapped at `width` (git's convention, 72): the subject line stays as it
@@ -1658,8 +1768,14 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
     rev.ready = true;
     rev.current =
         rev.hunks.iter().position(|h| h.decision == Decision::Undecided && !h.conflict).unwrap_or(0);
+    let yours = rev.asked_by.is_some() && rev.asked_by == Some(ed.input_seq);
     ed.current = doc_idx;
     ed.set_status(format!("claude answered in {}", crate::term::run_duration(took)));
+    // (asked by your key, nothing typed since: focused as it lands — else it waits for `C-q`, #528)
+    match yours {
+        true => review_focus(ed),
+        false => review_keys_sync(ed),
+    }
 }
 
 /// If edits happened while waiting, relocates the original (nearest match). False if not found.
@@ -1695,7 +1811,6 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
         return false;
     }
     let page = ed.viewport.0.max(2) as isize;
-    let chat = ed.workspace.chat_has_keys();
     // Still waiting for the answer: Esc stops it (the card says so)
     if key == Key::plain(Code::Esc) && esc_stops(ed) {
         stop_waiting(ed, None, "stopped — nothing changed");
@@ -1704,20 +1819,18 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
     let Some(rev) = ed.workspace.claude.review.as_mut().filter(|r| r.ready) else { return false };
     // (a key of yours ends what the mouse selected over it — copied already, as the button was let go)
     rev.marked = None;
-    let c_q = key.ctrl && !key.alt && key.code == Code::Char('q');
-    // Back in the chat: its keys are the chat's until `C-q`
-    if chat {
-        if c_q {
-            rev.away = false;
-            ed.workspace.viewer.keys_to_code();
-            return true;
-        }
-        return false;
+    rev.refused = None;
+    // Waiting: no key is its — they go where the keys are (its way in is `review_way_in`'s, beside the cards'). Handed
+    // the keys by an answer but not drawn yet: an answer typed on is refused, said on it (a `y y` never answers a
+    // file never in sight)
+    let answer = key.plain_char().is_some_and(|c| ANSWERS.contains(&c));
+    // (focused but no frame has drawn it yet — `C-q y` on its peek: the same refusal)
+    if (rev.handed || rev.focused && !rev.seen) && answer {
+        rev.refused = Some(format!("{key} came before this change was in sight — not taken"));
+        return true;
     }
-    // Back in the code: the editor's until `C-q`
-    if rev.away {
-        rev.away = !c_q;
-        return c_q;
+    if !rev.focused {
+        return false;
     }
     let scroll = |rev: &mut Review, by: isize| {
         rev.scroll = rev.scroll.saturating_add_signed(by);
@@ -1733,6 +1846,7 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
         (Code::Char('e'), true, false) => scroll(rev, 1),
         (Code::Char('y'), true, false) => scroll(rev, -1),
         (Code::Esc, ..) => {
+            rev.focused = false;
             match ed.workspace.claude.chat.as_mut().filter(|_| rev.from_chat) {
                 Some(_) => {
                     ed.workspace.set_at(Here::Chat);
@@ -1742,7 +1856,8 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
                     ));
                 }
                 None => {
-                    rev.away = true;
+                    // (the keys on the code: it folds to its peek, the code in sight)
+                    rev.fold();
                     ed.mode = crate::editor::Mode::Normal;
                     let key = ed.key_said("C-q");
                     ed.set_status(format!(
@@ -1877,7 +1992,7 @@ fn finish(ed: &mut Editor) {
     crate::reviews::edit_ended(ed, &rev, false, applied);
     // Answered here, the keys go back to the chat it took them from — as its Esc gives them (they stayed in
     // the code: `keys → pane#29 (commands)` after an edit review's `y`)
-    if rev.from_chat && !rev.away && ed.workspace.claude.chat.is_some() {
+    if rev.from_chat && rev.focused && ed.workspace.claude.chat.is_some() {
         ed.workspace.set_at(Here::Chat);
     }
     // A step `space u` takes back on its own

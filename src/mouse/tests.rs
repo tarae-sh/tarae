@@ -411,27 +411,51 @@ fn a_press_outside_a_focused_card_gives_its_keys_back() {
 /// A press anywhere on an edit's review gives it the keys, as `C-q` does — after `esc` left it for the code; a press
 /// on a change takes that one in hand too.
 #[test]
-fn a_press_on_an_edit_review_gives_it_the_keys() {
+fn a_press_on_a_waiting_edit_review_or_its_peek_gives_it_the_keys() {
     let mut ed = editor();
     ed.docs[0].text = ropey::Rope::from_str("a\nb\nc\n");
     let doc = ed.doc().id;
+    let waits = |ed: &Editor| {
+        ed.workspace
+            .claude
+            .review
+            .as_ref()
+            .is_some_and(|r| r.waits() && r.hunks[0].decision == crate::llm::Decision::Undecided)
+    };
+    // #528: the keys on the code as it comes — it waits, folded to its peek, the code in sight
     crate::llm::review_with(&mut ed, doc, "change it", vec![(0, 1, "a".into(), "x".into())], None);
     frame(&mut ed);
-    assert_eq!(ed.keys_to().region, Region::EditReview);
-    feed(&mut ed, "<esc>");
-    assert_eq!(ed.keys_to().region, Region::Code, "left for the code, unanswered");
-    // Off it — the status line, the top line over it (no split is drawn while it's up: it takes the code's whole
-    // area) — the press goes where it lands, never to the review
-    let (_, ry, ..) = ed.screen.review_area.get().expect("its area");
-    for y in [H as usize - 1, ry.saturating_sub(1)] {
-        press(&mut ed, 20, y);
-        assert_eq!(ed.keys_to().region, Region::Code, "row {y}: not the review's");
-        assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.away));
+    assert_eq!(ed.keys_to().region, Region::Code, "it waits");
+    let (px, py, pw) = ed.screen.review_peek.get().expect("its peek");
+    // Off it — the status line, the code — the press goes where it lands, answering nothing
+    for (x, y) in [(20, H as usize - 1), code_cell(&ed, 1)] {
+        press(&mut ed, x, y);
+        frame(&mut ed);
+        assert_eq!(ed.keys_to().region, Region::Code, "({x}, {y}): not the review's");
+        assert!(waits(&ed), "({x}, {y}): it still waits");
     }
+    press(&mut ed, px + pw / 2, py);
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::EditReview, "its peek pressed: it has the keys");
+    // Faded in the code area, the keys in the chat as it comes: a press on it gives it the keys, never an answer
+    crate::llm::close_review(&mut ed);
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    crate::chat::open(&mut ed);
+    assert!(ed.workspace.chat_has_keys());
+    crate::llm::review_with(&mut ed, doc, "change it", vec![(0, 1, "a".into(), "x".into())], None);
+    frame(&mut ed);
+    assert!(ed.screen.review_peek.get().is_none() && waits(&ed), "faded in the code area");
     let y = ed.screen.review_rows.borrow().first().map(|r| r.0).expect("its change's rows");
-    press(&mut ed, 20, y);
-    assert_eq!(ed.keys_to().region, Region::EditReview, "back in it by the press");
-    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| !r.away));
+    let (rx, ..) = ed.screen.review_area.get().expect("its area");
+    press(&mut ed, rx + 20, y);
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::EditReview, "pressed: it has the keys");
+    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.focused && r.from_chat));
+    assert_eq!(
+        ed.workspace.claude.review.as_ref().unwrap().hunks[0].decision,
+        crate::llm::Decision::Undecided
+    );
 }
 
 /// A press on the `:` menu's row fills that completion in, as `tab` cycling to it does — the prompt stays, the code

@@ -4120,6 +4120,8 @@ mod tests {
         assert_eq!(git_in(&wt, &["show", ":notes.md"]), "saved\ntodo", "staged what was saved");
         assert!(!git_in(&wt, &["ls-files"]).contains(".tmp"), "no temp file staged");
         std::fs::remove_file(&stray).unwrap();
+        // (Claude's draft drawn before it's answered, as the main loop draws after its result — #528)
+        crate::term::render(&mut ed, &mut Vec::new(), 112, 30).unwrap();
         feed(&mut ed, "a:w<ret>");
         settle_until(&mut ed, |ed| end_card(ed).is_some_and(|e| !e.dirty()));
         assert_eq!(git_in(&wt, &["log", "-1", "--format=%s"]), "Add the notes");

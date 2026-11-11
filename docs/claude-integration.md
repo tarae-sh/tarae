@@ -939,13 +939,21 @@ plan belongs to its conversation: it's kept and continued with it, and `C-l` sta
 
 When you ask for a change, Claude edits files from the chat too, across as many files as it takes. Nothing is
 written until you've seen it: each edit opens as the same in-buffer review as select → instruct → diff, headed
-by what you asked for. The change in hand says what its keys do: `y accept this one`, `a accept all 2` (every
-change still undecided), `n reject`, `esc back, unanswered` (shorter where the row is narrow), and while review at
-the end is off, the other way: `space v a review at the end` (left out first where the row is narrow); `q` rejects
-the rest. Esc gives the keys back where they were before the review took them — the chat, or the code (NORMAL) —
-and leaves the change waiting; `C-q` answers it. While it waits, `C-d` `C-u` (and
-the wheel) scroll it, a click on a change takes that one in hand (one answered already too, to change the answer),
-and `space`, `:` and `C-w` work over it. Under that title, Claude's own
+by what you asked for. It comes **waiting**, as a card that came on its own does, so a key you were typing is never
+an answer: with the keys in the chat, a list or the terminal it waits in the code area to be read, its lines
+at full strength, the change in hand's head row faint and leading with `C-q answer`; with the keys on the code it
+folds to a one-row peek at the code's foot (`▎ Claude's change · Cargo.toml   C-q answer`) and the code you're on
+stays in sight. `C-q` (`F2` inside zellij), a press on it or its peek, `enter` on its inbox row or `C-w w` (its
+round's last stop) gives it the keys: its bars light, and the change in hand says what its keys do: `y accept this
+one`, `a accept all 2` (every change still undecided), `n reject`, `esc back, unanswered` (shorter where the row is
+narrow), and while review at the end is off, the other way: `space v a review at the end` (left out first where the
+row is narrow); `q` rejects the rest. An answer typed before a frame has drawn it (`C-q y` on the peek) is refused,
+said on its head. A review your own key asked for comes with the keys: `space i`'s and a commit message's draft while
+nothing was typed since the key that asked, and the next file of a set after your answer on the one before. Esc
+gives the keys back where they were — the chat, or the code, where it folds to its peek — and leaves the change
+waiting; `C-q` answers it. A session switch lets go of it too. Focused, `C-d` `C-u` (and the wheel) scroll it, a
+click on a change takes that one in hand (one answered already too, to change the answer), and `space`, `:` and
+`C-w` work over it. Under that title, Claude's own
 words from just before it made the edit say why ([screenshot](screenshots/chat-edit-why.png)): what it
 concluded, in a row or two. Its full reasoning is in the chat. The accepted changes are what gets
 written. Accept part of a change, and only that part is written. Decline, and Claude is told so. Several edits

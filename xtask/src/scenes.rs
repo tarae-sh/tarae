@@ -169,6 +169,62 @@ const REST_REVIEW_KEYS: &[&str] = &[
     "@2",
 ];
 
+/// #528's scenes: Claude's edit review arriving while the chat is typed into (the ask line again at once after the
+/// question — its enter gives the keys back to the code) — it waits faded in the code area, its head row `C-q answer`.
+const REVIEW_WAITS_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    " ",
+    "l",
+    "@?Change 1 of 1",
+    "@1",
+    "so I",
+    "@1",
+];
+
+/// #528: the keys on the code as it comes (the ask line's enter gave them back) — the code stays, the review a one-row
+/// peek bottom-right.
+const REVIEW_PEEK_KEYS: &[&str] =
+    &["@1", " ", "l", "@1", "why does insert clone the name?", "\r", "@?C-q answer", "@1"];
+
+/// #528's fold: waiting faded with the keys in the ask line, then the keys onto the code (its `esc`) — it folds to its
+/// peek, the code back.
+const REVIEW_FOLD_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    " ",
+    "l",
+    "@?Change 1 of 1",
+    "@1",
+    "\x1b",
+    "@!Change 1 of 1",
+    "@1",
+];
+
+/// #528: the waiting review focused with `C-q` from the ask line — lit, its answers in the accent.
+const REVIEW_FOCUSED_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    " ",
+    "l",
+    "@?Change 1 of 1",
+    "@1",
+    "\x11",
+    "@1",
+];
+
 /// #481's rest-removed scene's keys: `space v v` on main.rs, the pointer resting on its removed doc comment (the base's
 /// text, not the buffer's).
 const REST_REMOVED_KEYS: &[&str] =
@@ -4456,6 +4512,10 @@ const SCENES: &[Scene] = &[
     // hover, the scene's own home: `-review` on a line Claude's edit review keeps, `-removed` on a line `space v`
     // shows removed)
     Scene { name: "rest-review", claude: "full", files: MAIN, keys: REST_REVIEW_KEYS },
+    Scene { name: "review-waits", claude: "full", files: MAIN, keys: REVIEW_WAITS_KEYS },
+    Scene { name: "review-peek", claude: "full", files: MAIN, keys: REVIEW_PEEK_KEYS },
+    Scene { name: "review-fold", claude: "full", files: MAIN, keys: REVIEW_FOLD_KEYS },
+    Scene { name: "review-focused", claude: "full", files: MAIN, keys: REVIEW_FOCUSED_KEYS },
     Scene { name: "rest-removed", claude: "idle", files: MAIN, keys: REST_REMOVED_KEYS },
     Scene { name: "sandbox-runtime", claude: "runtime", files: &["release.sh"], keys: SANDBOX_RUNTIME },
     // (#484c: Short 4's runs as a still, up to the masked toast stacked over the host's)

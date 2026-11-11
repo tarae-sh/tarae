@@ -165,6 +165,9 @@ pub struct Landing {
     /// Claude's call it answers, claimed as its request came (`chat::claim_for`) — its card's and reviews' keys
     /// stamp that row. None: the user's own, or a call not found.
     row: Option<String>,
+    /// The input that answered its card or its last review (`Events::asked` then): its next file's review, come while
+    /// that input is still the last one, is handed the keys (`llm::review_hand`) — else it waits for `C-q` (#528).
+    handed: Option<u64>,
 }
 
 /// Lands `files` as Claude's change (see the module's doc) — `call` is answered once every file is done.
@@ -249,6 +252,7 @@ pub fn land_told(
         note,
         since: std::time::Instant::now(),
         row,
+        handed: None,
     };
     if unseen.is_empty() {
         return queue(ed, l);
@@ -297,6 +301,7 @@ pub fn land_yours(
         note: String::new(),
         since: crate::clock::now(),
         row: None,
+        handed: None,
     });
     next(ed);
 }
@@ -798,9 +803,11 @@ pub fn accept_all(ed: &mut Editor, id: u64, whose: Whose) {
                     };
                     done.push((f.shown(), f.places, outcome));
                 }
+                let asked = ed.events.asked();
                 let Some(l) = front(ed, whose) else { return };
                 l.done.extend(done);
                 l.stage = Stage::OneByOne;
+                l.handed = asked;
                 // (the user's own step: what wasn't written isn't its)
                 if let Some(step) = l.step {
                     crate::checkpoint::own_drop(ed, step, &unwritten);
@@ -826,8 +833,10 @@ pub fn one_by_one(ed: &mut Editor, id: u64, whose: Whose) {
         return ed.offer_refused("a move or delete is among them — y accepts all, v shows them, n declines");
     }
     ed.offer_finished(id, Ok(()));
+    let asked = ed.events.asked();
     if let Some(l) = asking(ed, whose) {
         l.stage = Stage::OneByOne;
+        l.handed = asked;
     }
     next(ed);
 }
@@ -933,6 +942,8 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
     }
     let asks = matches!(whose, Whose::Ask(_));
     let warnings = if f.protected { crate::edits::warned(ed) } else { Vec::new() };
+    // (what the keys' pane shows: it stays there while the review waits folded — the code you're on stays in sight)
+    let shown = ed.doc().id;
     // (Claude's: a file not open yet is `claudes_only` — no grammar or server offered mid-turn, #208; read here, its
     // text compared right away)
     if let Err(e) = ed.open_as(&f.path, crate::editor::Opener::Claude) {
@@ -955,9 +966,12 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
         Whose::Ask(g) => crate::ask::cut(ed, g, doc_id, &f.before, changes),
         _ => changes,
     };
-    // The keys go to the review; the file is the user's now (follow won't close it as a preview)
-    let from_chat = claudes && ed.workspace.chat_has_keys();
-    ed.workspace.leave(crate::workspace::Here::Chat);
+    // The keys stay where they are (#528): the review waits for `C-q` — but the one your input asked for, as a card
+    // of yours comes focused (`Offer.yours`): `space i`'s while nothing was typed since it asked; the next file after
+    // your answer on the one before (or its card's), handed the keys once a frame draws it. The file is the user's
+    // now (follow won't close it as a preview)
+    let yours = matches!(whose, Whose::Ask(g) if crate::ask::yours(ed, g));
+    let handed = front(ed, whose).and_then(|l| l.handed) == Some(ed.input_seq);
     if let Some(c) = &mut ed.workspace.claude.chat {
         c.follow.keep(doc_id);
     }
@@ -974,7 +988,6 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
     }
     if let Some(r) = &mut ed.workspace.claude.review {
         r.answers = answers;
-        r.from_chat = from_chat;
         r.reason = reason;
         r.warnings = warnings;
         // (its turn in the chat is the step — the user's own change keeps its own: `reviewed`)
@@ -985,11 +998,27 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
             c.edits.review = Some(g);
         }
     }
+    match () {
+        _ if yours => crate::llm::review_focus(ed),
+        _ if handed => crate::llm::review_hand(ed),
+        _ => {}
+    }
+    // (folded to its peek: the pane keeps the code your keys are on)
+    if ed.workspace.claude.review.as_ref().is_some_and(|r| r.folded)
+        && let Some(i) = ed.docs.iter().position(|d| d.id == shown)
+    {
+        ed.current = i;
+    }
     crate::follow::settle(ed);
 }
 
 /// A file's review ended: kept for `space u` and saved (unless the user has unsaved edits there).
 fn reviewed(ed: &mut Editor, f: FileChange, whose: Whose, doc_id: DocId, dirty: bool, applied: bool) {
+    // (answered by your input: the next file's review is handed the keys while it's still the last one)
+    let asked = ed.events.asked();
+    if let Some(l) = front(ed, whose) {
+        l.handed = asked;
+    }
     if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| matches!(whose, Whose::Claude(_))) {
         c.edits.review = None;
     }
@@ -2039,6 +2068,7 @@ mod tests {
             note: String::new(),
             since: std::time::Instant::now(),
             row: None,
+            handed: None,
         };
         let q = card(&landing("")).question;
         assert!(!q.contains("matched only"), "Claude's words aren't tarae's: {q}");

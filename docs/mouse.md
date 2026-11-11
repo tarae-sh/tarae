@@ -19,6 +19,7 @@ that fills it (S selection).
 | A line between panels, between your panes | the chat's, the side panel's, the rail's, the slot's, a dock's, a divider, the follow card's free edges | ✓ | ✓ | ✓ | as one press | — nothing to scroll | ✓ |
 | Claude's edit review | a change | ✓ | — the press did it | ✓ | as one press | ✓ | — nothing on hover |
 | Claude's edit review | off it | says: the review waits for its answer — y accepts the change, n rejects it | — the press did it | says: the review waits for its answer — y accepts the change, n rejects it | as one press | — nothing to scroll | — nothing on hover |
+| Claude's edit review | its peek, waiting | ✓ | — the press did it | — the press opened it | as one press | ✓ | ✓ |
 | The review's rail | a file | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | ✓ | ✓ | — nothing on hover |
 | The review's rail | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
 | The review's rail | a key hint at its foot | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | — nothing on hover |

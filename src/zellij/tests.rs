@@ -151,6 +151,7 @@ fn reviewing(ed: &mut Editor) {
     ed.docs[0].text = ropey::Rope::from_str("a\n");
     let doc = ed.doc().id;
     crate::llm::review_with(ed, doc, "change it", vec![(0, 1, "a".into(), "b".into())], None);
+    crate::llm::review_focus(ed);
     drawn(ed, 160, 40);
     assert_eq!(ed.keys_to().region, Region::EditReview);
 }
@@ -162,15 +163,15 @@ fn the_edit_review_left_for_the_code_says_the_inbox_and_it_brings_it_back() {
     let mut ed = editor(true);
     reviewing(&mut ed);
     keys(&mut ed, "esc");
-    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.away), "left, unanswered");
+    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.waits()), "left, unanswered");
     assert!(
         said(&ed).contains("back to the code — the change waits unanswered, F2 answers it"),
         "{}",
         said(&ed)
     );
-    assert!(drawn(&mut ed, 160, 40).contains("F2 answer it"), "the header says it too");
+    assert!(drawn(&mut ed, 160, 40).contains("F2 answer"), "its peek says it too");
     keys(&mut ed, "F2");
-    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| !r.away), "back in it: {}", said(&ed));
+    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.focused), "back in it: {}", said(&ed));
     assert_eq!(ed.keys_to().region, Region::EditReview);
 }
 

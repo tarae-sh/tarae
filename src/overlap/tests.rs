@@ -454,6 +454,9 @@ fn answer(ed: &mut Editor, n: u64) -> String {
         }
         assert!(std::time::Instant::now() < end, "call {n} answered");
         if ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready) {
+            crate::llm::review_focus(ed);
+            // (drawn before it's answered: a `y` no frame preceded is refused — #528)
+            crate::term::render(ed, &mut Vec::new(), 120, 40).unwrap();
             crate::llm::review_key(ed, Key::plain(Code::Char('y')));
             crate::refactor::next(ed);
         }

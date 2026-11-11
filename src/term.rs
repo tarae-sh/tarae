@@ -995,6 +995,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         picker_input: Default::default(),
         picker_box: Default::default(),
         review_area: Default::default(),
+        review_peek: Default::default(),
         spots: Default::default(),
         stop_marks: Default::default(),
         map_marks: Default::default(),
@@ -1129,11 +1130,11 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     // Reviewing: put the current change's head at the top 1/4 of the screen (follow — off once j/k scroll)
     // (its doc comments' layout kept on it while it holds: taken out, refreshed when stale, put back)
     // (and its rows the same way)
-    let (cache, kept) = match editor.workspace.claude.review.as_mut().filter(|r| r.ready) {
+    let (cache, kept) = match editor.workspace.claude.review.as_mut().filter(|r| r.covers()) {
         Some(r) => (r.folds.take(), r.kept.take()),
         None => (None, None),
     };
-    let review_rows = editor.workspace.claude.review.as_ref().filter(|r| r.ready).and_then(|rev| {
+    let review_rows = editor.workspace.claude.review.as_ref().filter(|r| r.covers()).and_then(|rev| {
         let doc = editor.docs.iter().find(|d| d.id == rev.doc_id)?;
         let folds = review_folds(editor, doc, review_code_w(doc, &lay), cache);
         let kept = review_rows(editor, doc, rev, folds.as_ref(), kept);
@@ -1158,6 +1159,20 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
             rev.scroll = h.saturating_sub(lay.text_rows.saturating_sub(1) / 4);
         }
         rev.scroll = rev.scroll.min(rows.len().saturating_sub(1));
+    }
+    // Handed the keys by your answer on the one before: this frame draws it, so it has them (as `card_next`)
+    if review_rows.is_some()
+        && !lay.code_hidden()
+        && editor.workspace.claude.review.as_ref().is_some_and(|r| r.handed)
+    {
+        crate::llm::review_focus(editor);
+    }
+    // (drawn in the code area: what it changes is in sight — its answers taken from now on)
+    if review_rows.is_some()
+        && !lay.code_hidden()
+        && let Some(rev) = editor.workspace.claude.review.as_mut()
+    {
+        rev.seen = true;
     }
     // Per pane, screen row → doc line (for the mouse); the focused pane's also goes into editor.view, the followed
     // pane's writing rows into the screen (the follow card keeps off them)
@@ -6050,11 +6065,13 @@ fn draw(
     }
     // Narrow screen with the chat open: the chat takes it all — no text, nothing floating over it (so too
     // when something fills the screen — `C-w z`)
-    let text_cursor = match editor.workspace.claude.review.as_ref().filter(|r| r.ready) {
+    // (a waiting one folded to its peek leaves the code in sight — its peek drawn with the cards, below)
+    let text_cursor = match editor.workspace.claude.review.as_ref().filter(|r| r.covers()) {
         _ if lay.code_hidden() => None,
         Some(rev) => {
             if let Some(rows) = review_rows {
-                let _fade = Fade::unless(keys.code(), ui);
+                // (never faded, waiting or not — it waits here to be read before `C-q`, as a waiting card's body
+                // isn't faded: its title's and head row's bars say whether it has the keys — #528)
                 draw_review(rev, rows, editor, ui, lay, out)?;
                 editor.screen.regions.code(code_area(lay), None, true, true);
             }
@@ -6082,7 +6099,7 @@ fn draw(
     if let Some(r) = editor.workspace.code_review.as_ref().filter(|_| editor.review_rail_up())
         && let Some(col) = lay.side()
         && lay.zoom.is_none()
-        && !editor.workspace.claude.review.as_ref().is_some_and(|r| r.ready)
+        && !editor.workspace.claude.review.as_ref().is_some_and(|r| r.covers())
         && !editor.welcome()
     {
         let _fade = Fade::unless(keys == Keys::Review, ui);
@@ -6091,7 +6108,7 @@ fn draw(
     } else if let Some(sb) = &editor.workspace.viewer.sidebar
         && let Some(col) = lay.side()
         && !editor.review_rail_up()
-        && !editor.workspace.claude.review.as_ref().is_some_and(|r| r.ready)
+        && !editor.workspace.claude.review.as_ref().is_some_and(|r| r.covers())
     {
         let _fade = Fade::unless(matches!(keys, Keys::Side(_)), ui);
         draw_sidebar(sb, editor, ui, lay, col, out)?;
@@ -6212,6 +6229,9 @@ fn draw(
     let note_rect = editor.screen.note_card.get();
     drew(editor, Kind::Note, note_rect);
     let offer_rect = offer.as_ref().map(|o| o.rect());
+    // (a waiting edit review folded to its peek: placed now, the follow card and the toasts keep off it)
+    let peek = review_peek_at(editor, lay, offer_rect);
+    let peek_rect = peek.as_ref().map(|p| (p.0, p.1, p.2, 1));
     // Follow mode: one card — what Claude does and says, and while the panel is minimized the question and
     // its keys too (U4). The turn's, while it runs or its walk-through plays, and a replay's — never a stop held past
     // them: what the answer says there is its note's card, opened at the turn's end (#273)
@@ -6223,7 +6243,7 @@ fn draw(
         .chat
         .as_ref()
         .filter(|c| (c.follow.on && (c.busy() || c.follow.touring())) || c.follow.replaying.is_some())
-        && (editor.workspace.claude.review.is_none() || c.hidden)
+        && (editor.workspace.claude.review.as_ref().is_none_or(|r| r.ready && !r.covers()) || c.hidden)
         && !lay.code_hidden()
         && !editor.welcome()
         && crate::crash::holds(editor, &crate::crash::Pane::Chat).is_none()
@@ -6231,7 +6251,7 @@ fn draw(
         // (it came on its own too: never over a floating pane you opened — landing 1's rule, #299)
         let opened = opened_floats(editor, lay);
         let avoid: Vec<Rect4> =
-            [note_rect, offer_rect].into_iter().flatten().chain(opened).map(kept_apart).collect();
+            [note_rect, offer_rect, peek_rect].into_iter().flatten().chain(opened).map(kept_apart).collect();
         let drawn = {
             let _drawing = crate::crash::drawing(editor, crate::crash::Pane::Chat);
             draw_follow_card(c, editor, ui, lay, &avoid, out)?
@@ -6279,7 +6299,8 @@ fn draw(
     let line = |y0: usize, y1: usize| (fx, y0, fr - fx, y1 + 1 - y0);
     let cursor_row = text_cursor.map(|(_, y)| line(y as usize, y as usize));
     let change = editor.screen.review_change.get().map(|(a, b)| line(a, b));
-    let cards = [note_rect, follow_rect, offer_rect, ask_rect].into_iter().flatten().map(kept_apart);
+    let cards =
+        [note_rect, follow_rect, offer_rect, ask_rect, peek_rect].into_iter().flatten().map(kept_apart);
     let taken: Vec<Rect4> = cards.chain([cursor_row, change].into_iter().flatten()).collect();
     let toast_folded = !draw_toasts(editor, ui, lay, &taken, out)?;
     drew(editor, Kind::Toast, editor.screen.toast_card.get());
@@ -6289,6 +6310,10 @@ fn draw(
     if let Some(card) = offer {
         card.draw(editor, ui, out)?;
         drew(editor, Kind::Ask, editor.screen.offer_card);
+    }
+    if let Some(p) = &peek {
+        draw_review_peek(editor, ui, p, out)?;
+        drew(editor, Kind::Ask, peek_rect);
     }
     // The chat's slash list over its input — over an ask there too: it's what your keys are typing (#232)
     draw_slash_list(editor, ui, lay, out)?;
@@ -9951,7 +9976,8 @@ fn draw_review(
     let n = rev.hunks.len();
     let decided = rev.hunks.iter().filter(|h| h.decision != Decision::Undecided).count();
     queue!(out, MoveTo(x0 as u16, lay.text_top))?;
-    apply(out, accent)?;
+    // (its bar lit only while it has the keys — waiting, faint as a card's frame that can take them: #528)
+    apply(out, if rev.focused { accent } else { faint })?;
     queue!(out, Print(" ▎ "))?;
     apply(out, strong)?;
     queue!(out, Print("Claude"))?;
@@ -10072,6 +10098,76 @@ fn draw_review(
     Ok(())
 }
 
+/// A waiting edit review folded to its peek (#528: the keys on the code, the code stays in sight): one row at the code
+/// area's foot, bottom-right with a row of air under it, in a card's peek look — `▎ Claude's change · Cargo.toml   C-q
+/// answer`; above the card's stack `avoid` where it would meet it. Its place (x, y, width) and title.
+fn review_peek_at(
+    editor: &Editor,
+    lay: &Layout,
+    avoid: Option<Rect4>,
+) -> Option<(usize, usize, usize, String)> {
+    let rev = editor.workspace.claude.review.as_ref().filter(|r| r.ready && r.folded && !r.focused)?;
+    if lay.code_hidden() {
+        return None;
+    }
+    let doc = editor.docs.iter().find(|d| d.id == rev.doc_id)?;
+    let (ax, aw) = (lay.work.0, lay.work_w().saturating_sub(usize::from(lay.scrollbar)));
+    let tail = editor.key_said("C-q").width() + " answer".len();
+    let title = format!("Claude's change · {}", review_file(editor, doc));
+    // (` ▎ `, the title, three cells, its way in, a cell of air; a cell of air each side of it)
+    let w = (3 + title.width() + 3 + tail + 1).min(aw.saturating_sub(2));
+    if w < 3 + 12 + 3 + tail + 1 {
+        return None;
+    }
+    let x = ax + aw - 1 - w;
+    let mut y = lay.text_top as usize + lay.text_rows.checked_sub(2)?;
+    if let Some(r) = avoid.filter(|&r| overlaps((x, y, w, 1), r)) {
+        y = r.1.checked_sub(2).filter(|&y| y >= lay.text_top as usize)?;
+    }
+    Some((x, y, w, title))
+}
+
+/// The peek `review_peek_at` placed: its bar in the accent faded as a card's peek, its title, `C-q answer` as a hint pair.
+fn draw_review_peek(
+    editor: &Editor,
+    ui: &Ui,
+    (x, y, w, title): &(usize, usize, usize, String),
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let (x, y, w) = (*x, *y, *w);
+    let surface = card_style(ui, editor, "ui.popup");
+    let card = on_ground(ui, surface);
+    let bg = blend(surface.bg, ui.tint, 1.0 - PEEK_STEP).or(surface.bg);
+    let text = Style { fg: blend(card.fg, bg, 0.5).or(card.fg), bg, ..Style::default() };
+    let bar = Style { fg: blend(ui.accent.fg, bg, 0.6), bg, ..Style::default() };
+    let way = editor.key_said("C-q");
+    let key = Style { fg: ui.virt.fg, bg, ..Style::default() };
+    let faint = Style { fg: ui.linenr.fg, bg, ..Style::default() };
+    let hints = hint_spans(ui, &[(way.as_str(), "answer")], key, faint);
+    let tail: usize = hints.iter().map(|s| s.text.width()).sum();
+    let t = crate::whole::fit_left(title, w.saturating_sub(3 + 3 + tail + 1));
+    crate::whole::at(crate::whole::On::Card, &t, (x + 3, y), text, (x, x + w));
+    let gap = " ".repeat(w.saturating_sub(3 + t.width() + tail + 1));
+    let mut spans: Vec<(String, Style)> = vec![
+        (" ".into(), text),
+        ("▎".into(), bar),
+        (" ".into(), text),
+        (format!("{}{gap}", t.shown()), text),
+    ];
+    spans.extend(hints.iter().map(|s| (s.text.to_string(), s.style)));
+    spans.push((" ".into(), text));
+    queue!(out, MoveTo(x as u16, y as u16))?;
+    for (s, st) in &spans {
+        apply(out, *st)?;
+        queue!(out, Print(s))?;
+    }
+    // (a press on it is its way in — a button: its ground lightens under the pointer, as a waiting card's peek)
+    let kind = crate::kinds::Kind::Button(crate::mouse::Part::Answer(crate::mouse::WAY));
+    editor.screen.record(crate::kinds::Element { y, from: x, to: x + w, kind, spans: as_drawn(spans) });
+    editor.screen.review_peek.set(Some((x, y, w)));
+    Ok(())
+}
+
 /// The edit review's head of change `i` (its first line `at`): `▎ Change 2 of 3 · line 8`, its bar where the
 /// change marks go and its words where the code starts, then what each key does to it (the change in hand, on
 /// a band) or what was decided. `gutter` = the code's columns before its text, `width` = the row's.
@@ -10093,30 +10189,42 @@ fn draw_review_header(
     let base = Style { bg, ..ui.base };
     let line = at + 1;
     // The one in hand in ink bold, its bar in ink: only the answers it asks for are in the accent (geultarae
-    // decision 8 — the accent is a seal, one mark a region)
+    // decision 8 — the accent is a seal, one mark a region). Waiting (#528), its bar and words faint, as the title's
+    // `▎`: a lit bar says the keys are here, as a pane's lit line does
     let strong =
         base.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
+    let faint = Style { fg: ui.linenr.fg, ..base };
+    let lit = current && rev.focused;
     apply(out, base)?;
     queue!(out, Spaces(gutter - 1))?;
-    apply(out, if current { Style { bold: false, ..strong } } else { Style { fg: ui.linenr.fg, ..base } })?;
+    apply(out, if lit { Style { bold: false, ..strong } } else { faint })?;
     queue!(out, Print("▎ "))?;
     let label = format!("Change {} of {n} · line {line}", i + 1);
-    apply(out, if current { Style { bold: true, ..strong } } else { Style { fg: ui.virt.fg, ..base } })?;
+    apply(
+        out,
+        match (lit, current) {
+            (true, _) => Style { bold: true, ..strong },
+            (false, true) => faint,
+            (false, false) => Style { fg: ui.virt.fg, ..base },
+        },
+    )?;
     queue!(out, Print(&label))?;
     let mut used = gutter + 1 + label.width();
     // What each key takes, said plainly: `y` this change, `a` every one still undecided (it
     // was "a all" — one `y` left the rest waiting, easy to miss)
     let left = rev.hunks.iter().filter(|h| h.decision == Decision::Undecided && !h.conflict).count();
     let (all, all_short) = (format!("accept all {left}"), format!("all {left}"));
-    // Esc goes back where the keys were — the chat or the code — unanswered (#70, #118); from
-    // there `C-q` answers it. Each in a short form too, for when the row can't hold them whole
-    // (beside the chat it cut esc's off)
-    let chat = editor.workspace.chat_has_keys().then_some(true);
+    // Esc goes back where the keys were — the chat or the code — unanswered (#70, #118). Waiting (#528), `C-q`
+    // leads — the way in, as a waiting card's bottom line says it — and the answers follow faint: the lit line and
+    // the cursor say where the keys are. Each in a short form too, for when the row can't hold them whole (beside
+    // the chat it cut esc's off)
+    let waiting = !rev.focused;
     // (inside zellij its twin — worked out only where the header says it: it reads where the keys are and the inbox)
-    let c_q = match current && (chat == Some(true) || rev.away) {
+    let c_q = match current && waiting {
         true => editor.key_said("C-q"),
         false => String::new(),
     };
+    let refused = rev.refused.as_deref().filter(|_| current);
     let esc: &[(&str, &str)] = &[("esc", "back, unanswered")];
     let esc_short: &[(&str, &str)] = &[("esc", "back")];
     type Hints<'a> = Vec<(&'a str, &'a str)>;
@@ -10132,14 +10240,19 @@ fn draw_review_header(
         (_, Decision::Reject) => {
             (vec![("", "rejected")], vec![("", "rejected")], Style { fg: ui.virt.fg, ..base })
         }
-        _ if current && chat == Some(true) => (
-            vec![(c_q.as_str(), "answer it — the chat has the keys")],
-            vec![(c_q.as_str(), "answer it")],
+        // (an answer typed before it was in sight: said where it would have answered)
+        _ if let Some(why) = refused => {
+            let warn = editor.theme.try_get("warning").and_then(|s| s.fg).or(ui.accent.fg);
+            (vec![("", why)], vec![("", why)], Style { fg: warn, ..base })
+        }
+        _ if current && waiting && left > 1 => (
+            vec![(c_q.as_str(), "answer"), ("y", "accept this one"), ("a", all.as_str()), ("n", "reject")],
+            vec![(c_q.as_str(), "answer"), ("y", "this one"), ("a", all_short.as_str()), ("n", "no")],
             base,
         ),
-        _ if current && rev.away => (
-            vec![(c_q.as_str(), "answer it — the code has the keys")],
-            vec![(c_q.as_str(), "answer it")],
+        _ if current && waiting => (
+            vec![(c_q.as_str(), "answer"), ("y", "accept"), ("n", "reject")],
+            vec![(c_q.as_str(), "answer"), ("y", "yes"), ("n", "no")],
             base,
         ),
         _ if current && left > 1 => (
@@ -10161,8 +10274,7 @@ fn draw_review_header(
     let chats = editor.workspace.claude.chat.as_ref().is_some_and(|c| c.edits.review == Some(rev.generation));
     let other_way = chats
         && current
-        && chat != Some(true)
-        && !rev.away
+        && rev.focused
         && !h.conflict
         && !editor.config.llm.review_at_end
         && !crate::edits::at_end(editor);
@@ -10212,12 +10324,17 @@ fn draw_review_header(
             apply(out, st)?;
             queue!(out, Print(&piece))?;
         } else {
-            // (an answer's key in the accent; going back or on answers nothing: a hint's key, bold dim)
-            let answer = !matches!(key, "esc" | "tab") && key != way_key;
-            let fg = if answer { ui.accent.fg } else { ui.virt.fg };
-            apply(out, Style { fg, bold: true, ..base })?;
+            // (an answer's key in the accent; going back or on answers nothing: a hint's key, bold dim — waiting, the
+            // way in is the hint and the answers faint words: none of them answers until `C-q`)
+            let answer = !matches!(key, "esc" | "tab") && key != way_key && key != c_q;
+            let (fg, bold, said) = match (answer, waiting) {
+                (true, true) => (ui.linenr.fg, false, ui.linenr.fg),
+                (true, false) => (ui.accent.fg, true, ui.virt.fg),
+                (false, _) => (ui.virt.fg, true, ui.virt.fg),
+            };
+            apply(out, Style { fg, bold, ..base })?;
             queue!(out, Print(format!("{lead}{key}")))?;
-            apply(out, Style { fg: ui.virt.fg, ..base })?;
+            apply(out, Style { fg: said, ..base })?;
             queue!(out, Print(format!(" {desc}")))?;
         }
         used += piece.width();
@@ -12449,7 +12566,7 @@ fn draw_statusline(
             e.kind == "edit"
                 && e.up == "review"
                 && e.session == here
-                && editor.screen.review_area.get().is_some()
+                && (editor.screen.review_area.get().is_some() || editor.screen.review_peek.get().is_some())
         }
     };
     let unseen = inbox.iter().filter(|e| e.asks_answer() && !in_sight(e)).count();
@@ -12457,7 +12574,8 @@ fn draw_statusline(
     // header; its peeks alone, or none drawn, the line does — once)
     let way_drawn = editor.screen.offer_way.is_some()
         || editor.card_has_keys()
-        || editor.screen.review_area.get().is_some();
+        || editor.screen.review_area.get().is_some()
+        || editor.screen.review_peek.get().is_some();
     // What Claude is doing now (`now.rs`), after the mode word — and after whose turn it is where the chip names it: the
     // step and its time, its last sentence, the plan's step — the sentence cut to the room left below, once the rest is in.
     // While the follow card says the step (`short`, focus B1), the turn's cell alone — blank where `▲N waiting` says it
@@ -27919,6 +28037,8 @@ mod tests {
             vec![(at, end, old, "let a = 1;\nlet b = 2;\n".into())],
             None,
         );
+        // (in the code area, its change in hand drawn: focused — waiting with the keys on the code, it's a peek)
+        crate::llm::review_focus(&mut ed);
         ed.set_status("Claude proposes 1 change");
         draw(&mut ed);
         let (a, b) = ed.screen.review_change.get().expect("the change on screen");
@@ -27946,6 +28066,7 @@ mod tests {
             let id = ed.doc().id;
             ed.open(&front).unwrap();
             crate::llm::review_with(ed, id, "edit", vec![(0, 4, "one\n".into(), "uno\n".into())], None);
+            crate::llm::review_focus(ed);
             let mut bytes = Vec::new();
             render(ed, &mut bytes, w, 30).unwrap();
             let mut parser = vt100::Parser::new(30, w, 0);
@@ -31239,6 +31360,54 @@ mod tests {
         assert!(seen.iter().all(|r| r.1 + r.3 <= 38), "above the status line's row of air: {seen:?}");
     }
 
+    /// #528 (the design session's check): at 80 columns a waiting review's peek and the follow card at its tallest — a
+    /// long run of words — keep off each other, a row of air between them as between any two cards, each drawn whole, on a
+    /// short screen as on a tall one.
+    #[test]
+    fn a_waiting_reviews_peek_and_the_tallest_follow_card_keep_apart() {
+        let mut ed = threaded_turn();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Writing);
+        let long: Vec<String> = (1..=40).map(|i| format!("Line {i} of a long answer.")).collect();
+        c.msgs.retain(|m| m.role != crate::chat::Role::Note);
+        c.msgs.last_mut().unwrap().text = long.join("\n\n");
+        ed.workspace.viewer.keys_to_code();
+        let id = ed.doc().id;
+        let old = ed.doc().text.line(0).to_string();
+        crate::llm::review_with(
+            &mut ed,
+            id,
+            "grow",
+            vec![(0, old.len(), old, "fn grown() {}\n".into())],
+            None,
+        );
+        assert!(
+            ed.workspace.claude.review.as_ref().is_some_and(|r| r.folded && !r.focused),
+            "waiting, a peek"
+        );
+        // (beside each other, or a row of air between them)
+        let apart = |a: (usize, usize, usize, usize), b: (usize, usize, usize, usize)| {
+            a.0 + a.2 <= b.0 || b.0 + b.2 <= a.0 || a.1 + a.3 < b.1 || b.1 + b.3 < a.1
+        };
+        for h in [24, 30, 40] {
+            // (its tallest here: the card with no peek to keep off)
+            let draw = |ed: &mut Editor| render(ed, &mut Vec::new(), 80, h).unwrap();
+            let rev = ed.workspace.claude.review.take();
+            draw(&mut ed);
+            let tallest = ed.screen.thought_card.get().expect("the follow card").3;
+            ed.workspace.claude.review = rev;
+            draw(&mut ed);
+            let (px, py, pw) = ed.screen.review_peek.get().unwrap_or_else(|| panic!("{h} rows: its peek"));
+            let card = ed.screen.thought_card.get().unwrap_or_else(|| panic!("{h} rows: the follow card"));
+            assert!(apart((px, py, pw, 1), card), "{h} rows: peek {:?} under card {card:?}", (px, py, pw));
+            assert!(
+                tallest > 6 && card.3 + 2 >= tallest,
+                "{h} rows: tall {tallest}, beside the peek {}",
+                card.3
+            );
+        }
+    }
+
     /// #312: stepping through the replay, the follow card keeps off the lines its stop names, as a card about lines
     /// does (`float_geom_around`) — and off every line whose code reaches its columns, where it fits whole beside them:
     /// none of their ends hidden.
@@ -32554,6 +32723,7 @@ mod tests {
         let end = crate::movement::line_start(&ed.doc().text, 1);
         let added = format!("echo {} ADDED\n", "more ".repeat(30));
         crate::llm::review_with(&mut ed, first, "edit", vec![(0, end, "#!/bin/sh\n".into(), added)], None);
+        crate::llm::review_focus(&mut ed);
         let s = shown(&mut ed);
         assert!(s.contains("TAIL") && s.contains("ADDED"), "{s}");
         // (never: cut at the edge, as before)

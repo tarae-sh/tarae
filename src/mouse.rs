@@ -798,12 +798,20 @@ impl Editor {
             return self.chat_under(wheel, x, y);
         }
         // (Claude's edit review in place of the code — an answer still being written leaves the code the code's)
-        if self.workspace.claude.review.as_ref().is_some_and(|r| r.ready) {
-            if s.review_area.get().is_some_and(|a| inside(a, x, y)) {
+        // (waiting, it takes a press only on itself or its peek — to focus it; elsewhere a press is the surface's)
+        if let Some(r) = self.workspace.claude.review.as_ref().filter(|r| r.ready) {
+            // (its peek a button, as a folded card's: its way in — the wheel over it is the code's under it)
+            if !wheel && s.review_peek.get().is_some_and(|(px, py, pw)| y == py && (px..px + pw).contains(&x))
+            {
+                return at(S::EditReview, Part::Answer(WAY));
+            }
+            if r.covers() && s.review_area.get().is_some_and(|a| inside(a, x, y)) {
                 let hunk = s.review_rows.borrow().iter().find(|c| c.0 == y).map(|c| c.1);
                 return at(S::EditReview, hunk.map_or(Part::Blank, Part::Row));
             }
-            return at(S::EditReview, Part::Outside);
+            if r.focused {
+                return at(S::EditReview, Part::Outside);
+            }
         }
         if self.welcome() {
             let row = s.welcome_rows.borrow().iter().position(|r| on(r.0, r.1, r.2, x, y));
@@ -1094,13 +1102,14 @@ pub fn review_mouse(ed: &mut Editor, kind: MouseKind, x: usize, y: usize, hunk: 
             if let Some(i) = hunk.filter(|&i| r.hunks.get(i).is_some_and(|h| !h.conflict)) {
                 (r.current, r.follow) = (i, false);
             }
-            r.away = false;
             (r.marked, r.pressed) = (None, at);
             if at.is_some() {
                 ed.mouse_anchor = Some((Drag::Review, Held { from: 0, to: 0, unit: Unit::Char }));
             }
             ed.plugin_panel_unfocus();
             ed.procs_unfocus();
+            // (waiting, faded or as its peek: the press focuses it — never an answer)
+            crate::llm::review_focus(ed);
             ed.workspace.viewer.keys_to_code();
         }
         _ => return false,
@@ -1541,6 +1550,9 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Hover) => Not("a cut row comes whole under it"),
         },
         Su::EditReview => match (part, act) {
+            // (waiting folded, its peek: a press its way in — the review stands in the code area with the keys)
+            (Part::Answer(_), A::Drag) => Not("the press opened it"),
+            (Part::Answer(_), A::Hover) => Acts,
             (Part::Outside, A::Press | A::Drag) => Says(REVIEW_OFF),
             (Part::Outside, A::Wheel) => NO_SCROLL,
             (_, A::Press) | (_, A::Wheel) | (_, A::Drag) => Acts,
@@ -1662,6 +1674,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ),
         ("Claude's edit review", "a change", Su::EditReview, Part::Row(0)),
         ("Claude's edit review", "off it", Su::EditReview, Part::Outside),
+        ("Claude's edit review", "its peek, waiting", Su::EditReview, Part::Answer(WAY)),
         ("The review's rail", "a file", Su::Rail, Part::Row(0)),
         ("The review's rail", "off its rows", Su::Rail, Part::Blank),
         ("The review's rail", "a key hint at its foot", Su::Rail, Part::Word(Word::Does(0))),

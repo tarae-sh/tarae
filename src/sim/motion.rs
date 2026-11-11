@@ -102,6 +102,9 @@ fn step(sim: &mut Sim, ed: &mut Editor, stuck: &Cell<Option<String>>) -> String 
             let (a, b) = (doc.text.byte_slice(0..1).to_string(), doc.text.byte_slice(n - 1..n).to_string());
             let changes = vec![(0, 1, a, "Q".into()), (n - 1, n, b, "Z\n".into())];
             crate::llm::review_with(ed, id, "a review", changes, None);
+            crate::llm::review_focus(ed);
+            // (drawn before it's answered — an answer before that is refused, #528)
+            crate::term::render(ed, &mut Vec::new(), 80, 16).unwrap();
             keys(sim, ed, &[first]);
             crate::term::render(ed, &mut Vec::new(), 80, 16).unwrap();
             keys(sim, ed, &["n"]);

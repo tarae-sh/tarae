@@ -1401,6 +1401,9 @@ impl crate::editor::Editor {
         }
         // (a card, the picker, a prompt, which-key: the keys' while up, the docked pane's again once gone)
         self.float_sync();
+        // (the edit review's focus follows the keys: lost as they leave the code, folded as they come onto it — last,
+        // once a floating pane gone has given them back)
+        crate::llm::review_keys_sync(self);
     }
 
     /// Writes the sizes (worker — the newest write wins).

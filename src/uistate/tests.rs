@@ -605,15 +605,44 @@ pub(crate) const SCENES: &[Scene] = &[
         ed.sidebar_show(crate::sidebar::Mode::Outline);
         ed.mode = Mode::Insert;
     }),
+    // (#528: Claude's edit review waits for `C-q` — the keys on the code as it comes, folded to its peek)
     ("an edit's review", edit_review),
+    ("an edit's review, focused with C-q", |ed| {
+        edit_review(ed);
+        feed(ed, &["<C-q>"]);
+    }),
     ("an edit's review, the chat back", |ed| {
         edit_review(ed);
         chat(ed, "");
         ed.workspace.claude.review.as_mut().unwrap().from_chat = true;
     }),
-    ("an edit's review, left with Esc", |ed| {
+    ("an edit's review, focused, left with Esc", |ed| {
         edit_review(ed);
-        feed(ed, &["<esc>"]);
+        feed(ed, &["<C-q>", "<esc>"]);
+    }),
+    // (#528 itself: every key the draft's — a space or `tab` at its end typed, not in sight as text, as any draft's)
+    ("Claude's edit review arriving while the chat's draft is typed into", |ed| {
+        chat(ed, "hello");
+        edit_review(ed);
+    }),
+    ("Claude's edit review arriving while the chat's draft is typed into, focused with C-q", |ed| {
+        chat(ed, "hello");
+        edit_review(ed);
+        feed(ed, &["<C-q>"]);
+    }),
+    ("Claude's edit review arriving in insert mode", |ed| {
+        ed.mode = Mode::Insert;
+        edit_review(ed);
+    }),
+    ("the next file's review, handed the keys, not drawn yet", |ed| {
+        edit_review(ed);
+        crate::llm::review_hand(ed);
+    }),
+    // (`C-q` on its peek, no frame since — `mismatches` takes the frame's drawing back: its answers refused, said on it,
+    // and `keys_to` lists none)
+    ("an edit's review focused with C-q, no frame since", |ed| {
+        edit_review(ed);
+        feed(ed, &["<C-q>"]);
     }),
     // (Esc stops it — `llm::esc_stops`)
     ("a draft being written", |ed| {
@@ -873,6 +902,12 @@ pub(crate) const SCENES: &[Scene] = &[
         terminal(ed);
         light_card(ed);
     }),
+    // (#528: its `C-q` reaches it from the program too — beside the cards', first in `handle_key`)
+    // (every key but `C-q` the program's — its echo from its reader, as the program's own scene)
+    ("Claude's edit review arriving with the keys in the terminal's program", |ed| {
+        terminal(ed);
+        edit_review(ed);
+    }),
     ("pointing at something on screen, from the chat", |ed| {
         chat(ed, "a draft");
         light_card(ed);
@@ -1030,6 +1065,16 @@ fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String
                     off.push(format!("{name}: keys_to says {answers:?} answer it, card_key refuses them"));
                 }
             }
+            // (a review focused but no frame has drawn since: as between `C-q` on its peek and the frame after —
+            // `Review.seen`; and it says no key answers it, as `review_key` refuses them)
+            if name.contains("no frame since") {
+                let rev = ed.workspace.claude.review.as_mut().filter(|r| r.focused);
+                rev.expect("focused").seen = false;
+                let answers = ed.keys_to().answers;
+                if !answers.is_empty() {
+                    off.push(format!("{name}: keys_to says {answers:?} answer it, review_key refuses them"));
+                }
+            }
             ed.focus_sync();
             let said = model(&ed).route(key(probe)).handler();
             TOOK.set(None);
@@ -1123,6 +1168,9 @@ fn the_routing_test_sees_each_case_broken() {
         // (as `mismatches` leaves a scene with no room for its card)
         if name.contains("no room") {
             ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
+        }
+        if name.contains("no frame since") {
+            ed.workspace.claude.review.as_mut().expect("a review").seen = false;
         }
         let k = ed.keys_to();
         if matches!(k.chain[main(&k)].filter, Filter::Except(_)) {
@@ -1273,8 +1321,8 @@ fn tab_says_why_where_it_has_nothing_to_do() {
     };
     for (scene, words) in [
         ("a picker", "one row — tab has nowhere to move"),
-        ("an edit's review", "no other change waits"),
-        ("an edit's review under the side panel", "no other change waits"),
+        // (focused: waiting, `tab` is where the keys are — #528)
+        ("an edit's review, focused with C-q", "no other change waits"),
         ("the task panel's output, by C-w j", "the only tab at the bottom"),
         ("the task panel's output, select mode", "the only tab at the bottom"),
         ("a preflight's output", "the only tab at the bottom"),
@@ -1681,15 +1729,23 @@ fn the_close_reviewed_card_says_what_its_answers_do() {
     assert_eq!(o.answers(false), vec![('y', "Decline and close"), ('n', "Keep both")]);
 }
 
-/// Found by the routing test: an edit's review under a focused side panel has the keys — the status line
-/// said OUTLINE (the panel's) while `j` scrolled the review and `y` accepted Claude's change.
+/// Found by the routing test: an edit's review under a focused side panel had the keys — the status line
+/// said OUTLINE (the panel's) while `j` scrolled the review and `y` accepted Claude's change. Since #528 it waits there
+/// as anywhere, and `C-q` gives it the keys: the status line says so, and the state's `keys.waiting` names it until
+/// then, as a waiting card's (drivers and the scenes wait on it).
 #[test]
-fn an_edit_review_under_a_side_panel_is_where_the_keys_go() {
+fn an_edit_review_under_a_side_panel_waits_for_c_q() {
     let mut ed = editor();
-    edit_review(&mut ed);
     ed.sidebar_show(crate::sidebar::Mode::Outline);
+    edit_review(&mut ed);
+    frame(&mut ed);
+    assert_ne!(ed.keys_to().region, Region::EditReview, "it waits");
+    assert_eq!(ed.keys_to().waiting.as_deref(), Some("edit-review"));
+    assert_ne!(ed.keys_at(), crate::chrome::Keys::Change);
+    feed(&mut ed, &["<C-q>"]);
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::EditReview);
+    assert_eq!(ed.keys_to().waiting, None);
     assert_eq!(ed.keys_at(), crate::chrome::Keys::Change);
 }
 
@@ -1811,8 +1867,7 @@ fn the_keys_go_back_to_the_chat_once_its_review_is_answered() {
     let mut ed = editor();
     chat(&mut ed, "");
     edit_review(&mut ed);
-    ed.workspace.leave(crate::workspace::Here::Chat);
-    ed.workspace.claude.review.as_mut().unwrap().from_chat = true;
+    feed(&mut ed, &["<C-q>"]);
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::EditReview);
     feed(&mut ed, &["y"]);
@@ -1931,6 +1986,8 @@ fn the_state_as_json_is_pinned() {
     ed.workspace_by_id(id).unwrap().claude.sandbox =
         Some(crate::sandbox::guarantees::Guarantees::seatbelt(true, false));
     edit_review(&mut ed);
+    // (focused — in the code area, under the pointer: waiting with the keys on the code, it's a peek, #528)
+    crate::llm::review_focus(&mut ed);
     task_panel(&mut ed);
     light_card(&mut ed);
     ed.set_warning("a.rs changed on disk");

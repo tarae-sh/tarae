@@ -1610,6 +1610,15 @@ impl Editor {
         if self.float_list(sessions).is_some() && !self.list_docked(sessions) {
             self.float_list_close(sessions);
         }
+        // (its edit review lets go of the keys, as a focused card does — back where they were, as its Esc: the chat it
+        // took them from, else the code, where it waits folded; `C-q` on the way back — #528)
+        if let Some(r) = self.workspace.claude.review.as_mut().filter(|r| r.focused || r.handed) {
+            (r.focused, r.handed) = (false, false);
+            match r.from_chat && self.workspace.claude.chat.is_some() {
+                true => self.workspace.set_at(crate::workspace::Here::Chat),
+                false => r.fold(),
+            }
+        }
         // Out: where it was, and its own cards — Claude's, its review's end (they wait for it)
         self.workspace.viewer.current_doc = self.doc().id;
         let (mut mine, rest): (Vec<_>, Vec<_>) =

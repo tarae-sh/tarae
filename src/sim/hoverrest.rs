@@ -153,7 +153,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             let hunk =
                 crate::llm::Hunk { from, to, old, new: "    proposed(a)\n".into(), decision, conflict };
             let mut rev = crate::llm::Review::new(1, ed.doc().id, "two", vec![hunk]);
-            (rev.ready, rev.follow) = (true, false);
+            (rev.ready, rev.follow, rev.focused) = (true, false, true);
             ed.workspace.claude.review = Some(rev);
             "the edit review opened".into()
         }

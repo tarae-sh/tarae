@@ -295,6 +295,7 @@ fn a_drag_over_an_edit_review_selects_its_text() {
     let doc = ed.doc().id;
     let change = vec![(11, 22, "let b = 2;\n".into(), "let b = 20;\n".into())];
     crate::llm::review_with(&mut ed, doc, "change it", change, None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     let from = cell_of(&mut ed, "a = 1");
     let to = cell_of(&mut ed, "b = 20");
@@ -534,6 +535,7 @@ fn a_drag_past_the_edit_reviews_end_stops_at_its_bottom_row() {
         vec![(at, at + old.len(), old, "let w = 0;\n".into())],
         None,
     );
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     let scroll = ed.workspace.claude.review.as_ref().unwrap().scroll;
     let first = ed.screen.review_text.borrow().first().map(|r| r.0).expect("its rows");
@@ -632,6 +634,7 @@ fn a_drag_past_the_edit_reviews_edge_scrolls_it() {
         vec![(at, at + old.len(), old, "let w = 0;\n".into())],
         None,
     );
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     let scroll = ed.workspace.claude.review.as_ref().unwrap().scroll;
     assert!(scroll > 0, "scrolled to its change");

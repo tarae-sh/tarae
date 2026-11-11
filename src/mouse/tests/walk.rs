@@ -438,6 +438,8 @@ const MOUSE_SCENES: &[Scene] = &[
             vec![(at, at + old.len(), old, "let changed = 0;\n".into())],
             None,
         );
+        // (focused: in the code area — waiting with the keys on the code, it's a one-row peek, #528)
+        crate::llm::review_focus(ed);
     }),
     // (focus E1: the turn's map — a file row's marks and the code's signs, each a button: its ground lightens, a press
     // is its stop)
@@ -1131,6 +1133,10 @@ struct Before {
 /// Whether the card's answer under `u` at row `y` lights nothing (`Before.unlit`).
 fn unlit(ed: &Editor, u: Under, y: usize) -> bool {
     let Part::Answer(k) = u.part else { return false };
+    // (a waiting edit review's peek: a button, as a folded card's — #528)
+    if u.surface == Surface::EditReview {
+        return false;
+    }
     let bottom = ed.screen.offer_card.is_some_and(|c| y + 1 == c.1 + c.3);
     // (a peek lights as every button: its digit, or a folded card's own peek — its way in a button of its row,
     // `OfferCard::folded`; a bottom line's way in is `Screen.offer_way`, never one of its buttons)

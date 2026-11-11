@@ -6691,12 +6691,17 @@ mod tests {
         ed.offer_one_by_one();
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         assert_eq!(title(&ed).as_deref(), Some("rename `alpha` → `beta` · 1 of 3"));
+        // (`r` taken by no key here: the first file's review waits for `C-q` — #528; your answer on it hands the next
+        // one the keys once a frame has drawn it)
+        feed(&mut ed, "<C-q>");
         assert_eq!(ed.doc().path.as_ref(), Some(&file));
         feed(&mut ed, "a");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         assert_eq!(title(&ed).as_deref(), Some("rename `alpha` → `beta` · 2 of 3"));
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "q");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         assert_eq!(ed.doc().path.as_deref(), Some(std::fs::canonicalize(&third).unwrap().as_path()));
         feed(&mut ed, "a");
         settle_until(&mut ed, |_| tool_answer(7).is_some());

@@ -134,6 +134,7 @@ fn the_record_holds_no_code_text() {
         (one.len(), text.len(), two.to_string(), "let kiwi_hidden = 2;\n".to_string()),
     ];
     crate::llm::review_with(&mut ed, id, "rename the quokka_instruction", changes, None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "a");
     frame(&mut ed);
@@ -277,6 +278,7 @@ fn an_edit_review_writes_a_line_per_change_and_its_own() {
     let changes =
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
     crate::llm::review_with(&mut ed, id, "upper", changes, None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     let run = Run::of(&ed, &ed.workspace, true).expect("the state has it");
     assert_eq!((run.kind, run.changes, run.decided), ("edit", 2, 0));
@@ -518,6 +520,7 @@ fn the_state_says_the_review_and_a_watch_hears_it() {
     let changes =
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
     crate::llm::review_with(&mut ed, id, "upper", changes, None);
+    crate::llm::review_focus(&mut ed);
     let began = heard(&mut ed);
     assert!(began.len() == 1 && began[0].ends_with("review began (edit)"), "{began:?}");
     let state = ed.ui_state();
@@ -613,6 +616,7 @@ fn a_closed_edit_review_records_its_changes_left() {
     let changes =
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
     crate::llm::review_with(&mut ed, id, "upper", changes, None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "y");
     frame(&mut ed);
@@ -648,6 +652,7 @@ fn time_in_another_session_isnt_counted() {
     let (_s, mut ed, dir) = editor_on("behind", "a.txt", "one\n");
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "j");
     frame(&mut ed);
@@ -671,6 +676,7 @@ fn quitting_keeps_the_reviews_under_way() {
     let changes =
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
     crate::llm::review_with(&mut ed, id, "upper", changes, None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "y");
     frame(&mut ed);
@@ -720,6 +726,7 @@ fn review_record_off_writes_nothing() {
     ed.config.review_record = false;
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "y");
     let (entries, _) = record(&dir.join(DIR));
@@ -750,6 +757,7 @@ fn a_key_named_file_outside_the_checkout_has_no_id() {
     ed.open(&env).unwrap();
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "set it", vec![(0, 6, "PASS=\n".into(), "PASS=abc\n".into())], None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "a");
     let (entries, raw) = record(&dir.join(DIR));
@@ -769,6 +777,7 @@ fn a_link_at_the_records_folder_is_refused() {
     std::os::unix::fs::symlink(&elsewhere, dir.join(DIR)).unwrap();
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "a");
     assert!(crate::cards::wait_written(Duration::from_secs(5)), "the record's writes ended");
@@ -1228,6 +1237,7 @@ fn an_accept_that_lands_nowhere_is_left() {
     let (_s, mut ed, dir) = editor_on("gone", "a.txt", "one\n");
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     std::fs::write(dir.join("b.txt"), "b\n").unwrap();
     ed.open(&dir.join("b.txt")).unwrap();
@@ -1343,6 +1353,7 @@ fn an_accepted_edit_isnt_yours_though_you_typed_since() {
     feed(&mut ed, "ggjjjiZ<esc>");
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "spanish", vec![(0, 4, "ONE\n".into(), "UNO\n".into())], None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "a");
     rediffed(&mut ed, "the diff after the edit");
@@ -1405,6 +1416,7 @@ fn a_link_at_the_key_is_refused() {
     std::os::unix::fs::symlink(&known, key_path(&dir.join(DIR))).unwrap();
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
+    crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "a");
     let (entries, raw) = record(&dir.join(DIR));

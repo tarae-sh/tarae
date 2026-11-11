@@ -4636,7 +4636,7 @@ fn a_click_in_the_edit_review_takes_a_change_in_hand() {
     let hunks =
         vec![hunk(4, "    text.split(' ').count()\n"), hunk(13, "    let text = \"proposed here\";\n")];
     let mut rev = crate::llm::Review::new(1, id, "two", hunks);
-    (rev.ready, rev.follow) = (true, false);
+    (rev.ready, rev.follow, rev.focused) = (true, false, true);
     s.ed.workspace.claude.review = Some(rev);
     // (the row showing `needle`, on the screen as it is now)
     let click = |s: &mut Shot, needle: &str| {
@@ -4694,7 +4694,7 @@ fn a_decided_change_is_stamped_where_its_answer_was_asked() {
         hunk(13, "    let text = \"proposed here\";\n"),
     ];
     let mut rev = crate::llm::Review::new(1, id, "three", hunks);
-    (rev.ready, rev.follow) = (true, false);
+    (rev.ready, rev.follow, rev.focused) = (true, false, true);
     s.ed.workspace.claude.review = Some(rev);
     let p = cells(&s.frame(), s.w, s.h);
     assert!((0..s.h as usize).all(|y| stamp_in(&p, y, s.w).is_none()), "no stamp before a decision");
@@ -4735,6 +4735,73 @@ fn a_decided_change_is_stamped_where_its_answer_was_asked() {
     assert!(rows[at].contains("▌y▐ accepted"), "carved: {rows:#?}");
     let (_, c) = stamp_in(&p, at, s.w).unwrap();
     assert_eq!((c.bgcolor(), c.fgcolor()), (vt100::Color::Default, vt_color(ui.virt.fg).unwrap()));
+}
+
+/// #528: an edit review that came on its own waits. Its change in hand's head row leads with `C-q answer` (the key a
+/// hint's, bold dim), its answers faint words, its bar and `Change 1 of 1` faint as the title's `▎` — and the lines it
+/// proposes at full strength, there to be read before `C-q`. Focused: the bar lit, the words bold, the answers' keys
+/// in the accent, `esc back`. A lit bar means one thing: the keys are here. Both themes.
+#[test]
+fn a_waiting_reviews_head_row_is_faint_and_leads_with_its_way_in() {
+    let mut s = Shot::new(100, 30);
+    let id = s.file("src/words.rs", DOCS_BASE);
+    let text = Rope::from_str(DOCS_BASE);
+    let (from, to) = (text.line_to_byte(13), text.line_to_byte(14));
+    let old = text.byte_slice(from..to).to_string();
+    let new = "    let text = \"proposed here\";\n".to_string();
+    let hunk =
+        crate::llm::Hunk { from, to, old, new, decision: crate::llm::Decision::Undecided, conflict: false };
+    let mut rev = crate::llm::Review::new(1, id, "one", vec![hunk]);
+    (rev.ready, rev.follow) = (true, false);
+    s.ed.workspace.claude.review = Some(rev);
+    for theme in ["meok", "hanji"] {
+        s.ed.theme = crate::theme::load(theme).unwrap();
+        let ui = Ui::new(&s.ed);
+        let strong = s.ed.theme.try_get("ui.text.focus").and_then(|st| st.fg).or(ui.base.fg);
+        // (the frame drawn as it stands: waiting, else focused — no event, so nothing folds it)
+        let look = |s: &mut Shot, focused: bool| {
+            s.ed.workspace.claude.review.as_mut().unwrap().focused = focused;
+            let p = cells(&s.frame(), s.w, s.h);
+            let rows: Vec<String> = p.screen().rows(0, s.w).collect();
+            let y = |needle: &str| {
+                rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {rows:#?}"))
+            };
+            let cell_at = |y: usize, needle: &str| {
+                let x = rows[y].find(needle).map(|i| unicode_width::UnicodeWidthStr::width(&rows[y][..i]));
+                p.screen().cell(y as u16, x.unwrap() as u16).unwrap().clone()
+            };
+            let head = y("Change 1 of 1");
+            let (bar, label) = (cell_at(head, "▎ Change"), cell_at(head, "Change"));
+            let title = cell_at(y("Claude"), "▎");
+            let proposed = cell_at(y("proposed here"), "proposed");
+            (rows[head].clone(), bar, label, title, proposed, cell_at(head, "y "))
+        };
+        let faint = vt_color(ui.linenr.fg).unwrap();
+        let (row, bar, label, title, waiting_text, y_key) = look(&mut s, false);
+        let (c_q, y_at) = (row.find("C-q answer"), row.find("y accept"));
+        assert!(c_q.is_some_and(|c| y_at.is_some_and(|y| c < y)), "{theme}: `C-q answer` leads: {row:?}");
+        assert!(!row.contains("esc"), "{theme}: no `esc` while waiting: {row:?}");
+        assert_eq!((bar.fgcolor(), title.fgcolor()), (faint, faint), "{theme}: the bars faint while waiting");
+        assert_eq!((label.fgcolor(), label.bold()), (faint, false), "{theme}: its words faint while waiting");
+        assert_eq!((y_key.fgcolor(), y_key.bold()), (faint, false), "{theme}: an answer's key faint");
+        let (row, bar, label, title, focused_text, y_key) = look(&mut s, true);
+        assert!(!row.contains("C-q") && row.contains("esc back"), "{theme}: focused: {row:?}");
+        let lit = vt_color(strong).unwrap();
+        assert_eq!((bar.fgcolor(), bar.bold()), (lit, false), "{theme}: the head row's bar lit once focused");
+        assert_eq!((label.fgcolor(), label.bold()), (lit, true), "{theme}: its words bold once focused");
+        assert_eq!(
+            title.fgcolor(),
+            vt_color(ui.accent.fg).unwrap(),
+            "{theme}: the title's bar in the accent"
+        );
+        assert_eq!((y_key.fgcolor(), y_key.bold()), (vt_color(ui.accent.fg).unwrap(), true), "{theme}");
+        // (the change itself at one strength, waiting or not)
+        assert_eq!(
+            (waiting_text.fgcolor(), waiting_text.bgcolor(), waiting_text.dim()),
+            (focused_text.fgcolor(), focused_text.bgcolor(), focused_text.dim()),
+            "{theme}: what it proposes isn't faded while it waits"
+        );
+    }
 }
 
 /// 글타래 P5: `:granted`'s answers end in a stamp, the key each was given with, in one column — in the accent on the
@@ -5538,7 +5605,7 @@ fn snapshot_edit_review_doc_comments() {
     };
     let mut rev = crate::llm::Review::new(1, id, "say what it does on a tie", vec![hunk]);
     // (from the top: following, the change sits a quarter down and the first block's rows go above)
-    (rev.ready, rev.follow) = (true, false);
+    (rev.ready, rev.follow, rev.focused) = (true, false, true);
     s.ed.workspace.claude.review = Some(rev);
     let shown = screen_text(&mut s);
     assert!(!shown.contains("/// Counts") && shown.contains("Counts the words in text."), "{shown}");
@@ -5576,7 +5643,7 @@ fn the_edit_review_shows_the_file_as_the_editor_does() {
         conflict: false,
     };
     let mut rev = crate::llm::Review::new(1, id, "tab it", vec![hunk]);
-    (rev.ready, rev.follow) = (true, false);
+    (rev.ready, rev.follow, rev.focused) = (true, false, true);
     s.ed.workspace.claude.review = Some(rev);
     let shown = screen_text(&mut s);
     let row = |has: &str| shown.lines().find(|l| l.contains(has)).unwrap_or_default().to_string();
@@ -5617,7 +5684,7 @@ fn the_edit_review_shows_none_of_the_documents_selection() {
             conflict: false,
         };
         let mut rev = crate::llm::Review::new(1, id, "spell it", vec![hunk]);
-        (rev.ready, rev.follow) = (true, false);
+        (rev.ready, rev.follow, rev.focused) = (true, false, true);
         s.ed.workspace.claude.review = Some(rev);
         s.ed.doc_mut().set_selection(sel);
         let p = cells(&s.frame(), s.w, s.h);
@@ -5668,7 +5735,7 @@ fn a_control_character_in_a_row_not_the_documents_shows_as_a_replacement() {
         conflict: false,
     };
     let mut rev = crate::llm::Review::new(1, id, "bell it", vec![hunk]);
-    (rev.ready, rev.follow) = (true, false);
+    (rev.ready, rev.follow, rev.focused) = (true, false, true);
     s.ed.workspace.claude.review = Some(rev);
     let proposed = s.frame();
     let text = |f: &[u8]| String::from_utf8_lossy(f).into_owned();

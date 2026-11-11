@@ -745,8 +745,24 @@ pub(crate) mod tests {
             "`y` `r` `v` `n`",
             "Accept them all · review them one by one · every change in a buffer · decline them all",
         ),
-        ("An edit's review", "`y` `n` `a` `tab`", "Accept this change · reject it · accept all left · next"),
-        ("An edit's review", "`esc`", "Back to the chat, the change unanswered — `C-q` answers it"),
+        (
+            "An edit's review",
+            "`C-q`",
+            "Focus it from wherever the keys are — one Claude raised waits as it comes (in the code area, or a one-row \
+             peek while the keys are on the code), one your key asked for is focused as it comes; a click on it or its \
+             peek, or `C-w w`, focuses it too (the status line says CHANGE)",
+        ),
+        (
+            "An edit's review",
+            "`y` `n` `a` `tab`",
+            "Accept this change · reject it · accept all left · next — once focused, and once a frame has drawn it",
+        ),
+        (
+            "An edit's review",
+            "`esc`",
+            "Back where the keys were — the chat, or the code, where it folds to its peek — the change unanswered; \
+             `C-q` answers it",
+        ),
         (
             "An edit's review",
             "`C-d` `C-u` `C-f` `C-b` `C-e` `C-y`, wheel",

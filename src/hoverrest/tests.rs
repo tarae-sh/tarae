@@ -95,7 +95,7 @@ fn a_rest_card_in_the_edit_review_keeps_clear_of_the_change() {
         conflict: false,
     };
     let mut rev = crate::llm::Review::new(1, ed.doc().id, "one", vec![hunk]);
-    (rev.ready, rev.follow) = (true, false);
+    (rev.ready, rev.follow, rev.focused) = (true, false, true);
     ed.workspace.claude.review = Some(rev);
     let rows = frame(&mut ed);
     let (view, texts) = drawn(&ed, CodeIn::EditReview).expect("the edit review drawn");
@@ -357,7 +357,7 @@ fn edit_review() -> Scene {
         conflict: false,
     };
     let mut rev = crate::llm::Review::new(1, ed.doc().id, "two", vec![hunk]);
-    (rev.ready, rev.follow) = (true, false);
+    (rev.ready, rev.follow, rev.focused) = (true, false, true);
     ed.workspace.claude.review = Some(rev);
     let rests = &["context_word", "taken_word", "kept_word", "after_word"];
     Scene { name: "the edit review", ed, _dir, rests, silent: &["added_word"] }

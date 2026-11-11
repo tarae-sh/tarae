@@ -5177,6 +5177,10 @@ pub fn apply_code(ed: &mut Editor) {
     let doc_id = doc.id;
     ed.workspace.leave(Here::Chat);
     llm::review_with(ed, doc_id, "apply code from chat", vec![(r.from(), r.to(), old, new)], None);
+    // (your key asked for it: focused as it comes, as a card of yours)
+    if ed.events.asked() == Some(ed.input_seq) {
+        llm::review_focus(ed);
+    }
 }
 
 #[cfg(test)]

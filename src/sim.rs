@@ -83,6 +83,7 @@ mod rebaserecheck;
 mod restore;
 mod reveal;
 mod reviews;
+mod reviewwait;
 mod rundoc;
 mod sessions;
 mod shareswap;

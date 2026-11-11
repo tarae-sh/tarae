@@ -75,6 +75,19 @@ pub struct Ask {
     /// change there (`cut`).
     bounds: Vec<usize>,
     taken: ropey::Rope,
+    /// The input that asked (`Events::asked` as it started): its review is focused as it comes while that input is still
+    /// the last one — a key typed since, it waits for `C-q` (#528, as `Offer.yours`).
+    asked_by: Option<u64>,
+}
+
+/// Whether `space i`'s review of `generation` is yours as it comes: nothing typed since the `space i` that asked.
+pub fn yours(ed: &Editor, generation: u64) -> bool {
+    ed.workspace
+        .claude
+        .ask
+        .as_ref()
+        .filter(|a| a.generation == generation)
+        .is_some_and(|a| a.asked_by.is_some() && a.asked_by == Some(ed.input_seq))
 }
 
 /// What `space i` makes of the current buffer: Ok(None) — a file of the project, `edit`'s by its path; Ok(Some) — a
@@ -206,6 +219,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
         keep,
         bounds,
         taken,
+        asked_by: ed.events.asked(),
     });
     if let Some(child) = child {
         llm::pump(child, true, ed.events.sender(), move |ev| {
@@ -597,6 +611,9 @@ fn edit(ed: &mut Editor, generation: u64, call: Call, args: &Value) -> Result<()
         ed.current = i;
     }
     llm::review_with(ed, doc, &instruction, changes, Some(Box::new(done)));
+    if yours(ed, generation) {
+        llm::review_focus(ed);
+    }
     reviewing(ed);
     Ok(())
 }

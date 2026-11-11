@@ -415,6 +415,12 @@ impl Editor {
                 v.push(shortcut(Region::Card(o.id), Filter::Only(crate::inbox::way_in_keys())));
             }
         }
+        let pending = !self.pending.is_empty();
+        // `llm::review_way_in`: a waiting edit review, the next up — `C-q` focuses it from every surface (#528)
+        let review = self.workspace.claude.review.as_ref().filter(|r| r.ready && !modal && !pending);
+        if review.is_some_and(crate::llm::Review::waits) && next == crate::inbox::Next::Review {
+            v.push(shortcut(Region::EditReview, Filter::Only(crate::inbox::way_in_keys())));
+        }
         // `C-q` to the one that has waited longest, elsewhere (the front's edit review takes its own) — nothing
         // waiting, to a session whose turn ended
         let elsewhere = matches!(
@@ -444,14 +450,17 @@ impl Editor {
             let keys = vec![Key::plain(Code::Esc), ctrl('d'), ctrl('u'), ctrl('e'), ctrl('y')];
             v.push(shortcut(Region::Popup, Filter::Only(keys)));
         }
-        let pending = !self.pending.is_empty();
-        // `llm::review_key`: back in the chat or the code, only `C-q` returns to it
-        if let Some(rev) = self.workspace.claude.review.as_ref().filter(|r| r.ready && !modal && !pending) {
-            let chat = self.workspace.chat_has_keys();
-            v.push(match chat || rev.away {
-                true => shortcut(Region::EditReview, Filter::Only(crate::inbox::way_in_keys())),
-                false => layer(Region::EditReview, Filter::Except(vec![ch(' '), ch(':'), ctrl('w')])),
-            });
+        // `llm::review_key`: focused, every key its but `space`, `:` and `C-w`; handed the keys but not drawn yet, its
+        // answers refused (said on it), the rest going where the keys are; waiting, none
+        match review {
+            Some(rev) if rev.focused => {
+                v.push(layer(Region::EditReview, Filter::Except(vec![ch(' '), ch(':'), ctrl('w')])))
+            }
+            Some(rev) if rev.handed => {
+                let letters = crate::llm::ANSWERS.into_iter().map(ch).collect();
+                v.push(shortcut(Region::EditReview, Filter::Only(letters)));
+            }
+            _ => {}
         }
         // …still waiting for its answer: Esc stops it
         if crate::llm::esc_stops(self) {
@@ -596,6 +605,10 @@ impl Editor {
         }
         .map(|l| l.region);
         let takes = self.takes_of(region);
+        // (an edit review no frame has drawn since it was focused or handed the keys: `review_key` refuses its answers,
+        // said on it)
+        let review_unseen =
+            self.workspace.claude.review.as_ref().is_some_and(|r| r.handed || r.focused && !r.seen);
         let answers = match region {
             // (none for a card no presented frame had room for: `card_key` refuses every key, said — nor for one drawn,
             // weighty or handed the keys, in a frame not presented yet: its answers refused)
@@ -614,7 +627,8 @@ impl Editor {
                 }
                 v
             }),
-            Region::EditReview => vec!['y', 'n', 'a', 'q'],
+            Region::EditReview if review_unseen => Vec::new(),
+            Region::EditReview => crate::llm::ANSWERS.to_vec(),
             _ => Vec::new(),
         };
         let view = crate::view::viewing(self).filter(|_| self.pending.is_empty());
@@ -652,7 +666,12 @@ impl Editor {
             to: self.element_id(region),
             pane: self.at_pane().map(|id| format!("pane#{id}")),
             chain,
-            waiting: self.offers.first().filter(|_| self.card_waits()).map(|o| format!("card#{}", o.id)),
+            waiting: (self.offers.first().filter(|_| self.card_waits()).map(|o| format!("card#{}", o.id)))
+                .or_else(|| {
+                    let rev =
+                        self.workspace.claude.review.as_ref().filter(|r| r.waits() && self.offers.is_empty());
+                    rev.map(|_| "edit-review".to_string())
+                }),
         }
     }
 
@@ -671,7 +690,7 @@ impl Editor {
             Region::Chat => s.drawn_w(crate::pane::Shows::Chat) > 0 || s.chat_frame.is_some(),
             Region::Side(_) => s.drawn_w(crate::pane::Shows::Side) > 0,
             Region::Rail => s.drawn_w(crate::pane::Shows::Rail) > 0,
-            Region::EditReview => s.review_change.get().is_some(),
+            Region::EditReview => s.review_change.get().is_some() || s.review_peek.get().is_some(),
             Region::Slot(Slot::Terminal) | Region::Program => s.terminal_rows.is_some(),
             Region::Slot(Slot::Test) => s.test_panel.get().is_some(),
             Region::List(k) => crate::grouplist::drawn(self, k),

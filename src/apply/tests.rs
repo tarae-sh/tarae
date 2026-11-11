@@ -443,9 +443,11 @@ fn reviewed_one_by_one_each_file_joins_one_step_and_a_turns_end_leaves_it() {
     crate::refactor::one_by_one(&mut ed, id, Whose::Yours);
     for (f, after) in [("a.txt", "A\n"), ("b.txt", "B\n")] {
         pump(&mut ed, "its review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
-        assert_eq!(ed.doc().path.as_deref(), Some(dir.join(f).as_path()));
         crate::refactor::turn_over(&mut ed);
         assert!(ed.workspace.claude.review.is_some() && ed.workspace.applying.is_some(), "{f}: still up");
+        // (focused, its file in front — waiting, the pane kept the one the keys were on: #528)
+        crate::llm::review_focus(&mut ed);
+        assert_eq!(ed.doc().path.as_deref(), Some(dir.join(f).as_path()));
         assert!(crate::llm::review_key(&mut ed, Key::plain(Code::Char('y'))));
         pump(&mut ed, "saved", |_| read(dir, f).as_deref() == Some(after));
     }

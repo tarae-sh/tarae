@@ -2958,6 +2958,7 @@ mod tests {
             ed.open(&back.join("b.txt")).unwrap();
             let doc = ed.doc().id;
             crate::llm::review_with(ed, doc, "x", vec![(0, 3, "one".into(), "uno".into())], None);
+            crate::llm::review_focus(ed);
         });
         assert!(ed.workspace_by_id(id).unwrap().claude.review.is_some());
         try_it(&mut ed, "a review is open");

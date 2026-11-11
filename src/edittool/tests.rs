@@ -579,6 +579,7 @@ fn the_edit_tools_review_quotes_what_you_asked() {
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while answered(43).is_none() {
         assert!(std::time::Instant::now() < end, "the answer");
+        crate::llm::review_focus(&mut ed);
         crate::llm::review_key(&mut ed, crate::key::Key::plain(crate::key::Code::Char('n')));
         if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
             ed.handle_event(ev);
@@ -609,6 +610,7 @@ fn answer_reviews(ed: &mut Editor, key: char, done: impl Fn(&Editor) -> bool) {
     while !done(ed) {
         assert!(std::time::Instant::now() < end, "the reviews answered `{key}`");
         if ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready) {
+            crate::llm::review_focus(ed);
             crate::llm::review_key(ed, crate::key::Key::plain(crate::key::Code::Char(key)));
             crate::refactor::next(ed);
         }

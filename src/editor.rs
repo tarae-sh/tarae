@@ -812,6 +812,8 @@ pub struct Screen {
     pub picker_box: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// An edit's review in the buffer as drawn (x, y, width, height): a press on it gives it the keys.
     pub review_area: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// A waiting edit review's one-row peek as drawn (x, y, width) — folded, the keys on the code: a press focuses it.
+    pub review_peek: std::cell::Cell<Option<(usize, usize, usize)>>,
     /// The front card wasn't drawn this frame only because a key sequence is under way (`C-w` of `C-w w`: a card
     /// steps aside for which-key) — still in sight for the round (`cycle_view`).
     pub offer_held: bool,
@@ -2617,12 +2619,19 @@ impl Editor {
         let card = (self.screen.offer_card.is_some() || self.screen.offer_held)
             && self.card_waits()
             && !matches!(left, Some(Floating::Card(l)) if self.offers.first().is_some_and(|o| o.id == l));
+        // (a waiting edit review in sight the same way, after a waiting card — faded in the code area or its peek, #528)
+        let review = !card
+            && self.workspace.claude.review.as_ref().is_some_and(crate::llm::Review::waits)
+            && (self.screen.review_area.get().is_some() || self.screen.review_peek.get().is_some());
         // (the follow card the same way, after a waiting card — #267: from it, the round goes on from the code)
         let from_follow = std::mem::take(&mut self.follow_focus) || left == Some(Floating::Follow);
-        let follow = !card && !from_follow && self.screen.thought_card.get().is_some();
+        let follow = !card && !review && !from_follow && self.screen.thought_card.get().is_some();
         let edge = |end: Option<&crate::split::PaneId>| self.at_pane().is_some_and(|h| end == Some(&h));
         let (last, first) = (edge(order.last()) && left.is_none(), edge(order.first()) && left.is_none());
-        if (card || follow) && (if delta > 0 { last } else { first }) {
+        if (card || review || follow) && (if delta > 0 { last } else { first }) {
+            if review {
+                return crate::llm::review_focus(self);
+            }
             if follow {
                 self.follow_focus = true;
                 return;
@@ -6274,6 +6283,11 @@ impl Editor {
         if self.card_key(key) {
             return took(Handler::Card);
         }
+        // …and so is a waiting edit review that's the next up: `C-q` focuses it from every surface, the terminal's
+        // program too (#528)
+        if llm::review_way_in(self, key) {
+            return took(Handler::EditReview);
+        }
         // …else to the next up — nothing here, the one that has waited longest, wherever it is (#7, #90, #94,
         // #198) — the front's own edit review
         // takes its `C-q` itself
@@ -9461,6 +9475,7 @@ mod tests {
         feed(&mut ed, "<space>l");
         feed(&mut ed, "change it<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.doing(&ed.workspace), crate::workspace::Doing::Waiting);
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.on, "off before");
         feed(&mut ed, "<space>F");
@@ -11210,6 +11225,7 @@ mod tests {
             (8, 13, "three".to_string(), "THREE".to_string()),
         ];
         crate::llm::review_with(&mut ed, id, "upper", changes, None);
+        crate::llm::review_focus(&mut ed);
         let draw = |ed: &mut Editor| {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, 140, 40).unwrap();
@@ -11236,6 +11252,7 @@ mod tests {
         let changes =
             vec![(0, 4, "one\n".to_string(), "one\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
         crate::llm::review_with(&mut ed, id, "upper", changes, None);
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.workspace.claude.review.as_ref().unwrap().current, 1, "on the open change");
         feed(&mut ed, "y");
         assert!(ed.workspace.claude.review.is_none(), "one y settles it");
@@ -11245,6 +11262,7 @@ mod tests {
         let changes =
             vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "TWO\n".into(), "two\n".into())];
         crate::llm::review_with(&mut ed, id, "swap", changes, None);
+        crate::llm::review_focus(&mut ed);
         let rev = ed.workspace.claude.review.as_mut().unwrap();
         rev.hunks[0].decision = crate::llm::Decision::Reject;
         rev.current = 0;
@@ -11275,6 +11293,7 @@ mod tests {
             (19, 24, "five\n".into(), "FIVE\n".into()),
         ];
         crate::llm::review_with(&mut ed, id, "upper", changes, None);
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "yny");
         assert!(ed.workspace.claude.review.is_none());
         assert_eq!(ed.doc().text.to_string(), "ONE1\ntwo\nthree\nfour\nFIVE\n");
@@ -11294,6 +11313,7 @@ mod tests {
         let mut ed = editor("one\ntwo\n");
         let id = ed.doc().id;
         crate::llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "uno\n".into())], None);
+        crate::llm::review_focus(&mut ed);
         let status = |ed: &mut Editor| {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, 140, 30).unwrap();
@@ -11326,6 +11346,7 @@ mod tests {
         ed.workspace.leave(crate::workspace::Here::Chat);
         let id = ed.doc().id;
         crate::llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
+        crate::llm::review_focus(&mut ed);
         let draw = |ed: &mut Editor, w: u16| {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, w, 30).unwrap();
@@ -11361,6 +11382,8 @@ mod tests {
         let id = ed.doc().id;
         let long: String = (1..=80).map(|i| format!("new line {i}\n")).collect();
         crate::llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), long.clone())], None);
+        crate::llm::review_focus(&mut ed);
+        crate::llm::review_focus(&mut ed);
         let draw = |ed: &mut Editor| {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, 140, 30).unwrap();
@@ -11392,14 +11415,13 @@ mod tests {
             "the picker went, the review waits"
         );
         // #118: it took the keys from the code — Esc gives them back to the code, unanswered: NORMAL, its
-        // keys the editor's (a `j` moves the cursor, a `y` answers nothing) until C-q
+        // keys the editor's (a `j` moves the cursor, a `y` answers nothing) until C-q; the code in sight, the review
+        // folded to its peek (#528)
         feed(&mut ed, "<esc>");
         assert!(ed.workspace.claude.review.is_some(), "esc didn't answer it");
         assert_eq!(ed.mode, Mode::Normal);
-        // (the change's row, scrolled past above)
-        ed.workspace.claude.review.as_mut().unwrap().follow = true;
         let s = draw(&mut ed);
-        assert!(s.contains("C-q answer it — the code has the keys"), "{s}");
+        assert!(s.contains("Claude's change") && s.contains("C-q answer") && s.contains("two"), "{s}");
         assert_eq!(ed.keys_at().label(), None, "the status line says the code's mode, not REVIEW");
         let line = ed.cursor_line();
         feed(&mut ed, "jy");
@@ -11413,7 +11435,9 @@ mod tests {
         };
         assert!(undecided(&ed), "y was the code's");
         feed(&mut ed, "<C-q>");
-        assert!(!ed.workspace.claude.review.as_ref().unwrap().away, "C-q: the review has the keys again");
+        assert!(ed.workspace.claude.review.as_ref().unwrap().focused, "C-q: the review has the keys again");
+        // (the change's row, scrolled past above)
+        ed.workspace.claude.review.as_mut().unwrap().follow = true;
         // A chat that had the keys when the review took them: Esc goes back to it, unanswered
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -11433,7 +11457,7 @@ mod tests {
         feed(&mut ed, "<esc>");
         assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "back in the chat");
         let s = draw(&mut ed);
-        assert!(s.contains("C-q answer it — the chat has the keys"), "{s}");
+        assert!(s.contains("C-q answer   y accept   n reject"), "{s}");
         feed(&mut ed, "yn");
         assert_eq!(
             ed.workspace.claude.chat.as_ref().unwrap().input,
@@ -11451,6 +11475,200 @@ mod tests {
         feed(&mut ed, "<C-q>y");
         assert!(ed.workspace.claude.review.is_none(), "answered");
         assert!(text(&ed).starts_with("new line 1\n") && text(&ed).ends_with("new line 80\ntwo\n"));
+    }
+
+    /// A chat open (a stand-in claude) in a scratch project holding a `Cargo.toml`, and Claude's edit of it — a
+    /// protected file, never written unseen — to land.
+    fn chat_and_a_protected_edit(
+        name: &str,
+    ) -> (crate::scratch::Scratch, Editor, crate::refactor::FileChange) {
+        let scratch = crate::scratch::Scratch::new(name);
+        let dir = scratch.to_path_buf();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\n").unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        crate::chat::open(&mut ed);
+        let file = crate::refactor::FileChange {
+            path: std::fs::canonicalize(dir.join("Cargo.toml")).unwrap(),
+            rel: "Cargo.toml".into(),
+            before: ropey::Rope::from_str("[package]\n"),
+            after: ropey::Rope::from_str("[package]\nname = \"x\"\n"),
+            places: 1,
+            op: crate::refactor::Op::Text,
+            protected: true,
+        };
+        (scratch, ed, file)
+    }
+
+    /// `file` landed as Claude's edit, its review up.
+    fn landed(ed: &mut Editor, file: crate::refactor::FileChange) {
+        let call = crate::tools::Call::test(1);
+        crate::refactor::land(ed, call, "edit Cargo.toml".into(), "change", vec![file], String::new());
+        settle_until(ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+    }
+
+    fn undecided(ed: &Editor) -> bool {
+        ed.workspace
+            .claude
+            .review
+            .as_ref()
+            .is_some_and(|r| r.hunks.iter().all(|h| h.decision == llm::Decision::Undecided))
+    }
+
+    fn screen_of(ed: &mut Editor) -> String {
+        let mut bytes = Vec::new();
+        crate::term::render(ed, &mut bytes, 140, 30).unwrap();
+        let mut parser = vt100::Parser::new(30, 140, 0);
+        parser.process(&bytes);
+        parser.screen().contents()
+    }
+
+    /// #528 replayed: typing into the chat when Claude's edit of a protected file lands. The review waits in the code
+    /// area, there to be read — every key typed on is the chat's, none an answer, nothing said of the review; `C-q y` accepts it
+    /// and the keys are back in the chat.
+    #[test]
+    fn claudes_edit_review_waits_while_the_chat_is_typed_into() {
+        let (_scratch, mut ed, file) = chat_and_a_protected_edit("review-waits-chat");
+        feed(&mut ed, "hello s/");
+        landed(&mut ed, file);
+        assert!(ed.workspace.chat_has_keys(), "the keys stayed in the chat");
+        let s = screen_of(&mut ed);
+        assert!(s.contains("C-q answer   y accept   n reject"), "waiting, its way in said: {s}");
+        feed(&mut ed, "Sh a sentence");
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input, "hello s/Sh a sentence");
+        assert!(undecided(&ed), "no key answered it");
+        let s = screen_of(&mut ed);
+        assert!(!s.contains("does nothing in the review"), "{s}");
+        feed(&mut ed, "<C-q>");
+        assert_eq!(ed.keys_to().region, crate::uistate::Region::EditReview);
+        feed(&mut ed, "y");
+        assert!(ed.workspace.claude.review.is_none(), "answered");
+        assert!(ed.workspace.chat_has_keys(), "the keys back in the chat");
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input, "hello s/Sh a sentence");
+    }
+
+    /// #528's fold: a review waiting in the code area while the chat has the keys folds to its peek once the keys
+    /// come onto the code — the code back in sight, letters typed land in it, nothing answered — and never unfolds by
+    /// itself (the keys back in the chat, it stays a peek); `C-q` opens it.
+    #[test]
+    fn a_waiting_review_folds_to_its_peek_once_the_keys_come_onto_the_code() {
+        let mut ed = editor("one\ntwo\n");
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        crate::chat::open(&mut ed);
+        let id = ed.doc().id;
+        llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "uno\n".into())], None);
+        let s = screen_of(&mut ed);
+        assert!(
+            !ed.workspace.claude.review.as_ref().unwrap().folded && s.contains("C-q answer"),
+            "waiting: {s}"
+        );
+        assert!(ed.screen.review_area.get().is_some(), "in the code area");
+        // The keys into the code: folded, the code in sight
+        ed.workspace.leave(Here::Chat);
+        ed.focus_sync();
+        let s = screen_of(&mut ed);
+        assert!(ed.workspace.claude.review.as_ref().unwrap().folded, "folded");
+        assert!(
+            ed.screen.review_area.get().is_none() && ed.screen.review_peek.get().is_some(),
+            "its peek: {s}"
+        );
+        assert!(s.contains("Claude's change") && s.contains("C-q answer"), "{s}");
+        feed(&mut ed, "ianay<esc>");
+        assert_eq!(text(&ed), "anayone\ntwo\n", "typed into the code, in sight");
+        assert!(undecided(&ed), "nothing answered");
+        // Never unfolded by itself: the keys back in the chat, still its peek
+        ed.workspace.set_at(Here::Chat);
+        ed.focus_sync();
+        screen_of(&mut ed);
+        assert!(ed.screen.review_peek.get().is_some(), "still folded");
+        feed(&mut ed, "<C-q>");
+        let s = screen_of(&mut ed);
+        assert!(ed.screen.review_area.get().is_some() && s.contains("esc back, unanswered"), "opened: {s}");
+        assert_eq!(ed.keys_to().region, crate::uistate::Region::EditReview);
+    }
+
+    /// `C-q y` typed on a waiting review's peek: `C-q` opens it, but no frame has drawn what it changes — the `y` is
+    /// refused, said on its change's head, as a card's answer typed before a frame drew it; once drawn, `y` answers.
+    #[test]
+    fn an_answer_typed_before_a_frame_drew_the_review_is_refused() {
+        let mut ed = editor("one\ntwo\n");
+        screen_of(&mut ed);
+        let id = ed.doc().id;
+        llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "uno\n".into())], None);
+        screen_of(&mut ed);
+        assert!(ed.screen.review_peek.get().is_some(), "waiting, its peek");
+        feed(&mut ed, "<C-q>y");
+        assert!(undecided(&ed), "not taken");
+        let s = screen_of(&mut ed);
+        assert!(s.contains("y came before this change was in sight"), "said on it: {s}");
+        feed(&mut ed, "y");
+        assert!(ed.workspace.claude.review.is_none() && text(&ed) == "uno\ntwo\n", "drawn: answered");
+    }
+
+    /// A focused review lets `space`, `:` and `C-w` through to the editor — which-key, a prompt over the code are
+    /// floating panes with the keys for a moment, and the review keeps them: back once they go, never folded (#528's
+    /// sync read them as the keys leaving the code). A hop away (`C-w l` to the chat) lets go.
+    #[test]
+    fn a_focused_review_keeps_the_keys_through_space_and_a_prompt() {
+        let mut ed = editor("one\ntwo\n");
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        crate::chat::open(&mut ed);
+        let id = ed.doc().id;
+        llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "uno\n".into())], None);
+        feed(&mut ed, "<C-q>");
+        let review = |ed: &Editor| ed.workspace.claude.review.as_ref().map(|r| (r.focused, r.folded));
+        assert_eq!(review(&ed), Some((true, false)));
+        for (keys, what) in [("<space>", "which-key"), (":", "a prompt")] {
+            feed(&mut ed, keys);
+            screen_of(&mut ed);
+            feed(&mut ed, "<esc>");
+            assert_eq!(review(&ed), Some((true, false)), "{what}: still focused, not folded");
+            assert_eq!(ed.keys_to().region, crate::uistate::Region::EditReview, "{what}");
+        }
+        feed(&mut ed, "<space>k");
+        assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("no cursor")), "{:?}", ed.status);
+        assert_eq!(review(&ed), Some((true, false)), "a space command run: still focused");
+        feed(&mut ed, "<C-w>l");
+        assert!(ed.workspace.chat_has_keys());
+        assert_eq!(review(&ed).map(|r| r.0), Some(false), "the keys gone: let go");
+        assert!(undecided(&ed));
+    }
+
+    /// A session switch lets go of a focused review, as of a focused card (#528): back there it waits for `C-q` — the
+    /// keys where its Esc would have put them: the chat it took them from, else the code, the review folded to its peek.
+    #[test]
+    fn a_session_switch_lets_go_of_a_focused_review() {
+        let scratch = crate::scratch::Scratch::new("review-switch");
+        for chat in [true, false] {
+            let mut ed = editor("one\ntwo\n");
+            ed.config.llm.command = "sh".into();
+            ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+            if chat {
+                crate::chat::open(&mut ed);
+            }
+            let id = ed.doc().id;
+            llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "uno\n".into())], None);
+            feed(&mut ed, "<C-q>");
+            assert_eq!(ed.keys_to().region, crate::uistate::Region::EditReview, "chat {chat}");
+            let (home, dir) = (ed.workspace.id, scratch.join(if chat { "a" } else { "b" }));
+            std::fs::create_dir_all(&dir).unwrap();
+            let other = ed.workspace_add(dir);
+            ed.workspace_switch(other);
+            ed.workspace_switch(home);
+            ed.focus_sync();
+            let r = ed.workspace.claude.review.as_ref().expect("still up");
+            assert!(!r.focused && r.folded != chat, "chat {chat}: let go");
+            assert_eq!(ed.workspace.chat_has_keys(), chat, "back where they were");
+            assert_ne!(ed.keys_to().region, crate::uistate::Region::EditReview, "chat {chat}");
+            feed(&mut ed, "y");
+            assert!(undecided(&ed), "chat {chat}: `y` no answer");
+            feed(&mut ed, "<esc><C-q>");
+            assert_eq!(ed.keys_to().region, crate::uistate::Region::EditReview, "chat {chat}: `C-q` again");
+        }
     }
 
     /// #29: the git tab reads the status again when Claude edits, writes or runs something — not only when
@@ -13233,6 +13451,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[edit]);
         feed(&mut ed, "<space>lshout line 2<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert!(!ed.workspace.is_at(crate::workspace::Here::Chat), "the keys go to the review");
         feed(&mut ed, "y");
         let a = tool_answer_to(&mut ed, &log, "c1");
@@ -13306,8 +13525,10 @@ mod tests {
         edit_calls(&mut ed, &dir, &lib, true);
         feed(&mut ed, "<space>ltwo edits please<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "yy");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert_eq!(
             ed.workspace.claude.chat.as_ref().unwrap().calls.len(),
             2,
@@ -13337,10 +13558,12 @@ mod tests {
         two_edit_calls(&mut ed, &dir, &lib);
         feed(&mut ed, "<space>Ltwo edits please<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.workspace.claude.review.as_ref().unwrap().hunks.len(), 2, "two changes in its review");
         // (answered `n`, then `y`: stamped `y` first, whichever came first)
         feed(&mut ed, "ny");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "n");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let stamps = |ed: &Editor, id: &str| -> String {
@@ -13385,6 +13608,7 @@ mod tests {
         two_edit_calls(&mut ed, &dir, &lib);
         feed(&mut ed, "<space>ltwo edits please<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         crate::llm::close_review(&mut ed);
         assert_eq!(stamps(&ed, "e1"), "", "answered in part, then closed: no key gave it");
@@ -13403,8 +13627,10 @@ mod tests {
             fake_edits(&mut ed, &dir, &[edit(&lib, "line 2", "LINE 2"), edit(&new, "", "fn new() {}\n")]);
         feed(&mut ed, "<space>ltwo files please<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
@@ -13477,6 +13703,7 @@ mod tests {
         // (asked from the ask line: the chat out of sight once it went)
         feed(&mut ed, "<space>lfix it<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        crate::llm::review_focus(&mut ed);
         let r = ed.workspace.claude.review.as_ref().unwrap();
         assert_eq!(r.reason, "Line 2 is lowercase while the rest shout, so I will make it match.");
         // Under the title
@@ -13516,6 +13743,7 @@ mod tests {
         // (asked from the ask line: the chat out of sight once it went)
         feed(&mut ed, "<space>lshout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.workspace.claude.review.as_ref().unwrap().hunks.len(), 2);
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 120, 40).unwrap();
@@ -13707,6 +13935,7 @@ mod tests {
         ];
         feed(&mut ed, "<space>ladd a flag<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.workspace.claude.review.as_ref().unwrap().reason, "step 2/3: Wire it into the config");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let p = ed.workspace.claude.chat.as_ref().unwrap().plan.clone().expect("the plan");
@@ -13888,6 +14117,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "n");
         let a = tool_answer_to(&mut ed, &log, "c1");
         assert!(a.contains("declined by the user"), "{a}");
@@ -13905,6 +14135,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         let open = |ed: &Editor| ed.docs.iter().any(|d| d.path.as_deref() == Some(main.as_path()));
         crate::typed::execute(&mut ed, "buffer-close!").unwrap();
         assert!(open(&ed) && ed.workspace.claude.review.is_some(), "asked, not closed");
@@ -13932,6 +14163,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         let open = |ed: &Editor| ed.docs.iter().any(|d| d.path.as_deref() == Some(main.as_path()));
         crate::typed::execute(&mut ed, "buffer-close").unwrap();
         let q = ed.offers.first().map(|o| o.question.clone()).expect("a card");
@@ -13965,6 +14197,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[both]);
         feed(&mut ed, "<space>lshout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "yn");
         let a = tool_answer_to(&mut ed, &log, "c1");
         assert!(a.contains("accepted in part: ") && a.contains("util.rs (2)"), "{a}");
@@ -13985,6 +14218,7 @@ mod tests {
         let id = ed.doc().id;
         let long = format!("let x = {}; // THE END\n", "1 + ".repeat(30));
         crate::llm::review_with(&mut ed, id, "x", vec![(0, 6, "short\n".into(), long)], None);
+        crate::llm::review_focus(&mut ed);
         let shown = |ed: &mut Editor| {
             let mut out = Vec::new();
             crate::term::render(ed, &mut out, 80, 20).unwrap();
@@ -14023,6 +14257,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[edit_of(&new, "", "pub fn new() {}\n")]);
         feed(&mut ed, "<space>lmake it<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         let a = tool_answer_to(&mut ed, &log, "c1");
         assert!(a.contains("accepted by the user: src/fresh/deeper/new.rs"), "{a}");
@@ -14043,6 +14278,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         let a = tool_answer_to(&mut ed, &log, "c1");
         assert!(a.contains("unsaved edits"), "{a}");
@@ -14075,6 +14311,7 @@ mod tests {
         let log = fake_two_edits(&mut ed, &dir, &main);
         feed(&mut ed, "<space>Ltwo edits<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         // A slow disk: the first's save on its way — Claude not answered meanwhile
         ed.saver.held.hold();
         feed(&mut ed, "y");
@@ -14090,6 +14327,7 @@ mod tests {
         let a = tool_answer_to(&mut ed, &log, "c1");
         assert!(a.contains("accepted by the user: ") && a.contains("main.rs (1)"), "{a}");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         let a = tool_answer_to(&mut ed, &log, "c2");
         assert!(a.contains("accepted by the user: ") && a.contains("main.rs (1)"), "{a}");
@@ -14111,12 +14349,14 @@ mod tests {
         let log = fake_two_edits(&mut ed, &dir, &main);
         feed(&mut ed, "<space>Ltwo edits<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         // (the answer gave the keys back to the chat: Esc to the code, then typed — before c2 is read, events
         // wait for settle_until)
         assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "back in the chat");
         feed(&mut ed, "<esc>ggiX<esc>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         let a = tool_answer_to(&mut ed, &log, "c2");
         assert!(a.contains("unsaved edits"), "{a}");
@@ -14517,6 +14757,7 @@ mod tests {
         ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
         feed(&mut ed, "write them<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         // c1, c2: written unasked, nothing shown
         for id in ["c1", "c2"] {
             assert!(tool_answer_to(&mut ed, &log, id).contains("written: "), "{id}");
@@ -14529,9 +14770,13 @@ mod tests {
         };
         assert_eq!(kept(&main), Some((Some("line 1\nline 2\nline 3\n".into()), true)), "{turn:?}");
         assert_eq!(kept(&new), Some((None, true)), "a file it makes: none before");
-        // c3: a build script is a review
-        assert_eq!(ed.doc().path.as_deref(), Some(build.as_path()));
-        feed(&mut ed, "y");
+        // c3: a build script is a review — waiting for `C-q` (#528)
+        let reviewed = |ed: &Editor| {
+            let id = ed.workspace.claude.review.as_ref().map(|r| r.doc_id);
+            ed.docs.iter().find(|d| Some(d.id) == id).and_then(|d| d.path.clone())
+        };
+        assert_eq!(reviewed(&ed).as_deref(), Some(build.as_path()));
+        feed(&mut ed, "<C-q>y");
         assert!(tool_answer_to(&mut ed, &log, "c3").contains("accepted by the user: build.rs"));
         // c4: outside the project, not made
         let a = tool_answer_to(&mut ed, &log, "c4");
@@ -14539,6 +14784,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "note\n");
         // c5: unsaved edits in util.rs — a review, and it stays in the buffer
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.doc().path.as_deref(), Some(util.as_path()));
         let kept =
             |p: &Path| ed.workspace.claude.checkpoints.turn.iter().find(|t| t.path == p).map(|t| t.unseen);
@@ -14669,7 +14915,10 @@ mod tests {
         feed(&mut ed, "<space>l");
         feed(&mut ed, "make it<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
-        assert_eq!(ed.doc().path.as_deref(), Some(setup.as_path()), "its review, a new file");
+        crate::llm::review_focus(&mut ed);
+        let id = ed.workspace.claude.review.as_ref().map(|r| r.doc_id);
+        let path = ed.docs.iter().find(|d| Some(d.id) == id).and_then(|d| d.path.clone());
+        assert_eq!(path.as_deref(), Some(setup.as_path()), "its review, a new file");
         // Another session: a file of its own opened aside, then its Claude's turn ends
         let other = ed.workspace_add(away.clone());
         ed.with_workspace(other, |ed| {
@@ -14689,6 +14938,8 @@ mod tests {
         assert_eq!(ed.doing(behind), crate::workspace::Doing::Waiting, "behind too");
         assert_eq!(ed.cards_waiting(), (0, 1), "{:?}", ed.inbox());
         ed.workspace_switch(front);
+        // (the switch let go of it: it waits for `C-q` again — #528)
+        ed.handle_event(Event::Key("C-q".parse().unwrap()));
         ed.handle_event(Event::Key("y".parse().unwrap()));
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("setup.sh"), "answered: {}", tool_answer(&log));
@@ -17311,6 +17562,7 @@ mod tests {
         settle_until(&mut ed, |ed| ed.workspace.git_status.as_ref().is_some_and(|s| !s.staged.is_empty()));
         feed(&mut ed, "C");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         let sent = std::fs::read_to_string(&log).unwrap();
         assert!(sent.contains("<recent-commits>") && sent.contains("base"), "its style: {sent}");
         assert!(sent.contains("+two"), "the staged diff: {sent}");
@@ -20579,6 +20831,7 @@ mod tests {
         feed(&mut ed, "e iupper<ret>");
         // (a file's own jobs — its parse — may come first)
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         assert_eq!(text(&ed), "LINE 1\nline 2\nline 3\n");
         settle_until(&mut ed, |ed| ed.workspace.claude.ask.is_none() && !ed.doc().is_modified());
@@ -20609,6 +20862,7 @@ mod tests {
         let doc = ed.doc().id;
         crate::llm::draft(&mut ed, doc, "a commit message", "draft it", 0, 0).unwrap();
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         let lines = crate::calls::recorded(dir.path(), 2);
         let mut what: Vec<&str> = lines.iter().map(|l| l["what"].as_str().unwrap()).collect();
         what.sort_unstable();
@@ -20634,6 +20888,7 @@ mod tests {
             "editing isn't blocked while waiting"
         );
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert!(ed.status.as_ref().is_some_and(|s| s.0.starts_with("claude answered in")), "{:?}", ed.status);
         feed(&mut ed, "y");
         assert_eq!(text(&ed), "FOO bar");
@@ -20746,6 +21001,7 @@ mod tests {
         fake_ask(&mut ed, edit, done(), None);
         feed(&mut ed, "%sfoo|bar<ret>:ask shout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.workspace.claude.review.as_ref().map(|r| r.hunks.len()), Some(2));
         feed(&mut ed, "yn");
         assert_eq!(text(&ed), "X\nkeep\nbar\n");
@@ -20763,6 +21019,7 @@ mod tests {
         fake_ask(&mut ed, edit, done(), None);
         feed(&mut ed, "%sfoo|bar<ret>:ask shout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert_eq!(hunks(&ed), Some(2));
         feed(&mut ed, "ny");
         assert_eq!(text(&ed), "foo\nY\nkeep\n");
@@ -20774,6 +21031,7 @@ mod tests {
         fake_ask(&mut ed, edit, done(), None);
         feed(&mut ed, "%sfoo|bar<ret>:ask shout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         assert_eq!(ed.doc().path.as_deref(), Some(other.as_path()));
         assert_eq!(hunks(&ed), Some(1), "another file");
         // A buffer that isn't a file, by its id: selected by `select`, `between` typed while it's asked
@@ -20791,6 +21049,8 @@ mod tests {
             let edit =
                 serde_json::json!({"edits": [{"file_path": id, "old_string": old, "new_string": new}]});
             ask_calls(&mut ed, g, 1, "edit", edit);
+            // (asked without a key: its review waits — `C-q`)
+            crate::llm::review_focus(&mut ed);
             ed
         };
         let keys = |k: &'static str| move |ed: &mut Editor| feed(ed, k);
@@ -20823,8 +21083,46 @@ mod tests {
         feed(&mut ed, "ww:ask upper<ret>");
         feed(&mut ed, "ghizz<esc>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "a");
         assert_eq!(text(&ed), "zzfoo BAR");
+    }
+
+    /// #528, as a card of yours (`Offer.yours`): `space i`'s review comes focused while nothing was typed since the key
+    /// that asked; a key typed while Claude answers, and it waits for `C-q` — a `y` then is the code's, never an answer.
+    #[test]
+    fn space_is_review_waits_once_a_key_came_since_it_asked() {
+        for typed in [false, true] {
+            let dir = crate::scratch::Scratch::new("ask-typed-since");
+            let gate = dir.join("gate");
+            let path = std::fs::canonicalize(dir.path()).unwrap().join("a.txt");
+            std::fs::write(&path, "word\n").unwrap();
+            let mut ed = editor("");
+            ed.open(&path).unwrap();
+            let edit = serde_json::json!([{"file_path": path, "whole": true, "new_string": "WORD\n"}]);
+            fake_ask(&mut ed, edit, done(), None);
+            let args = &mut ed.config.llm.args[1];
+            *args = format!(
+                "i=0; while [ ! -e '{}' ] && [ $i -lt {} ]; do sleep 0.05; i=$((i+1)); done; {args}",
+                gate.display(),
+                crate::test_results::PATIENCE.as_millis() / 50,
+            );
+            feed(&mut ed, "%");
+            feed(&mut ed, ":ask x<ret>");
+            if typed {
+                feed(&mut ed, "l");
+            }
+            std::fs::write(&gate, "").unwrap();
+            settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+            let focused = ed.workspace.claude.review.as_ref().unwrap().focused;
+            assert_eq!(focused, !typed, "typed since: {typed}");
+            feed(&mut ed, "y");
+            assert_eq!(undecided(&ed), typed, "typed since: {typed}");
+            if typed {
+                feed(&mut ed, "<C-q>y");
+            }
+            assert_eq!(text(&ed), "WORD\n", "typed since: {typed}");
+        }
     }
 
     /// A big ask (a 200 KB selection) to a claude still starting — not reading yet — goes out off the main
@@ -20852,6 +21150,7 @@ mod tests {
         assert!(!reading.exists(), "the main loop waited on the pipe");
         std::fs::write(&gate, "").unwrap();
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::llm::review_focus(&mut ed);
         feed(&mut ed, "y");
         assert_eq!(text(&ed), "X");
     }
@@ -20990,7 +21289,8 @@ mod tests {
             serde_json::json!({"edits": [{"file_path": id, "old_string": "hey", "new_string": "Excuse me"}]});
         ask_calls(&mut ed, g, 2, "edit", edit);
         assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready), "its review");
-        feed(&mut ed, "y");
+        // (asked without a key: its review waits — `C-q`)
+        feed(&mut ed, "<C-q>y");
         assert_eq!(text(&ed), "Excuse me, look at this\n");
         assert!(ed.doc().is_modified(), "not saved");
         let got = ask_answers(&rx);
@@ -21044,7 +21344,8 @@ mod tests {
         let by_id =
             serde_json::json!({"edits": [{"file_path": id, "old_string": "alpha", "new_string": "ALPHA"}]});
         ask_calls(&mut ed, g, 2, "edit", by_id);
-        feed(&mut ed, "y");
+        // (asked without a key: its review waits — `C-q`)
+        feed(&mut ed, "<C-q>y");
         assert_eq!(text(&ed), "ALPHA\n");
         settle(&mut ed);
         assert!(ed.doc().is_modified() && std::fs::read_to_string(&out).unwrap() == "alpha\n", "unsaved");
