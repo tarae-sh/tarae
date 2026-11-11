@@ -394,6 +394,94 @@ fn a_takes_surroundings_copy_your_config_with_cost_and_auto_cards_off_and_name_g
     assert_eq!(copy["workspace"]["worktrees"].as_str(), Some("/w"));
 }
 
+/// The take's fish prompt, its own: the folder's name and git's branch, no login, no machine, no greeting — written in
+/// the take's config home, where fish would write its default.
+#[test]
+fn a_takes_fish_prompt_is_the_folders_name_and_its_branch_with_no_greeting() {
+    let dir = Scratch::new("xtask-take-fish");
+    crate::record::take::surroundings(&dir, None, None, None).unwrap();
+    let prompt = std::fs::read_to_string(dir.join("config/fish/functions/fish_prompt.fish")).unwrap();
+    assert!(
+        prompt.contains("function fish_prompt; printf '%s%s> ' (basename $PWD) (fish_vcs_prompt); end\n"),
+        "{prompt}"
+    );
+    let greeting = std::fs::read_to_string(dir.join("config/fish/conf.d/greeting.fish")).unwrap();
+    assert!(greeting.lines().any(|l| l == "set -g fish_greeting"), "{greeting}");
+}
+
+/// The take's environment is what it keeps and what it sets: a Claude Code shell's `CLAUDE_CODE_*`,
+/// `ANTHROPIC_BASE_URL` and a name nobody listed don't reach it; the kept names do, the take's own over the caller's.
+/// Run through a real child, as the take's tarae gets it.
+#[test]
+fn a_takes_environment_is_the_names_it_keeps_and_what_it_sets() {
+    use std::ffi::OsString;
+    let os = |s: &str| OsString::from(s);
+    let caller = [
+        ("CLAUDE_CODE_X", "stand-in"),
+        ("ANTHROPIC_BASE_URL", "stand-in"),
+        ("FOO", "stand-in"),
+        ("HOME", "/home/u"),
+        ("USER", "u"),
+        ("LOGNAME", "u"),
+        ("SHELL", "/bin/fish"),
+        ("TERM", "xterm"),
+        ("COLORTERM", "truecolor"),
+        ("LANG", "en_US.UTF-8"),
+        ("LC_ALL", "C"),
+        ("TMPDIR", "/tmp/u"),
+        ("PATH", "/yours"),
+    ]
+    .map(|(k, v)| (os(k), os(v)));
+    let set = [(os("PATH"), os("/usr/bin:/bin")), (os("GIT_AUTHOR_NAME"), os("halil dev"))];
+    let (env, left) = crate::record::take::takes_env(caller, &set);
+    assert_eq!(left, ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_X", "FOO"]);
+    let out = std::process::Command::new("/usr/bin/env").env_clear().envs(env).output().unwrap();
+    let mut got: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(String::from).collect();
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            "COLORTERM=truecolor",
+            "GIT_AUTHOR_NAME=halil dev",
+            "HOME=/home/u",
+            "LANG=en_US.UTF-8",
+            "LC_ALL=C",
+            "LOGNAME=u",
+            "PATH=/usr/bin:/bin",
+            "SHELL=/bin/fish",
+            "TERM=xterm",
+            "TMPDIR=/tmp/u",
+            "USER=u",
+        ]
+    );
+}
+
+/// What the take left out is said by prefix and count, names only: each prefix named, the rest counted.
+#[test]
+fn what_a_take_left_out_is_said_by_each_prefix() {
+    let names: Vec<String> = [
+        "ANTHROPIC_BASE_URL",
+        "CARGO_PKG_NAME",
+        "CLAUDECODE",
+        "CLAUDE_AGENT_SDK_VERSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_SSE_PORT",
+        "FOO",
+        "MCP_TIMEOUT",
+        "RUSTUP_TOOLCHAIN",
+        "ZELLIJ_SESSION_NAME",
+    ]
+    .map(String::from)
+    .to_vec();
+    assert_eq!(
+        crate::record::take::left_out(&names),
+        "left out of the take: CLAUDE_CODE_… ×2, CLAUDE_AGENT_SDK_… ×1, CLAUDE… ×1, ANTHROPIC_… ×1, MCP_… ×1, \
+         CARGO_… ×1, RUSTUP_… ×1, ZELLIJ… ×1, 1 other"
+    );
+    assert_eq!(crate::record::take::left_out(&["A".into(), "B".into()]), "left out of the take: 2 others");
+    assert_eq!(crate::record::take::left_out(&[]), "left out of the take: nothing");
+}
+
 #[test]
 fn a_bring_is_a_landmark() {
     let mut marks = crate::record::landmarks::Landmarks::default();

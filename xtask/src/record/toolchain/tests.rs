@@ -188,14 +188,33 @@ fn the_take_has_a_state_and_a_data_home_of_its_own() {
     assert!(super::super::take::homes_of_its_own(&dir).is_err());
 }
 
-/// rustup's proxy's own variables, set for `cargo xtask`, never reach the take's tarae: its `RUSTUP_TOOLCHAIN` is
-/// tarae's pinned one, which the clone doesn't hold.
+/// rustup's proxy's own variables and `cargo run`'s, set for `cargo xtask`, never reach the take's tarae: its
+/// `RUSTUP_TOOLCHAIN` is tarae's pinned one, which the clone doesn't hold. The clone's own homes and `PATH` do, with
+/// the clone's values over yours.
 #[test]
 fn rustups_toolchain_pin_is_left_out_of_the_take() {
-    for n in ["RUSTUP_TOOLCHAIN", "RUSTUP_TOOLCHAIN_SOURCE", "CARGO_PKG_NAME"] {
-        assert!(super::super::take::cargo_runs_own(n.as_ref()), "{n}");
-    }
-    for n in ["RUSTUP_HOME", "CARGO_HOME", "PATH"] {
-        assert!(!super::super::take::cargo_runs_own(n.as_ref()), "{n}");
-    }
+    let os = |s: &str| std::ffi::OsString::from(s);
+    let theirs = [
+        "RUSTUP_TOOLCHAIN",
+        "RUSTUP_TOOLCHAIN_SOURCE",
+        "CARGO",
+        "CARGO_PKG_NAME",
+        "CARGO_MANIFEST_DIR",
+        "CARGO_CRATE_NAME",
+        "CARGO_BIN_NAME",
+        "CARGO_PRIMARY_PACKAGE",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "CLAUDECODE",
+    ];
+    let caller = theirs
+        .iter()
+        .chain(&["RUSTUP_HOME", "CARGO_HOME", "PATH"])
+        .map(|n| (os(n), os("yours")))
+        .collect::<Vec<_>>();
+    let set = ["RUSTUP_HOME", "CARGO_HOME", "PATH"].map(|n| (os(n), os("the clone's")));
+    let (env, left) = super::super::take::takes_env(caller, &set);
+    let mut theirs = theirs.map(String::from).to_vec();
+    theirs.sort();
+    assert_eq!(left, theirs);
+    assert_eq!(env, set.to_vec());
 }

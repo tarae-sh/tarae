@@ -12,9 +12,15 @@
 //!   floor every run of tarae's sandbox keeps (`src/sandbox/runenv.rs`), so tarae's git, `:sh` and Claude's runs all
 //!   commit as them; your Rust toolchain cloned outside the home (`toolchain.rs`, `TAKE_RUST`: made where it isn't,
 //!   refused where it holds anything) as its `RUSTUP_HOME` and `CARGO_HOME`, rustup's proxies first on its `PATH`,
-//!   your `~/.cargo/bin` last, `RUSTUP_AUTO_INSTALL=0`. `FOLDER` (the take's `/Users/Shared/halil`) is made where it
-//!   isn't, refused where it holds anything. Your files are read, never written. Its claude is your config's: run it
-//!   only as the take, never in a test.
+//!   your `~/.cargo/bin` last, `RUSTUP_AUTO_INSTALL=0`; fish's prompt the take's own (`FISH_PROMPT`: the folder's name
+//!   and git's branch, `halil (main)> `, no greeting — its config home is the take's, where fish would write its
+//!   default, login and machine and all; zsh and bash read your own rc files from `HOME`, so only fish's prompt is the
+//!   take's). Its environment is a list of what it keeps (`KEPT`: `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
+//!   `COLORTERM`, the locale, `TMPDIR`) and what it sets, never a list of what it drops: the same from any shell, a
+//!   Claude Code one's plumbing included (`takes_env`); what it left out said first, by prefix and count (`left_out`,
+//!   names only — some are tokens), and its `SHELL` beside it. `FOLDER` (the take's `/Users/Shared/halil`) is made
+//!   where it isn't, refused where it holds anything. Your files are read, never written. Its claude is your config's:
+//!   run it only as the take, never in a test.
 //! - `cargo xtask record dry [OUT]` — V3's dry run (default `target/rec/record-dry`, made new): the take's motions end
 //!   to end at the take's size by the hands (`hands.rs`), on a scene's tarae with the stand-in Claude (`scenes::live`,
 //!   `nine`: the real one refused, #247) and the same surroundings; each step and its answer in `dry.txt`, the take in
@@ -44,6 +50,38 @@ pub(crate) const TAKE_WORKTREES: &str = "/Users/Shared/halil-checkouts";
 /// Git's name and mail in a take: stand-ins, never yours.
 pub(crate) const GIT_NAME: &str = "halil dev";
 pub(crate) const GIT_MAIL: &str = "dev@halil.invalid";
+
+/// The take's fish prompt (`$XDG_CONFIG_HOME/fish/functions/fish_prompt.fish`): the folder's name and git's branch —
+/// `halil (main)> `, `halil-564b6228 (try2)> ` in a checkout. `/U/S/halil` reads as a puzzle to a viewer, and the
+/// whole path is in what cargo prints (the design session, 2026-11-11).
+pub(crate) const FISH_PROMPT: &str = "# The take's prompt (cargo xtask record take): the folder's name and git's branch.\n\
+                                       function fish_prompt; printf '%s%s> ' (basename $PWD) (fish_vcs_prompt); end\n";
+
+/// The take's fish greeting (`$XDG_CONFIG_HOME/fish/conf.d/greeting.fish`): none.
+pub(crate) const FISH_GREETING: &str =
+    "# The take's greeting (cargo xtask record take): none.\nset -g fish_greeting\n";
+
+/// The names a take keeps from the environment it's started in (and the locale's `LC_*`): everything else is left out,
+/// whatever shell started it (`takes_env`).
+pub(crate) const KEPT: [&str; 8] =
+    ["HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "LANG", "TMPDIR"];
+
+/// How what's left out is counted (`left_out`), the first that a name starts with, in this order; the rest "others".
+const LEFT_OUT_BY: [&str; 13] = [
+    "CLAUDE_CODE_",
+    "CLAUDE_AGENT_SDK_",
+    "CLAUDE",
+    "ANTHROPIC_",
+    "MCP_",
+    "OTEL_",
+    "CARGO_",
+    "RUSTUP_",
+    "GIT_",
+    "XDG_",
+    "TARAE_",
+    "ZELLIJ",
+    "SSH_",
+];
 
 const USAGE: &str = "usage: cargo xtask record take --out DIR --cwd FOLDER --tarae BIN [--size 166x32] [--config FILE] | record dry [OUT]";
 
@@ -108,6 +146,18 @@ pub(crate) fn surroundings(
          \temail = {GIT_MAIL}\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n"
     );
     std::fs::write(&git, gitconfig).map_err(|e| format!("{}: {e}", git.display()))?;
+    let fish = home.join("config/fish");
+    for (file, text) in [("functions/fish_prompt.fish", FISH_PROMPT), ("conf.d/greeting.fish", FISH_GREETING)]
+    {
+        let p = fish.join(file);
+        let dir = p.parent().unwrap_or(&fish);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
     Ok(vec![
         // (cargo's build folder in each checkout's own `target`: a shared one set in your cargo config is a path under
         // your home, and `cargo test` says it on every run — "Running unittests src/main.rs (/Users/…)")
@@ -121,28 +171,66 @@ pub(crate) fn surroundings(
     ])
 }
 
-/// What `cargo run` (`cargo xtask`) sets for the program it runs, never your shell: left out of a take's tarae, whose
-/// runs would carry them into the take's own builds (and its preflight says each). rustup's proxy's own too: its
-/// `RUSTUP_TOOLCHAIN` is tarae's pinned one (measured: set for the program `cargo run` runs), which the take's
-/// project doesn't pin and its cloned rustup doesn't hold.
-pub(super) fn cargo_runs_own(name: &std::ffi::OsStr) -> bool {
-    let n = name.to_string_lossy();
-    n == "CARGO"
-        || n == "RUSTUP_TOOLCHAIN"
-        || n == "RUSTUP_TOOLCHAIN_SOURCE"
-        || n.starts_with("CARGO_PKG_")
-        || n.starts_with("CARGO_MANIFEST_")
-        || matches!(
-            &*n,
-            "CARGO_CRATE_NAME" | "CARGO_BIN_NAME" | "CARGO_PRIMARY_PACKAGE" | "DYLD_FALLBACK_LIBRARY_PATH"
-        )
+/// The take's environment: of `caller`'s (the environment `record take` was started in), only the names it keeps
+/// (`KEPT`, `LC_*`), then `set` (the take's own, over a kept one of the same name) — and the names left out, sorted.
+/// A list of what's kept, never of what's dropped: a Claude Code shell's `CLAUDE_CODE_*` (a messaging socket and its
+/// token, a session id), `ANTHROPIC_BASE_URL` or `MCP_*`, what `cargo run` sets (`CARGO_PKG_*`, rustup's
+/// `RUSTUP_TOOLCHAIN` pin), whatever comes next — none reaches the take's real, billed claude or its builds.
+pub(crate) fn takes_env(
+    caller: impl IntoIterator<Item = (OsString, OsString)>,
+    set: &[(OsString, OsString)],
+) -> (Vec<(OsString, OsString)>, Vec<String>) {
+    let is_set = |k: &OsString| set.iter().any(|(s, _)| s == k);
+    let (mut env, mut left) = (Vec::new(), Vec::new());
+    for (k, v) in caller {
+        let n = k.to_string_lossy();
+        if KEPT.contains(&&*n) || n.starts_with("LC_") {
+            if !is_set(&k) {
+                env.push((k, v));
+            }
+        } else if !is_set(&k) {
+            left.push(n.into_owned());
+        }
+    }
+    env.extend(set.iter().cloned());
+    left.sort();
+    (env, left)
 }
 
-/// `cmd` without `cargo run`'s own variables (`cargo_runs_own`).
-fn without_cargo_runs(cmd: &mut Command) {
-    for (k, _) in std::env::vars_os().filter(|(k, _)| cargo_runs_own(k)) {
-        cmd.env_remove(k);
+/// What `takes_env` left out, said by prefix and count (`LEFT_OUT_BY`) — names only, never a value (some are tokens):
+/// `left out of the take: CLAUDE_CODE_… ×28, ANTHROPIC_… ×2, CARGO_… ×9, 14 others`.
+pub(crate) fn left_out(names: &[String]) -> String {
+    let mut counts = [0usize; LEFT_OUT_BY.len()];
+    let mut others = 0;
+    for n in names {
+        match LEFT_OUT_BY.iter().position(|p| n.starts_with(p)) {
+            Some(i) => counts[i] += 1,
+            None => others += 1,
+        }
     }
+    let mut said: Vec<String> =
+        LEFT_OUT_BY.iter().zip(counts).filter(|(_, c)| *c > 0).map(|(p, c)| format!("{p}… ×{c}")).collect();
+    match others {
+        0 => {}
+        1 => said.push("1 other".into()),
+        n => said.push(format!("{n} others")),
+    }
+    if said.is_empty() {
+        said.push("nothing".into());
+    }
+    format!("left out of the take: {}", said.join(", "))
+}
+
+/// `cmd`'s environment made the take's (`takes_env`): `set` and `cmd`'s own explicit ones over the kept names of
+/// this process's, nothing else. What it left out, said (`left_out`).
+fn the_takes_env(cmd: &mut Command, set: Vec<(&'static str, OsString)>) -> String {
+    let mut own: Vec<(OsString, OsString)> =
+        cmd.get_envs().filter_map(|(k, v)| Some((k.to_os_string(), v?.to_os_string()))).collect();
+    own.retain(|(k, _)| !set.iter().any(|(s, _)| k == s));
+    own.extend(set.into_iter().map(|(k, v)| (OsString::from(k), v)));
+    let (env, left) = takes_env(std::env::vars_os(), &own);
+    cmd.env_clear().envs(env);
+    left_out(&left)
 }
 
 /// Your tarae config's folder, as tarae finds it: `$XDG_CONFIG_HOME/tarae`, else `~/.config/tarae`.
@@ -205,13 +293,15 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     env.extend(own);
     env.extend(rust.env);
     let mut cmd = Command::new(&bin);
-    cmd.envs(env.iter().map(|(k, v)| (k, v)));
-    // (a Claude Code session's marker, where the take is started from one: its claude is the take's own)
-    cmd.env_remove("CLAUDECODE");
-    without_cargo_runs(&mut cmd);
+    eprintln!("record take: {}", the_takes_env(&mut cmd, env));
+    // (fish against zsh changes what's on screen: the terminal pane's prompt, `:sh`'s)
+    match std::env::var_os("SHELL") {
+        Some(s) => eprintln!("record take: its shell {} (the one that started it)", s.to_string_lossy()),
+        None => eprintln!("record take: no SHELL where it was started — tarae's own default"),
+    }
     eprintln!(
         "record take: its home {} — your config copied with llm.cost = false, auto-cards off and the checkouts in \
-         {TAKE_WORKTREES}, git as {GIT_NAME} <{GIT_MAIL}>, a state and data home of its own, Rust's {} and registry cloned into \
+         {TAKE_WORKTREES}, git as {GIT_NAME} <{GIT_MAIL}>, fish's prompt its own, a state and data home of its own, Rust's {} and registry cloned into \
          {} in {}{}; tarae in {}",
         home.display(),
         rust.toolchain,
@@ -377,8 +467,7 @@ pub(super) fn dry(args: &[String]) -> Result<()> {
     let file = live.setup.config.join("tarae/config.toml");
     let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let env = surroundings(&home, Some(&text), None, None)?;
-    cmd.envs(env.iter().map(|(k, v)| (k, v)));
-    without_cargo_runs(&mut cmd);
+    eprintln!("record dry: {}", the_takes_env(&mut cmd, env));
     let take = out.join("take");
     let spec = Spec {
         size: TAKE_SIZE,
