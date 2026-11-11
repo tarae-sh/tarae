@@ -2012,6 +2012,8 @@ fn go_search(ed: &mut Editor, call: Call, q: Query, args: Value, granted: Vec<Pa
     // (where its time goes, as one `timing` line: the worker's start, the walk, test code told apart, the
     // enclosing symbols, the main loop's turn)
     let mut trace = crate::trace::Trace::new(format!("claude's search: {}", clip(&q.pattern, 60)));
+    // (a code program's: its batch's searches share `grep::THREADS` walkers)
+    let share = call.program().map(|i| usize::from(i.share));
     ed.events.jobs().spawn(move || {
         trace.step("worker");
         let r = scopes(&root, &q.paths, &keys, &gate);
@@ -2019,7 +2021,14 @@ fn go_search(ed: &mut Editor, call: Call, q: Query, args: Value, granted: Vec<Pa
         if !q.paths.is_empty() {
             trace.step("places judged");
         }
-        let r = r.map(|s| s.map(|scopes| run_search_traced(&root, &scopes, &q, &unsaved, &keys, &mut trace)));
+        let mut run =
+            |scopes: Vec<PathBuf>| run_search_traced(&root, &scopes, &q, &unsaved, &keys, &mut trace);
+        let r = r.map(|s| {
+            s.map(|scopes| match share {
+                Some(n) => crate::grep::shared(n, || run(scopes)),
+                None => run(scopes),
+            })
+        });
         move |ed: &mut Editor| {
             trace.step("main loop");
             crate::log::line("tarae", "timing", &trace.line());

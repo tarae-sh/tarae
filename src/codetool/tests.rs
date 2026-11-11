@@ -149,8 +149,8 @@ fn the_fuel_and_the_step_limit_end_a_program_with_their_words() {
         let fuel = error(Program::start(&e, "!", Limits { jit, ..SMALL }));
         assert_eq!(
             fuel,
-            "stopped at the limit of one program's fuel (its work, the steps' and what they don't count: strings, \
-             JSON, sorting): do less in one program, or split it"
+            "stopped at the limit of one program's work (what the steps don't count too: strings, JSON, sorting): \
+             do less in one program, or split it"
         );
     }
     let (p, _) = calls(Program::start(
@@ -159,7 +159,7 @@ fn the_fuel_and_the_step_limit_end_a_program_with_their_words() {
         SMALL,
     ));
     assert!(
-        error(p.answer(0, &json!(1))).contains("of one program's fuel"),
+        error(p.answer(0, &json!(1))).contains("of one program's work"),
         "the fuel is the whole program's, resumes too"
     );
     let steps = r#"error
@@ -302,7 +302,7 @@ fn a_program_runs_as_jobs_and_lands_on_the_main_loop() {
         }
     };
     let s = seen.clone();
-    start_job(&ed.events.jobs(), load, src, SMALL, Watch::new(&SMALL), move |ed, next| {
+    start_job(&ed.events.jobs(), load, "", src, SMALL, Watch::new(&SMALL), move |ed, next| {
         assert_eq!(std::thread::current().id(), main);
         let (p, calls) = calls(next);
         s.lock().unwrap().push(format!("asked {}", calls[0].name));
@@ -548,10 +548,13 @@ pub const HEAVY: [(&str, &str); 3] = [
 ];
 
 /// The host's stop lands inside the work the steps don't see, on both engines: each shape, its second step running
-/// for ever, is stopped from another thread. (In real time: the clock's own test is the simulation's,
-/// `src/sim/codeclock.rs`.)
+/// for ever, is stopped from another thread once that step has begun. (In real time: the clock's own test is the
+/// simulation's, `src/sim/codeclock.rs`.) And a stopped program only ever says its ending: nothing in the host
+/// gives an instance a new flag but its start — a QuickJS stopped inside a builtin is torn.
 #[test]
 fn the_hosts_stop_ends_the_work_the_steps_dont_see() {
+    let host = include_str!("../codetool.rs");
+    assert_eq!(host.matches(".set_interrupt(").count(), 1, "only `start_with` gives an instance its flag");
     let Some(e) = real() else { return };
     let log = test_log(2_000);
     for jit in [true, false] {
@@ -563,7 +566,17 @@ fn the_hosts_stop_ends_the_work_the_steps_dont_see() {
                 let log = log.clone();
                 move || p.answer(0, &json!(log))
             });
-            crate::event::sleep(Duration::from_millis(50));
+            // (waits on the second step's stamp, never a time: wherever the stop lands from then on — before the
+            // engine's first instruction or deep in its builtin — the next check ends the step, and the first step's
+            // fuel is already spent)
+            let since = std::time::Instant::now();
+            while watch.steps() < 2 {
+                assert!(
+                    since.elapsed() < crate::test_results::PATIENCE,
+                    "{what}: its second step never began"
+                );
+                std::thread::yield_now();
+            }
             watch.stop("the turn ended");
             let end = ended(run.join().unwrap());
             assert_eq!(end.result, Err("stopped: the turn ended".into()), "{what}, jit {jit}");

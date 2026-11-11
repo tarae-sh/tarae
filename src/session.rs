@@ -155,6 +155,11 @@ pub struct Session {
     pub fork: Option<crate::fork::ForkFrom>,
     /// `space F` with no Claude here yet (#231): its chat opens following, whatever `llm.follow` says. Until you quit.
     pub follow_armed: bool,
+    /// Its Claude's code programs under way (`codetool::tool`).
+    pub programs: Vec<crate::codetool::tool::Running>,
+    /// Its Claude's runs' outputs, for a program's `output("run#N")` — the last `codetool::tool::KEPT` of its
+    /// conversation, until you quit.
+    pub runs_kept: std::collections::VecDeque<crate::codetool::tool::Kept>,
 }
 
 impl Session {
@@ -203,6 +208,8 @@ impl Session {
             continues: None,
             fork: None,
             follow_armed: false,
+            programs: Vec::new(),
+            runs_kept: Default::default(),
             caps: None,
             caps_asked: 0,
             sandbox: None,

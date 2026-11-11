@@ -1509,6 +1509,10 @@ pub const TITLE: &str = "Claude wants to read — outside the project";
 /// A read that opens files named like keys (`Look.keys`) — in the project, or outside it by their names.
 pub const KEYS_TITLE: &str = "Claude wants to read — named like a key";
 
+/// The two above, for a read a code program of Claude's asks (`codetool::tool`).
+pub const SCRIPT_TITLE: &str = "Claude's program wants to read — outside the project";
+pub const SCRIPT_KEYS_TITLE: &str = "Claude's program wants to read — named like a key";
+
 /// The user pointed at a file named like a key (`point`).
 pub const POINTED_TITLE: &str = "Send to Claude — named like a key";
 
@@ -1543,7 +1547,14 @@ pub fn next(ed: &mut Editor) {
     let asked = crate::cards::Asked::new(crate::cards::Why::Read, crate::cards::Request::Read(p.class))
         .about(&p.look.given);
     // (a file named like a key — in the project, or outside it by its name: the key card, `y` once)
-    let title = if !p.look.keys.is_empty() { KEYS_TITLE } else { TITLE };
+    // (a code program's read: its card says so — the same gate, the same answers, `codetool::tool`)
+    let program = p.then.as_ref().is_some_and(|t| t.call.program().is_some());
+    let title = match (!p.look.keys.is_empty(), program) {
+        (true, false) => KEYS_TITLE,
+        (false, false) => TITLE,
+        (true, true) => SCRIPT_KEYS_TITLE,
+        (false, true) => SCRIPT_TITLE,
+    };
     let what = crate::offer::What::Read { pending: Box::new(p), keep, folder: folder.map(|(f, _)| f) };
     let mut o = crate::offer::Offer::new(title.into(), &q, "", String::new(), what).asked(asked);
     o.warning = warning;

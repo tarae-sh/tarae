@@ -234,6 +234,9 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
             }
             match r {
                 Ok(Ok((parts, shown))) => {
+                    // (a program's read: the program saw the text, Claude didn't — nothing is "read" for an edit's
+                    // "changed since you last read it")
+                    let stamps = if call.program().is_some() { Vec::new() } else { stamps };
                     let went: Vec<PathBuf> = (stamps.iter())
                         .filter(|(p, s)| crate::edittool::went(ed, call.generation(), p, *s))
                         .map(|(p, _)| p.clone())

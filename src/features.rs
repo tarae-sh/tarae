@@ -182,6 +182,17 @@ pub const PICKERS: &[&str] = &[
 /// The tools Claude has in the chat: tarae's (as the stream names them, `mcp__tarae__` off) — it has none of
 /// Claude Code's. Any other name is counted as `other` — a name is the model's output, never kept as it came.
 pub const CLAUDE_TOOLS: &[&str] = &[
+    "code",
+    // (a code program's calls, `codetool::tool::recorded`)
+    "code.definition",
+    "code.diagnostics",
+    "code.git",
+    "code.other",
+    "code.output",
+    "code.read",
+    "code.references",
+    "code.search",
+    "code.symbols",
     "definition",
     "diagnostics",
     "edit",

@@ -21,8 +21,6 @@
 //! - **Never on the key or frame path**: loading and every `start` and `resume` run on a worker (`start_job`,
 //!   `answer_job`); the `Program` travels between them and the main loop.
 
-#![allow(dead_code, reason = "S1 a: the engine's host; the tool that calls it is piece b")]
-
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
@@ -36,6 +34,7 @@ use crate::event::Jobs;
 
 #[cfg(test)]
 pub(crate) mod tests;
+pub mod tool;
 
 /// Where a dev build and the tests find the engine `cargo xtask quickjs` built. How it ships is S3's decision; till
 /// then a release has none.
@@ -248,6 +247,10 @@ pub struct Watch {
     flag: Interrupt,
     limit: Duration,
     ledger: Mutex<Ledger>,
+    /// Rung as a step ends, the program ends or it's stopped: the step's watchdog ends with it, at once.
+    wake: crate::event::Wake,
+    /// Watchdogs alive.
+    dogs: std::sync::atomic::AtomicU32,
     /// Tests: what a step's running is in a simulation (`src/sim/codeclock.rs`) — given the step's number, the
     /// watch, and the step's work to run. A simulation runs one thread at a time, so the engine's real work can't
     /// race its clock: the model says how the clock moves while a step runs.
@@ -290,6 +293,8 @@ impl Watch {
             flag: Interrupt::new(),
             limit: limits.clock(),
             ledger: Mutex::default(),
+            wake: crate::event::Wake::default(),
+            dogs: Default::default(),
             #[cfg(test)]
             model: None,
         })
@@ -318,9 +323,11 @@ impl Watch {
             l.why = Some(why);
         }
         self.flag.set();
+        self.wake.ring();
     }
 
-    /// Its running time when it was stopped, if it was.
+    /// Its running time when it was stopped, if it was. (Tests till piece c's rows.)
+    #[cfg(test)]
     pub fn stopped_at(&self) -> Option<Duration> {
         self.ledger().at_stop
     }
@@ -330,7 +337,8 @@ impl Watch {
         self.ledger().why.clone()
     }
 
-    /// Its running time so far, the step running included.
+    /// Its running time so far, the step running included. (Tests till piece c's rows.)
+    #[cfg(test)]
     pub fn ran(&self) -> Duration {
         let l = self.ledger();
         l.ran + l.since.map_or(Duration::ZERO, crate::clock::since)
@@ -352,16 +360,25 @@ impl Watch {
         l.steps
     }
 
-    /// The step running ends: its time added.
+    /// The step running ends: its time added, its watchdog ended.
     fn end(&self) {
         let mut l = self.ledger();
         if let Some(t) = l.since.take() {
             l.ran += crate::clock::since(t);
         }
+        drop(l);
+        self.wake.ring();
     }
 
     fn close(&self) {
         self.ledger().ended = true;
+        self.wake.ring();
+    }
+
+    /// Watchdogs alive, and of them those asleep that nothing has woken (tests: none outlives its step).
+    #[cfg(test)]
+    pub fn dogs(&self) -> (u32, usize) {
+        (self.dogs.load(std::sync::atomic::Ordering::SeqCst), self.wake.asleep())
     }
 
     /// What step `k`'s watchdog does now: sleep this long (the running time left — it can't run out sooner), or
@@ -387,13 +404,18 @@ impl Watch {
 }
 
 /// Step `k`'s watchdog, the last net behind the steps and the fuel: a job that sleeps the running time left
-/// (`event::sleep`: a simulation moves it), then sets the flag once it ran out with the step still running. It
-/// ends with its step — a program waiting on a card wakes nothing.
+/// (`event::Wake`: a simulation moves it), then sets the flag once it ran out with the step still running. Its
+/// step's end rings it awake and it ends, at once — a program waiting on a card or an answer holds no sleeping
+/// thread.
 fn watchdog(watch: Weak<Watch>, k: u32) {
+    let Some(w) = watch.upgrade() else { return };
     loop {
-        let Some(left) = watch.upgrade().and_then(|w| w.tick(k)) else { return };
-        crate::event::sleep(left);
+        // (the rings read before the look: a step that ends between the two ends the sleep at once)
+        let seen = w.wake.rings();
+        let Some(left) = w.tick(k) else { break };
+        w.wake.sleep(left, seen);
     }
+    w.dogs.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// A program waiting on its calls: its own instance of the engine.
@@ -432,13 +454,22 @@ impl Drop for Program {
 
 impl Program {
     /// Runs `src` on a fresh instance of `engine` until it waits or ends — a worker's. Its clock runs (`Watch`), but
-    /// with no watchdog nothing holds it to its limit: `start_job` gives it one.
+    /// with no watchdog nothing holds it to its limit: `start_job` gives it one. (Tests: the tool starts by `start_job`.)
+    #[cfg(test)]
     pub fn start(engine: &Engine, src: &str, limits: Limits) -> Next {
         Program::start_with(engine, src, limits, Watch::new(&limits))
     }
 
     /// `start`, on `watch` — its flag the instance's interrupt.
+    #[cfg(test)]
     pub fn start_with(engine: &Engine, src: &str, limits: Limits, watch: Arc<Watch>) -> Next {
+        Program::start_in(engine, "", src, limits, watch)
+    }
+
+    /// `start_with`, `prelude` before `src` on its first line (no line break in it: an error's line stays the
+    /// program's own) — the tool's bindings, say; the hint reads `src` alone.
+    pub fn start_in(engine: &Engine, prelude: &str, src: &str, limits: Limits, watch: Arc<Watch>) -> Next {
+        debug_assert!(!prelude.contains('\n'), "a prelude on the program's first line");
         let wasm = tarae_wasm::Limits { memory_bytes: limits.memory, jit: limits.jit, ..Default::default() };
         let mut inst = match Instance::new(engine.module.clone(), wasm, limits.fuel) {
             Ok(i) => i,
@@ -457,7 +488,8 @@ impl Program {
             fuel: limits.fuel,
             steps: limits.steps,
         };
-        let (init, bytes, steps) = (engine.init, src.as_bytes(), limits.steps as i32);
+        let whole = format!("{prelude}{src}");
+        let (init, bytes, steps) = (engine.init, whole.as_bytes(), limits.steps as i32);
         let reply = p.step(move |p| {
             if let Some(init) = init {
                 p.inst.call(init, &[])?;
@@ -499,6 +531,7 @@ impl Program {
     }
 
     /// The calls handed out and not answered yet.
+    #[cfg(test)]
     pub fn waiting(&self) -> impl Iterator<Item = u32> + '_ {
         self.out.iter().copied()
     }
@@ -627,16 +660,24 @@ pub(crate) fn time_limit(limit: Duration) -> String {
     )
 }
 
+/// The words for a program stopped through its flag (`Watch`), at `limits`' clock.
+pub(crate) fn stopped_words(why: &Why, limits: &Limits) -> String {
+    match why {
+        Why::Clock => time_limit(limits.clock()),
+        Why::Host(why) => format!("stopped: {why}"),
+    }
+}
+
 /// The words for a step that trapped or broke the protocol: the instance is dropped with it.
 fn stopped(s: Stop, watch: &Watch) -> String {
     match s {
         Stop::Trap(Trap::OutOfFuel) => format!(
-            "stopped at the limit of one program's fuel (its work, the steps' and what they don't count: strings, \
-             JSON, sorting): {REMEDY}"
+            "stopped at the limit of one program's work (what the steps don't count too: strings, JSON, sorting): \
+             {REMEDY}"
         ),
         Stop::Trap(Trap::Interrupted) => match watch.stopped() {
             Some(Why::Clock) => time_limit(watch.limit),
-            Some(Why::Host(why)) => format!("stopped: {why}"),
+            Some(why) => stopped_words(&why, &LIMITS),
             None => "the engine stopped: interrupted".into(),
         },
         Stop::Trap(t) => format!("the engine stopped: {t}"),
@@ -720,11 +761,13 @@ fn blank(src: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Starts `src` on a worker, on the engine `load` gives there (`Engine::here`), held to `watch` (the host keeps it:
-/// `Watch::stop`); `then` takes what comes on the main loop.
+/// Starts `src` (`prelude` before it, `Program::start_in`) on a worker, on the engine `load` gives there
+/// (`Engine::here`), held to `watch` (the host keeps it: `Watch::stop`); `then` takes what comes on the main loop.
+#[allow(clippy::too_many_arguments, reason = "a program's start: each is its own")]
 pub fn start_job(
     jobs: &Jobs,
     load: impl FnOnce() -> Result<Arc<Engine>, String> + Send + 'static,
+    prelude: &'static str,
     src: String,
     limits: Limits,
     watch: Arc<Watch>,
@@ -733,7 +776,7 @@ pub fn start_job(
     watched(jobs, &watch);
     jobs.spawn(move || {
         let next = match load() {
-            Ok(e) => Program::start_with(&e, &src, limits, watch),
+            Ok(e) => Program::start_in(&e, prelude, &src, limits, watch),
             Err(why) => {
                 watch.close();
                 Next::Ended(Ended::failed(why))
@@ -746,6 +789,7 @@ pub fn start_job(
 /// The next step's watchdog, beside it (a timer: nothing lands).
 fn watched(jobs: &Jobs, watch: &Arc<Watch>) {
     let (dog, k) = (Arc::downgrade(watch), watch.steps() + 1);
+    watch.dogs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     jobs.detached(move || watchdog(dog, k));
 }
 

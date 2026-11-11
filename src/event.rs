@@ -506,6 +506,74 @@ pub fn sleep(d: Duration) {
     nap(d);
 }
 
+/// A timer that stands down with what it guards: `sleep` waits a time, as `event::sleep` does (a simulation moves
+/// its clock instead), unless a `ring` comes first — a code program's watchdog ends the moment its step does, so no
+/// sleeping thread outlives the step it watched.
+#[derive(Default)]
+pub struct Wake {
+    /// Rings so far · sleepers no ring has woken yet.
+    state: std::sync::Mutex<(u64, usize)>,
+    cv: std::sync::Condvar,
+}
+
+impl Wake {
+    fn state(&self) -> std::sync::MutexGuard<'_, (u64, usize)> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Every sleep under way (and one about to start, given an older count) ends now.
+    pub fn ring(&self) {
+        let mut s = self.state();
+        s.0 += 1;
+        s.1 = 0;
+        drop(s);
+        self.cv.notify_all();
+        #[cfg(test)]
+        crate::sim::ring(self as *const Wake as usize);
+    }
+
+    /// Rings so far: what `sleep` is given, read before the look that decided to sleep.
+    pub fn rings(&self) -> u64 {
+        self.state().0
+    }
+
+    /// Sleepers no ring has woken (tests: a timer left behind).
+    #[cfg(test)]
+    pub fn asleep(&self) -> usize {
+        self.state().1
+    }
+
+    /// Waits `d`, or until a ring past `seen` (`rings`) — at once if one came already. A spurious end is possible:
+    /// the caller looks again.
+    pub fn sleep(&self, d: Duration, seen: u64) {
+        waits();
+        let mut s = self.state();
+        if s.0 != seen {
+            return;
+        }
+        s.1 += 1;
+        #[cfg(test)]
+        {
+            drop(s);
+            if crate::sim::doze(d, self as *const Wake as usize) {
+                let mut s = self.state();
+                if s.0 == seen {
+                    s.1 -= 1;
+                }
+                return;
+            }
+            s = self.state();
+            if s.0 != seen {
+                return;
+            }
+        }
+        let (mut s, _) = self.cv.wait_timeout_while(s, d, |s| s.0 == seen).unwrap_or_else(|p| p.into_inner());
+        if s.0 == seen {
+            s.1 -= 1;
+        }
+    }
+}
+
 /// A pause in the work: holds back tarae's own work under way — a debounce before it (the gutter's diff, blame,
 /// inlay hints, a live search, a plugin's changed text), a poll's step while it finishes (a process, a lock, a file
 /// settling, a busy server asked again). Its job stays the start's, so a settle waits for what it then does

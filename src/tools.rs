@@ -45,9 +45,43 @@ pub struct Call {
     /// A `run`'s or `run_tests`' way from the ask to its end (`trace.rs`) — its card, the sandbox, the run
     /// carry it on; logged at the end, or where it was dropped.
     pub(crate) trace: Option<crate::trace::RunTrace>,
+    /// A code program's call (`codetool::tool`): its answer goes back to the program, never to the chat.
+    pub(crate) inner: Option<Inner>,
+}
+
+/// Which program's call, and which of its calls. (Packed: it sits in the padding `Call` had — a `Call` rides in many
+/// an `Err`, at clippy's large-error limit.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C, packed)]
+pub struct Inner {
+    pub program: u32,
+    /// Below `codetool::CALLS`.
+    pub id: u8,
+    /// A search's walkers, of the ones a batch's searches share (`grep::shared`).
+    pub share: u8,
 }
 
 impl Call {
+    /// Call `id` of program `program`, which this `code` call started: the same chat process and revision, `tool`'s,
+    /// an MCP id no call of Claude's has (`code-3.1`) — so no chat row, stop or wait is ever its.
+    pub(crate) fn inner(&self, program: u32, id: u8, tool: &str, share: u8) -> Call {
+        Call {
+            generation: self.generation,
+            request_id: self.request_id.clone(),
+            id: json!(format!("code-{program}.{id}")),
+            rev: self.rev,
+            tool: tool.to_string(),
+            output: None,
+            trace: None,
+            inner: Some(Inner { program, id, share }),
+        }
+    }
+
+    /// The program that made it, if a program did.
+    pub(crate) fn program(&self) -> Option<Inner> {
+        self.inner
+    }
+
     /// Call `id` of claude process `generation` (`request_id` its control request's), in revision `rev`, of `tool` —
     /// `space i`'s claude's (`ask.rs`), whose server isn't `mcp`.
     pub(crate) fn new(
@@ -58,7 +92,16 @@ impl Call {
         tool: &str,
     ) -> Call {
         let request_id = request_id.to_string();
-        Call { generation, request_id, id, rev, tool: tool.to_string(), output: None, trace: None }
+        Call {
+            generation,
+            request_id,
+            id,
+            rev,
+            tool: tool.to_string(),
+            output: None,
+            trace: None,
+            inner: None,
+        }
     }
 
     /// Whether `other` is this call (the same chat process, the same MCP id).
@@ -114,12 +157,14 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
         tool: tool.to_string(),
         output: None,
         trace: None,
+        inner: None,
     };
     let method = msg["method"].as_str().unwrap_or_default();
     let result = match method {
         "tools/list" => {
             sandbox_look(ed);
-            Ok(list(crate::orchestra::lists(ed), crate::web::search::lists(ed)))
+            let code = crate::codetool::tool::lists(ed);
+            Ok(list_with(crate::orchestra::lists(ed), crate::web::search::lists(ed), code))
         }
         "tools/call" => {
             // (side by side with another call still unanswered? — `calls.rs`; `sized` sees it answered)
@@ -157,6 +202,13 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     Ok(()) => return None,
                     Err(e) => Err(e),
                 },
+                // (only a chat that lists it — `llm.code` as its process started)
+                Some("code") if crate::codetool::tool::lists(ed) => {
+                    match crate::codetool::tool::call(ed, call(), args) {
+                        Ok(()) => return None,
+                        Err(e) => Err(e),
+                    }
+                }
                 // (its card's answer is the user's: no tool reaches it)
                 Some("plugin") => match crate::plugin::tool_call(ed, call(), args) {
                     Ok(()) => return None,
@@ -240,7 +292,14 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
 /// that may start sessions (`orchestra::may_parent`) has the session tools after the rest, a second fixed list;
 /// one with `llm.web-search` on as it started has `web_search` after those (`web`) — each off, today's list to
 /// the byte.
+#[cfg(test)]
 pub fn list(parent: bool, web: bool) -> Value {
+    list_with(parent, web, false)
+}
+
+/// `list`, with `code` after the rest when the chat's process started with `llm.code` on (`codetool::tool`) — off,
+/// `list`'s to the byte.
+pub fn list_with(parent: bool, web: bool, code: bool) -> Value {
     let mut tools = vec![
         run_tests_schema(),
         run_schema(),
@@ -269,6 +328,9 @@ pub fn list(parent: bool, web: bool) -> Value {
     if web {
         tools.push(crate::web::search::schema());
     }
+    if code {
+        tools.push(crate::codetool::tool::schema());
+    }
     json!({ "tools": tools.into_iter().map(annotated).collect::<Vec<_>>() })
 }
 
@@ -296,6 +358,8 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
         "session_act" => ("Act on a session", None),
         "sessions" => ("Your sessions", Some("readOnlyHint")),
         "web_search" => ("Search the web", Some("readOnlyHint")),
+        // (its calls are the read-only tools, through their own gates)
+        "code" => ("Compute with a program", Some("readOnlyHint")),
         _ => return schema,
     };
     let mut a = json!({ "title": title });
@@ -397,6 +461,7 @@ impl Call {
             tool: String::new(),
             output: None,
             trace: None,
+            inner: None,
         }
     }
 
@@ -417,6 +482,7 @@ impl Call {
             tool: String::new(),
             output: None,
             trace: None,
+            inner: None,
         }
     }
 }
@@ -438,6 +504,9 @@ fn answered(call: &Call, r: &Result<Vec<Part>, String>) {
 pub fn answer_parts(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
     #[cfg(test)]
     answered(&call, &r);
+    if let Some(inner) = call.program() {
+        return to_program(ed, inner, r);
+    }
     if call.tool == "sessions_start" {
         crate::orchestra::answered(ed, &call);
     }
@@ -502,6 +571,26 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             let later = move |ed: &mut Editor| deliver(ed, call, r);
             let tag = ed.claude_of(session);
             let _ = ed.events.shared_sender().send(crate::event::Event::For(session, tag, Box::new(later)));
+        }
+    }
+}
+
+/// A program's call answered: to the program, in the session that holds it (`deliver`'s way — the session in front,
+/// another swapped in, or from the main loop next while one behind is in); none: it ended, or its session is gone.
+fn to_program(ed: &mut Editor, inner: Inner, r: Result<Vec<Part>, String>) {
+    let key = inner.program;
+    let owns = |l: &crate::workspace::Workspace| l.claude.programs.iter().any(|p| p.key == key);
+    let owner = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| owns(l)).map(|l| l.id);
+    match owner {
+        None => {}
+        Some(s) if s == ed.workspace.id => crate::codetool::tool::answered(ed, inner, r),
+        Some(s) if !ed.background() => {
+            ed.with_workspace(s, move |ed| crate::codetool::tool::answered(ed, inner, r));
+        }
+        Some(s) => {
+            let later = move |ed: &mut Editor| crate::codetool::tool::answered(ed, inner, r);
+            let tag = ed.claude_of(s);
+            let _ = ed.events.shared_sender().send(crate::event::Event::For(s, tag, Box::new(later)));
         }
     }
 }
@@ -765,6 +854,7 @@ fn refused_rows(ed: &Editor, call: &Call, others: &[(Call, String)]) -> Vec<Stri
 pub fn tests_done(ed: &mut Editor) {
     let failed = ed.workspace.test_run.as_ref().is_some_and(|r| matches!(r.state, RunState::Failed(_)));
     let known = rules_known(ed, failed);
+    let code = crate::codetool::tool::lists(ed);
     let Some(r) = ed.workspace.test_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
     let guard = said.as_ref().map(|s| format!("\n{}\n", s.text)).unwrap_or_default();
@@ -778,12 +868,15 @@ pub fn tests_done(ed: &mut Editor) {
     let Some(call) = r.chat.take() else { return };
     let snap = r.snap.take();
     let root = ed.workspace.root.clone();
-    let text = report(&root, r, Waited::of(r.started, r.queued.as_ref(), None)) + &guard;
+    // (its whole output kept for a code program, and its id named, while the chat lists `code`)
+    let kept = crate::codetool::tool::Kept::of_tests(r, call.generation);
+    let named = |t: String| crate::codetool::tool::named(code, kept.id, t);
+    let text = named(report(&root, r, Waited::of(r.started, r.queued.as_ref(), None))) + &guard;
     let others: Vec<(Call, String)> = joined
         .into_iter()
         .map(|j| {
             let how = Waited::of(r.started, r.queued.as_ref(), Some((j.asked, j.running)));
-            (j.call, report(&root, r, how) + &guard)
+            (j.call, named(report(&root, r, how)) + &guard)
         })
         .collect();
     let failed = r.failures().first().map(|&i| r.cases[i].clone());
@@ -793,6 +886,7 @@ pub fn tests_done(ed: &mut Editor) {
     let ended_failed = matches!(r.state, RunState::Failed(_));
     let env = r.guard.as_ref().and_then(|g| g.run_env()).cloned().map(|e| (e, r.output.to_vec()));
     let refused = refused_line(r.guard.as_ref(), crate::rundoc::tests_ran(r), r.last_output);
+    crate::codetool::tool::keep(ed, kept);
     rules_told(ed, said.as_ref());
     crate::reads::run_ended(ed);
     // (what the sandbox blocked it, under its chat row — #474a)
@@ -836,6 +930,7 @@ pub fn tests_done(ed: &mut Editor) {
 /// command still waiting for the user's yes is no longer asked about. What the turn's calls left running
 /// (`Left`, for `left_running`).
 pub fn turn_over(ed: &mut Editor) -> Vec<Left> {
+    crate::codetool::tool::turn_over(ed);
     let left = left_of(&ed.workspace);
     ed.workspace.claude.tool_waits.clear();
     crate::queued::turn_over(ed);
@@ -4970,23 +5065,28 @@ pub fn run_done(ed: &mut Editor) {
             drop(claim);
         });
     }
+    let code = crate::codetool::tool::lists(ed);
     let Some(r) = ed.workspace.task_run.as_mut() else { return };
     let Some(mut call) = r.chat.take() else { return };
     call.output = Some(r.output_bytes);
     let snap = r.snap.take();
     let r = &*r;
     let items = &r.places;
+    // (its whole output kept for a code program, and its id named, while the chat lists `code`)
+    let kept = crate::codetool::tool::Kept::of_task(r, call.generation);
+    let named = |t: String| crate::codetool::tool::named(code, kept.id, t);
     let on = base.map(|b| format!("On {}'s tree — a copy apart from the project, removed now:\n", b.said()));
-    let text = on.unwrap_or_default()
-        + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None))
-        + &guard;
+    let text = named(
+        on.unwrap_or_default()
+            + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None)),
+    ) + &guard;
     // (each call that joined it: the same run, its own wait)
     let others: Vec<(Call, String)> = joined
         .into_iter()
         .map(|j| {
             let how = Waited::of(r.started, r.queued.as_ref(), Some((j.asked, j.running)));
             let call = Call { output: Some(r.output_bytes), ..j.call };
-            (call, run_report(&ed.workspace.root, r, items, how) + &guard)
+            (call, named(run_report(&ed.workspace.root, r, items, how)) + &guard)
         })
         .collect();
     let first =
@@ -4998,7 +5098,9 @@ pub fn run_done(ed: &mut Editor) {
     let refused = refused_line(r.guard.as_ref(), crate::rundoc::task_ran(r), r.last_output);
     // (its chat row says where it ran, and what it warned of — the run's own record, cardburden 4 — and what the
     // sandbox blocked it, under it, #474a)
-    if let Some(ran) = r.ran.clone() {
+    let ran = r.ran.clone();
+    crate::codetool::tool::keep(ed, kept);
+    if let Some(ran) = ran {
         crate::chat::mark_ran(ed, &cmd, ran);
     }
     if let Some(line) = refused {

@@ -265,6 +265,16 @@ impl Tally {
         *had = merged;
     }
 
+    /// A code program's call (`codetool::tool`), as `code.read` names it: in the record after its request's calls, and
+    /// counted by name — not one of Claude's calls (`Sums.calls`).
+    pub fn inner(&mut self, name: &'static str) {
+        match self.steps.last_mut() {
+            Some(step) => step.push(name),
+            None => self.steps.push(vec![name]),
+        }
+        *self.turn.tools.entry(name.to_string()).or_default() += 1;
+    }
+
     /// claude's result for call `id` (a `tool_result` block; `error`: `is_error`).
     pub fn answered(&mut self, id: &str, error: bool, now: u64) {
         let Some(tool) = self.open.remove(id) else { return };

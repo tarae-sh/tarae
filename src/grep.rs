@@ -18,6 +18,54 @@ use ignore::{WalkBuilder, WalkState};
 /// macOS).
 pub(crate) const THREADS: usize = 4;
 
+thread_local! {
+    /// The walkers this thread's search may use, taken from `SHARED` (`shared`) — None: its own `THREADS`.
+    static SHARE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The walkers searches side by side share (a code program's batch, `codetool::tool`): `THREADS` free at first.
+static SHARED: std::sync::Mutex<usize> = std::sync::Mutex::new(THREADS);
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Runs `search` (a worker's) on `want` walkers (1 to `THREADS`) of the ones searches side by side share, once
+/// that many are free — so eight searches handed out together walk on `THREADS` threads in all, not eight times
+/// that. A job of a simulation waits by yielding (`sim::blocked`).
+pub fn shared<R>(want: usize, search: impl FnOnce() -> R) -> R {
+    let want = want.clamp(1, THREADS);
+    loop {
+        let mut free = SHARED.lock().unwrap_or_else(|p| p.into_inner());
+        if *free >= want {
+            *free -= want;
+            break;
+        }
+        #[cfg(test)]
+        if crate::sim::on_job() {
+            drop(free);
+            crate::sim::blocked();
+            continue;
+        }
+        drop(FREED.wait(free).unwrap_or_else(|p| p.into_inner()));
+    }
+    /// Gives the walkers back, a panic too.
+    struct Taken(usize);
+    impl Drop for Taken {
+        fn drop(&mut self) {
+            SHARE.with(|s| s.set(None));
+            *SHARED.lock().unwrap_or_else(|p| p.into_inner()) += self.0;
+            FREED.notify_all();
+        }
+    }
+    let _taken = Taken(want);
+    SHARE.with(|s| s.set(Some(want)));
+    search()
+}
+
+/// The walkers free now (tests).
+#[cfg(test)]
+pub fn shared_free() -> usize {
+    *SHARED.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// A line's text kept at most this long, in bytes (a minified file's line) — what's shown is shorter.
 const TEXT_MAX: usize = 1024;
 
@@ -172,6 +220,7 @@ pub fn search(
     let exclude = excluder(q)?;
     let (globs, types) = filters(root, q)?;
     let threads = std::thread::available_parallelism().map_or(THREADS, |n| n.get()).min(THREADS);
+    let threads = SHARE.with(|s| s.get()).map_or(threads, |n| threads.min(n));
     let mut walk = WalkBuilder::new(scopes.first().map_or(root, |s| s.as_path()));
     for s in scopes.iter().skip(1) {
         walk.add(s);

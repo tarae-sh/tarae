@@ -40,6 +40,139 @@ fn work_the_steps_dont_see_ends_by_the_clock() {
     super::seeds("work_the_steps_dont_see_ends_by_the_clock", &[0, 1], heavy);
 }
 
+/// Seeds of `a_batchs_answers_go_back_in_the_order_handed_out` where the second call's read landed first.
+static SECOND_FIRST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[test]
+fn a_batchs_answers_go_back_in_the_order_handed_out() {
+    super::seeds("a_batchs_answers_go_back_in_the_order_handed_out", SEEDS, batch);
+    assert!(
+        SECOND_FIRST.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "no seed landed the second call first"
+    );
+}
+
+#[test]
+fn a_program_answered_quickly_leaves_no_watchdog_behind() {
+    super::seeds("a_program_answered_quickly_leaves_no_watchdog_behind", &[0, 1, 2], quick);
+}
+
+/// An editor whose chat lists the code tool, its programs on the stand-in (their source a script of replies), in a
+/// project of `files` (name, text) in `s`.
+fn tool_editor(s: &crate::scratch::Scratch, files: &[(&str, &str)]) -> Editor {
+    // (a seed is run twice on this thread: the first run's answers aren't the second's)
+    crate::tools::ANSWERED.with(|a| a.borrow_mut().clear());
+    let dir = crate::paths::real(s).unwrap();
+    for (name, text) in files {
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.root = dir;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.claude.chat.as_mut().unwrap().code = true;
+    codetool::tool::ENGINE.with(|e| *e.borrow_mut() = Some(stand_in()));
+    codetool::tool::BARE.with(|b| b.set(true));
+    ed
+}
+
+/// The program `steps` as the chat's `code` call `n`.
+fn code_call(ed: &mut Editor, n: u64, steps: &[&str]) {
+    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    let call = crate::tools::Call::of(generation, "", json!(n)).named("code");
+    codetool::tool::call(ed, call, &json!({ "src": script(steps) })).unwrap();
+}
+
+fn code_answered(n: u64) -> Option<Result<String, String>> {
+    crate::tools::ANSWERED.with(|a| a.borrow().iter().find(|(k, _)| *k == json!(n)).map(|(_, r)| r.clone()))
+}
+
+/// The design session's point 6: two reads handed out together, each its own job — the seed picks which lands
+/// first; the second's answer is never given back before the first's, and the program's end is the same on every
+/// seed (the last answer it was given, `@`'s, is the second call's).
+fn batch(choices: Choices) -> Vec<String> {
+    let mut sim = Sim::new("a_batchs_answers_go_back_in_the_order_handed_out", choices, LIMIT);
+    let s = crate::scratch::Scratch::new("sim-codetool-batch");
+    let mut ed = tool_editor(&s, &[("a.txt", "alpha\n"), ("b.txt", "beta\n")]);
+    let read = |id: u32, f: &str| json!({ "id": id, "name": "read", "arg": { "files": [f] } });
+    let first = format!("pending\n{}", json!({ "pending": [read(0, "a.txt"), read(1, "b.txt")] }));
+    code_call(&mut ed, 50, &[&first, "pending\n{\"pending\":[]}", "@"]);
+    let second_first = std::cell::Cell::new(false);
+    let check = |ed: &Editor| {
+        let Some(r) = ed.workspace.claude.programs.first() else { return Ok(()) };
+        let (held, waiting): (Vec<u32>, Vec<u32>) = (r.held().collect(), r.waiting().collect());
+        if held.contains(&1) && waiting.contains(&0) {
+            second_first.set(true);
+        }
+        // (one held is given back only after every call before it)
+        match held.first() {
+            Some(&h) if r.between_steps() && waiting.iter().all(|&w| w > h) => {
+                Err(format!("call {h}'s answer held with nothing before it waiting"))
+            }
+            _ => Ok(()),
+        }
+    };
+    let print = |ed: &Editor| {
+        let r = ed.workspace.claude.programs.first();
+        let held: Vec<u32> = r.map(|r| r.held().collect()).unwrap_or_default();
+        format!("held {held:?} · answered {}", code_answered(50).is_some())
+    };
+    sim.walk(&mut ed, 0, |_, _| unreachable!("no inputs"), check, print);
+    sim.at_end(|| match code_answered(50) {
+        Some(Ok(t)) if t.starts_with("returned:\n== b.txt") && t.contains("1: beta") => Ok(()),
+        r => Err(format!("the program ended {r:?}: the second call's answer wasn't the last given")),
+    });
+    if second_first.get() {
+        SECOND_FIRST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    drop(ed);
+    trace
+}
+
+/// The design session's answer on the flag: no watchdog outlives its step. A program of 64 calls, each answered as
+/// it's asked (`output`, given at once): at any moment at most one watchdog sleeps that nothing has woken — the one
+/// of the step not ended yet (a step's end wakes its own, which then ends; the next is spawned only after) — none
+/// between two steps, and at its end none is alive. One left asleep would hold a thread for the limit's 10 s or 60 s,
+/// and 64 of them pile up.
+fn quick(choices: Choices) -> Vec<String> {
+    let mut sim = Sim::new("a_program_answered_quickly_leaves_no_watchdog_behind", choices, LIMIT);
+    let s = crate::scratch::Scratch::new("sim-codetool-quick");
+    let mut ed = tool_editor(&s, &[]);
+    let steps: Vec<String> = (0..64)
+        .map(|id| {
+            format!("pending\n{}", json!({ "pending": [{ "id": id, "name": "output", "arg": "run#1" }] }))
+        })
+        .chain(["@".to_string()])
+        .collect();
+    code_call(&mut ed, 60, &steps.iter().map(String::as_str).collect::<Vec<_>>());
+    let watch = ed.workspace.claude.programs[0].watch.clone();
+    let check = |ed: &Editor| {
+        let (alive, asleep) = watch.dogs();
+        let between = ed.workspace.claude.programs.first().is_none_or(|r| r.between_steps());
+        match asleep > 1 || between && asleep > 0 {
+            true => Err(format!(
+                "{asleep} watchdog(s) asleep that nothing woke, {alive} alive, step {}",
+                watch.steps()
+            )),
+            false => Ok(()),
+        }
+    };
+    let print = |_: &Editor| format!("step {} · watchdogs {:?}", watch.steps(), watch.dogs());
+    sim.walk(&mut ed, 0, |_, _| unreachable!("no inputs"), check, print);
+    sim.at_end(|| {
+        let (alive, _) = watch.dogs();
+        match code_answered(60) {
+            Some(Ok(_)) if alive == 0 && watch.steps() == 65 => Ok(()),
+            r => Err(format!("ended {r:?} after {} steps, {alive} watchdog(s) alive", watch.steps())),
+        }
+    });
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    drop(ed);
+    trace
+}
+
 /// What a step brought back, for the scenario to take.
 type Landed = Arc<Mutex<Option<Next>>>;
 
@@ -100,7 +233,7 @@ fn counted(choices: Choices) -> Vec<String> {
     let pending = |id: u32| format!("pending\n{{\"pending\":[{{\"id\":{id},\"name\":\"x\"}}]}}");
     let src = script(&[&pending(0), &pending(1), "@"]);
     let landed = Landed::default();
-    codetool::start_job(&ed.events.jobs(), || Ok(stand_in()), src, limits, watch.clone(), lands(&landed));
+    codetool::start_job(&ed.events.jobs(), || Ok(stand_in()), "", src, limits, watch.clone(), lands(&landed));
     let w =
         World { watch, runs, spans, limit, landed, waiting: RefCell::default(), ended: RefCell::default() };
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &w), |_| held(&w), |_| print(&w));
@@ -204,7 +337,15 @@ fn heavy(choices: Choices) -> Vec<String> {
                 }
             };
             let e = engine.clone();
-            codetool::start_job(&ed.events.jobs(), move || Ok(e), src.into(), limits, watch.clone(), answer);
+            codetool::start_job(
+                &ed.events.jobs(),
+                move || Ok(e),
+                "",
+                src.into(),
+                limits,
+                watch.clone(),
+                answer,
+            );
             all.push(Heavy { what, limits, watch, landed });
         }
     }

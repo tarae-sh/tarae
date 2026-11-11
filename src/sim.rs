@@ -173,6 +173,8 @@ enum Run {
     Runs,
     /// Waiting for another job's work (`blocked`): ready again once another job yields.
     Blocked,
+    /// Sleeping until this time, or until its wake (`event::Wake`, by its address) rings sooner (`doze`).
+    Dozes(Duration, usize),
     Done,
 }
 
@@ -353,6 +355,35 @@ pub fn sleep(d: Duration) -> bool {
         }
     }
     true
+}
+
+/// `event::Wake::sleep` on a thread of a simulation (false outside one): `sleep`, but a job's sleep ends sooner
+/// when `wake` rings (`ring`) — a timer that stands down with what it guards. The driver's moves the clock, as
+/// `sleep`'s does.
+pub fn doze(d: Duration, wake: usize) -> bool {
+    let Some((h, role)) = current_role() else { return false };
+    let Role::Job(id) = role else { return sleep(d) };
+    let mut s = h.helpers_end(h.lock(), id);
+    let at = s.now + d;
+    s.jobs[id - 1].run = Run::Dozes(at, wake);
+    unblock(&mut s, id);
+    s.holder = 0;
+    drop(s);
+    h.0.turn.notify_all();
+    h.wait_turn(id);
+    true
+}
+
+/// `event::Wake::ring` on a thread of a simulation: the jobs dozing on `wake` are ready now.
+pub fn ring(wake: usize) {
+    let Some((h, _)) = current_role() else { return };
+    let mut s = h.lock();
+    let now = s.now;
+    for j in s.jobs.iter_mut() {
+        if matches!(j.run, Run::Dozes(_, w) if w == wake) {
+            j.run = Run::Waits(now);
+        }
+    }
 }
 
 /// Whether this thread is a job of a simulation — one that waits for another's work yields (`blocked`) rather
@@ -680,7 +711,7 @@ impl Sim {
             v.push(Next::Input);
         }
         for (i, j) in s.jobs.iter().enumerate() {
-            if matches!(j.run, Run::Waits(at) if at <= s.now) {
+            if matches!(j.run, Run::Waits(at) | Run::Dozes(at, _) if at <= s.now) {
                 v.push(Next::Resume(i + 1));
             }
         }
@@ -698,7 +729,9 @@ impl Sim {
             .jobs
             .iter()
             .filter_map(|j| match j.run {
-                Run::Waits(at) => Some(format!("job {} at {} ms", j.site, at.as_millis())),
+                Run::Waits(at) | Run::Dozes(at, _) => {
+                    Some(format!("job {} at {} ms", j.site, at.as_millis()))
+                }
                 Run::Blocked => Some(format!("job {} waiting for another's work", j.site)),
                 _ => None,
             })
@@ -785,7 +818,7 @@ fn next_wake(s: &State) -> Option<Duration> {
     s.jobs
         .iter()
         .filter_map(|j| match j.run {
-            Run::Waits(at) if at > s.now => Some(at),
+            Run::Waits(at) | Run::Dozes(at, _) if at > s.now => Some(at),
             _ => None,
         })
         .min()

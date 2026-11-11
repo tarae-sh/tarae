@@ -214,6 +214,8 @@ pub struct LlmConfig {
     pub web_search: bool,
     /// The model its search runs on (`--model` of the helper `web::search` starts). Only your own config sets it.
     pub web_search_model: String,
+    /// Chat: Claude has `code` (`codetool::tool`) — fixed for a chat's process, as `web_search` is. Off until its A/B.
+    pub code: bool,
     /// `web.signed-in`: your wikis, each with the variable holding its token (`web::signed`) — here, beside what every
     /// claude is made from, so no claude tarae starts can miss leaving the variable out (`command`). Only your own
     /// config sets it.
@@ -266,6 +268,7 @@ impl Default for LlmConfig {
             parent_wakes: 6,
             web_search: true,
             web_search_model: crate::web::search::MODEL.into(),
+            code: false,
             signed_in: Vec::new(),
             cost: true,
         }

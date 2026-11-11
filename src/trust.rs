@@ -53,6 +53,8 @@ pub const RISKY: &[&str] = &[
     // (what Claude read could leave the machine as a search's words — and on whose model, billed to you)
     "llm.web-search",
     "llm.web-search-model",
+    // (Claude's programs run in tarae, on its runtime, model-written code every time)
+    "llm.code",
     // (where your token goes, and what of your wiki reaches Claude)
     "web.signed-in",
     // (where a checkout of the project's files is written — a launch agents folder would run them)

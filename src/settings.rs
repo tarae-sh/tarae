@@ -628,6 +628,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.web_search_model = s(v).to_string(),
     },
     Setting {
+        path: "llm.code",
+        kind: Kind::Bool,
+        doc: "Chat: Claude can run a JavaScript program in tarae (code) to compute from what the read-only tools give — each of its calls through the same gate and cards as Claude's own, a run's kept output by its id. Off by default; a change takes the next chat",
+        get: |c| Value::from(c.llm.code),
+        set: |c, v| c.llm.code = b(v),
+    },
+    Setting {
         path: "llm.children-max",
         kind: Kind::Int { min: 0, max: 16 },
         doc: "Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",

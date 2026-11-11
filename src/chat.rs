@@ -121,7 +121,7 @@ const ALLOWED: &str = "mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
 mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
 mcp__tarae__plugin,mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act,\
-mcp__tarae__web_search";
+mcp__tarae__web_search,mcp__tarae__code";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
@@ -761,6 +761,8 @@ pub struct Chat {
     /// Whether its process lists `web_search` (`llm.web-search` as it was spawned): fixed for its life, as
     /// `session_tools`.
     pub web_search: bool,
+    /// Whether its process lists `code` (`llm.code` as it was spawned), as `web_search`.
+    pub code: bool,
     /// The line that says who a parent's message is from went in this conversation (`orchestra::FRAMING`): once.
     pub framed: bool,
     /// The turn under way is a wake (`orchestra::wake`): the children it was woken for, and how many turns its usage had
@@ -1289,6 +1291,7 @@ impl Chat {
             sends: Vec::new(),
             session_tools: false,
             web_search: false,
+            code: false,
             framed: false,
             waking: None,
             queued_laid: RefCell::new(None),
@@ -2547,7 +2550,7 @@ fn ensure_proc(ed: &mut Editor) {
     let tx = ed.events.sender();
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
-    let web_search = ed.config.llm.web_search;
+    let (web_search, code) = (ed.config.llm.web_search, ed.config.llm.code);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
@@ -2574,7 +2577,7 @@ fn ensure_proc(ed: &mut Editor) {
         // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
         c.generation = crate::tools::generation();
         c.proc = Some(Proc { stdin: llm::Lines::to(tx), pid: 0 });
-        (c.session_tools, c.web_search) = (parent, web_search);
+        (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
         return;
     }
     let mut args = llm::with_tools(&cfg.args, TOOLS, ALLOWED);
@@ -2636,7 +2639,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.generation = crate::tools::generation();
     let generation = c.generation;
     c.proc = Some(Proc { stdin, pid: child.id() });
-    (c.session_tools, c.web_search) = (parent, web_search);
+    (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
     llm::pump(child, false, tx, move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
