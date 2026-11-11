@@ -241,6 +241,52 @@ fn made_up_take(dir: &Path, screens: &[&[&str]]) {
     }
 }
 
+/// Each busy size fills the wide video's width at its glyph, and the video draws it at that glyph.
+#[test]
+fn the_busy_sizes_fill_the_wide_video_at_their_glyphs() {
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    for px in super::spike::BUSY_PX {
+        let (c, r) = super::spike::filling_at(px).unwrap();
+        println!("{px} px: {c}×{r}");
+        assert_eq!(video::fit(&fonts, usize::from(c), usize::from(r)), Some(px), "{c}×{r}");
+        assert_ne!(
+            video::fit(&fonts, usize::from(c) + 1, usize::from(r)),
+            Some(px),
+            "one column more doesn't fit"
+        );
+    }
+}
+
+/// A login under four letters (made up: `qz`) is yours only after a home's folder or before `@`; as a bare word — a
+/// command's alias in the `:` list — it's weak, listed apart, counted, not failing.
+#[test]
+fn a_short_login_is_yours_only_where_unmistakable_and_weak_as_a_bare_word() {
+    let dir = Scratch::new("xtask-record-check-short");
+    let mut y = Yours { names: vec!["qz".into()], homes: Vec::new(), mails: Vec::new() };
+    y.tidy();
+    let rows: &[&str] = &[
+        "write-quit   Save and quit · qz x",
+        "$ cd /Users/qz/work",
+        "~qz/notes · /home/qz",
+        concat!("from qz", "@mail.example"),
+        "/Users/qzx/work · aqz@ · ~qza",
+    ];
+    made_up_take(&dir, &[rows]);
+    let found = super::check::scan(&dir, &y).unwrap();
+    let said: Vec<(u16, &str, bool)> = found.iter().map(|h| (h.row, h.kind, h.weak)).collect();
+    assert_eq!(
+        said,
+        [(0, "name", true), (1, "name", false), (2, "name", false), (3, "name", false), (3, "mail", false)],
+        "{found:?}"
+    );
+    let list = super::check::listed(&found);
+    assert!(list.contains("4 places\n") && list.contains("1 weak\n"), "{list}");
+    assert!(list.find("write-quit") > list.find("4 places"), "the weak listed apart, after: {list}");
+    // (four letters or more: a bare word is yours, as ever)
+    let long = Yours { names: vec!["qzqz".into()], ..Yours::default() };
+    assert_eq!(super::check::found("alias · qzqz x", &long), [("name", "qzqz".to_string(), false)]);
+}
+
 #[test]
 fn check_finds_a_planted_name_home_mail_and_amount_and_nothing_in_a_clean_take() {
     let dir = Scratch::new("xtask-record-check");

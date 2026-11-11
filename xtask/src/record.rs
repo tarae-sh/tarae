@@ -17,6 +17,8 @@
 //!   stood still a second) as the wide video draws it, with its glyph size and how much of the room it fills.
 //! - `record check DIR` — every place the take's screens show something of yours (`check.rs`).
 //! - `record spike [OUT]` — V0's own take and measures (`spike.rs`).
+//! - `record sizes [OUT]` — the take's busiest screen (code, a run's panel, the chat) at the sizes that fill the wide
+//!   video at 17, 18 and 19 px glyphs (`spike::sizes`).
 //!
 //! A take, `DIR`:
 //! - `take.json` — the size, the command, when it started (Unix ms), how long it ran (ms), its exit, its byte counts,
@@ -65,7 +67,7 @@ pub(crate) const SCRIPT: u8 = 2;
 
 const USAGE: &str = "usage: cargo xtask record [--size 120x34] --out DIR [--keys FILE] [--state DIR] [--headless] -- \
                      COMMAND … | record draw DIR [--bg dark|light] [--title T] | record still DIR OUT.png [--at S] | \
-                     record check DIR | record spike [OUT]";
+                     record check DIR | record spike [OUT] | record sizes [OUT]";
 
 pub fn run(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
@@ -73,6 +75,7 @@ pub fn run(args: &[String]) -> Result<()> {
         Some("draw") => return draw_cmd(&args[1..]),
         Some("still") => return still_cmd(&args[1..]),
         Some("spike") => return spike::run(&args[1..]),
+        Some("sizes") => return spike::sizes(&args[1..]),
         _ => {}
     }
     let at = args.iter().position(|a| a == "--").ok_or(USAGE)?;
@@ -698,25 +701,83 @@ pub(crate) fn feed(parser: &mut vt100::Parser, bytes: &[u8]) {
 /// A take's screens at their times (ms since its start): its screen log replayed at its `size`, a screen after each
 /// chunk that drew a whole frame — one that looks like the one before it (a resting redraw) left out.
 pub(crate) fn screens(recs: &[Rec], size: (u16, u16)) -> Vec<(u64, vt100::Screen)> {
-    let mut parser = vt100::Parser::new(size.1, size.0, 0);
-    let mut whole = Whole::default();
-    let mut out: Vec<(u64, vt100::Screen)> = Vec::new();
-    let mut last = None;
-    for r in recs.iter().filter(|r| r.whose == SCREEN) {
-        let ready = whole.take(&r.bytes);
-        if ready.is_empty() {
-            continue;
-        }
-        feed(&mut parser, &ready);
-        let s = parser.screen();
-        let looks = (s.contents_formatted(), s.cursor_position(), s.hide_cursor());
-        if last.as_ref() == Some(&looks) {
-            continue;
-        }
-        last = Some(looks);
-        out.push((r.us / 1000, s.clone()));
+    let mut replay = Replay::new(recs, size);
+    let mut out = Vec::new();
+    while let Some(ms) = replay.next() {
+        out.push((ms, replay.screen().clone()));
     }
     out
+}
+
+/// A take's screens one at a time, the log replayed as it's read — `screens`' screens, never more than one held: what
+/// an hour and a half's take is cut by (`cut.rs`), where every screen kept at once would be gigabytes.
+pub(crate) struct Replay<'a> {
+    recs: &'a [Rec],
+    at: usize,
+    parser: vt100::Parser,
+    whole: Whole,
+    last: Option<(Vec<u8>, (u16, u16), bool)>,
+    /// How many screens it has given (each looking unlike the one before).
+    pub(crate) shown: u64,
+}
+
+impl<'a> Replay<'a> {
+    pub(crate) fn new(recs: &'a [Rec], size: (u16, u16)) -> Replay<'a> {
+        Replay {
+            recs,
+            at: 0,
+            parser: vt100::Parser::new(size.1, size.0, 0),
+            whole: Whole::default(),
+            last: None,
+            shown: 0,
+        }
+    }
+
+    /// The next screen's time (ms), the screen then `screen()`; None past the log's end.
+    #[allow(clippy::should_implement_trait)]
+    pub(crate) fn next(&mut self) -> Option<u64> {
+        while let Some(r) = self.recs.get(self.at) {
+            self.at += 1;
+            if self.fed(r) {
+                return Some(r.us / 1000);
+            }
+        }
+        None
+    }
+
+    /// The screen as it stands `ms` into the take: every record by then fed. Whether a new screen came on the way.
+    pub(crate) fn to(&mut self, ms: u64) -> bool {
+        let mut came = false;
+        while let Some(r) = self.recs.get(self.at).filter(|r| r.us / 1000 <= ms) {
+            self.at += 1;
+            came |= self.fed(r);
+        }
+        came
+    }
+
+    pub(crate) fn screen(&self) -> &vt100::Screen {
+        self.parser.screen()
+    }
+
+    /// `r` fed where it's the screen's and ends a whole frame: whether the screen now looks unlike the one before.
+    fn fed(&mut self, r: &Rec) -> bool {
+        if r.whose != SCREEN {
+            return false;
+        }
+        let ready = self.whole.take(&r.bytes);
+        if ready.is_empty() {
+            return false;
+        }
+        feed(&mut self.parser, &ready);
+        let s = self.parser.screen();
+        let looks = (s.contents_formatted(), s.cursor_position(), s.hide_cursor());
+        if self.last.as_ref() == Some(&looks) {
+            return false;
+        }
+        self.last = Some(looks);
+        self.shown += 1;
+        true
+    }
 }
 
 /// A take read back: its `take.json`, size and screen log.

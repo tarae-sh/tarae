@@ -110,7 +110,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         }
     }
     for size in sizes {
-        said.push(still_at(size, &bin, &me, &out)?);
+        said.push(still_at(size, ("idle", STILL_KEYS, "start"), &bin, &me, &out)?);
     }
 
     // 2. the take
@@ -131,20 +131,9 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     drop(live);
     said.push(super::draw(&dir, Bg::Dark, "A live take, unedited")?);
     let hits = super::check::scan(&dir, &super::check::Yours::here())?;
-    said.push(format!("check: {} places (take/check.txt)", hits.len()));
-    let list: String = (hits.iter())
-        .map(|h| {
-            format!(
-                "{:.2}s–{:.2}s row {} {} {}\n",
-                h.from as f64 / 1e3,
-                h.to as f64 / 1e3,
-                h.row,
-                h.kind,
-                h.found
-            )
-        })
-        .collect();
-    write(&dir.join("check.txt"), &format!("{list}{} places\n", hits.len()))?;
+    let weak = hits.iter().filter(|h| h.weak).count();
+    said.push(format!("check: {} places, {weak} weak (take/check.txt)", hits.len() - weak));
+    write(&dir.join("check.txt"), &super::check::listed(&hits))?;
 
     // 3. the cost
     said.push(bench(&bin, &me, &out)?);
@@ -173,18 +162,82 @@ pub(crate) fn filling(rows: u16) -> Result<(u16, u16)> {
     Ok((u16::try_from(cols).unwrap_or(u16::MAX), rows))
 }
 
-/// tarae at `size` with the chat opened (`STILL_KEYS`), a take of its own in `out/start-<c>x<r>/`, and its screen just
-/// before the quit drawn as the wide video draws it (`super::still`) at `out/start-<c>x<r>.png`. Said: `still`'s line.
-fn still_at(size: (u16, u16), bin: &Path, me: &Path, out: &Path) -> Result<String> {
-    let name = format!("start-{}x{}", size.0, size.1);
+/// The size whose columns fill the wide video's room's width at glyph `px`, and as many rows as its height then holds
+/// (`video::fit` gives that glyph back for it).
+pub(crate) fn filling_at(px: f32) -> Result<(u16, u16)> {
+    let fonts = shot::Fonts::load(1)?;
+    let (rw, rh) = video::WIDE_ROOM;
+    let (cw, ch) = shot::cell(&fonts, px);
+    let size = ((rw - 2 * PAD) / cw, (rh - 2 * PAD) / ch);
+    Ok((u16::try_from(size.0).unwrap_or(u16::MAX), u16::try_from(size.1).unwrap_or(u16::MAX)))
+}
+
+/// The brief's glyphs for the busy screen (V1's "The size, on a busy frame": 17, 18, 19 px).
+pub(crate) const BUSY_PX: [f32; 3] = [17.0, 18.0, 19.0];
+
+/// The busy screen's keys: the spike's take up to its run's card answered `y` and the run's panel settled — the demo's
+/// code, `cargo test --quiet`'s panel under it and the chat beside (V0's `look-40.png`).
+const BUSY_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "@type:run the tests",
+    "\r",
+    "@20?Its reason",
+    "@1.5",
+    "\x11",
+    "y",
+    "@20?test result",
+    "@2",
+];
+
+/// `record sizes [OUT]` (default `target/rec/record-sizes`, made new): the busy screen (`BUSY_KEYS`, the stand-in's
+/// `nine` script) at the size that fills the wide video at each of `BUSY_PX` (`filling_at`), each a take of its own
+/// (`busy-<c>x<r>/`) and its picture as the wide video draws it (`busy-<c>x<r>.png`); `sizes.txt` says each.
+pub(super) fn sizes(args: &[String]) -> Result<()> {
+    let out = match args {
+        [] => super::rec_dir("record-sizes"),
+        [o] => PathBuf::from(o),
+        _ => return Err("usage: cargo xtask record sizes [OUT]".into()),
+    };
+    if out.exists() {
+        return Err(format!("{} is there already — name another, or move it away first", out.display()));
+    }
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let bin = shot::build(&root(), "shot-docs", &["bundled-grammars"])?;
+    let me = std::env::current_exe().map_err(|e| format!("this xtask: {e}"))?;
+    let mut said = Vec::new();
+    for px in BUSY_PX {
+        let size = filling_at(px)?;
+        said.push(format!("{px} px: {}×{}", size.0, size.1));
+        said.push(still_at(size, ("nine", BUSY_KEYS, "busy"), &bin, &me, &out)?);
+    }
+    let all = said.join("\n") + "\n";
+    write(&out.join("sizes.txt"), &all)?;
+    print!("{all}");
+    Ok(())
+}
+
+/// tarae at `size` on the stand-in's `script`, driven by `keys` (the spike's start: the chat opened, `STILL_KEYS`), a
+/// take of its own in `out/<name>-<c>x<r>/`, and its screen just before the quit drawn as the wide video draws it
+/// (`super::still`) at `out/<name>-<c>x<r>.png`. Said: `still`'s line.
+fn still_at(
+    size: (u16, u16),
+    (script, keys, name): (&'static str, &[&str], &str),
+    bin: &Path,
+    me: &Path,
+    out: &Path,
+) -> Result<String> {
+    let name = format!("{name}-{}x{}", size.0, size.1);
     let dir = out.join(&name);
-    let live = scenes::live("record-spike", "idle", Bg::Dark, bin, me, false)?;
+    let live = scenes::live("record-spike", script, Bg::Dark, bin, me, false)?;
     let cmd = shot::command(&live.setup, &live.state, &live.homes)?;
     let spec = Spec {
         size,
         out: dir.clone(),
         outer: None,
-        keys: keys::of_keys(STILL_KEYS)?,
+        keys: keys::of_keys(keys)?,
         quit_after_keys: true,
         ui: None,
     };

@@ -410,7 +410,7 @@ fn stacked(pictures: &[(usize, usize, Vec<u8>)]) -> (usize, usize, Vec<u8>) {
 }
 
 /// `pictures` two across, a gap between (the gaps a mid grey: apart from a dark and a light theme alike), at `out`.
-fn grid(pictures: &[(usize, usize, Vec<u8>)], out: &Path) -> Result<()> {
+pub(crate) fn grid(pictures: &[(usize, usize, Vec<u8>)], out: &Path) -> Result<()> {
     if pictures.is_empty() {
         return Ok(());
     }

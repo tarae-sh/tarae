@@ -61,6 +61,9 @@
 //!   tarae's own state as landmarks; `record draw DIR` the take as the wide video, unedited; `record still DIR OUT.png`
 //!   one screen of it as the video draws it; `record check DIR` every place it shows your name, home, a mail address
 //!   or an amount of money; `record spike [OUT]` the full video's V0 take and measures (see [`record`]).
+//! - `cut FILE` — a take made a video by the edit list beside it (spans at a speed or left out, chapters, captions, zooms,
+//!   a hook), honest about time: `<folder>/<stem>/cut.mp4`, its sheet and `chapters.txt`; `cut init TAKE` a first edit
+//!   list by rule (see [`cut`]).
 //! - `sign [<out-dir>]` — the working sign's candidates as animated PNGs, one recorded turn each in meok and hanji,
 //!   and their frames a second (see [`sign`]).
 //! - `focus [scene …] [--layout L …] [--bin TARAE] [--compare]` — a turn's reading path from its frames: where new
@@ -89,6 +92,7 @@ mod cards;
 mod claudeenv;
 mod claudestub;
 mod compat;
+mod cut;
 mod deb;
 mod dockerlock;
 mod failures;
@@ -183,9 +187,10 @@ fn main() {
         Some("sign") => sign::run(&args[1..]),
         Some("sound") => sound::run(&args[1..]),
         Some("record") => record::run(&args[1..]),
+        Some("cut") => cut::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | record [--size CxR] --out DIR [--keys F] -- COMMAND … | record draw|still|check DIR | record spike [OUT] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | record [--size CxR] --out DIR [--keys F] -- COMMAND … | record draw|still|check DIR | record spike [OUT] | cut FILE | cut init TAKE [--out FILE] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };

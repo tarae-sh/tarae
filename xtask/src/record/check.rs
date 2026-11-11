@@ -2,7 +2,10 @@
 //! it (the Shorts' rule, the full video's plan: "nothing of the user's on screen"). The screens are read as they were
 //! drawn — their cells' text, row by row (`super::screens`), never the raw bytes, which a frame redraws in pieces — for:
 //!
-//! - `name` — your login name or your full name (the account's, and git's `user.name`), as a whole word;
+//! - `name` — your login name or your full name (the account's, and git's `user.name`), as a whole word — but a login
+//!   shorter than `SHORT_NAME` letters (two letters match `:wq`'s alias in the `:` list): yours only where it can't be
+//!   anything else, after `/Users/`, `/home/` or `~` or before `@`; as a bare word it's listed apart as weak, counted,
+//!   never failing;
 //! - `home` — your home's path;
 //! - `mail` — any mail address (yours, git's `user.email`, said as yours);
 //! - `money` — an amount: a currency sign before a number (`$` with cents or thousands, so a shell's `$1` isn't one),
@@ -10,7 +13,7 @@
 //!
 //! What's yours is read from this machine when it runs — never written into the repository or a test. Each place is
 //! listed once for as long as it stands: its time, its row, what it found and the row's text; `DIR/check.txt` keeps
-//! the list.
+//! the list. It fails where a place isn't weak.
 
 use std::path::Path;
 
@@ -70,7 +73,11 @@ impl Yours {
     }
 }
 
-/// A place a take shows something: from when to when it stood (ms), its row, its kind, what it found, the row's text.
+/// A login shorter than this is your name only where nothing else could be (`unmistakable`).
+pub(crate) const SHORT_NAME: usize = 4;
+
+/// A place a take shows something: from when to when it stood (ms), its row, its kind, what it found, the row's text,
+/// and whether it's weak (a short login as a bare word: counted, not failing).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Hit {
     pub(crate) from: u64,
@@ -79,29 +86,45 @@ pub(crate) struct Hit {
     pub(crate) kind: &'static str,
     pub(crate) found: String,
     pub(crate) text: String,
+    pub(crate) weak: bool,
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
     let [dir] = args else { return Err("usage: cargo xtask record check DIR".into()) };
     let dir = Path::new(dir);
     let hits = scan(dir, &Yours::here())?;
-    let mut list = String::new();
-    for h in &hits {
-        list += &format!(
-            "{:>8.2}s–{:<8.2} row {:>2}  {:<5}  {}  │ {}\n",
+    let list = listed(&hits);
+    let p = dir.join("check.txt");
+    std::fs::write(&p, &list).map_err(|e| format!("{}: {e}", p.display()))?;
+    print!("{list}");
+    match hits.iter().filter(|h| !h.weak).count() {
+        0 => Ok(()),
+        n => Err(format!("{n} places show something of yours ({})", p.display())),
+    }
+}
+
+/// The places listed, the weak ones apart after the rest, each kind counted.
+pub(crate) fn listed(hits: &[Hit]) -> String {
+    let line = |h: &Hit| {
+        format!(
+            "{:>8.2}s–{:<8} row {:>2}  {:<5}  {}  │ {}\n",
             h.from as f64 / 1000.0,
             format!("{:.2}s", h.to as f64 / 1000.0),
             h.row,
             h.kind,
             h.found,
             h.text.trim_end()
-        );
+        )
+    };
+    let (weak, strong): (Vec<&Hit>, Vec<&Hit>) = hits.iter().partition(|h| h.weak);
+    let mut list: String = strong.iter().map(|h| line(h)).collect();
+    list += &format!("{} places\n", strong.len());
+    if !weak.is_empty() {
+        list += &format!("\nweak — a login under {SHORT_NAME} letters as a bare word, not failing:\n");
+        list += &weak.iter().map(|h| line(h)).collect::<String>();
+        list += &format!("{} weak\n", weak.len());
     }
-    list += &format!("{} places\n", hits.len());
-    let p = dir.join("check.txt");
-    std::fs::write(&p, &list).map_err(|e| format!("{}: {e}", p.display()))?;
-    print!("{list}");
-    Ok(())
+    list
 }
 
 /// The places the take in `dir` shows something of `yours` (`hits` over its screens).
@@ -121,11 +144,12 @@ pub(crate) fn hits(frames: &[(u64, vt100::Screen)], end: u64, yours: &Yours) -> 
         let until = frames.get(i + 1).map_or(end, |f| f.0);
         let mut now = Vec::new();
         for (row, text) in rows(screen).into_iter().enumerate() {
-            for (kind, found) in found(&text, yours) {
-                now.push(Hit { from: *t, to: until, row: row as u16, kind, found, text: text.clone() });
+            for (kind, found, weak) in found(&text, yours) {
+                now.push(Hit { from: *t, to: until, row: row as u16, kind, found, text: text.clone(), weak });
             }
         }
-        let same = |a: &Hit, b: &Hit| a.row == b.row && a.kind == b.kind && a.found == b.found;
+        let same =
+            |a: &Hit, b: &Hit| a.row == b.row && a.kind == b.kind && a.found == b.found && a.weak == b.weak;
         // (one still standing: longer; one gone: done)
         let (stay, gone): (Vec<Hit>, Vec<Hit>) = open.drain(..).partition(|o| now.iter().any(|n| same(o, n)));
         done.extend(gone);
@@ -155,28 +179,48 @@ fn rows(screen: &vt100::Screen) -> Vec<String> {
         .collect()
 }
 
-/// What of `yours` one row's `text` shows: each kind and what it found.
-pub(crate) fn found(text: &str, yours: &Yours) -> Vec<(&'static str, String)> {
+/// What of `yours` one row's `text` shows: each kind, what it found, and whether it's weak (a login under
+/// `SHORT_NAME` letters as a bare word).
+pub(crate) fn found(text: &str, yours: &Yours) -> Vec<(&'static str, String, bool)> {
     let mut out = Vec::new();
     let lower = text.to_lowercase();
     for name in &yours.names {
-        if words(&lower).any(|w| w == name.to_lowercase())
-            || (name.contains(' ') && lower.contains(&name.to_lowercase()))
-        {
-            out.push(("name", name.clone()));
+        let n = name.to_lowercase();
+        let bare = words(&lower).any(|w| w == n) || (name.contains(' ') && lower.contains(&n));
+        let short = name.chars().count() < SHORT_NAME && !name.contains(' ');
+        match (short, unmistakable(&lower, &n)) {
+            (true, true) => out.push(("name", name.clone(), false)),
+            (true, false) if bare => out.push(("name", name.clone(), true)),
+            (false, _) if bare => out.push(("name", name.clone(), false)),
+            _ => {}
         }
     }
     for home in &yours.homes {
         if text.contains(home.as_str()) {
-            out.push(("home", home.clone()));
+            out.push(("home", home.clone(), false));
         }
     }
     for m in mails(text) {
         let yours = yours.mails.iter().any(|y| y.eq_ignore_ascii_case(&m));
-        out.push(("mail", if yours { format!("{m} (yours)") } else { m }));
+        out.push(("mail", if yours { format!("{m} (yours)") } else { m }, false));
     }
-    out.extend(money(text).into_iter().map(|m| ("money", m)));
+    out.extend(money(text).into_iter().map(|m| ("money", m, false)));
     out
+}
+
+/// Whether `lower` shows the login `name` (lowercased) where it can only be a person's: a home folder's name (after
+/// `/users/`, `/home/` or `~`) or a mail's user (before `@`), as the whole of it.
+pub(crate) fn unmistakable(lower: &str, name: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
+    let ends = |at: usize| !lower[at..].starts_with(word);
+    let homed = ["/users/", "/home/", "~"].iter().any(|p| {
+        let whole = format!("{p}{name}");
+        lower.match_indices(&whole).any(|(i, _)| ends(i + whole.len()))
+    });
+    let mailed = (lower.match_indices(&format!("{name}@"))).any(|(i, _)| {
+        !lower[..i].ends_with(word) && lower[i + name.len() + 1..].starts_with(char::is_alphanumeric)
+    });
+    homed || mailed
 }
 
 /// A row's words: its runs of letters, digits, `_`, `-` and `.` (a login like `jo.k`), dots at their ends left off.

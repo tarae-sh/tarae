@@ -53,22 +53,22 @@ pub(crate) const FPS: u64 = 30;
 pub(crate) const FRAME_MS: &str = "33";
 const _: () = assert!(1000 / FPS == 33);
 /// The captions' band under the screen, its height: a caption's row and air above and below it.
-const BAND: usize = 150;
+pub(crate) const BAND: usize = 150;
 /// The air kept round the screen above the band: at its sides, and above and below it.
-const SIDE: usize = 32;
+pub(crate) const SIDE: usize = 32;
 const ABOVE: usize = 12;
 /// A caption's glyphs, and the cards' (the spike's 34 px read well at 1080p; ≤ ~60 characters fill the band's width).
-const CAPTION_PX: f32 = 34.0;
-const NAME_PX: f32 = 72.0;
-const LINE_PX: f32 = 40.0;
+pub(crate) const CAPTION_PX: f32 = 34.0;
+pub(crate) const NAME_PX: f32 = 72.0;
+pub(crate) const LINE_PX: f32 = 40.0;
 /// A caption comes in over this long (motion's short fade), then stands until the next beat.
 const FADE_MS: u64 = 200;
 /// The title card, the last screen held, the end card.
-const TITLE_MS: u64 = 2_000;
-const LAST_MS: u64 = 1_500;
-const END_MS: u64 = 3_000;
+pub(crate) const TITLE_MS: u64 = 2_000;
+pub(crate) const LAST_MS: u64 = 1_500;
+pub(crate) const END_MS: u64 = 3_000;
 /// Where ffmpeg is looked for past `PATH` (Homebrew's two homes).
-const FFMPEG_AT: [&str; 2] = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
+pub(crate) const FFMPEG_AT: [&str; 2] = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
 
 /// A Short's picture: 1080×1920, 9:16 upright.
 pub(crate) const SHORT: (usize, usize) = (1080, 1920);
@@ -224,14 +224,14 @@ pub(crate) fn short_size() -> Result<(u16, u16)> {
 
 /// The theme's colours the video draws with outside tarae's cells: its ground, ink, faint ink (the band's rule) and
 /// accent (`t a r a e` on the cards) — meok's and hanji's palettes (`src/themes/`).
-struct Look {
-    ground: Rgb,
-    ink: Rgb,
-    faint: Rgb,
-    accent: Rgb,
+pub(crate) struct Look {
+    pub(crate) ground: Rgb,
+    pub(crate) ink: Rgb,
+    pub(crate) faint: Rgb,
+    pub(crate) accent: Rgb,
 }
 
-fn look(bg: Bg) -> Look {
+pub(crate) fn look(bg: Bg) -> Look {
     let (ink, ground) = recording::ground(bg);
     match bg {
         Bg::Dark => Look { ground, ink, faint: [0x51, 0x54, 0x5c], accent: [0xf4, 0x80, 0x5a] },
@@ -1196,7 +1196,7 @@ pub(crate) const WIDE_ROOM: (usize, usize) = (W - 2 * SIDE, H - BAND - 2 * ABOVE
 
 /// The largest glyph size (whole pixels) whose `cols`×`rows` cells, with the renderer's margin, fit the picture above
 /// the captions' band with `SIDE` and `ABOVE` round them.
-fn fit(fonts: &Fonts, cols: usize, rows: usize) -> Option<f32> {
+pub(crate) fn fit(fonts: &Fonts, cols: usize, rows: usize) -> Option<f32> {
     (8..=64).rev().map(|px| px as f32).find(|&px| {
         let (cw, ch) = shot::cell(fonts, px);
         cols * cw + 2 * PAD <= W - 2 * SIDE && rows * ch + 2 * PAD <= H - BAND - 2 * ABOVE
@@ -1230,10 +1230,10 @@ fn greedy(text: &str, cols: usize) -> Vec<String> {
 }
 
 /// RGBA pixels: width, height, four bytes a pixel.
-type Rgba = (usize, usize, Vec<u8>);
+pub(crate) type Rgba = (usize, usize, Vec<u8>);
 
 /// The seal for `bg`'s theme, RGBA (`docs/brand/seal-<theme>-96.png`, made once from its SVG).
-fn seal(bg: Bg) -> Result<Rgba> {
+pub(crate) fn seal(bg: Bg) -> Result<Rgba> {
     rgba(&root().join(format!("docs/brand/seal-{}-96.png", bg.theme())))
 }
 
@@ -1275,7 +1275,7 @@ fn rgba(path: &Path) -> Result<Rgba> {
 }
 
 /// `text` in one row of cells at `px`, `fg` on `ground` (bold: `bold`), by the shots' renderer — its margin the ground.
-fn text(text: &str, px: f32, fg: Rgb, ground: Rgb, bold: bool, fonts: &Fonts) -> Picture {
+pub(crate) fn text(text: &str, px: f32, fg: Rgb, ground: Rgb, bold: bool, fonts: &Fonts) -> Picture {
     let cols = text.chars().count().max(1) as u16;
     let mut p = vt100::Parser::new(1, cols, 0);
     let [r, g, b] = fg;
@@ -1333,7 +1333,7 @@ fn caption_text(lines: &[String], fonts: &Fonts) -> Picture {
 
 /// A card's frame, `dims` px: `lines` (text, size, colour, bold) one under another, centred, the seal stamped under
 /// them.
-fn card(
+pub(crate) fn card(
     lines: &[(&str, f32, Rgb, bool)],
     seal: &(usize, usize, Vec<u8>),
     look: &Look,
@@ -1372,7 +1372,7 @@ fn mix(dst: &mut [u8], c: Rgb, a: u8) {
 }
 
 /// `p` on the frame `dst` (`dims` px) at (`x0`, `y0`), `a`/255 of it over what's there; clipped.
-fn blit(dst: &mut [u8], dims: (usize, usize), p: &Picture, x0: usize, y0: usize, a: u8) {
+pub(crate) fn blit(dst: &mut [u8], dims: (usize, usize), p: &Picture, x0: usize, y0: usize, a: u8) {
     let (fw, fh) = dims;
     let (pw, ph, src) = p;
     let w = (*pw).min(fw.saturating_sub(x0));
@@ -1390,7 +1390,7 @@ fn blit(dst: &mut [u8], dims: (usize, usize), p: &Picture, x0: usize, y0: usize,
 }
 
 /// `p` (`dims` px) at half its size, each pixel the mean of four (a sheet's frame).
-fn half(p: &[u8], dims: (usize, usize)) -> Picture {
+pub(crate) fn half(p: &[u8], dims: (usize, usize)) -> Picture {
     let (fw, _) = dims;
     let (w, h) = (dims.0 / 2, dims.1 / 2);
     let mut out = vec![0; w * h * 3];
@@ -1406,7 +1406,7 @@ fn half(p: &[u8], dims: (usize, usize)) -> Picture {
 }
 
 /// ffmpeg on `PATH`, else at `FFMPEG_AT`.
-fn ffmpeg() -> Option<PathBuf> {
+pub(crate) fn ffmpeg() -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     (std::env::split_paths(&path).map(|d| d.join("ffmpeg")))
         .chain(FFMPEG_AT.iter().map(PathBuf::from))
@@ -1538,8 +1538,8 @@ struct Take {
 /// How the camera's region maps the screen onto a Short's window: the screen drawn at `px` (its cells `cell` px), and
 /// for each of the window's px the picture's it samples, by axis `origin + k · scale` (px indices: a pixel's centre).
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct View {
-    px: f32,
+pub(crate) struct View {
+    pub(crate) px: f32,
     cell: (usize, usize),
     scale: (f32, f32),
     origin: (f32, f32),
@@ -1596,7 +1596,7 @@ impl View {
 /// whole drawn sharp); drawn at the smallest glyph size whose cells (`cell`'s) are at least that large (at most
 /// `SHORT_PX_MAX`) and taken down to it — so a push is continuous, never a glyph size's step; the region's middle at
 /// the window's.
-fn view(
+pub(crate) fn view(
     region: Region,
     screen: (u16, u16),
     window: (usize, usize),
@@ -1646,7 +1646,14 @@ fn frame_of(
 /// `pic` drawn through `view` into the `size` px at `at` of a frame `w` px wide (RGB): each px the picture's bilinear
 /// sample there, where that's inside the picture (else the frame's own, as it is); at a scale of 1 and a whole origin,
 /// the picture's own px.
-fn resample(out: &mut [u8], w: usize, at: (usize, usize), size: (usize, usize), pic: &Picture, view: &View) {
+pub(crate) fn resample(
+    out: &mut [u8],
+    w: usize,
+    at: (usize, usize),
+    size: (usize, usize),
+    pic: &Picture,
+    view: &View,
+) {
     let (pw, ph, src) = pic;
     let axis = |o: f32, s: f32, n: usize, len: usize| -> Vec<Option<(usize, usize, u32)>> {
         (0..n)
@@ -2168,31 +2175,7 @@ impl Video<'_> {
     /// in BT.709 (what a phone's player assumes for HD), the index at the front; `audio` (a WAV) as AAC beside it. How
     /// many frames differ from the one before.
     fn encode(&self, ffmpeg: &Path, mp4: &Path, audio: Option<&Path>) -> Result<u64> {
-        let (w, h) = self.form.dims();
-        let size = format!("{w}x{h}");
-        let fps = FPS.to_string();
-        let mut cmd = Command::new(ffmpeg);
-        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s"])
-            .args([&size, "-r", &fps, "-i", "-"]);
-        if let Some(wav) = audio {
-            cmd.arg("-i").arg(wav).args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "160k"]);
-        }
-        let mut child = cmd
-            .args(["-c:v", "libx264", "-preset", "slow", "-crf", "20"])
-            .args(["-tune", "animation", "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"])
-            .args(["-colorspace", "bt709", "-color_range", "tv", "-movflags", "+faststart"])
-            // (the primaries and transfer written into the stream itself: the filter's frames leave them unspecified,
-            // whatever `-color_primaries` says)
-            .args([
-                "-bsf:v",
-                "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1",
-            ])
-            .arg(mp4)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("{}: {e}", ffmpeg.display()))?;
+        let mut child = encoder(ffmpeg, mp4, self.form.dims(), audio)?;
         let mut stdin = child.stdin.take().ok_or("ffmpeg's stdin")?;
         let (mut drawn, mut captions) = (Vec::new(), HashMap::new());
         let mut last: Option<(Framed, Vec<u8>)> = None;
@@ -2265,6 +2248,37 @@ impl Video<'_> {
             .collect();
         recording::pages(&pictures, out)
     }
+}
+
+/// ffmpeg started to make `mp4` from raw RGB frames of `(w, h)` on its stdin: H.264 `slow` CRF 20 tuned for flat
+/// pictures, 4:2:0 in BT.709 (what a phone's player assumes for HD), the index at the front; `audio` (a WAV) as AAC
+/// beside it. Its stderr kept for what it says when it stops.
+pub(crate) fn encoder(
+    ffmpeg: &Path,
+    mp4: &Path,
+    (w, h): (usize, usize),
+    audio: Option<&Path>,
+) -> Result<std::process::Child> {
+    let size = format!("{w}x{h}");
+    let fps = FPS.to_string();
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s"])
+        .args([&size, "-r", &fps, "-i", "-"]);
+    if let Some(wav) = audio {
+        cmd.arg("-i").arg(wav).args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "160k"]);
+    }
+    cmd.args(["-c:v", "libx264", "-preset", "slow", "-crf", "20"])
+        .args(["-tune", "animation", "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"])
+        .args(["-colorspace", "bt709", "-color_range", "tv", "-movflags", "+faststart"])
+        // (the primaries and transfer written into the stream itself: the filter's frames leave them unspecified,
+        // whatever `-color_primaries` says)
+        .args(["-bsf:v", "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"])
+        .arg(mp4)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", ffmpeg.display()))
 }
 
 impl From<Take> for Shows {
