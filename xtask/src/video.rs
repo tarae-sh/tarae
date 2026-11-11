@@ -1260,6 +1260,81 @@ fn intro_frames(bg: Bg) -> Result<Vec<Rgba>> {
     paths.iter().map(|p| rgba(p)).collect()
 }
 
+/// The swing's height on the wide video's 1080p frame (px). Its frames are made 960 tall for a Short's width and shrunk
+/// here; a 2160p frame wants them made again at twice this (V4) — never a frame stretched.
+const WIDE_INTRO_PX: usize = 560;
+
+/// The wide video's intro (the full video's opening, `cut`'s `[opening]`): the Shorts' swing (`intro_frames`) made
+/// `WIDE_INTRO_PX` tall, `t a r a e` rising in under it as on a Short's end card (`NAME_RISE`), the two centred on the
+/// frame by the pose that stays (`inked`: the rows the last frame covers, not its box — the brush swings higher on
+/// the way, and has the room); the frames' size as made, said.
+pub(crate) struct WideIntro {
+    frames: Vec<Rgba>,
+    name: Picture,
+    inked: (usize, usize),
+    pub(crate) made: (usize, usize),
+}
+
+impl WideIntro {
+    /// `bg`'s swing (meok's only: hanji has no frames — refused, said by the caller).
+    pub(crate) fn new(bg: Bg, look: &Look, fonts: &Fonts) -> Result<WideIntro> {
+        let frames = intro_frames(bg)?;
+        let made = frames.first().map_or((0, 0), |f| (f.0, f.1));
+        let k = (WIDE_INTRO_PX as f32 / made.1.max(1) as f32).min(1.0);
+        let frames = if k < 1.0 { frames.iter().map(|f| shrunk(f, k)).collect() } else { frames };
+        let name = text("t a r a e", INTRO_NAME_PX, look.accent, look.ground, true, fonts);
+        let rows = |(w, _, px): &Rgba| -> Vec<usize> {
+            (px.chunks(w * 4).enumerate())
+                .filter(|(_, row)| row.chunks(4).any(|p| p[3] > 8))
+                .map(|(y, _)| y)
+                .collect()
+        };
+        let all: Vec<usize> = frames.last().map(rows).unwrap_or_default();
+        let h = frames.first().map_or(0, |f| f.1);
+        let inked = (all.iter().copied().min().unwrap_or(0), all.iter().copied().max().map_or(h, |y| y + 1));
+        Ok(WideIntro { frames, name, inked, made })
+    }
+
+    /// How many frames, their size as drawn, and the rows they ink (from, to).
+    pub(crate) fn drawn(&self) -> (usize, (usize, usize), (usize, usize)) {
+        (self.frames.len(), self.frames.first().map_or((0, 0), |f| (f.0, f.1)), self.inked)
+    }
+
+    /// The intro `ms` in, `dims` px: the swing's frame then (the last held), the name rising under it.
+    pub(crate) fn frame(&self, ms: u64, look: &Look, dims: (usize, usize)) -> Vec<u8> {
+        let (w, h) = dims;
+        let mut out = look.ground.repeat(w * h);
+        let k = ((ms * INTRO_FPS / 1000) as usize).min(self.frames.len() - 1);
+        let f = &self.frames[k];
+        let (top, bottom) = self.inked;
+        let tall = bottom - top + INTRO_GAP + self.name.1;
+        // (the frame's top over the column's by its empty rows; never above the picture's)
+        let y = (h.saturating_sub(tall) / 2).saturating_sub(top);
+        stamp(&mut out, dims, f, (w.saturating_sub(f.0) / 2, y));
+        let up = camera::ease_out(ms.saturating_sub(NAME_RISE.0) as f32 / (NAME_RISE.1 - NAME_RISE.0) as f32)
+            * f32::from(ms >= NAME_RISE.0);
+        if up > 0.0 {
+            let x = w.saturating_sub(self.name.0) / 2;
+            let y = y + bottom + INTRO_GAP + ((1.0 - up) * INTRO_RISE_PX) as usize;
+            blit(&mut out, dims, &self.name, x, y, (up * 255.0) as u8);
+        }
+        out
+    }
+}
+
+/// An RGBA picture over the frame `dst` (`dims` px) at (`x0`, `y0`), by its alpha; clipped.
+fn stamp(dst: &mut [u8], (w, h): (usize, usize), (fw, fh, rgba): &Rgba, (x0, y0): (usize, usize)) {
+    for y in 0..*fh {
+        for x in 0..*fw {
+            let s = &rgba[(y * fw + x) * 4..][..4];
+            if s[3] > 0 && y0 + y < h && x0 + x < w {
+                let at = ((y0 + y) * w + x0 + x) * 3;
+                mix(&mut dst[at..at + 3], [s[0], s[1], s[2]], s[3]);
+            }
+        }
+    }
+}
+
 /// An 8-bit RGBA PNG.
 fn rgba(path: &Path) -> Result<Rgba> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -2078,17 +2153,7 @@ impl Video<'_> {
         let mut out = self.look.ground.repeat(SHORT.0 * SHORT.1);
         let laid = intro_laid(intro);
         let k = ((ms * INTRO_FPS / 1000) as usize).min(intro.frames.len() - 1);
-        let (fw, fh, rgba) = &intro.frames[k];
-        let (x0, y0) = laid[0];
-        for y in 0..*fh {
-            for x in 0..*fw {
-                let s = &rgba[(y * fw + x) * 4..][..4];
-                if s[3] > 0 && y0 + y < SHORT.1 && x0 + x < SHORT.0 {
-                    let at = ((y0 + y) * SHORT.0 + x0 + x) * 3;
-                    mix(&mut out[at..at + 3], [s[0], s[1], s[2]], s[3]);
-                }
-            }
-        }
+        stamp(&mut out, SHORT, &intro.frames[k], laid[0]);
         let rise = |(from, to): (u64, u64)| {
             camera::ease_out(ms.saturating_sub(from) as f32 / (to - from) as f32) * f32::from(ms >= from)
         };

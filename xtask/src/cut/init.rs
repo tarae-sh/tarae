@@ -11,7 +11,9 @@
 //! - a turn: sped so what's left of it takes at most `TURN_MAX` on screen, never under `TURN_MIN`×;
 //! - the rest: `DEFAULT`×, the file's `default`;
 //! - a chapter where the take starts and wherever the workspace in front changes, titled with its name (to fill in).
-//!   A bring landing has no landmark (tarae says it only in a toast's words), so none is placed for it.
+//!   A bring landing has no landmark (tarae says it only in a toast's words), so none is placed for it;
+//! - the opening: where it ends the take's last `ENDS_FOR` from `ENDS_BEFORE` before its end, the card's words left
+//!   empty — the cut refuses them so until they're written.
 //!
 //! Where rules meet, the first in that list wins. Each span's edges are written as the landmark they came from where
 //! there is one (`card 2 answered + 1s`), else as the take's clock to the millisecond.
@@ -28,6 +30,8 @@ pub(crate) const TYPED_AFTER: u64 = 500;
 pub(crate) const TYPED_SPEED: f64 = 2.0;
 pub(crate) const ASK_STANDS: u64 = 1_500;
 pub(crate) const CARD_AFTER: u64 = 1_000;
+pub(crate) const ENDS_BEFORE: u64 = 6_000;
+pub(crate) const ENDS_FOR: u64 = 4_000;
 pub(crate) const CARD_OPEN: u64 = 3_000;
 pub(crate) const STILL_MS: u64 = 2_000;
 pub(crate) const STILL_KEPT: u64 = 500;
@@ -324,9 +328,20 @@ pub(crate) fn written(f: &Facts, dir: &Path) -> (String, String) {
          # The rules: a card shown to answered + 1s at 1×; something typed at 2×, then 1× from its last key (at most\n\
          # 1.5s) to half a second past its return; a still screen (but a timer or a spinner) over 2s left out but its\n\
          # first half second; a turn in at most 20s on screen, never under 4×.\n\n\
-         title = \"A live take\"\ndefault = {}   # the rest\n",
+         default = {}   # the rest\n",
         dir.display(),
         factor(DEFAULT)
+    );
+    let ends = f.end.saturating_sub(ENDS_BEFORE);
+    t += &format!(
+        "\n[opening]   # the intro, the card of what's built, where it ends — the card's words to fill in\n\
+         name = \"\"   # what's built, by its name: halil\n\
+         line = \"\"   # what it is, to someone who has never heard of it: A task manager for the terminal.\n\
+         code = []   # up to two lines drawn as code: [\"halil board\"]\n\
+         at = \"{}\"   # where it ends: the take's last seconds, at 1×\n\
+         for = \"{}ms\"\n",
+        if ends == 0 { "start".to_string() } else { format!("end - {}ms", f.end - ends) },
+        ENDS_FOR.min(f.end - ends)
     );
     for (ms, edge, name) in &f.fronts {
         let edge = if *edge == "start" || *ms == 0 { "start".to_string() } else { edge.clone() };

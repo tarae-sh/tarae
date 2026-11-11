@@ -35,20 +35,28 @@ fn marks() -> Marks {
     )
 }
 
+/// `text` against the made-up take; one with no `[opening]` gets `OPENING` at its end (its lines as they were).
 fn cut(text: &str) -> Result<Cut> {
-    Cut::parse(text, "cut.toml", &marks())
+    match text.contains("[opening]") {
+        true => Cut::parse(text, "cut.toml", &marks()),
+        false => Cut::parse(&format!("{text}{OPENING}"), "cut.toml", &marks()),
+    }
 }
 
-/// The made-up cut: 0–10 s at the default 4×, 10–20 s at 1×, 20–50 s left out, 50–56 s fit in 3 s, the rest 4×; a
-/// hook of 3 s from 55 s; chapters at the start and at `fix`; a caption; a zoom.
+const OPENING: &str =
+    "\n[opening]\nname = \"halil\"\nline = \"A task manager.\"\nat = \"end - 4s\"\nfor = \"3s\"\n";
+
+/// The made-up cut: the opening's card and where it ends, 3 s from 55 s; 0–10 s at the default 4×, 10–20 s at 1×,
+/// 20–50 s left out, 50–56 s fit in 3 s, the rest 4×; chapters at the start and at `fix`; a caption; a zoom.
 const CUT: &str = r#"
-title = "made up"
 default = 4
 
-[hook]
+[opening]
+name = "halil"
+line = "A task manager for the terminal."
+code = ['halil add "pay rent friday 9am +home !high"', "halil board"]
 at = "card 2 shown"
 for = "3s"
-title = "Where it ends"
 
 [[chapter]]
 at = "start"
@@ -226,7 +234,10 @@ fn a_file_out_of_the_takes_order_is_refused_with_its_line() {
             "cut.toml:2: span: one of",
         ),
         ("default = 4\n[[span]]\nfrom = \"10s\"\nto = \"20s\"\nsped = 2\n", "cut.toml:5: span: no key sped"),
-        ("title = \"x\"\n", "cut.toml:1: no default"),
+        ("bg = \"dark\"\n", "cut.toml:1: no default"),
+        // (the title and the hook are gone: the opening says what the video is)
+        ("title = \"x\"\ndefault = 4\n", "cut.toml:1: the file: no key title"),
+        ("default = 4\n[hook]\nat = \"start\"\nfor = \"1s\"\n", "cut.toml:1: the file: no key hook"),
     ];
     for (text, want) in refused {
         let e = cut(text).unwrap_err();
@@ -250,14 +261,16 @@ fn the_band_says_the_clock_the_speed_and_the_jump_where_each_must_and_nowhere_el
     assert_eq!((sped(16.0), sped(2.5), sped(1.0)), (Some("▸▸ ×16".into()), Some("▸▸ ×2.5".into()), None));
     let c = cut(CUT).unwrap();
     let p = Program::new(&c);
-    // (the hook: the take from 55 s at 1×, from later; then the title card, no clock)
-    let hook = p.frame(1_000_000);
-    assert_eq!((hook.clock, hook.speed, hook.later, hook.jump), (Some(56_000), None, true, None));
-    let title = p.frame(4_000_000);
-    assert_eq!((title.card, title.clock, title.speed), (Some(Card::Title), None, None));
+    // (the intro and the card of what's built: no clock; then where it ends, the take from 55 s at 1×, marked)
+    let intro = p.frame(1_000_000);
+    assert_eq!((intro.card, intro.clock, intro.ends), (Some(Card::Intro(1_000)), None, false));
+    let built = p.frame(4_000_000);
+    assert_eq!((built.card, built.clock, built.speed), (Some(Card::Built), None, None));
+    let ends = p.frame(7_000_000);
+    assert_eq!((ends.clock, ends.speed, ends.ends, ends.jump), (Some(56_000), None, true, None));
     // (a sped stretch: its factor; at 1× none; the clock always the take's)
     let fast = at_take(&p, 5_000, 0);
-    assert_eq!((fast.clock, fast.speed, fast.later), (Some(5_000), Some(4.0), false));
+    assert_eq!((fast.clock, fast.speed, fast.ends), (Some(5_000), Some(4.0), false));
     let one = at_take(&p, 15_000, 0);
     assert_eq!((one.clock, one.speed, one.jump), (Some(15_000), None, None));
     // (the jump: 30 s left out, said from the moment after it for a second, then gone; never before it)
@@ -286,7 +299,7 @@ fn the_band_says_the_clock_the_speed_and_the_jump_where_each_must_and_nowhere_el
     let v = p.video_of(c.map.video(5_000)).unwrap();
     let said = label(&p, v, &fast, false, &["now ×4".into()]);
     assert_eq!(said, format!("{}  take 0:00:05  ×4  now ×4", video_time(v)));
-    assert!(label(&p, 1_000_000, &hook, false, &[]).contains("take 0:00:56  1× from later"));
+    assert!(label(&p, 7_000_000, &ends, false, &[]).contains("take 0:00:56  1× where it ends"));
 }
 
 #[test]
@@ -297,8 +310,9 @@ fn the_parts_cross_and_chapters_txt_says_each_card_s_time() {
     assert_eq!(
         whats,
         [
-            What::Hook { from: 55_000 },
-            What::Title,
+            What::Intro,
+            What::Built,
+            What::Ends { from: 55_000 },
             What::Chapter(0),
             What::Take { from: 0 },
             What::Chapter(1),
@@ -307,19 +321,167 @@ fn the_parts_cross_and_chapters_txt_says_each_card_s_time() {
             What::End
         ]
     );
-    // (hook 3 s, title 2 s, chapter 2 s; the take's 12.5 s to `fix`, its card; the rest 19 s)
-    assert_eq!(p.parts[4].at, 3_000_000 + 2_000_000 + 2_000_000 + 12_500_000);
+    // (the opening 9 s, chapter 1's card 2 s; the take's 12.5 s to `fix`, its card; the rest 19 s)
+    assert_eq!(p.parts[5].at, 9_000_000 + 2_000_000 + 12_500_000);
     let (txt, said) = p.chapters();
-    assert_eq!(txt, "0:00 Where it ends\n0:05 One\n0:19 Two\n");
-    assert!(said.iter().any(|s| s.contains("“Where it ends” runs 5.0 s")), "{said:?}");
+    assert_eq!(txt, "0:00 halil\n0:09 One\n0:23 Two\n");
+    assert!(said.iter().any(|s| s.contains("“halil” runs 9.0 s")), "{said:?}");
     // (each part's start crosses, and the jump at 20 s does — where `fix`'s card stands, one crossing)
     let crossings = p.crossings();
     for x in &p.parts[1..] {
         assert!(crossings.contains(&x.at), "{x:?} in {crossings:?}");
     }
-    // (no hook's title: the first chapter covers the hook and the title card)
-    let plain = cut(&CUT.replace("title = \"Where it ends\"\n", "")).unwrap();
-    assert_eq!(Program::new(&plain).chapters().0, "0:00 One\n0:19 Two\n");
+}
+
+#[test]
+fn the_opening_is_the_intro_the_card_then_where_it_ends_and_a_list_without_it_is_refused() {
+    let c = cut(CUT).unwrap();
+    let o = &c.opening;
+    assert_eq!(
+        (o.name.as_str(), o.line.as_str(), o.code.as_slice(), o.from, o.len),
+        (
+            "halil",
+            "A task manager for the terminal.",
+            &["halil add \"pay rent friday 9am +home !high\"".to_string(), "halil board".into()][..],
+            55_000,
+            3_000
+        )
+    );
+    let p = Program::new(&c);
+    let first: Vec<(What, u64, u64)> = p.parts[..4].iter().map(|x| (x.what, x.at, x.len)).collect();
+    assert_eq!(
+        first,
+        [
+            (What::Intro, 0, INTRO_MS * 1000),
+            (What::Built, INTRO_MS * 1000, BUILT_MS * 1000),
+            (What::Ends { from: 55_000 }, 6_000_000, 3_000_000),
+            (What::Chapter(0), 9_000_000, CHAPTER_MS * 1000),
+        ],
+        "the intro, the card, where it ends, then the take"
+    );
+    // (the sheet says each part by its name)
+    let sheet: Vec<String> = super::draw::sheet_marks(&p).into_iter().map(|m| m.1).collect();
+    assert_eq!(&sheet[..3], ["intro", "what's built", "where it ends"]);
+    // (a list with no card of what's built, or one missing a part of it: refused, naming what's missing)
+    let bare = "default = 4\n[[chapter]]\nat = \"start\"\ntitle = \"One\"\n";
+    let e = Cut::parse(bare, "cut.toml", &marks()).unwrap_err();
+    assert!(e.starts_with("cut.toml:1: no [opening]: the card of what's built — name, line, code"), "{e}");
+    let at = CUT.lines().position(|l| l == "[opening]").unwrap() + 1;
+    for (gone, said) in [
+        ("name = \"halil\"\n", "opening: no name ("),
+        ("at = \"card 2 shown\"\nfor = \"3s\"\n", "opening: no at, for ("),
+    ] {
+        let e = cut(&CUT.replace(gone, "")).unwrap_err();
+        assert!(e.starts_with(&format!("cut.toml:{at}: {said}")), "{e}");
+    }
+    for (was, now, said) in [
+        ("name = \"halil\"", "name = \"\"", "opening: its name, one line of 1 to 24 characters (0 here)"),
+        ("\"halil board\"]", "\"halil board\", \"halil done 1\"]", "opening: code = "),
+        ("for = \"3s\"\n", "for = \"70s\"\n", "opening: where it ends runs past the take's end"),
+        ("name = \"halil\"", "name = \"halil\"\ntitle = \"x\"", "opening: no key title"),
+    ] {
+        let e = cut(&CUT.replace(was, now)).unwrap_err();
+        assert!(e.starts_with("cut.toml:") && e.contains(said), "{now}: {e}");
+    }
+}
+
+#[test]
+fn the_small_line_says_the_takes_length_and_the_videos_by_run_duration() {
+    let d = Duration::from_millis;
+    for (ms, said) in [
+        (412, "412ms"),
+        (999, "999ms"),
+        (8_300, "8.3s"),
+        (59_960, "1m 00s"),
+        (7 * 60_000 + 12_000, "7m 12s"),
+        (92 * 60_000, "1h 32m"),
+        ((48 + 4) * 3_600_000, "2d 04h"),
+    ] {
+        assert_eq!(run_duration(d(ms)), said, "{ms} ms");
+    }
+    assert_eq!(
+        told(87 * 60_000 + 12_000, 603_000_000),
+        "A real session with Claude in tarae: 1h 27m, shown in 10m 03s"
+    );
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    assert_eq!(
+        told(c.end, p.total),
+        format!(
+            "A real session with Claude in tarae: 2m 00s, shown in {}",
+            run_duration(Duration::from_micros(p.total))
+        )
+    );
+}
+
+/// By hand (the design session's look, before any commit): the card of what's built at 1080p on meok and on hanji, the
+/// full video's words and made-up times (1h 27m of take, 10m 03s of video), and the intro's frame where the name has
+/// risen (meok only: hanji has no swing), written to `$CUT_STILLS` (a folder made new).
+#[test]
+#[ignore = "by hand: writes the opening's stills where $CUT_STILLS says"]
+fn by_hand_the_opening_s_stills() {
+    let dir = std::path::PathBuf::from(std::env::var("CUT_STILLS").expect("CUT_STILLS: where the stills go"));
+    std::fs::create_dir(&dir).unwrap();
+    let c = cut(CUT).unwrap();
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let said = told(87 * 60_000 + 12_000, 603_000_000);
+    for bg in [Bg::Dark, Bg::Light] {
+        let look = video::look(bg);
+        let px = super::opening::card(&c.opening, &said, bg, &look, &fonts, (video::W, video::H));
+        let p = dir.join(format!("built-{}.png", bg.theme()));
+        crate::shot::save_png(&p, video::W, video::H, &px).unwrap();
+        println!("{}", p.display());
+        if let Ok(intro) = video::WideIntro::new(bg, &look, &fonts) {
+            for ms in [800, INTRO_MS - 100] {
+                let p = dir.join(format!("intro-{}-{ms}.png", bg.theme()));
+                crate::shot::save_png(&p, video::W, video::H, &intro.frame(ms, &look, (video::W, video::H)))
+                    .unwrap();
+                println!("{} ({:?} as made, {:?} drawn)", p.display(), intro.made, intro.drawn());
+            }
+        }
+    }
+}
+
+#[test]
+fn where_it_ends_is_marked_so_its_zoom_applies_and_its_keys_sound_there_and_in_their_place() {
+    // (no `from later` left anywhere the cut says a word)
+    for (name, src) in [
+        ("cut.rs", include_str!("../cut.rs")),
+        ("draw.rs", include_str!("draw.rs")),
+        ("sound.rs", include_str!("sound.rs")),
+        ("init.rs", include_str!("init.rs")),
+        ("opening.rs", include_str!("opening.rs")),
+    ] {
+        assert!(!src.contains(concat!("from ", "later")), "{name}");
+    }
+    assert_eq!(super::draw::ENDS, "where it ends");
+    // (a zoom whose time falls where it ends: the camera there too, on that stretch's own clock)
+    let zoomed =
+        CUT.to_string() + "\n[[zoom]]\nat = \"card 2 shown + 0.5s\"\nfor = \"1s\"\non = \"card:rebased\"\n";
+    let c = cut(&zoomed).unwrap();
+    assert_eq!(c.zooms.iter().map(|z| (z.ends, z.shown)).collect::<Vec<_>>(), [(false, true), (true, true)]);
+    let p = Program::new(&c);
+    let size = (40, 10);
+    let all = Region::all(size);
+    let near = Region { x: 20.0, y: 5.0, w: 20.0, h: 5.0 };
+    let paths = super::draw::paths(&c, &[all, near], size);
+    let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap().at;
+    let region = |v: u64| super::draw::region(&p.frame(v), &c, &paths, size);
+    assert_eq!(region(ends + 100_000), all, "before the zoom: the whole");
+    let held = region(ends + (500 + camera::DRIFT_MS + 500) * 1000);
+    assert!((held.w - near.w).abs() < 1.0 && (held.x - near.x).abs() < 1.0, "held on its target: {held:?}");
+    // (one where it ends only, its time left out of the take part: taken there, never in the take's camera)
+    let only = zoomed
+        .replace("at = \"card 2 shown\"\nfor = \"3s\"", "at = \"25s\"\nfor = \"3s\"")
+        .replace("card 2 shown + 0.5s", "25.5s");
+    let c = cut(&only).unwrap();
+    assert!(!c.zooms[1].shown);
+    assert_eq!(
+        super::draw::take_reads(&c, &[all, near])[1].0,
+        super::draw::take_reads(&c, &[all, near])[1].1
+    );
+    let e = cut(&only.replace("at = \"25s\"\nfor = \"3s\"", "at = \"end - 4s\"\nfor = \"3s\"")).unwrap_err();
+    assert!(e.contains("zoom: at 0:00:25, inside a span left out"), "elsewhere, still refused: {e}");
 }
 
 #[test]
@@ -348,24 +510,25 @@ fn a_chapter_with_no_card_stands_in_the_band_and_a_caption_waits_for_it() {
     assert_eq!(
         whats,
         [
-            What::Hook { from: 55_000 },
-            What::Title,
+            What::Intro,
+            What::Built,
+            What::Ends { from: 55_000 },
             What::Take { from: 0 },
             What::Chapter(1),
             What::Take { from: 12_500_000 },
             What::Last,
             What::End
         ],
-        "no card for chapter 1: the title card, then the take"
+        "no card for chapter 1: the opening, then the take"
     );
     // (its number and title in the band from the take's first frame, standing, then gone after 3 s)
     let at = p.chapter_at(0);
-    assert_eq!(at, 5_000_000, "after the hook and the title card");
+    assert_eq!(at, 9_000_000, "after the opening");
     assert_eq!(p.frame(at + 1_500_000).chapter, Some((0, 255)));
     assert_eq!(p.frame(at + FADE_MS * 500).chapter.map(|c| c.0), Some(0), "fading in");
     assert_eq!(p.frame(at + CHAPTER_BAND_MS * 1000 + 40_000).chapter, None, "gone");
-    assert_eq!(p.frame(p.parts[3].at + 500_000).chapter, None, "a card is a card");
-    assert_eq!(p.chapters().0, "0:00 Where it ends\n0:05 One\n0:17 Two\n");
+    assert_eq!(p.frame(p.parts[4].at + 500_000).chapter, None, "a card is a card");
+    assert_eq!(p.chapters().0, "0:00 halil\n0:09 One\n0:21 Two\n");
     // (a caption while it stands: refused, with its line)
     let crowded = plain.replace("at = \"card 1 shown\"\nfor = \"2s\"", "at = \"2s\"\nfor = \"2s\"");
     let e = cut(&crowded).unwrap_err();
@@ -412,7 +575,7 @@ fn a_key_in_a_real_time_span_sounds_at_its_video_time_and_one_in_a_fast_span_doe
         key(52_000, b" "),            // fit in 3 s: 2×, heard
     ];
     let s = sounds(&p, &keys, &marks());
-    // (hook 3 s, title 2 s, chapter 1's card 2 s; the take's 10 s at 4× is 2.5 s, then 4 s at 1×)
+    // (the opening 9 s, chapter 1's card 2 s; the take's 10 s at 4× is 2.5 s, then 4 s at 1×)
     let ks: Vec<(u64, Heard)> = s
         .list
         .iter()
@@ -420,13 +583,13 @@ fn a_key_in_a_real_time_span_sounds_at_its_video_time_and_one_in_a_fast_span_doe
         .map(|(t, h)| (t.as_micros() as u64, h.clone()))
         .collect();
     let fit = p.video_of(c.map.video(52_000)).unwrap();
-    assert_eq!(ks, [(13_500_000, Heard::Key('k')), (14_000_000, Heard::Key('\r')), (fit, Heard::Key(' '))]);
+    assert_eq!(ks, [(17_500_000, Heard::Key('k')), (18_000_000, Heard::Key('\r')), (fit, Heard::Key(' '))]);
     assert_eq!((s.keys, s.fast, s.out), (3, 1, 1));
     assert_eq!(heard_at(&p, 5_000), Where::Fast);
     assert_eq!(heard_at(&p, 30_000), Where::Out);
-    // (in the hook: heard there, and again in the take where it's shown slowly enough — 55.5 s is the 2× fit's)
-    assert_eq!(heard_at(&p, 55_500), Where::At(vec![500_000, p.video_of(c.map.video(55_500)).unwrap()]));
-    assert_eq!(heard_at(&p, 57_000), Where::At(vec![2_000_000]), "the hook only: the take shows it at 4×");
+    // (where it ends: heard there, and again in the take where it's shown slowly enough — 55.5 s is the 2× fit's)
+    assert_eq!(heard_at(&p, 55_500), Where::At(vec![6_500_000, p.video_of(c.map.video(55_500)).unwrap()]));
+    assert_eq!(heard_at(&p, 57_000), Where::At(vec![8_000_000]), "there only: the take shows it at 4×");
 }
 
 #[test]
@@ -437,16 +600,21 @@ fn the_stamp_sounds_once_where_a_card_is_answered_its_key_its_own() {
     let at = |h: &Heard| -> Vec<u64> {
         s.list.iter().filter(|x| &x.1 == h).map(|x| x.0.as_micros() as u64).collect()
     };
-    // (card 1 answered at 15 s, at 1×: 7 s + 2.5 s + 5 s; card 2 at 56 s: the take's 4× there, the hook's 1× at 1 s)
-    assert_eq!(at(&Heard::Stamp), [1_000_000, 14_500_000]);
+    // (card 1 answered at 15 s, at 1×: 11 s + 2.5 s + 5 s; card 2 at 56 s: the take's 4× there, where it ends' 1× at 7 s)
+    assert_eq!(at(&Heard::Stamp), [7_000_000, 18_500_000]);
     assert_eq!(
         at(&Heard::Key('k')),
-        [13_500_000],
+        [17_500_000],
         "the y that answered is the stamp's; the x before it its own"
     );
     assert_eq!((s.stamps, s.stamps_missed), (2, 0));
     let end = p.parts.iter().find(|x| x.what == What::End).unwrap().at;
-    assert_eq!(s.brush, Some(end), "the brush on the end card");
+    assert_eq!((s.intro, s.brush), (Some(0), Some(end)), "the brush with the intro and on the end card");
+    // (the intro's is the end card's as mastered, laid again)
+    let mut track = vec![0.0f32; 100];
+    track[80..90].copy_from_slice(&[0.5; 10]);
+    super::sound::intro_brush(&mut track, 80, 3, 10);
+    assert_eq!((&track[3..13], track[2], track[13]), (&[0.5f32; 10][..], 0.0, 0.0));
 }
 
 /// `CUT` with two beds: the first from the start, the second from chapter 2 looping between 1 s and 3 s.
@@ -481,13 +649,14 @@ fn beds_cross_at_equal_power_loop_at_their_marks_and_fade_where_they_run_out() {
     let tone = |hz: f32, n: usize| -> Vec<f32> {
         (0..n).map(|i| 0.5 * (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin()).collect()
     };
-    // (laid out: the first in over half a second from 0:00; crossed into the second over chapter 2's card)
+    // (laid out: the first in under the intro's last half second; crossed into the second over chapter 2's card)
     let card = p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap();
     let (placed, said) = layout(&p, &[(secs(60.0), 0), (secs(5.0), 0)]);
     assert!(said.is_empty(), "{said:?}");
+    let intro = INTRO_MS * 1000;
     assert_eq!(
         (placed[0].start, placed[0].fade_in, placed[0].fade_out),
-        (0, (0, 500_000), (card.at, card.at + card.len))
+        (intro - 500_000, (intro - 500_000, intro), (card.at, card.at + card.len))
     );
     assert_eq!((placed[1].start, placed[1].fade_in), (card.at, (card.at, card.at + card.len)));
     let end = p.parts.iter().find(|x| x.what == What::End).unwrap();
@@ -522,27 +691,28 @@ fn beds_cross_at_equal_power_loop_at_their_marks_and_fade_where_they_run_out() {
         assert!(near(r[sample_at(seam + 100_000)], file(1.1)), "seam {k}: after it, the file's 1.1 s");
     }
     // (a bed with no loop that runs out: it fades to nothing at its end, and the next begins under it)
+    // (from 2 s, so it runs out at 12 s)
     let (placed, said) = layout(&p, &[(secs(10.0), 0), (secs(5.0), 0)]);
-    assert_eq!((placed[0].ran_out, placed[0].fade_out), (Some(10_000_000), (8_000_000, 10_000_000)));
-    assert_eq!((placed[1].start, placed[1].fade_in), (8_000_000, (8_000_000, 10_000_000)));
+    assert_eq!((placed[0].ran_out, placed[0].fade_out), (Some(12_000_000), (10_000_000, 12_000_000)));
+    assert_eq!((placed[1].start, placed[1].fade_in), (10_000_000, (10_000_000, 12_000_000)));
     assert!(
-        said.len() == 1 && said[0].contains("runs out at 0:10.0") && said[0].contains("bed 2"),
+        said.len() == 1 && said[0].contains("runs out at 0:12.0") && said[0].contains("bed 2"),
         "{said:?}"
     );
     let mut f = vec![0.0f32; len];
     lay(&placed[0], &tone(440.0, secs(10.0)), None, 1.0, &mut f);
     let level = |from: f64| rms(&f[secs(from)..secs(from + 0.05)]);
-    assert!((level(7.0) / 0.3536 - 1.0).abs() < 0.02, "before its fade, as it is: {}", level(7.0));
-    assert!(level(9.0) < 0.3536 * 0.75 && level(9.0) > 0.3536 * 0.6, "half way: {}", level(9.0));
-    assert!(level(9.95) < 0.02 && f[secs(10.0)..].iter().all(|x| *x == 0.0), "gone at its end");
+    assert!((level(9.0) / 0.3536 - 1.0).abs() < 0.02, "before its fade, as it is: {}", level(9.0));
+    assert!(level(11.0) < 0.3536 * 0.75 && level(11.0) > 0.3536 * 0.6, "half way: {}", level(11.0));
+    assert!(level(11.95) < 0.02 && f[secs(12.0)..].iter().all(|x| *x == 0.0), "gone at its end");
 }
 
 #[test]
 fn the_bed_drops_under_the_keys_at_a_span_s_edge_and_comes_back_after_by_the_samples() {
     let c = cut(CUT).unwrap();
     let p = Program::new(&c);
-    // (the hook; the 1× span 10–20 s after the title and chapter 1's card; the 2× fit after chapter 2's card)
-    assert_eq!(realtime(&p), [(0, 3_000_000), (9_500_000, 19_500_000), (21_500_000, 24_500_000)]);
+    // (where it ends; the 1× span 10–20 s after chapter 1's card; the 2× fit after chapter 2's card)
+    assert_eq!(realtime(&p), [(6_000_000, 9_000_000), (13_500_000, 23_500_000), (25_500_000, 28_500_000)]);
     let span = [(5_000_000, 10_000_000)];
     let len = sample_at(12_000_000);
     let d = under(&span, len);
@@ -800,7 +970,17 @@ fn cut_init_gives_the_spans_its_rules_say_and_reads_them_back() {
     let (text, said) = written(&facts, std::path::Path::new("take"));
     assert!(text.contains("to = \"card 1 answered + 1s\"") && text.contains("at = \"front 2\""), "{text}");
     assert!(said.contains("4 at 1×") && said.contains("1 left out (9.5 s)"), "{said}");
+    // (the opening's words left to fill in: refused until they're written)
+    let e = cut(&text).unwrap_err();
+    assert!(e.contains("opening: its name, one line"), "{e}");
+    let text =
+        text.replacen("name = \"\"", "name = \"halil\"", 1).replacen("line = \"\"", "line = \"A tool.\"", 1);
     let back = cut(&text).unwrap();
+    assert_eq!(
+        (back.opening.from, back.opening.len),
+        (114_000, 4_000),
+        "where it ends: the take's last seconds"
+    );
     let read: Vec<(u64, u64, Pace)> = back.map.segs().iter().map(|s| (s.from, s.to, s.pace)).collect();
     assert_eq!(read, got, "{text}");
     assert_eq!(

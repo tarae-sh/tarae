@@ -2,15 +2,18 @@
 //! real time, music where it doesn't, and the two never fighting.
 //!
 //! - **Keys**: the take's own input log (`keys.bin`), each key through the time map — heard at its video time where its
-//!   stretch is shown at `KEYS_MAX_SPEED` or slower (and in the hook), not in a faster one nor where it's left out.
+//!   stretch is shown at `KEYS_MAX_SPEED` or slower (and where it ends, in the opening), not in a faster one nor where
+//!   it's left out.
 //! - **The stamp** where a card is answered (its landmark; the key that answered it, `STAMP_KEY_MS` before, is the
-//!   stamp's own), and **the brush** on the end card, as in the Shorts — all mastered as a Short's keys are
+//!   stamp's own), and **the brush** on the end card, as in the Shorts, and again with the intro's swing (the end card's
+//!   as mastered, laid there too: the two bookends sound alike) — all mastered as a Short's keys are
 //!   (`sound::track`: brought toward `sound::SHORT_LUFS`, the limiter taking at most `LIMIT_MOST_DB` from a click).
 //! - **Beds** (`[[music]]`): each from its chapter on, its file's leading silence left out (`sound::sounds_from`), each
 //!   at one loudness (`BED_REF_LUFS`) before the level below; crossed into the next over that chapter's card (or
 //!   `CROSS_US` round a chapter with no card), equal power; repeating between its loop's two marks with a `SEAM_MS`
 //!   seam; where it runs out with no loop, faded over `CROSS_US` to its end and the next begun under it; the first in
-//!   over `sound::BED_IN_S`, the last out over the end card, under the brush.
+//!   under the intro's last `BED_UNDER_INTRO_US` (from chapter 1; else over `sound::BED_IN_S` at its chapter), leading
+//!   through the card of what's built; the last out over the end card, under the brush.
 //! - **Who leads** follows the picture's speed, the levels by distance (`Mix`, the edit list's `[sound]`, else
 //!   `WIDE_UNDER_LU` and `LEAD_OVER_LU`): where the keys may sound (`realtime`), the bed `under` LU under the keys' own
 //!   loudness (each alone); on a sped span and the cards it leads, `over` LU over that; eased `DUCK_US` — down before
@@ -48,11 +51,13 @@ const WINDOW_S: f32 = 3.0;
 const STEP_S: f32 = 1.0;
 /// A key this soon before a card's answer is the answer: the stamp is its sound.
 pub(crate) const STAMP_KEY_MS: u64 = 150;
+/// The first bed comes in under the intro's last this much (µs), then leads through the card of what's built.
+pub(crate) const BED_UNDER_INTRO_US: u64 = 500_000;
 
 // ── What's heard ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Where a moment of the take (ms) is heard: at these video times (µs: the hook's, the take part's), or nowhere — its
-/// stretch sped past `KEYS_MAX_SPEED`, or left out.
+/// Where a moment of the take (ms) is heard: at these video times (µs: where it ends', the take part's), or nowhere —
+/// its stretch sped past `KEYS_MAX_SPEED`, or left out.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Where {
     At(Vec<u64>),
@@ -63,11 +68,11 @@ pub(crate) enum Where {
 pub(crate) fn heard_at(prog: &Program, t: u64) -> Where {
     let cut = prog.cut;
     let mut at = Vec::new();
-    if let Some(h) = &cut.hook
-        && (h.from..h.from + h.len).contains(&t)
-        && let Some(p) = prog.parts.iter().find(|p| matches!(p.what, What::Hook { .. }))
+    let o = &cut.opening;
+    if o.ends(t)
+        && let Some(p) = prog.parts.iter().find(|p| matches!(p.what, What::Ends { .. }))
     {
-        at.push(p.at + (t - h.from) * 1000);
+        at.push(p.at + (t - o.from) * 1000);
     }
     let map = &cut.map;
     let missed = match map.segs()[map.seg_of(t)].pace {
@@ -100,9 +105,9 @@ pub(crate) fn stroke(b: &[u8]) -> Option<char> {
     Some(if b == b" " { ' ' } else { 'k' })
 }
 
-/// What the cut hears, at its video times, and what it doesn't: key strokes heard (one key heard twice where the hook
-/// shows it too), keys not heard for their stretch's speed or because it's left out; stamps heard and not; where the
-/// brush starts (µs).
+/// What the cut hears, at its video times, and what it doesn't: key strokes heard (one key heard twice where the
+/// opening shows it too), keys not heard for their stretch's speed or because it's left out; stamps heard and not;
+/// where the brush starts (µs) on the end card, and with the intro.
 #[derive(Debug, Default)]
 pub(crate) struct Sounds {
     pub(crate) list: Vec<(Duration, Heard)>,
@@ -112,6 +117,7 @@ pub(crate) struct Sounds {
     pub(crate) stamps: usize,
     pub(crate) stamps_missed: usize,
     pub(crate) brush: Option<u64>,
+    pub(crate) intro: Option<u64>,
 }
 
 /// The cut's sounds from the take's input log (`keys`) and its landmarks.
@@ -144,11 +150,12 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
         }
     }
     s.brush = prog.parts.iter().find(|p| p.what == What::End).map(|p| p.at);
+    s.intro = prog.parts.iter().find(|p| p.what == What::Intro).map(|p| p.at);
     s.list.sort_by_key(|h| h.0);
     s
 }
 
-/// Where the keys may sound (video µs, apart, in order): the hook, and each stretch of the take part shown at
+/// Where the keys may sound (video µs, apart, in order): where it ends, and each stretch of the take part shown at
 /// `KEYS_MAX_SPEED` or slower — where the bed lies under the keys.
 pub(crate) fn realtime(prog: &Program) -> Vec<(u64, u64)> {
     let map = &prog.cut.map;
@@ -160,7 +167,7 @@ pub(crate) fn realtime(prog: &Program) -> Vec<(u64, u64)> {
     };
     for p in &prog.parts {
         match p.what {
-            What::Hook { .. } => push(p.at, p.at + p.len),
+            What::Ends { .. } => push(p.at, p.at + p.len),
             What::Take { from } => {
                 for (i, s) in map.segs().iter().enumerate() {
                     if !matches!(s.pace, Pace::Speed(k) if k <= KEYS_MAX_SPEED + 1e-6) {
@@ -202,6 +209,18 @@ fn micros(n: usize) -> u64 {
     (n as f64 * 1e6 / f64::from(RATE)).round() as u64
 }
 
+/// The first bed's way in (µs, from–to): from chapter 1, under the intro's last `BED_UNDER_INTRO_US`; from a later
+/// chapter, over `sound::BED_IN_S` from its crossing.
+pub(crate) fn first_in(prog: &Program, chapter: usize) -> (u64, u64) {
+    match (chapter, prog.parts.iter().find(|p| p.what == What::Intro)) {
+        (0, Some(p)) => ((p.at + p.len).saturating_sub(BED_UNDER_INTRO_US), p.at + p.len),
+        _ => {
+            let a = if chapter == 0 { 0 } else { crossing(prog, chapter).0 };
+            (a, a + (sound::BED_IN_S * 1e6) as u64)
+        }
+    }
+}
+
 /// Chapter `i`'s crossing (µs): its card, else `CROSS_US` round where it begins.
 pub(crate) fn crossing(prog: &Program, i: usize) -> (u64, u64) {
     match prog.parts.iter().find(|p| p.what == What::Chapter(i)) {
@@ -224,10 +243,7 @@ pub(crate) fn layout(prog: &Program, tracks: &[(usize, usize)]) -> (Vec<Placed>,
     for (j, bed) in beds.iter().enumerate() {
         let fade_in = match (early.take(), j) {
             (Some(w), _) => w,
-            (None, 0) => {
-                let a = if bed.chapter == 0 { 0 } else { crossing(prog, bed.chapter).0 };
-                (a, a + (sound::BED_IN_S * 1e6) as u64)
-            }
+            (None, 0) => first_in(prog, bed.chapter),
             (None, _) => crossing(prog, bed.chapter),
         };
         let start = fade_in.0;
@@ -319,6 +335,15 @@ pub(crate) fn lay(p: &Placed, track: &[f32], looped: Option<(usize, usize)>, gai
             false => 1.0,
         };
         *y += x * gain * into * away;
+    }
+}
+
+/// The end card's brush as mastered (`len` samples from `end`) laid again from `intro`: the two bookends sound alike.
+pub(crate) fn intro_brush(track: &mut [f32], end: usize, intro: usize, len: usize) {
+    let len = len.min(track.len().saturating_sub(end)).min(track.len().saturating_sub(intro));
+    if intro + len <= end {
+        let (a, b) = track.split_at_mut(end);
+        a[intro..intro + len].iter_mut().zip(&b[..len]).for_each(|(y, x)| *y += x);
     }
 }
 
@@ -419,7 +444,7 @@ pub(crate) fn make(
         if !path.is_file() {
             return Err(format!("{}:{}: music: {}: no such file", cut.file, bed.line, path.display()));
         }
-        let start = if j == 0 && bed.chapter == 0 { 0 } else { crossing(prog, bed.chapter).0 };
+        let start = if j == 0 { first_in(prog, bed.chapter).0 } else { crossing(prog, bed.chapter).0 };
         let upto = Duration::from_micros(end - start) + Duration::from_secs(10);
         let upto = bed.looped.map_or(upto, |(_, b)| upto.min(Duration::from_millis(b + 1_000)));
         let s = video::decoded(ffmpeg, &path, upto)
@@ -466,8 +491,12 @@ pub(crate) fn make(
 
     // (the ceiling moved until the AAC's true peak is under its aim, as a Short's)
     let brush = heard.brush.map(Duration::from_micros);
+    let brush_len = sound::brush().len();
     let made = |ceiling: f32| -> (Vec<f32>, Levels) {
-        let keys = sound::track(&heard.list, length, brush, ceiling, None);
+        let mut keys = sound::track(&heard.list, length, brush, ceiling, None);
+        if let (Some(b), Some(i)) = (heard.brush, heard.intro) {
+            intro_brush(&mut keys.samples, samples(b), samples(i), brush_len);
+        }
         let loud = Some(keys.lufs).filter(|l| l.is_finite()).unwrap_or(sound::SHORT_LUFS);
         let (x, depth) = bed_gains(loud, cut.mix);
         let mut y = match cut.beds.is_empty() {
@@ -532,7 +561,7 @@ pub(crate) fn make(
     let s = |us: u64| video_time(us);
     said.push(format!(
         "sound: {} key strokes heard; {} keys not, their stretch faster than {}×, and {} left out; {} stamps heard{}; \
-         the brush at {}",
+         the brush with the intro at {} and on the end card at {}",
         heard.keys,
         heard.fast,
         super::factor(KEYS_MAX_SPEED),
@@ -542,6 +571,7 @@ pub(crate) fn make(
             0 => String::new(),
             n => format!(", {n} not (a sped or left-out stretch)"),
         },
+        heard.intro.map_or("—".into(), s),
         heard.brush.map_or("—".into(), s)
     ));
     let db = |x: f32| if x.is_finite() { format!("{x:.1}") } else { "—".into() };
@@ -554,7 +584,7 @@ pub(crate) fn make(
     if !cut.beds.is_empty() {
         said.push(format!(
             "  the bed alone: {} LUFS where it leads (sped spans, the cards), {} LUFS under the keys (spans at {}× or \
-             slower, the hook: {:.0} % of the video) — a swing of {} dB, eased {:.1} s each way; the mix {} LU under \
+             slower, where it ends: {:.0} % of the video) — a swing of {} dB, eased {:.1} s each way; the mix {} LU under \
              the keys, {} over that{}",
             db(lv.lead),
             db(lv.under),

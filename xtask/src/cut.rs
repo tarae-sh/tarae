@@ -11,14 +11,17 @@
 //! The file:
 //!
 //! ```toml
-//! title = "halil, from an empty folder"   # the title card's
 //! bg = "dark"                             # or "light" (dark if left out)
 //! default = 8                             # what no span names: a speed, or "out"
 //!
-//! [hook]                                  # shown first: this much of the take at 1×, marked as from later
-//! at = "end - 6s"
-//! for = "3s"
-//! title = "Where it ends"                 # chapters.txt's 0:00 (else the first chapter's)
+//! [opening]                               # the video's first seconds (`Program`): the intro — the brush's swing
+//!                                         # and `t a r a e`, `INTRO_MS` —, the card of what's built (`BUILT_MS`),
+//!                                         # where it ends; then the take. Every word on the card is from here.
+//! name = "halil"                          # the card's name, large; chapters.txt's 0:00, over the three parts
+//! line = "A task manager for the terminal."    # what it is, to someone who has never heard of it
+//! code = ["halil add \"pay rent friday 9am +home !high\"", "halil board"]   # up to two lines, drawn as code
+//! at = "end - 6s"                         # where it ends: this much of the take at 1×, its keys heard; a zoom
+//! for = "4s"                              # whose `at` falls in it is the camera there too
 //!
 //! [[span]]                                # in the take's order, apart; the rest takes `default`
 //! from = "turn 1 start - 4s"
@@ -60,9 +63,11 @@
 //! Every list is in the take's order and spans don't overlap: a file that reorders anything is refused with the line.
 //! What the picture always says, in the band under tarae's cells (never over them): the take's real time (`0:37:12`)
 //! at its left; on a sped span its factor (`▸▸ ×16`) at its right; where time is left out, the clock jumps and a mark
-//! says how much (`+6 min`) for `JUMP_MS`; over the hook, `from later`.
+//! says how much (`+6 min`) for `JUMP_MS`; over where it ends, `where it ends`. The card of what's built has one small
+//! line the cut makes, never the file (`told`): that it's a real session, how long it took and how long it's shown.
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -73,6 +78,7 @@ use crate::video::{self, FPS};
 
 mod draw;
 mod init;
+mod opening;
 mod sound;
 #[cfg(test)]
 mod tests;
@@ -87,6 +93,15 @@ pub(crate) const CAPTION_MAX: usize = 60;
 /// The jump's mark stands this long (then fades), and comes in and goes out over `FADE_MS` — a caption's too.
 pub(crate) const JUMP_MS: u64 = 1_000;
 pub(crate) const FADE_MS: u64 = crate::captions::FADE_MS;
+/// The intro: the brush's swing and `t a r a e` (`video::WideIntro`), the swing's frames then the name risen, held.
+pub(crate) const INTRO_MS: u64 = 2_500;
+/// The card of what's built.
+pub(crate) const BUILT_MS: u64 = 3_500;
+/// The card's words at their longest (characters): its name, its line, each line of code; and how many lines of code.
+pub(crate) const NAME_MAX: usize = 24;
+pub(crate) const LINE_MAX: usize = 60;
+pub(crate) const CODE_MAX: usize = 56;
+pub(crate) const CODE_LINES: usize = 2;
 
 const USAGE: &str = "usage: cargo xtask cut FILE | cut init TAKE [--out FILE]";
 
@@ -185,6 +200,30 @@ pub(crate) fn jumped(ms: u64) -> String {
         (h, 0) => format!("+{h} h"),
         (h, m) => format!("+{h} h {m} min"),
     }
+}
+
+/// How long something took, as tarae writes every time someone reads (`term.rs`'s `run_duration`, the same words):
+/// `412ms`, `8.3s`, `7m 12s`, `1h 32m`, `2d 04h`.
+pub(crate) fn run_duration(d: Duration) -> String {
+    let s = d.as_secs_f32();
+    let whole = d.as_secs().max(60);
+    match s {
+        _ if s < 0.9995 => format!("{:.0}ms", s * 1000.0),
+        _ if s < 59.95 => format!("{s:.1}s"),
+        _ if whole < 3600 => format!("{}m {:02}s", whole / 60, whole % 60),
+        _ if whole < 86_400 => format!("{}h {:02}m", whole / 3600, whole / 60 % 60),
+        _ => format!("{}d {:02}h", whole / 86_400, whole / 3600 % 24),
+    }
+}
+
+/// The card of what's built's small line, made by the cut from the take's length (ms) and the video's (µs), so it can't
+/// be wrong.
+pub(crate) fn told(take_ms: u64, video_us: u64) -> String {
+    format!(
+        "A real session with Claude in tarae: {}, shown in {}",
+        run_duration(Duration::from_millis(take_ms)),
+        run_duration(Duration::from_micros(video_us))
+    )
 }
 
 /// A sped span's mark: `▸▸ ×16`, `▸▸ ×2.5`; none at 1×.
@@ -421,12 +460,22 @@ impl Map {
 
 // ── The file ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The hook: this much of the take from `from` (ms), at 1×; chapters.txt's 0:00 its `title` where it has one.
+/// The opening's words and where it ends: the card's name, line and lines of code; then this much (`len`) of the take
+/// from `from` (ms), at 1×.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Hook {
+pub(crate) struct Opening {
+    pub(crate) name: String,
+    pub(crate) line: String,
+    pub(crate) code: Vec<String>,
     pub(crate) from: u64,
     pub(crate) len: u64,
-    pub(crate) title: Option<String>,
+}
+
+impl Opening {
+    /// Whether the take's `t` (ms) is shown where it ends.
+    pub(crate) fn ends(&self, t: u64) -> bool {
+        (self.from..self.from + self.len).contains(&t)
+    }
 }
 
 /// A chapter, a caption, a zoom: where in the take (ms), and the file's line. A chapter shows a card, or (`card`
@@ -448,13 +497,16 @@ pub(crate) struct Caption {
     pub(crate) line: usize,
 }
 
-/// A zoom: held `len` ms of the video on `on`, moving in and out `camera::DRIFT_MS` each way.
+/// A zoom: held `len` ms of the video on `on`, moving in and out `camera::DRIFT_MS` each way; where it ends too when its
+/// `at` is in that stretch (`ends`), and in the take part where that shows it (`shown`: not left out).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Zoom {
     pub(crate) at: u64,
     pub(crate) len: u64,
     pub(crate) on: String,
     pub(crate) line: usize,
+    pub(crate) ends: bool,
+    pub(crate) shown: bool,
 }
 
 /// A music bed: from chapter `chapter` (its index) on, its `file` as the edit list says it, repeating between `looped`'s
@@ -474,10 +526,9 @@ pub(crate) const LOOP_MIN: u64 = 2_000;
 #[derive(Debug)]
 pub(crate) struct Cut {
     pub(crate) file: String,
-    pub(crate) title: String,
     pub(crate) bg: Bg,
     pub(crate) map: Map,
-    pub(crate) hook: Option<Hook>,
+    pub(crate) opening: Opening,
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) captions: Vec<Caption>,
     pub(crate) zooms: Vec<Zoom>,
@@ -586,10 +637,7 @@ impl Cut {
         let src = Src { lines: text.lines().collect(), file };
         let top: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{file}: {e}"))?;
         let root = Entry { t: &top, line: 0, src: &src, name: "the file" };
-        root.keys(&[
-            "title", "bg", "default", "hook", "span", "chapter", "caption", "zoom", "music", "sound",
-        ])?;
-        let title = root.text("title")?.unwrap_or("A live take").to_string();
+        root.keys(&["bg", "default", "opening", "span", "chapter", "caption", "zoom", "music", "sound"])?;
         let bg = match root.text("bg")? {
             None | Some("dark") => Bg::Dark,
             Some("light") => Bg::Light,
@@ -689,24 +737,7 @@ impl Cut {
         }
         let map = Map::new(segs);
 
-        let hook = match top.get("hook") {
-            None => None,
-            Some(toml::Value::Table(t)) => {
-                let e = Entry { t, line: src.header("hook", None), src: &src, name: "hook" };
-                e.keys(&["at", "for", "title"])?;
-                let (from, len) = (e.time("at", marks)?, e.length("for")?);
-                if from + len > marks.end {
-                    return Err(
-                        e.err("for", format!("hook: it runs past the take's end, {}", clock(marks.end)))
-                    );
-                }
-                if len == 0 {
-                    return Err(e.err("for", "hook: for = \"3s\" or so"));
-                }
-                Some(Hook { from, len, title: e.text("title")?.map(String::from) })
-            }
-            Some(_) => return Err(src.at(src.key(0, "hook"), "hook: a table, as [hook]")),
-        };
+        let opening = Self::opening(&top, &src, marks)?;
 
         let mut chapters: Vec<Chapter> = Vec::new();
         for e in list("chapter")? {
@@ -797,7 +828,8 @@ impl Cut {
         for e in list("zoom")? {
             e.keys(&["at", "for", "on"])?;
             let (at, len, on) = (e.time("at", marks)?, e.length("for")?, e.needed("on")?.to_string());
-            if map.left_out(at) {
+            let (ends, shown) = (opening.ends(at), !map.left_out(at));
+            if !shown && !ends {
                 return Err(e.err("at", format!("zoom: at {}, inside a span left out", clock(at))));
             }
             if let Some(b) = zooms.last() {
@@ -820,7 +852,7 @@ impl Cut {
                     ));
                 }
             }
-            zooms.push(Zoom { at, len, on, line: e.line });
+            zooms.push(Zoom { at, len, on, line: e.line, ends, shown });
         }
 
         let mut beds: Vec<Bed> = Vec::new();
@@ -912,10 +944,9 @@ impl Cut {
         Ok(Cut {
             mix,
             file: file.to_string(),
-            title,
             bg,
             map,
-            hook,
+            opening,
             chapters,
             captions,
             zooms,
@@ -923,16 +954,67 @@ impl Cut {
             end: marks.end,
         })
     }
+
+    /// The file's `[opening]`: the card's words, each one line within its longest, and where it ends — refused, naming
+    /// what's missing, where it isn't there.
+    fn opening(top: &toml::Table, src: &Src, marks: &Marks) -> Result<Opening> {
+        const WHAT: &str =
+            "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for";
+        let t = match top.get("opening") {
+            Some(toml::Value::Table(t)) => t,
+            Some(_) => return Err(src.at(src.key(0, "opening"), "opening: a table, as [opening]")),
+            None => return Err(src.at(1, format!("no [opening]: {WHAT}"))),
+        };
+        let e = Entry { t, line: src.header("opening", None), src, name: "opening" };
+        e.keys(&["name", "line", "code", "at", "for"])?;
+        let missing: Vec<&str> =
+            ["name", "line", "at", "for"].into_iter().filter(|k| !t.contains_key(*k)).collect();
+        if !missing.is_empty() {
+            return Err(src.at(e.line, format!("opening: no {} ({WHAT})", missing.join(", "))));
+        }
+        let one_line = |key: &str, s: &str, max: usize| -> Result<String> {
+            let s = s.trim();
+            let n = s.chars().count();
+            match n == 0 || n > max || s.contains('\n') {
+                true => Err(
+                    e.err(key, format!("opening: its {key}, one line of 1 to {max} characters ({n} here)"))
+                ),
+                false => Ok(s.to_string()),
+            }
+        };
+        let name = one_line("name", e.needed("name")?, NAME_MAX)?;
+        let line = one_line("line", e.needed("line")?, LINE_MAX)?;
+        let shape = || e.err("code", format!("opening: code = [\"halil board\"], up to {CODE_LINES} lines"));
+        let code = match t.get("code") {
+            None => Vec::new(),
+            Some(toml::Value::Array(a)) if a.len() <= CODE_LINES => (a.iter())
+                .map(|v| v.as_str().ok_or_else(shape).and_then(|s| one_line("code", s, CODE_MAX)))
+                .collect::<Result<_>>()?,
+            Some(_) => return Err(shape()),
+        };
+        let (from, len) = (e.time("at", marks)?, e.length("for")?);
+        if len == 0 {
+            return Err(e.err("for", "opening: for = \"4s\" or so, where it ends"));
+        }
+        if from + len > marks.end {
+            return Err(e.err(
+                "for",
+                format!("opening: where it ends runs past the take's end, {}", clock(marks.end)),
+            ));
+        }
+        Ok(Opening { name, line, code, from, len })
+    }
 }
 
 // ── The video's parts ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// What a part of the video is: the hook (the take from its ms), the title card, a stretch of the take part (from the
-/// map's µs), a chapter's card, the take's last screen held, the end card.
+/// What a part of the video is: the intro, the card of what's built, where it ends (the take from its ms), a stretch of
+/// the take part (from the map's µs), a chapter's card, the take's last screen held, the end card.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum What {
-    Hook { from: u64 },
-    Title,
+    Intro,
+    Built,
+    Ends { from: u64 },
     Take { from: u64 },
     Chapter(usize),
     Last,
@@ -947,18 +1029,19 @@ pub(crate) struct Part {
     pub(crate) len: u64,
 }
 
-/// A card in place of the screen.
+/// A card in place of the screen: the intro (its ms in), the card of what's built, a chapter's, the end card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Card {
-    Title,
+    Intro(u64),
+    Built,
     Chapter(usize),
     End,
 }
 
 /// What one frame shows: the take's screen at its ms, or a card; and what the band says — the take's time, a sped
-/// span's factor, the jump's mark (how much was left out, and how drawn, of 255), whether it's the hook's (from later),
-/// a caption or a chapter with no card (which, how drawn) —; and where in the map it is (the camera's clock), the take
-/// part's frames only.
+/// span's factor, the jump's mark (how much was left out, and how drawn, of 255), whether it's where it ends, a caption
+/// or a chapter with no card (which, how drawn) —; and where in the map it is (the camera's clock), the take part's
+/// frames only.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
     pub(crate) screen: Option<u64>,
@@ -966,7 +1049,7 @@ pub(crate) struct Frame {
     pub(crate) clock: Option<u64>,
     pub(crate) speed: Option<f64>,
     pub(crate) jump: Option<(u64, u8)>,
-    pub(crate) later: bool,
+    pub(crate) ends: bool,
     pub(crate) caption: Option<(usize, u8)>,
     pub(crate) chapter: Option<(usize, u8)>,
     pub(crate) map: Option<u64>,
@@ -980,7 +1063,7 @@ impl Frame {
             clock: None,
             speed: None,
             jump: None,
-            later: false,
+            ends: false,
             caption: None,
             chapter: None,
             map: None,
@@ -998,8 +1081,8 @@ pub(crate) fn envelope(since: u64, len: u64) -> u8 {
     (a * 255.0).round() as u8
 }
 
-/// The video, part by part: the hook first (where there is one), the title card, the take part with each chapter's card
-/// where it starts, its last screen held, the end card; where time is left out (the map's µs, how much of the take);
+/// The video, part by part: the opening — the intro, the card of what's built, where it ends —, the take part with each
+/// chapter's card where it starts, its last screen held, the end card; where time is left out (the map's µs, how much of the take);
 /// each caption's stretch on the map, and each chapter's with no card (from, to, which).
 pub(crate) struct Program<'c> {
     pub(crate) cut: &'c Cut,
@@ -1019,10 +1102,9 @@ impl<'c> Program<'c> {
             parts.push(Part { what, at, len });
             at += len;
         };
-        if let Some(h) = &cut.hook {
-            push(What::Hook { from: h.from }, h.len * 1000);
-        }
-        push(What::Title, video::TITLE_MS * 1000);
+        push(What::Intro, INTRO_MS * 1000);
+        push(What::Built, BUILT_MS * 1000);
+        push(What::Ends { from: cut.opening.from }, cut.opening.len * 1000);
         let mut from = 0;
         for (i, c) in cut.chapters.iter().enumerate().filter(|(_, c)| c.card) {
             let m = map.video(c.at);
@@ -1096,11 +1178,12 @@ impl<'c> Program<'c> {
         let p = self.part(v);
         let off = v.saturating_sub(p.at);
         match p.what {
-            What::Hook { from } => {
+            What::Intro => Frame::card(Card::Intro(off / 1000)),
+            What::Built => Frame::card(Card::Built),
+            What::Ends { from } => {
                 let t = (from + off / 1000).min(self.cut.end);
-                Frame { screen: Some(t), card: None, clock: Some(t), later: true, ..Frame::card(Card::Title) }
+                Frame { screen: Some(t), card: None, clock: Some(t), ends: true, ..Frame::card(Card::Built) }
             }
-            What::Title => Frame::card(Card::Title),
             What::Chapter(i) => Frame::card(Card::Chapter(i)),
             What::End => Frame::card(Card::End),
             What::Take { from } => self.take_frame(from + off, true),
@@ -1131,7 +1214,7 @@ impl<'c> Program<'c> {
             clock: Some(t),
             speed,
             jump,
-            later: false,
+            ends: false,
             caption,
             chapter,
             map: Some(m),
@@ -1147,18 +1230,14 @@ impl<'c> Program<'c> {
         out
     }
 
-    /// YouTube's chapter list: each chapter's card's time in the video and its title, the first at 0:00 (the hook's
-    /// title there where it has one, else the first chapter's, which then covers the hook and the title card); and what
-    /// keeps YouTube from taking it (fewer than three, one under ten seconds), said.
+    /// YouTube's chapter list: 0:00 the opening, by the name of what's built (the intro, the card, where it ends), then
+    /// each chapter's card's time in the video and its title; and what keeps YouTube from taking it (fewer than three,
+    /// one under ten seconds), said.
     pub(crate) fn chapters(&self) -> (String, Vec<String>) {
-        let mut list: Vec<(u64, String)> = (self.cut.chapters.iter().enumerate())
-            .map(|(i, c)| (self.chapter_at(i), c.title.clone()))
+        let list: Vec<(u64, String)> = [(0, self.cut.opening.name.clone())]
+            .into_iter()
+            .chain((self.cut.chapters.iter().enumerate()).map(|(i, c)| (self.chapter_at(i), c.title.clone())))
             .collect();
-        match (&self.cut.hook.as_ref().and_then(|h| h.title.clone()), list.first_mut()) {
-            (Some(t), _) => list.insert(0, (0, t.clone())),
-            (None, Some(first)) => first.0 = 0,
-            (None, None) => {}
-        }
         let text: String = list.iter().map(|(at, t)| format!("{} {t}\n", chapter_time(*at))).collect();
         let mut said = Vec::new();
         if list.len() < 3 {
