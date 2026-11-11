@@ -9,11 +9,15 @@
 //!   tests, the preflight, the user's test runs and tasks; never tarae's own git, a restart's build or an install. 0.5 s, at
 //!   most once every 20 s, on any span (a failure flying by at ×8 still gets its half second). The one abrupt start, on
 //!   purpose; with a key inside it, the wide face over the typing hands, no hop.
-//! - **Stretch**: 6 s of video with no key heard (`STRETCH_QUIET_MS`); 1.2 s, at most once a minute.
+//! - **Stretch**: 6 s of video with no key heard (`STRETCH_QUIET_MS`) — after a chapter's card, 6 s of the new chapter:
+//!   the quiet starts again at the card's end, never through the hold and the card; 1.2 s, at most once a minute.
 //! - **Brush swing**: a chapter's last second before its card (the first's: where it ends), and a bring that landed;
-//!   0.9 s.
+//!   0.9 s. **Every chapter's end gets its swing** (the design session's, 2026-11-12): placed first, and one with no room
+//!   is a `Hold` — the cut holds that chapter's last frame still before its card (`What::Hold`, the swing and its margin
+//!   past whatever was still going on) and the swing plays there. A bring's stays as it was: placed, or left out.
 //! - **Whole-body motions (stretch, swing) only where they fit whole** (`Room`): from the half-turn before them to
-//!   `MARGIN_MS` of hands back over the keys after, no key heard, no card, no surprise; one every `BODY_EVERY_MS`. A swing
+//!   `MARGIN_MS` of hands back over the keys after, no key heard, no card, no surprise; one every `BODY_EVERY_MS` within
+//!   a chapter (a card is a full break; a chapter's end's swing only clear of the others). A swing
 //!   with no room at its moment moves to the nearest within `SWING_MOVE_MS` either side, else it's left out (said); it
 //!   also waits for the key pops to go, its trail beside their lane. After one the hands stay over the keys `QUIET_MS`,
 //!   as after a key.
@@ -27,7 +31,7 @@
 
 use super::{Arms, Face, Hands, Pic, Pose, QUIET_MS, Switches};
 use crate::cut::sound::KEYS_MAX_SPEED;
-use crate::cut::{Marks, Pace, Program, What, clock, ms_of};
+use crate::cut::{HOLD_STEP, Hold, Marks, Pace, Program, What, clock, ms_of};
 use crate::rain::Rng;
 use crate::video::FPS;
 
@@ -105,12 +109,27 @@ impl Kind {
     }
 }
 
-/// What makes a surprise or a swing: where in the video (µs — a swing's, where it would start), the take's ms, in words.
+/// What makes a surprise or a swing: where in the video (µs — a swing's, where it would start), the take's ms, in words;
+/// a chapter's end: whose card follows, and whether it's held still for the swing (`What::Hold`).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Cause {
     pub(crate) v: u64,
     pub(crate) t: u64,
     pub(crate) said: String,
+    pub(crate) chapter: Option<usize>,
+    pub(crate) held: bool,
+}
+
+impl Cause {
+    /// A cause that isn't a chapter's end.
+    pub(crate) fn at(v: u64, t: u64, said: String) -> Cause {
+        Cause { v, t, said, chapter: None, held: false }
+    }
+}
+
+/// A swing and its margin (µs): a chapter's starts this long before its card.
+pub(crate) fn swing_us() -> u64 {
+    len_of(&SWING) * 1_000_000 / FPS + MARGIN_MS * 1000
 }
 
 /// The take's surprises and swings, each where the cut shows it.
@@ -164,16 +183,18 @@ pub(crate) fn causes(prog: &Program, marks: &Marks) -> Causes {
                 false => run.to_string(),
             };
             let said = format!("{run} — {step}");
-            c.surprise.extend(shown_at(prog, t).into_iter().map(|v| Cause { v, t, said: said.clone() }));
+            c.surprise.extend(shown_at(prog, t).into_iter().map(|v| Cause::at(v, t, said.clone())));
         }
     }
-    let swing = len_of(&SWING) * 1_000_000 / FPS + MARGIN_MS * 1000;
+    let swing = swing_us();
     for (i, p) in prog.parts.iter().enumerate() {
         let What::Chapter(n) = p.what else { continue };
-        let before = i.checked_sub(1).map(|j| prog.parts[j].what);
-        if !matches!(before, Some(What::Ends { .. } | What::Take { .. })) {
-            continue;
-        }
+        let before = i.checked_sub(1).map(|j| prog.parts[j]);
+        let held = match before.map(|b| b.what) {
+            Some(What::Ends { .. } | What::Take { .. }) => None,
+            Some(What::Hold { .. }) => before.map(|b| b.len),
+            _ => continue,
+        };
         let v = p.at.saturating_sub(swing);
         let f = prog.frame(v);
         let what = match (f.ends, n) {
@@ -182,12 +203,14 @@ pub(crate) fn causes(prog: &Program, marks: &Marks) -> Causes {
             (false, n) => format!("chapter {n}'s end"),
         };
         let t = f.clock.unwrap_or(0);
-        c.swing.push(Cause { v, t, said: format!("{what}, before chapter {}'s card", n + 1) });
+        let still = held.map_or(String::new(), |us| format!(", held still {:.1} s", us as f64 / 1e6));
+        let said = format!("{what}, before chapter {}'s card{still}", n + 1);
+        c.swing.push(Cause { v, t, said, chapter: Some(n), held: held.is_some() });
     }
     for v in marks.of("bring").filter(|v| v["how"] == "landed") {
         let t = ms_of(v);
         let said = format!("a bring landed: {}", v["name"].as_str().unwrap_or("?"));
-        c.swing.extend(shown_at(prog, t).into_iter().map(|v| Cause { v, t, said: said.clone() }));
+        c.swing.extend(shown_at(prog, t).into_iter().map(|v| Cause::at(v, t, said.clone())));
     }
     c.surprise.sort_by_key(|c| c.v);
     c.swing.sort_by_key(|c| c.v);
@@ -221,6 +244,9 @@ pub(crate) struct Plan {
     pub(crate) unstretched: Vec<(u64, u64, String)>,
     /// How many stretches each of `STRETCH_TRIED_MS` would give (ms, count).
     pub(crate) would_stretch: Vec<(u64, usize)>,
+    /// Each chapter's end whose swing had no room, and how long it must be held still before its card for one
+    /// (`cut::Program::held`; the cut lays it all again with them).
+    pub(crate) holds: Vec<Hold>,
 }
 
 /// What a whole-body motion's frames must be clear of.
@@ -245,8 +271,17 @@ impl Room<'_> {
         self.taps.get(i).copied().filter(|&f| f < b)
     }
 
-    /// Whether a `len`-frame whole-body motion fits from frame `k` among `placed`; else why not, in words.
-    fn fits(&self, k: u64, len: u64, placed: &[Placed], pops: bool) -> std::result::Result<(), String> {
+    /// Whether a `len`-frame whole-body motion fits from frame `k` among `placed`; else why not, in words. `spaced`: at
+    /// least `BODY_EVERY_MS` from another whole-body motion in its chapter — a card between is a full break (the design
+    /// session's, 2026-11-12) —; a chapter's end's swing isn't, only clear of it (each gets its swing).
+    fn fits(
+        &self,
+        k: u64,
+        len: u64,
+        placed: &[Placed],
+        pops: bool,
+        spaced: bool,
+    ) -> std::result::Result<(), String> {
         let end = k + len + self.margin;
         if k < TURN || !self.shown(k - TURN, end) {
             return Err("a card or the video's edge".into());
@@ -257,7 +292,10 @@ impl Room<'_> {
         for p in placed {
             let near = match p.kind {
                 Kind::Surprise => k - TURN < p.from + p.len + TURN && p.from < end + TURN,
-                _ => k.abs_diff(p.from) < frames(BODY_EVERY_MS),
+                _ if spaced => {
+                    k.abs_diff(p.from) < frames(BODY_EVERY_MS) && self.shown(k.min(p.from), k.max(p.from))
+                }
+                _ => k - TURN < p.from + p.len + self.margin && p.from < end + TURN,
             };
             if near {
                 return Err(format!("the {} at {}", p.kind.word(), secs(p.from)));
@@ -270,6 +308,24 @@ impl Room<'_> {
             }
         }
         Ok(())
+    }
+
+    /// How long a chapter's end must be held still before its card (its first frame `card`) for a `len`-frame swing to
+    /// fit there: past the last key's hand coming up, the last key pop gone and the last surprise's turn, then the swing
+    /// and the margin — in whole `HOLD_STEP`s (frames). Nothing comes inside a hold: no key maps there, no surprise.
+    fn hold_for(&self, card: u64, len: u64, placed: &[Placed]) -> u64 {
+        let mut k = card;
+        if let Some(&last) = self.taps[..self.taps.partition_point(|&f| f < card)].last() {
+            k = k.max(last + self.hold + 1);
+        }
+        let i = self.pops.partition_point(|p| p.0 < card);
+        if let Some(until) = self.pops[..i].iter().map(|p| p.1).max() {
+            k = k.max(until);
+        }
+        for p in placed.iter().filter(|p| p.kind == Kind::Surprise && p.from < card) {
+            k = k.max(p.from + p.len + 2 * TURN);
+        }
+        (k - card + len + self.margin).div_ceil(HOLD_STEP) * HOLD_STEP
     }
 }
 
@@ -304,13 +360,13 @@ fn stretches(
             continue;
         }
         if k == quiet_from + need {
-            why = match (k < next_ok, room.fits(k, len, &all, false)) {
+            why = match (k < next_ok, room.fits(k, len, &all, false, true)) {
                 (true, _) => Some("within a minute of the last stretch".into()),
                 (false, Err(e)) => Some(e),
                 (false, Ok(())) => None,
             };
         }
-        if k >= quiet_from + need && k >= next_ok && room.fits(k, len, &all, false).is_ok() {
+        if k >= quiet_from + need && k >= next_ok && room.fits(k, len, &all, false, true).is_ok() {
             why = None;
             let p = Placed {
                 kind: Kind::Stretch,
@@ -333,7 +389,7 @@ fn stretches(
 }
 
 /// A frame's video time, for what's said (`m:ss.s`).
-fn secs(k: u64) -> String {
+pub(crate) fn secs(k: u64) -> String {
     let ms = Program::time_of(k) / 1000;
     format!("{}.{}", clock(ms), ms % 1000 / 100)
 }
@@ -434,16 +490,33 @@ impl Plan {
                 last = Some(k);
             }
         }
-        // (the swings: at their moment, else the nearest room within `SWING_MOVE_MS`, else left out)
+        // (the swings: the chapters' ends first — each gets its swing —, then the brings'; at their moment, else the
+        // nearest room within `SWING_MOVE_MS`, else left out — a chapter's end then held still for it, `holds`; one in
+        // its hold plays there)
+        let mut holds = Vec::new();
         if sw.swing {
             let len = len_of(&SWING);
             let most = frames(SWING_MOVE_MS) as i64;
-            for c in &causes.swing {
+            let ends = causes.swing.iter().filter(|c| c.chapter.is_some());
+            for c in ends.chain(causes.swing.iter().filter(|c| c.chapter.is_none())) {
                 let ideal = Program::frame_at(c.v) as i64;
+                let spaced = c.chapter.is_none();
+                if c.held {
+                    placed.push(Placed {
+                        kind: Kind::Swing,
+                        from: ideal as u64,
+                        len,
+                        cause: c.said.clone(),
+                        t: c.t,
+                        moved: 0,
+                        typing: false,
+                    });
+                    continue;
+                }
                 let tries = (0..=most).flat_map(|d| if d == 0 { vec![0] } else { vec![-d, d] });
                 let found = tries
                     .filter(|d| ideal + d >= 0)
-                    .find(|d| room.fits((ideal + d) as u64, len, &placed, true).is_ok());
+                    .find(|d| room.fits((ideal + d) as u64, len, &placed, true, spaced).is_ok());
                 match found {
                     Some(d) => placed.push(Placed {
                         kind: Kind::Swing,
@@ -455,14 +528,20 @@ impl Plan {
                         typing: false,
                     }),
                     None => {
-                        let why =
-                            room.fits(ideal.max(0) as u64, len, &placed, true).err().unwrap_or_default();
+                        let why = room
+                            .fits(ideal.max(0) as u64, len, &placed, true, spaced)
+                            .err()
+                            .unwrap_or_default();
                         left_out.push(format!(
                             "swing left out at {}: {} — no room within {} s either side ({why} at its moment)",
                             secs(ideal.max(0) as u64),
                             c.said,
                             SWING_MOVE_MS / 1000
                         ));
+                        if let Some(chapter) = c.chapter {
+                            let card = Program::frame_at(c.v + swing_us());
+                            holds.push(Hold { chapter, frames: room.hold_for(card, len, &placed) });
+                        }
                     }
                 }
             }
@@ -594,6 +673,7 @@ impl Plan {
             glanced: glanced.iter().map(|g| g.0).collect(),
             unstretched,
             would_stretch,
+            holds,
         }
     }
 

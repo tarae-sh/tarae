@@ -547,6 +547,8 @@ pub(crate) struct Opening {
     pub(crate) from: u64,
     pub(crate) len: u64,
     pub(crate) zoom: Option<(String, usize)>,
+    /// Its `[opening]`'s line in the file.
+    pub(crate) line_at: usize,
 }
 
 impl Opening {
@@ -1152,23 +1154,44 @@ impl Cut {
             Some("") => return Err(e.err("zoom", "opening: zoom = \"card:Run these checks\", a target")),
             Some(on) => Some((on.to_string(), e.line("zoom"))),
         };
-        Ok(Opening { name, line, code, from, len, zoom })
+        Ok(Opening { name, line, code, from, len, zoom, line_at: e.line })
     }
 }
 
 // ── The video's parts ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 /// What a part of the video is: the intro, the card of what's built, where it ends (the take from its ms), a stretch of
-/// the take part (from the map's µs), a chapter's card, the take's last screen held, the end card.
+/// the take part (from the map's µs), a chapter's end held still for its swing (the video's µs of the frame held), a
+/// chapter's card, the take's last screen held, the end card.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum What {
     Intro,
     Built,
     Ends { from: u64 },
     Take { from: u64 },
+    Hold { v: u64 },
     Chapter(usize),
     Last,
     End,
+}
+
+/// A chapter's end held still before its card so its brush swing plays there (the design session's, 2026-11-12: every
+/// chapter's end gets its swing): which chapter's card follows, and how long (frames, whole `HOLD_STEP`s — so whole µs,
+/// and every frame after it moved by whole frames).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Hold {
+    pub(crate) chapter: usize,
+    pub(crate) frames: u64,
+}
+
+/// A hold's step (frames): a tenth of a second.
+pub(crate) const HOLD_STEP: u64 = FPS / 10;
+const _: () = assert!(FPS.is_multiple_of(10), "a tenth of a second is whole frames");
+
+impl Hold {
+    pub(crate) fn us(&self) -> u64 {
+        self.frames * 1_000_000 / FPS
+    }
 }
 
 /// A part: what, from where in the video (µs), how long (µs).
@@ -1245,30 +1268,42 @@ pub(crate) struct Program<'c> {
 
 impl<'c> Program<'c> {
     pub(crate) fn new(cut: &'c Cut) -> Program<'c> {
+        Program::held(cut, &[])
+    }
+
+    /// The video with each of `holds`' chapter ends held still before its card (`What::Hold`) — where the take or where
+    /// it ends comes before the card; a hold elsewhere is none.
+    pub(crate) fn held(cut: &'c Cut, holds: &[Hold]) -> Program<'c> {
         let map = &cut.map;
-        let mut parts = Vec::new();
+        let mut parts: Vec<Part> = Vec::new();
         let mut at = 0;
-        let mut push = |what: What, len: u64| {
-            parts.push(Part { what, at, len });
-            at += len;
+        let push = |parts: &mut Vec<Part>, at: &mut u64, what: What, len: u64| {
+            parts.push(Part { what, at: *at, len });
+            *at += len;
         };
-        push(What::Intro, INTRO_MS * 1000);
-        push(What::Built, BUILT_MS * 1000);
-        push(What::Ends { from: cut.opening.from }, cut.opening.len * 1000);
+        push(&mut parts, &mut at, What::Intro, INTRO_MS * 1000);
+        push(&mut parts, &mut at, What::Built, BUILT_MS * 1000);
+        push(&mut parts, &mut at, What::Ends { from: cut.opening.from }, cut.opening.len * 1000);
         let mut from = 0;
         for (i, c) in cut.chapters.iter().enumerate().filter(|(_, c)| c.card) {
             let m = map.video(c.at);
             if m > from {
-                push(What::Take { from }, m - from);
+                push(&mut parts, &mut at, What::Take { from }, m - from);
                 from = m;
             }
-            push(What::Chapter(i), CHAPTER_MS * 1000);
+            let after = parts.last().is_some_and(|p| matches!(p.what, What::Ends { .. } | What::Take { .. }));
+            if let Some(h) = holds.iter().find(|h| h.chapter == i).filter(|_| after) {
+                // (the last frame shown before the card, held)
+                let v = Program::time_of(Program::frame_at(at).saturating_sub(1));
+                push(&mut parts, &mut at, What::Hold { v }, h.us());
+            }
+            push(&mut parts, &mut at, What::Chapter(i), CHAPTER_MS * 1000);
         }
         if map.len() > from {
-            push(What::Take { from }, map.len() - from);
+            push(&mut parts, &mut at, What::Take { from }, map.len() - from);
         }
-        push(What::Last, video::LAST_MS * 1000);
-        push(What::End, video::END_MS * 1000);
+        push(&mut parts, &mut at, What::Last, video::LAST_MS * 1000);
+        push(&mut parts, &mut at, What::End, video::END_MS * 1000);
         let mut jumps: Vec<(u64, u64)> = Vec::new();
         for (i, s) in map.segs().iter().enumerate().filter(|(_, s)| s.pace == Pace::Out) {
             match jumps.last_mut() {
@@ -1305,6 +1340,20 @@ impl<'c> Program<'c> {
         (v * FPS).div_ceil(1_000_000)
     }
 
+    /// What the frame at `v` must stand through to be held still (the take's ms, from–to; none on a card): V4b's
+    /// `camera::STAND_MS` before it — the take's screens the video showed then (from its part's start at the soonest; a
+    /// jump in it is a change too) — and after it, the take's own next `STAND_MS` at that frame's pace: what the video
+    /// would have gone on to show. A screen that changes in it (a running timer, a streaming answer) reads, held, as a
+    /// frozen video.
+    pub(crate) fn stand_window(&self, v: u64) -> Option<(u64, u64)> {
+        let f = self.frame(v);
+        let t = f.screen?;
+        let p = self.part(v);
+        let a = self.frame(v.saturating_sub(camera::STAND_MS * 1000).max(p.at)).screen.unwrap_or(t);
+        let after = (camera::STAND_MS as f64 * f.speed.unwrap_or(1.0)).round() as u64;
+        Some((a.min(t), t + after))
+    }
+
     /// The part the video's `v` µs is in (the last past the end).
     pub(crate) fn part(&self, v: u64) -> &Part {
         &self.parts[self.parts.partition_point(|p| p.at <= v).saturating_sub(1)]
@@ -1337,6 +1386,8 @@ impl<'c> Program<'c> {
             What::Chapter(i) => Frame::card(Card::Chapter(i)),
             What::End => Frame::card(Card::End),
             What::Take { from } => self.take_frame(from + off, true),
+            // (the frame before it, still: the clock stands, no speed)
+            What::Hold { v } => Frame { speed: None, ..self.frame(v) },
             What::Last => self.take_frame(self.cut.map.len(), false),
         }
     }
@@ -1394,7 +1445,11 @@ impl<'c> Program<'c> {
     /// part's start past the first, through it — never one part's words over the next's —; each jump, the take's two
     /// screens over each other (where a part starts too: through the ground).
     pub(crate) fn crossings(&self) -> Vec<(u64, bool)> {
-        let mut out: Vec<(u64, bool)> = self.parts.iter().skip(1).map(|p| (p.at, true)).collect();
+        // (a hold is the frame before it, still: no crossing into it)
+        let mut out: Vec<(u64, bool)> = (self.parts.iter().skip(1))
+            .filter(|p| !matches!(p.what, What::Hold { .. }))
+            .map(|p| (p.at, true))
+            .collect();
         out.extend(self.jumps.iter().filter_map(|j| self.video_of(j.0)).map(|v| (v, false)));
         out.sort_unstable_by_key(|c| (c.0, !c.1));
         out.dedup_by_key(|c| c.0);

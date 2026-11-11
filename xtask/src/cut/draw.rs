@@ -293,6 +293,68 @@ pub(crate) fn changes(prog: &Program, take: &Take) -> (Vec<u64>, Vec<u64>) {
     (whole, crossing)
 }
 
+/// What moves on the take's screen through each window (the take's ms, from–to: `Program::stand_window`): None where
+/// it stands — no screen unlike the one before comes in it —, else how many came and where: the topmost row that
+/// changed and its text then, how many more, or the cursor alone. One replay, the windows in the take's order (a new one where
+/// one goes back).
+pub(crate) fn moving(take: &Take, windows: &[(u64, u64)]) -> Vec<Option<String>> {
+    const SAID: usize = 40;
+    let mut order: Vec<usize> = (0..windows.len()).collect();
+    order.sort_by_key(|&i| windows[i]);
+    let mut out = vec![None; windows.len()];
+    let mut replay = Replay::new(&take.screen, take.size);
+    // (how far the replay has been fed, ms)
+    let mut fed = 0;
+    for i in order {
+        let (a, b) = windows[i];
+        if a < fed {
+            replay = Replay::new(&take.screen, take.size);
+        }
+        replay.to(a);
+        fed = fed.max(a);
+        let mut seen = Cells::of(replay.screen());
+        let (mut came, mut rows) = (0, Vec::<(usize, String)>::new());
+        while let Some(ms) = replay.next() {
+            fed = ms;
+            if ms > b {
+                break;
+            }
+            came += 1;
+            let now = Cells::of(replay.screen());
+            for (r, (x, y)) in now.text.iter().zip(&seen.text).enumerate() {
+                if (x != y || now.ground[r] != seen.ground[r]) && !rows.iter().any(|q| q.0 == r) {
+                    rows.push((r, x.concat().trim().to_string()));
+                }
+            }
+            seen = now;
+        }
+        if came == 0 {
+            continue;
+        }
+        let screens = format!(
+            "{came} screen{} in {:.1} s of take",
+            if came == 1 { "" } else { "s" },
+            (b - a) as f64 / 1e3
+        );
+        rows.sort_by_key(|q| q.0);
+        out[i] = Some(match rows.first() {
+            None => format!("{screens}: the cursor"),
+            Some((r, text)) => {
+                let text: String = match text.chars().count() > SAID {
+                    true => text.chars().take(SAID - 1).chain(['…']).collect(),
+                    false => text.clone(),
+                };
+                let more = match rows.len() - 1 {
+                    0 => String::new(),
+                    n => format!(" and {n} more row{}", if n == 1 { "" } else { "s" }),
+                };
+                format!("{screens}: row {} “{text}”{more}", r + 1)
+            }
+        });
+    }
+    out
+}
+
 /// The cut of `take` (in `dir`, its landmarks `marks`) as `cut` says, at `scale`, into `out`: `cut.mp4` with its sound
 /// (`sound.rs`, `cut.wav` beside it), the sheet's pages, `chapters.txt`. What was made, said.
 pub(crate) fn make(
@@ -304,7 +366,6 @@ pub(crate) fn make(
 ) -> Result<String> {
     let started = Instant::now();
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let prog = Program::new(cut);
     let size = take.size;
     let k = scale.k();
     let fonts = Fonts::load(k)?;
@@ -339,25 +400,28 @@ pub(crate) fn make(
         true => crate::record::read_log(&dir.join("keys.bin"))?,
         false => Vec::new(),
     };
-    let heard = super::sound::sounds(&prog, &keys, marks);
-    let taps = heard.taps;
-    let hands = Hands::new(&taps);
-    // (the mascot's key pops and motions, laid on knowing every key: before the frames)
+    // (the keys heard, the mascot's key pops and motions, laid on knowing every key: before the frames — and laid again
+    // with each chapter's end held still where its swing had no room)
     let planned = Instant::now();
-    let (pops, plan) = match mascot {
-        None => (Pops::default(), None),
-        Some(_) => {
-            let regions = pops::Regions::read(dir)?;
-            // (a text's width in the lane at 1080p: the renderer's cells, a command's and a letter's size)
-            let cw = |px: f32| shot::cell(&fonts, px).0;
-            let (cmd_w, typed_w) = (cw(pops::COMMAND_PX), cw(pops::TYPED_PX));
-            let width = |t: &str, command: bool| t.chars().count() * if command { cmd_w } else { typed_w };
-            let pops = pops::pops(&heard.struck, &regions, cut.mascot.keys, &width);
-            let causes = motions::causes(&prog, marks);
-            let plan = Plan::new(&prog, &hands, &causes, &pops.busy(), &cut.mascot, cut.seed);
-            (pops, Some(plan))
-        }
+    let regions = match mascot {
+        Some(_) => Some(pops::Regions::read(dir)?),
+        None => None,
     };
+    // (a text's width in the lane at 1080p: the renderer's cells, a command's and a letter's size)
+    let cw = |px: f32| shot::cell(&fonts, px).0;
+    let (cmd_w, typed_w) = (cw(pops::COMMAND_PX), cw(pops::TYPED_PX));
+    let width = |t: &str, command: bool| t.chars().count() * if command { cmd_w } else { typed_w };
+    let laid = |prog: &Program<'_>| {
+        let heard = super::sound::sounds(prog, &keys, marks);
+        let hands = Hands::new(&heard.taps);
+        let Some(regions) = &regions else { return ((heard.taps, hands, Pops::default()), None) };
+        let pops = pops::pops(&heard.struck, regions, cut.mascot.keys, &width);
+        let causes = motions::causes(prog, marks);
+        let plan = Plan::new(prog, &hands, &causes, &pops.busy(), &cut.mascot, cut.seed);
+        ((heard.taps, hands, pops), Some(plan))
+    };
+    let (prog, (taps, hands, pops), plan, held) = held_ends(cut, laid, |w| moving(take, w));
+    said.extend(held);
     let planned = planned.elapsed();
     // (the seal made at the picture's size, else 1080p's — smaller, never stretched —, said)
     let seal = match video::seal_at(cut.bg, scale) {
@@ -770,6 +834,74 @@ pub(crate) fn make(
     Ok(head.join("\n") + "\n")
 }
 
+/// The video laid out — by `lay`: the keys heard, the key pops and the mascot's plan, for a program — and, where a
+/// chapter's end had no room for its swing (`Plan::holds`), laid again with each such end held still before its card
+/// (`Program::held`): the program, what `lay` gave for it, and `cut.txt`'s lines of the ends held — each one's screen
+/// standing or what moves on it (`moves`: for each held frame's `Program::stand_window`, what moves there, `moving`),
+/// and each that moves a place in the edit list, the line of the chapter whose card follows (where it ends: the
+/// `[opening]`'s): held, it reads as a frozen video, and the chapter's end goes where the screen stands.
+pub(crate) fn held_ends<'c, T>(
+    cut: &'c Cut,
+    lay: impl Fn(&Program<'c>) -> (T, Option<Plan>),
+    moves: impl FnOnce(&[(u64, u64)]) -> Vec<Option<String>>,
+) -> (Program<'c>, T, Option<Plan>, Vec<String>) {
+    let prog = Program::new(cut);
+    let (got, plan) = lay(&prog);
+    let holds = plan.as_ref().map_or(Vec::new(), |p| p.holds.clone());
+    if holds.is_empty() {
+        return (prog, got, plan, Vec::new());
+    }
+    let prog = Program::held(cut, &holds);
+    let (got, plan) = lay(&prog);
+    let more: u64 = holds.iter().map(|h| h.us()).sum();
+    // (each held end: its part, the chapter whose card follows, the frame held)
+    let held: Vec<(&super::Part, usize, u64)> = (prog.parts.iter().enumerate())
+        .filter_map(|(i, p)| match (p.what, prog.parts.get(i + 1).map(|q| q.what)) {
+            (What::Hold { v }, Some(What::Chapter(n))) => Some((p, n, v)),
+            _ => None,
+        })
+        .collect();
+    let windows: Vec<(u64, u64)> = held.iter().map(|h| prog.stand_window(h.2).unwrap_or((0, 0))).collect();
+    let moved = moves(&windows);
+    let standing = moved.iter().filter(|m| m.is_none()).count();
+    let mut said = vec![format!(
+        "chapter ends held still for their swing (no room for it before the card): {}, {:.1} s more video; {standing} on \
+         a screen that stands, {} on one that moves",
+        holds.len(),
+        more as f64 / 1e6,
+        held.len() - standing
+    )];
+    let mut places = Vec::new();
+    for (&(p, n, v), m) in held.iter().zip(&moved) {
+        let f = prog.frame(v);
+        let (what, line) = match (f.ends, n) {
+            (true, _) => ("where it ends".to_string(), cut.opening.line_at),
+            (false, 0) => ("the take before chapter 1".to_string(), cut.chapters[0].line),
+            (false, n) => (format!("chapter {n}'s end"), cut.chapters[n].line),
+        };
+        let how = m.as_ref().map_or("stands".to_string(), |m| format!("moves — {m}"));
+        let at = format!("held {:.1} s at {}", p.len as f64 / 1e6, video_time(p.at));
+        said.push(format!(
+            "  {what}, before chapter {}'s card: {at} (take {}) — {how}",
+            n + 1,
+            f.clock.map_or("?".into(), clock)
+        ));
+        if let Some(m) = m {
+            places.push(format!(
+                "{}:{line}: {what} is {at} on a screen that moves ({m}): held, it reads as a frozen video — end the \
+                 chapter where its screen stands",
+                cut.file
+            ));
+        }
+    }
+    said.extend(places);
+    // (a hold leaves room by its making; were any still wanting one, said)
+    for h in plan.as_ref().map_or(&[][..], |p| &p.holds[..]) {
+        said.push(format!("  chapter {}'s end: still no room for its swing, held or not", h.chapter + 1));
+    }
+    (prog, got, plan, said)
+}
+
 /// A frame as the sheet shows it: 1080p's halved, whatever the picture's size (the sheet stays small).
 fn sheet_picture(px: &[u8], lay: &Layout) -> Picture {
     let mut p = video::half(px, lay.dims);
@@ -1049,6 +1181,7 @@ pub(crate) fn sheet_marks(prog: &Program) -> Vec<(u64, String)> {
             What::Chapter(i) => {
                 out.push((p.at + p.len / 2, format!("chapter {}: “{}”", i + 1, cut.chapters[i].title)))
             }
+            What::Hold { .. } => out.push((p.at + p.len / 2, "held for the swing".into())),
             What::Last => out.push((p.at, "the last screen held".into())),
             What::End => out.push((p.at + p.len / 2, "end card".into())),
             What::Take { .. } => {}
@@ -1114,6 +1247,7 @@ pub(crate) fn label(prog: &Program, v: u64, f: &Frame, zoomed: bool, marks: &[St
                 (false, Some(k)) => format!("×{}", factor(k)),
                 (false, None) => match prog.part(v).what {
                     What::Last => "held".into(),
+                    What::Hold { .. } => "held for the swing".into(),
                     _ => "1×".into(),
                 },
             });

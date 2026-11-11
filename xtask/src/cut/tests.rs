@@ -2197,6 +2197,250 @@ fn clear_of_keys(plan: &Plan, taps: &[u64]) {
     }
 }
 
+/// The motions for `p` with keys at the take's `keys` (ms) wherever `p` shows them, each with its pop up `POP_MS`: the
+/// taps and the pops' frames, and the plan — as the cut lays them for a program (`draw::held_ends`' `lay`).
+type Motions = ((Vec<u64>, Vec<(u64, u64)>), Option<Plan>);
+
+fn motions_of(p: &Program, keys: &[u64], sw: Switches) -> Motions {
+    let mut taps: Vec<u64> = keys.iter().flat_map(|&t| motions::shown_at(p, t)).collect();
+    taps.sort_unstable();
+    let life = motions::frames(mascot::pops::POP_MS);
+    let busy: Vec<(u64, u64)> =
+        taps.iter().map(|&v| (Program::frame_at(v), Program::frame_at(v) + life)).collect();
+    let (plan, _) = plan_of(p, &taps, &motions::causes(p, &marks()), &busy, sw);
+    ((taps, busy), Some(plan))
+}
+
+/// Every chapter with a card has its swing, whole and its margin before the card: a placed swing whose cause names it.
+fn every_chapter_swings(p: &Program, plan: &Plan) -> usize {
+    let margin = motions::frames(motions::MARGIN_MS);
+    let mut n = 0;
+    for (i, part) in p.parts.iter().enumerate() {
+        let What::Chapter(c) = part.what else { continue };
+        if !matches!(p.parts[i - 1].what, What::Take { .. } | What::Ends { .. } | What::Hold { .. }) {
+            continue;
+        }
+        let words = format!("before chapter {}'s card", c + 1);
+        let m = plan.placed.iter().find(|m| m.kind == Kind::Swing && m.cause.contains(&words));
+        let m = m.unwrap_or_else(|| panic!("no swing {words}: {:#?}", plan.left_out));
+        assert!(m.from + m.len + margin <= Program::frame_at(part.at), "{m:?}");
+        n += 1;
+    }
+    n
+}
+
+/// Every chapter's end gets its brush swing (the design session's, 2026-11-12): in place where there's room; where keys
+/// leave none within 2 s, its last frame held still before the card — the clock standing, no speed, no key heard, no
+/// crossing into it — for the swing past the last key and its pop, and its margin, in whole tenths; `cut.txt` says them.
+#[test]
+fn every_chapter_with_a_card_has_its_swing_in_place_or_held() {
+    let c = cut(CUT).unwrap();
+    let swing = STILL.with(|s| s.swing = true);
+    let holds_of = |p: &Program| p.parts.iter().filter(|x| matches!(x.what, What::Hold { .. })).count();
+    // (no keys: both in place — where it ends before chapter 1's card, chapter 1's end before chapter 2's —, none held)
+    let (p, _, plan, said) = super::draw::held_ends(&c, |p| motions_of(p, &[], swing), standing);
+    assert_eq!((holds_of(&p), said.len()), (0, 0));
+    assert_eq!(every_chapter_swings(&p, &plan.unwrap()), 2);
+
+    // (keys every 0.4 s through both ends' last seconds: no room for either within 2 s — each needs a hold)
+    let keys = keys_through_both_ends();
+    let p0 = Program::new(&c);
+    let (_, plan0) = motions_of(&p0, &keys, swing);
+    let plan0 = plan0.unwrap();
+    assert_eq!(plan0.holds.iter().map(|h| h.chapter).collect::<Vec<_>>(), [0, 1], "{:#?}", plan0.left_out);
+
+    let (p, (taps, busy), plan, said) = super::draw::held_ends(&c, |p| motions_of(p, &keys, swing), standing);
+    let plan = plan.unwrap();
+    assert_eq!(every_chapter_swings(&p, &plan), 2, "held or in place, every one");
+    assert!(
+        plan.holds.is_empty() && !plan.left_out.iter().any(|l| l.contains("'s card")),
+        "{:#?}",
+        plan.left_out
+    );
+    clear_of_keys(&plan, &taps);
+    let holds: Vec<&Part> = p.parts.iter().filter(|x| matches!(x.what, What::Hold { .. })).collect();
+    assert_eq!(holds.len(), 2);
+    let more: u64 = holds.iter().map(|h| h.len).sum();
+    assert_eq!(p.total, p0.total + more, "the video longer by its holds");
+    let crossings: Vec<u64> = p.crossings().iter().map(|c| c.0).collect();
+    for h in &holds {
+        assert_eq!(h.len % 100_000, 0, "whole tenths: {h:?}");
+        let (a, b) = (Program::frame_at(h.at), Program::frame_at(h.at + h.len));
+        assert!(!crossings.contains(&h.at), "no crossing into a hold");
+        // (the frame before it, still: the clock stands, no speed; no key heard in it)
+        let before = p.frame(Program::time_of(a - 1));
+        for k in a..b {
+            let f = p.frame(Program::time_of(k));
+            assert_eq!(
+                (f.screen, f.clock, f.speed, f.card),
+                (before.screen, before.clock, None, None),
+                "{k}"
+            );
+        }
+        assert!(!taps.iter().any(|&v| (a..b).contains(&Program::frame_at(v))), "a key in the hold");
+        // (its swing in it, the last pop gone when it starts)
+        let m = plan.placed.iter().find(|m| m.kind == Kind::Swing && (a..b).contains(&m.from)).unwrap();
+        assert!(m.cause.contains("held still"), "{m:?}");
+        assert!(!busy.iter().any(|q| q.0 <= m.from && m.from < q.1), "a pop up at {m:?}");
+    }
+    assert!(
+        said[0].starts_with("chapter ends held still for their swing (no room for it before the card): 2, "),
+        "{said:#?}"
+    );
+    assert!(said[1].starts_with("  where it ends, before chapter 1's card: held "), "{said:#?}");
+    assert!(said[2].starts_with("  chapter 1's end, before chapter 2's card: held "), "{said:#?}");
+}
+
+/// Every held frame's screen stands (`draw::held_ends`' `moves`).
+fn standing(w: &[(u64, u64)]) -> Vec<Option<String>> {
+    vec![None; w.len()]
+}
+
+/// The keys of `every_chapter_with_a_card_has_its_swing_in_place_or_held`: every 0.4 s through both of the made-up
+/// cut's chapter ends' last seconds — each held for its swing.
+fn keys_through_both_ends() -> Vec<u64> {
+    (13_000..=19_800).step_by(400).chain((55_000..58_000).step_by(400)).collect()
+}
+
+/// A held frame must be a screen that stands (the design session's, 2026-11-12): V4b's 600 ms of video before it and
+/// the take's next 600 ms at its pace (`Program::stand_window`), the replay asked what came in them (`draw::moving`) —
+/// a timer ticking named by its row; `cut.txt` says `stands` or what moves for each held end, and one that moves is a
+/// place in the edit list, the line of the chapter whose card follows.
+#[test]
+fn a_held_end_stands_or_what_moves_is_named_and_its_chapter_is_a_place_to_fix() {
+    // (the window: at 4× 600 ms of video either side is 2.4 s of take; at 1×, 600 ms)
+    let c = cut(CUT).unwrap();
+    let p0 = Program::new(&c);
+    assert_eq!(p0.stand_window(take_at(&p0, 8_000)), Some((5_600, 10_400)), "at 4×");
+    assert_eq!(p0.stand_window(take_at(&p0, 15_000)), Some((14_400, 15_600)), "at 1×");
+
+    // (the replay: a timer ticking on row 2 every 100 ms from 20 s; the windows out of order, one going back)
+    let at = |ms: u64, bytes: &str| Rec { us: ms * 1000, whose: SCREEN, bytes: bytes.as_bytes().to_vec() };
+    let mut recs = vec![at(0, "\x1b[H\x1b[2J\x1b[?25lhalil board\r\nidle")];
+    recs.extend((0..30).map(|i| at(20_000 + i * 100, &format!("\x1b[2;1Hrun {}.{}s", i / 10, i % 10))));
+    let take = Take { about: Value::Null, size: (20, 3), screen: recs };
+    assert_eq!(
+        super::draw::moving(&take, &[(19_500, 21_000), (5_000, 6_200), (20_500, 20_700), (22_900, 23_500)]),
+        [
+            Some("11 screens in 1.5 s of take: row 2 “run 0.0s”".to_string()),
+            None,
+            Some("2 screens in 0.2 s of take: row 2 “run 0.6s”".to_string()),
+            None,
+        ]
+    );
+
+    // (the made-up cut's two held ends: where it ends stands, chapter 1's end moves)
+    let swing = STILL.with(|s| s.swing = true);
+    let keys = keys_through_both_ends();
+    let mut asked = Vec::new();
+    let moves = |w: &[(u64, u64)]| {
+        asked = w.to_vec();
+        vec![None, Some("12 screens in 1.2 s of take: row 2 “run 0.3s”".to_string())]
+    };
+    let (p, _, _, said) = super::draw::held_ends(&c, |p| motions_of(p, &keys, swing), moves);
+    let held: Vec<(u64, u64)> = (p.parts.iter())
+        .filter_map(|x| match x.what {
+            What::Hold { v } => p.stand_window(v),
+            _ => None,
+        })
+        .collect();
+    assert_eq!((asked.len(), &asked), (2, &held), "each held frame's window asked");
+    assert!(said[0].ends_with("; 1 on a screen that stands, 1 on one that moves"), "{said:#?}");
+    assert!(said[1].starts_with("  where it ends, before chapter 1's card: held "), "{said:#?}");
+    assert!(said[1].ends_with(" — stands"), "{said:#?}");
+    assert!(said[2].starts_with("  chapter 1's end, before chapter 2's card: held "), "{said:#?}");
+    assert!(said[2].ends_with(" — moves — 12 screens in 1.2 s of take: row 2 “run 0.3s”"), "{said:#?}");
+    let place = format!("cut.toml:{}: chapter 1's end is held ", c.chapters[1].line);
+    assert_eq!(said.len(), 4, "{said:#?}");
+    assert!(said[3].starts_with(&place), "{said:#?}");
+    assert!(
+        said[3].contains("on a screen that moves (12 screens")
+            && said[3].ends_with("end the chapter where its screen stands"),
+        "{said:#?}"
+    );
+}
+
+/// The bed plays through a hold as through any of the video: each of its samples the file's next, no gap and none
+/// again; and the sound is the video's length, its holds in it.
+#[test]
+fn a_bed_plays_through_a_hold_with_no_gap_or_repeat_and_the_sound_is_the_videos_length() {
+    let c = cut(&bedded()).unwrap();
+    let p0 = Program::new(&c);
+    let hold = Hold { chapter: 1, frames: 4 * HOLD_STEP };
+    let p = Program::held(&c, &[hold]);
+    let h = *p.parts.iter().find(|x| matches!(x.what, What::Hold { .. })).unwrap();
+    let card = *p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap();
+    assert_eq!((h.at + h.len, p.total), (card.at, p0.total + hold.us()));
+    let len = track_len(&p);
+    assert_eq!(len, sample_at(p.total), "the sound the video's length");
+    // (the first bed: in under the intro, out over chapter 2's card — after the hold)
+    let n = sample_at(60_000_000);
+    let (placed, _) = layout(&p, &[(n, 0), (n, 0)]);
+    assert!(placed[0].fade_in.1 < h.at && placed[0].fade_out.0 == card.at, "{:?}", placed[0]);
+    // (a file whose every sample is its own number: through the hold, each sample the one after the last)
+    let track: Vec<f32> = (0..n).map(|i| i as f32).collect();
+    let mut out = vec![0.0f32; len];
+    lay(&placed[0], &track, None, 1.0, &mut out);
+    let s0 = sample_at(placed[0].start);
+    for k in sample_at(h.at) - RATE as usize..sample_at(card.at) {
+        assert_eq!(out[k], track[placed[0].from + k - s0], "sample {k}");
+    }
+}
+
+/// A chapter's card is a full break (the design session's, 2026-11-12): a stretch after it needs 6 s of the new chapter
+/// with no key — the quiet never counted through the end of the chapter before and the card.
+#[test]
+fn a_stretch_after_a_chapter_card_needs_six_seconds_of_the_new_chapter() {
+    let c = cut(&moving("")).unwrap();
+    let p = Program::new(&c);
+    let card = *p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap();
+    // (keys every 0.4 s to 4 s before chapter 2's card: that quiet runs into the card, short of a stretch; none after)
+    let keys: Vec<u64> = (0..=46_000).step_by(400).map(|t| take_at(&p, t)).collect();
+    let stretch = STILL.with(|s| s.stretch = true);
+    let (pl, _) = plan_of(&p, &keys, &Causes::default(), &[], stretch);
+    let after = Program::frame_at(card.at + card.len);
+    let first = pl.placed.iter().find(|m| m.kind == Kind::Stretch).map(|m| m.from);
+    assert_eq!(first, Some(after + motions::frames(motions::STRETCH_QUIET_MS)), "{:#?}", pl.placed);
+}
+
+/// The 30 s between whole-body motions counts within a chapter: a stretch 10–20 s before its own chapter's end's swing
+/// is refused (said), one 9 s after it, past the card, is placed.
+#[test]
+fn a_stretch_keeps_thirty_seconds_from_its_own_chapters_end_swing_and_none_across_the_card() {
+    let c = cut(&moving("")).unwrap();
+    let p = Program::new(&c);
+    let card = *p.parts.iter().find(|x| x.what == What::Chapter(1)).unwrap();
+    // (keys every 0.4 s but for 30–40 s and the end's last 3 s; after the card, none for 10 s)
+    let keys: Vec<u64> = ((0..30_000).step_by(400))
+        .chain((40_000..47_000).step_by(400))
+        .chain((60_000..120_000).step_by(400))
+        .map(|t| take_at(&p, t))
+        .collect();
+    let sw = STILL.with(|s| {
+        s.stretch = true;
+        s.swing = true
+    });
+    let (pl, _) = plan_of(&p, &keys, &motions::causes(&p, &marks()), &[], sw);
+    let swing = pl.placed.iter().find(|m| m.kind == Kind::Swing && m.cause.starts_with("chapter 1's end"));
+    let swing = swing.unwrap_or_else(|| panic!("chapter 1's end swings: {:#?}", pl.left_out));
+    let stretches: Vec<u64> = pl.placed.iter().filter(|m| m.kind == Kind::Stretch).map(|m| m.from).collect();
+    let at = |t: u64| Program::frame_at(take_at(&p, t));
+    assert!(!stretches.iter().any(|&k| k < swing.from), "none in chapter 1: {:#?}", pl.placed);
+    let refused = pl.unstretched.iter().find(|u| (at(29_000)..at(31_000)).contains(&u.0));
+    assert!(
+        refused.is_some_and(|u| u.2 == format!("the swing at {}", motions::secs(swing.from))),
+        "{:#?}",
+        pl.unstretched
+    );
+    let after = Program::frame_at(card.at + card.len);
+    assert_eq!(
+        stretches.first(),
+        Some(&(after + motions::frames(motions::STRETCH_QUIET_MS))),
+        "{:#?}",
+        pl.placed
+    );
+}
+
 #[test]
 fn a_whole_body_motion_fits_whole_before_the_next_key_or_is_never_begun() {
     let c = cut(&moving("")).unwrap();
@@ -2259,7 +2503,7 @@ fn a_whole_body_motion_fits_whole_before_the_next_key_or_is_never_begun() {
     clear_of_keys(&pl, &keys);
     // (a bring's swing waits for the key pops to go, its trail beside their lane — later, the nearest; a second in 30 s
     // has no room)
-    let bring = |v: u64| Cause { v, t: 0, said: "a bring landed: fix".into() };
+    let bring = |v: u64| Cause::at(v, 0, "a bring landed: fix".into());
     let at = v0 + s(10_000);
     let two = Causes { surprise: Vec::new(), swing: vec![bring(at), bring(at + s(10_000))] };
     let tap = Program::time_of(frame(at) - 5);
