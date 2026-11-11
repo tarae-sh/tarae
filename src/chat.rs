@@ -737,6 +737,9 @@ pub struct Chat {
     /// as tarae's own, never `Msg.typed` — joined to one of yours, the whole is (the reviewer misses words, never
     /// takes tarae's for yours). It doesn't steer.
     pub queued_composed: bool,
+    /// `queued` holds a message tarae sent by itself, alone, put back to go again (`queue_again`): it goes marked
+    /// `Msg.by_itself` again (#498) — joined to anything, the whole is drawn as yours (`queue`).
+    pub queued_by_itself: bool,
     /// What steers the turn under way (the steer key, `chat_steer` — the flow plan's piece 5): the user's words for
     /// Claude's next tool answer (`steer_take`), a second joined to the first a blank line apart; the turn over before an
     /// answer came, they go as the queued message does, ahead of it (`Chat::steer_over`).
@@ -1092,6 +1095,8 @@ impl Chat {
             }
         }
         let n = self.queued.as_ref().map_or(0, |_| self.queued_n.max(1));
+        // (joined to another, the whole isn't one tarae sent by itself: drawn as yours)
+        self.queued_by_itself &= n == 0;
         if !first || n == 0 {
             self.queued_last = q.clone();
         }
@@ -1102,6 +1107,18 @@ impl Chat {
         });
         self.queued_n = n + 1;
         false
+    }
+
+    /// `m`'s words, a message that went, put back to go again first (a lost conversation's, `start_again`'s): tarae's
+    /// own stays tarae's (`queued_composed`), and one it sent by itself goes marked so again while nothing joins it
+    /// (`queued_by_itself`). True as `queue`'s.
+    fn queue_again(&mut self, text: String, typed: bool, by_itself: bool) -> bool {
+        let alone = self.queued.as_ref().is_none_or(|q| is_compact(q));
+        let dropped = self.queue(text, true);
+        // (after `queue`: a `/compact` it drops clears what was queued's marks)
+        self.queued_composed |= !typed;
+        self.queued_by_itself = by_itself && alone;
+        dropped
     }
 
     /// `text` steers the turn under way: it waits for Claude's next tool answer, joined to what waits already.
@@ -1128,6 +1145,7 @@ impl Chat {
     pub fn queued_gone(&mut self) {
         (self.queued_n, self.queued_last) = (0, String::new());
         self.queued_composed = false;
+        self.queued_by_itself = false;
     }
 
     /// What waits for this turn's end, as its row and the state say it — (`2 messages queued` · `review notes
@@ -1253,6 +1271,7 @@ impl Chat {
             queued_screen: None,
             queued_pointed: Vec::new(),
             queued_composed: false,
+            queued_by_itself: false,
             steer: None,
             steer_laid: RefCell::new(None),
             cleared: None,
@@ -2458,12 +2477,9 @@ pub(crate) fn start_again(ed: &mut Editor, message: Option<String>, said: &str) 
     let failed = message.filter(|_| !c.busy()).and_then(|q| {
         let at = c.msgs.iter().rposition(|m| m.role == Role::User && m.text == q)?;
         let m = c.msgs.remove(at);
-        Some((m.text, m.typed))
+        Some((m.text, m.typed, m.by_itself))
     });
-    let dropped = failed.is_some_and(|(q, typed)| {
-        c.queued_composed |= !typed;
-        c.queue(q, true)
-    });
+    let dropped = failed.is_some_and(|(q, typed, by_itself)| c.queue_again(q, typed, by_itself));
     c.note(said);
     if dropped {
         ed.set_warning(COMPACT_DROPPED);
@@ -3135,8 +3151,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                     }
                     c.queued_pointed = pointed;
                     c.key_pass.extend(m.key_pass);
-                    c.queued_composed |= !m.typed;
-                    dropped = c.queue(m.text, true);
+                    dropped = c.queue_again(m.text, m.typed, m.by_itself);
                 }
                 let note = match (over, lost) {
                     (0, 0) => String::new(),
@@ -3491,8 +3506,11 @@ pub(crate) fn send_queued(ed: &mut Editor) {
         std::mem::replace(&mut c.pointed, std::mem::take(&mut c.queued_pointed)),
         std::mem::take(&mut c.with),
     );
-    let typed = !c.queued_composed;
+    let (typed, by_itself) = (!c.queued_composed, c.queued_by_itself);
     let sent = submit_input(ed, &q, typed);
+    if sent && by_itself {
+        mark_by_itself(ed);
+    }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     match sent {
         true => c.queued_gone(),
@@ -3780,13 +3798,18 @@ pub fn submit_by_itself(
     if !submit_as(ed, question, about, chip, false, false, None) {
         return false;
     }
-    // (the message just pushed, as `submit_from_with` marks its own)
+    mark_by_itself(ed);
+    true
+}
+
+/// The message just pushed, as `submit_from_with` marks its own: one tarae sent by itself (`Msg.by_itself`) — sent
+/// first, or going again (`send_queued`, #498).
+fn mark_by_itself(ed: &mut Editor) {
     if let Some(m) =
         ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rfind(|m| m.role == Role::User))
     {
         m.by_itself = true;
     }
-    true
 }
 
 /// A message from the session `from`'s Claude — this one's parent (`orchestra.rs`) — as the next turn: in
@@ -6615,6 +6638,76 @@ mod tests {
         c.queued_gone();
         assert!(!c.queue("again".into(), false) && !c.queue("more".into(), false));
         assert_eq!(c.queued.as_deref(), Some("again\n\nmore"), "messages still join each other");
+    }
+
+    /// #498: a rerun's report tarae sent by itself (`submit_by_itself`), put back to go again — its conversation lost,
+    /// or its claude started again on the key card's `y` (`start_again`) — is sent again still marked `Msg.by_itself`,
+    /// never your words, and drawn as one row; joined to a message of yours, the whole is yours to draw.
+    #[test]
+    fn a_message_sent_by_itself_goes_again_still_by_itself() {
+        let report = "cargo test, run again by you, ended:\nexit 101\nFAILED tests::a\n(tarae sent this)";
+        for (path, yours) in [("lost", None), ("start again", None), ("lost", Some("and the docs"))] {
+            let mut ed = editor("");
+            // (the claude started after it can't start: the stand-in takes its place, deterministically)
+            ed.config.llm.command = "tarae-no-such-claude".into();
+            let mut c = Chat::new();
+            let first = stand_in(&mut c);
+            c.resume = Some("s-1".into());
+            ed.workspace.claude.chat = Some(c);
+            ed.workspace.set_at(crate::workspace::Here::Chat);
+            assert!(submit_by_itself(&mut ed, report, None, None), "{path}: sent");
+            assert_eq!(first.try_iter().count(), 1, "{path}: it went");
+            if let Some(t) = yours {
+                ed.workspace.claude.chat.as_mut().unwrap().input = t.into();
+                send(&mut ed);
+            }
+            match path {
+                "lost" => {
+                    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
+                    on_event(
+                        &mut ed,
+                        generation,
+                        StreamEv::Exit("No conversation found with session ID: s-1".into()),
+                    );
+                }
+                _ => {
+                    ed.workspace.claude.chat.as_mut().unwrap().state = State::Idle;
+                    start_again(&mut ed, Some(report.to_string()), "started again");
+                }
+            }
+            let next = stand_in(ed.workspace.claude.chat.as_mut().unwrap());
+            stand_in_done(&mut ed);
+            let went: Vec<String> = next
+                .try_iter()
+                .filter_map(|l| {
+                    let v: serde_json::Value = serde_json::from_str(&l).ok()?;
+                    (v["type"] == "user").then(|| v["message"]["content"].as_str().unwrap_or_default().into())
+                })
+                .collect();
+            let whole = match yours {
+                Some(t) => format!("{report}\n\n{t}"),
+                None => report.to_string(),
+            };
+            assert!(went.len() == 1 && went[0].ends_with(&whole), "{path}: went again: {went:?}");
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            let rows: Vec<usize> = (0..c.msgs.len())
+                .filter(|&i| c.msgs[i].role == Role::User && c.msgs[i].text.starts_with(report))
+                .collect();
+            assert_eq!(rows.len(), 1, "{path}: its row went again, the old one gone");
+            let (at, m) = (rows[0], &c.msgs[rows[0]]);
+            assert!(!m.typed, "{path}: never your words");
+            assert_eq!(m.by_itself, yours.is_none(), "{path} {yours:?}: by itself alone, yours joined");
+            assert!(!c.queued_by_itself && c.queued.is_none(), "{path}: nothing waits marked");
+            let mut bytes = Vec::new();
+            crate::term::render(&mut ed, &mut bytes, 100, 30).unwrap();
+            let laid = ed.screen.chat_laid.borrow();
+            let rows =
+                laid.iter().find(|(o, _)| *o == crate::chatdoc::Of::Msg(at)).map_or(0, |(_, r)| r.len());
+            match yours {
+                None => assert_eq!(rows, 1, "{path}: one row"),
+                Some(_) => assert!(rows > 1, "{path}: yours, every line drawn: {rows}"),
+            }
+        }
     }
 
     /// `/compact` queued alone that can't go as the turn ends (no claude to take it): it stays queued, as it was.
