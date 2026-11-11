@@ -318,27 +318,34 @@ fn ask(
         return ed.set_status("the board's card is up — y starts it, n doesn't");
     }
     let (for_parent, proposal) = asked.map(|a| (a.review, a.proposal)).unzip();
-    let o = card(Ask {
-        session: ed.workspace.id,
-        name: ed.workspace.name.clone(),
-        conversation: conversation(ed),
-        taken: Box::new(t),
-        angles,
-        estimate,
-        parent: crate::orchestra::parent_label(ed),
-        for_parent,
-    });
+    let o = card(
+        Ask {
+            session: ed.workspace.id,
+            name: ed.workspace.name.clone(),
+            conversation: conversation(ed),
+            taken: Box::new(t),
+            angles,
+            estimate,
+            parent: crate::orchestra::parent_label(ed),
+            for_parent,
+        },
+        ed.config.llm.cost,
+    );
     ed.push_offer(crate::orchestra::carry(o, proposal));
 }
 
 /// The card: the question its title (`Start a board on frictions31?`), what the last boards cost its first line
-/// (`≈ API $4.10 — the last 5 boards here`, their median), then its angles and how long a yes holds.
-pub fn card(a: Ask) -> crate::offer::Offer {
+/// (`≈ API $4.10 — the last 5 boards here`, their median) — unless `money` is off (`llm.cost`): no line, nor the blank
+/// after it — then its angles and how long a yes holds.
+pub fn card(a: Ask, money: bool) -> crate::offer::Offer {
     let cost = match a.estimate {
-        Some((c, 1)) => format!("≈ API ${c:.2} — the last board here"),
-        Some((c, k)) => format!("≈ API ${c:.2} — the last {k} boards here"),
-        None => "its cost isn't known yet — no board has ended whole here".into(),
+        _ if !money => String::new(),
+        Some((c, 1)) => format!("≈ API ${c:.2} — the last board here\n\n"),
+        Some((c, k)) => format!("≈ API ${c:.2} — the last {k} boards here\n\n"),
+        None => "its cost isn't known yet — no board has ended whole here\n\n".into(),
     };
+    // (the lines that fold, counted after the cost's two when they're there)
+    let at = if money { 2 } else { 0 };
     let names: Vec<&str> = a.angles.iter().map(|x| x.name.as_str()).collect();
     let (n, them) = match names.len() {
         1 => ("One Claude reads".to_string(), "from its angle"),
@@ -353,14 +360,14 @@ pub fn card(a: Ask) -> crate::offer::Offer {
     // (a child's: one its parent's Claude proposes always asks — `start`'s `asked`)
     let not = a.parent.as_ref().map(|p| format!(" (not one {p}'s Claude proposes)")).unwrap_or_default();
     let q = format!(
-        "{cost}\n\n{n} the changes ({what}) in the background.\n{them} — {} — then a skeptic checks each group \
+        "{cost}{n} the changes ({what}) in the background.\n{them} — {} — then a skeptic checks each group \
          of their claims.\n\nA yes holds for this session and its conversation: another board here starts without \
          asking{not}.",
         names.join(", ")
     );
     let title = format!("Start a board on {}?", a.name);
     crate::offer::Offer::new(title, &q, "", String::new(), crate::offer::What::Board(Box::new(a)))
-        .folding(vec![3..4, 4..6])
+        .folding(vec![at + 1..at + 2, at + 2..at + 4])
 }
 
 /// The board's card answered: `y` starts it, and holds for the session and its conversation; `n` starts none.

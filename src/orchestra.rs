@@ -286,7 +286,9 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
     // that its Claude is woken: a line each in the paragraph above, no row of air — at 80×24 a set of three fits whole
     // (cut in height, its `y` would wait for `v`)
     let each = if n == 1 { "" } else { " each" };
-    match s.costs.child {
+    // (money only while it's on the screen — `llm.cost`)
+    let money = ed.config.llm.cost;
+    match s.costs.child.filter(|_| money) {
         Some((c, 1)) => {
             q += &format!("\n≈ API {}{each}, as the last session started so.", crate::usage::dollars(c))
         }
@@ -297,7 +299,11 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
     }
     if s.wake {
         let ends = if n == 1 { "it ends" } else { "each ends" };
-        let cost = s.costs.wake.map(|(c, _)| format!(" — ≈ API {} a time", crate::usage::dollars(c)));
+        let cost = s
+            .costs
+            .wake
+            .filter(|_| money)
+            .map(|(c, _)| format!(" — ≈ API {} a time", crate::usage::dollars(c)));
         q += &format!(
             "\n{}'s Claude is woken as {ends}{}, {} an hour at most.",
             s.parent_name,
@@ -1471,7 +1477,7 @@ pub fn review_ended(ed: &mut Editor) {
     let there = |ids: &[u64]| ids.iter().filter(|id| notes.iter().any(|n| n.id == **id)).count();
     let stopped = match &r.state {
         crate::reviewer::State::Failed(_) | crate::reviewer::State::Stopped => {
-            Some(crate::reviewer::ended(r, 0).1)
+            Some(crate::reviewer::ended(r, 0, true).1)
         }
         _ => None,
     };
@@ -1511,7 +1517,7 @@ fn review_said(ed: &Editor, l: &crate::workspace::Workspace) -> String {
         r.findings.iter().filter_map(|id| l.claude.notes.list.iter().find(|n| n.id == *id)).collect();
     let state = match &r.state {
         crate::reviewer::State::Failed(_) | crate::reviewer::State::Stopped => {
-            crate::reviewer::ended(r, notes.len()).1
+            crate::reviewer::ended(r, notes.len(), true).1
         }
         _ if r.reading() => {
             format!("its reviewer is still reading — {} so far", crate::nav::count(notes.len(), "finding"))

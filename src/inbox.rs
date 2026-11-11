@@ -236,7 +236,7 @@ impl Editor {
             }
             // Its reviewer ended while it was behind (#195): news, not a question — what it found, where to
             // read it; gone once the session is in front
-            if let Some((said, at)) = crate::reviewer::news(l) {
+            if let Some((said, at)) = crate::reviewer::news(l, self.config.llm.cost) {
                 v.push(entry(format!("reviewer#{}", s()), "reviewer", said, at, "ended"));
             }
             // A rebase that waits on you, its card put away (`n`) — resolved, or stopped with nothing asked of

@@ -516,6 +516,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.follow = b(v),
     },
     Setting {
+        path: "llm.cost",
+        kind: Kind::Bool,
+        doc: "Chat: money on the screen — a turn's ≈ API cost and the plan's weekly window on the usage row, a board's estimate; off for a shared screen (:usage and /cost still say it)",
+        get: |c| Value::from(c.llm.cost),
+        set: |c, v| c.llm.cost = b(v),
+    },
+    Setting {
         path: "llm.follow-resume",
         kind: Kind::Int { min: 0, max: 3600 },
         doc: "Chat: seconds after your last key that follow takes over again while Claude still works (0 = only by your key: C-f in the chat, space F in the code)",

@@ -15,15 +15,28 @@ fn the_boards_card_asks_then_says_the_cost() {
         for_parent: None,
     };
     let first = |o: &crate::offer::Offer| o.question.lines().next().unwrap_or_default().to_string();
-    let o = card(ask(Some((4.1, 5))));
+    let o = card(ask(Some((4.1, 5))), true);
     assert_eq!(o.title, "Start a board on frictions31?");
     assert_eq!(first(&o), "≈ API $4.10 — the last 5 boards here");
-    assert_eq!(first(&card(ask(Some((3.0, 1))))), "≈ API $3.00 — the last board here");
-    assert_eq!(first(&card(ask(None))), "its cost isn't known yet — no board has ended whole here");
+    assert_eq!(first(&card(ask(Some((3.0, 1))), true)), "≈ API $3.00 — the last board here");
+    assert_eq!(first(&card(ask(None), true)), "its cost isn't known yet — no board has ended whole here");
     // (a child's card: one its parent's Claude proposes asks, a yes here or not)
     assert!(o.question.ends_with("starts without asking."));
-    let child = card(Ask { parent: Some("main".into()), ..ask(None) });
+    let child = card(Ask { parent: Some("main".into()), ..ask(None) }, true);
     assert!(child.question.ends_with("starts without asking (not one main's Claude proposes)."));
+    // `llm.cost` off: no cost line, nor the blank after it — what it reads first, the same lines folding
+    let off = card(ask(Some((4.1, 5))), false);
+    assert!(
+        first(&off).contains("Claudes read the changes") && !off.question.contains('$'),
+        "{}",
+        off.question
+    );
+    let lines = |o: &crate::offer::Offer| -> Vec<Vec<String>> {
+        let all: Vec<&str> = o.question.lines().collect();
+        o.folds.iter().map(|r| all[r.clone()].iter().map(|l| l.to_string()).collect()).collect()
+    };
+    assert_eq!(lines(&off), lines(&o), "the same lines fold");
+    assert!(lines(&off)[0][0].starts_with("Each from its angle"), "{:?}", lines(&off));
 }
 
 fn changed(rel: &str, grade: Grade) -> Changed {

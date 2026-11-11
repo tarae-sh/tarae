@@ -218,6 +218,10 @@ pub struct LlmConfig {
     /// claude is made from, so no claude tarae starts can miss leaving the variable out (`command`). Only your own
     /// config sets it.
     pub signed_in: Vec<crate::web::signed::Wiki>,
+    /// `llm.cost`: money on the screen unasked — the chat's usage row's cost and the plan's weekly window, the board's
+    /// estimate on its card and its start. Off (a shared screen, a recording): none of it; `:usage`, `/cost` and a
+    /// board's report, which you ask for, still say it.
+    pub cost: bool,
 }
 
 impl Default for LlmConfig {
@@ -263,6 +267,7 @@ impl Default for LlmConfig {
             web_search: true,
             web_search_model: crate::web::search::MODEL.into(),
             signed_in: Vec::new(),
+            cost: true,
         }
     }
 }

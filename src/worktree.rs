@@ -2620,7 +2620,7 @@ impl Editor {
 
     /// Each session as the list says it, in its order.
     pub(crate) fn session_shown(&self) -> Vec<Shown> {
-        let now_ms = crate::usage::now_ms();
+        let (now_ms, money) = (crate::usage::now_ms(), self.config.llm.cost);
         let context = |u: &crate::usage::Usage| match u.context() {
             Some((n, Some(w))) if w > 0 => Some(n * 100 / w),
             _ => None,
@@ -2640,12 +2640,14 @@ impl Editor {
                 reloaded: l.reloaded,
                 compacted: l.claude.compacted.unseen,
                 reviewer: Shown::reviewer_of(self, l),
+                // (what it cost, its children's too, only while money is on the screen — `llm.cost`)
                 claude: Shown::claude_of(
                     &l.claude.usage,
                     crate::idlecompact::next_at(self, l, now_ms),
                     now_ms,
                     self.interface.zone,
-                ),
+                )
+                .map(|(cache, total)| (cache, if money { total } else { String::new() })),
                 billing: l.claude.billing,
                 build: self.workspace_store.build_dirs.get(&l.id).map(|(_, size)| *size),
                 queue: self.bring_said(l.id),
@@ -2655,7 +2657,7 @@ impl Editor {
                 report: crate::sessionpane::report(l.claude.chat.as_ref()),
                 context: context(&l.claude.usage),
                 children: crate::orchestra::children_cost(self, l.claude.id)
-                    .map(|(n, t)| (n, if t.turns == 0 { String::new() } else { t.cost_said() })),
+                    .map(|(n, t)| (n, if t.turns == 0 || !money { String::new() } else { t.cost_said() })),
                 wakes: l.claude.parent.filter(|_| crate::orchestra::wakes_parent(l)).and_then(|p| {
                     let all = std::iter::once(&self.workspace).chain(&self.workspaces);
                     all.into_iter().find(|w| w.claude.id == p).map(|w| w.label().to_string())

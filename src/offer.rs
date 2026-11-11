@@ -2346,7 +2346,7 @@ impl crate::editor::Editor {
             Some(What::SessionFork(mut f)) => {
                 f.making.billing = other(f.making.billing);
                 let id = self.offers[0].id;
-                let card = crate::fork::card(&f, self.weakness_due());
+                let card = crate::fork::card(&f, self.weakness_due(), self.config.llm.cost);
                 let o = &mut self.offers[0];
                 (o.question, o.what, o.warning, o.warnings) =
                     (card.question, card.what, card.warning, card.warnings);

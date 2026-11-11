@@ -722,11 +722,12 @@ pub(crate) fn begin(
         }
         Some(b) => {
             let names: Vec<&str> = b.angles.iter().map(|a| a.name.as_str()).collect();
-            format!(
-                "the board reads the changes in the background — {} · {}{aside}",
-                names.join(", "),
-                crate::board::estimate_said(b.estimate)
-            )
+            // (what it may cost, only while money is on the screen — `llm.cost`; its report still says it)
+            let cost = match ed.config.llm.cost {
+                true => format!(" · {}", crate::board::estimate_said(b.estimate)),
+                false => String::new(),
+            };
+            format!("the board reads the changes in the background — {}{cost}{aside}", names.join(", "))
         }
     };
     let review = ed.workspace.code_review.as_ref().filter(|c| c.base.label() == t.label).map(|c| c.started);
@@ -1324,7 +1325,7 @@ fn finish(ed: &mut Editor) {
         ed.workspace.claude.usage.to_record.push(e);
     }
     let Some(r) = ed.workspace.reviewer.as_ref() else { return };
-    let (kind, said) = ended(r, r.findings.len());
+    let (kind, said) = ended(r, r.findings.len(), ed.config.llm.cost);
     match kind {
         crate::editor::ToastKind::Success => ed.set_success(said),
         _ => ed.set_warning(said),
@@ -1397,8 +1398,8 @@ pub fn board_read_of(ed: &Editor, c: &crate::codereview::CodeReview) -> bool {
 }
 
 /// How reviewer `r` ended, with `n` findings, as its toast says it: done (what it found, and the keys) — or
-/// stopped, and why.
-pub fn ended(r: &Reviewer, n: usize) -> (crate::editor::ToastKind, String) {
+/// stopped, and why. `money`: a board's cost said too (`llm.cost`; always to a parent's Claude).
+pub fn ended(r: &Reviewer, n: usize, money: bool) -> (crate::editor::ToastKind, String) {
     use crate::editor::ToastKind;
     let who = if r.board.is_some() { "the board" } else { "the reviewer" };
     // (files its diff left out that no member read: a partial review, said where its end is — frictions 51)
@@ -1413,7 +1414,10 @@ pub fn ended(r: &Reviewer, n: usize) -> (crate::editor::ToastKind, String) {
             let send = if n > 0 { " — space v s sends them on" } else { "" };
             // (short of an angle: said as a warning, its kind of fault unread)
             let kind = if r.angles_short().is_empty() { ToastKind::Success } else { ToastKind::Warning };
-            unread((kind, format!("the board is done: {}{send} · space v r reads it", board_said(r, n))))
+            unread((
+                kind,
+                format!("the board is done: {}{send} · space v r reads it", board_said(r, n, money)),
+            ))
         }
         State::Waiting | State::Reading | State::Done => {
             let found = match n {
@@ -1429,8 +1433,8 @@ pub fn ended(r: &Reviewer, n: usize) -> (crate::editor::ToastKind, String) {
 }
 
 /// How session `l`'s reviewer ended behind, as its inbox item says it (`unseen`): what it found and that
-/// `space v r` reads it — or why it stopped. When it ended. None: no such news.
-pub fn news(l: &crate::workspace::Workspace) -> Option<(String, Instant)> {
+/// `space v r` reads it — or why it stopped. When it ended. None: no such news. `money`: a board's cost said too.
+pub fn news(l: &crate::workspace::Workspace, money: bool) -> Option<(String, Instant)> {
     let r = l.reviewer.as_ref().filter(|r| r.unseen)?;
     let at = r.started + r.took.unwrap_or_default();
     let who = if r.board.is_some() { "the board" } else { "the reviewer" };
@@ -1439,7 +1443,7 @@ pub fn news(l: &crate::workspace::Workspace) -> Option<(String, Instant)> {
         State::Failed(why) => format!("{who} stopped: {why}"),
         State::Stopped => format!("{who} was stopped by you"),
         State::Waiting | State::Reading | State::Done if r.board.is_some() => {
-            format!("the board is done: {} — space v r reads it", board_said(r, n))
+            format!("the board is done: {} — space v r reads it", board_said(r, n, money))
         }
         State::Waiting | State::Reading | State::Done => match n {
             0 => "the reviewer is done: no findings — space v r reads its verdict".to_string(),
@@ -1452,11 +1456,12 @@ pub fn news(l: &crate::workspace::Workspace) -> Option<(String, Instant)> {
 /// Session `ed.workspace`, come to the front: its reviewer's end, if it came while it was behind, said now —
 /// as it was then (its inbox item and its tab's `•` go).
 pub fn workspace_in(ed: &mut Editor) {
+    let money = ed.config.llm.cost;
     let Some(r) = ed.workspace.reviewer.as_mut().filter(|r| r.unseen) else { return };
     r.unseen = false;
     let n =
         r.findings.iter().filter(|id| ed.workspace.claude.notes.list.iter().any(|n| n.id == **id)).count();
-    let (kind, said) = ended(r, n);
+    let (kind, said) = ended(r, n, money);
     match kind {
         crate::editor::ToastKind::Success => ed.set_success(said),
         _ => ed.set_warning(said),
@@ -1464,8 +1469,8 @@ pub fn workspace_in(ed: &mut Editor) {
 }
 
 /// A board's end in words: the angles that didn't read to their end, its findings (`n` still pinned), the
-/// claims refuted, what it cost.
-fn board_said(r: &Reviewer, n: usize) -> String {
+/// claims refuted, what it cost (`money`: `llm.cost`).
+fn board_said(r: &Reviewer, n: usize, money: bool) -> String {
     let Some(b) = r.board.as_deref() else { return String::new() };
     let refuted = b.count(Some(crate::board::Verdict::Refuted));
     let short = r.angles_short();
@@ -1480,7 +1485,7 @@ fn board_said(r: &Reviewer, n: usize) -> String {
     if refuted > 0 {
         out += &format!(" · {refuted} refuted");
     }
-    if let Some(c) = r.cost {
+    if let Some(c) = r.cost.filter(|_| money) {
         out += &format!(" · ≈ API ${c:.2}");
     }
     out
@@ -1934,7 +1939,8 @@ pub fn status_said(ed: &Editor) -> Option<(String, String, Option<&'static str>)
         let counts = match r.board.is_some() {
             true => {
                 let reading = r.members.iter().filter(|m| m.state == State::Reading).count();
-                let cost = r.cost.map(|c| format!(" · ${c:.2}")).unwrap_or_default();
+                let cost = r.cost.filter(|_| ed.config.llm.cost).map(|c| format!(" · ${c:.2}"));
+                let cost = cost.unwrap_or_default();
                 format!(" · {reading} of {} reading{cost}", r.members.len())
             }
             false => format!(" · {}", reads(r.reads)),
@@ -3949,6 +3955,26 @@ mod tests {
             "{:?}",
             ed.messages
         );
+        let said_of = |ed: &Editor, from: usize, start: &str| -> String {
+            let m = ed.messages[from..].iter().find(|m| m.2.starts_with(start));
+            m.map(|m| m.2.clone()).unwrap_or_else(|| panic!("{start}: {:?}", ed.messages))
+        };
+        assert!(said_of(&ed, 0, "the board is done: ").contains(" · ≈ API $"), "its end says what it cost");
+        // `llm.cost` off: neither its start nor its end says money
+        let (id, from) =
+            (ed.workspace.reviewer.as_ref().unwrap().board.as_ref().unwrap().id.clone(), ed.messages.len());
+        ed.config.llm.cost = false;
+        ask_in(&mut ed, repo.clone(), None, true);
+        settle_until(&mut ed, |ed| {
+            ed.workspace
+                .reviewer
+                .as_ref()
+                .is_some_and(|r| r.board.as_ref().is_some_and(|b| b.id != id) && !r.reading())
+        });
+        let start = said_of(&ed, from, "the board reads the changes in the background");
+        assert!(start.ends_with("— correctness, tests") && !start.contains('$'), "{start}");
+        let end = said_of(&ed, from, "the board is done: ");
+        assert!(!end.contains('$') && !end.contains("≈"), "{end}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5444,7 +5470,7 @@ mod tests {
             let r = ed.workspace.reviewer.as_ref().unwrap();
             assert!(r.prefix.contains("leaves out the changes of 1 file"), "{}", r.prefix);
             assert!(r.prefix.contains("\nbig.txt:1-1600\n") && !r.prefix.contains("+++ b/big.txt"), "{name}");
-            let (kind, said) = ended(r, 0);
+            let (kind, said) = ended(r, 0, true);
             let first = report(&ed).unwrap().lines().nth(2).unwrap_or_default().to_string();
             match unread {
                 true => {

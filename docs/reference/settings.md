@@ -65,6 +65,7 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `llm.model` | string | `""` | Model for llm.command, e.g. "haiku" ("" = the CLI's default) |
 | `llm.effort` | `""` · `"low"` · `"medium"` · `"high"` · `"xhigh"` · `"max"` | `""` | How hard Claude thinks, for models that take it ("" = the model's default) |
 | `llm.follow` | bool | `true` | Chat: the editor follows the code Claude is reading, with its thoughts beside it (C-f toggles it in a chat) |
+| `llm.cost` | bool | `true` | Chat: money on the screen — a turn's ≈ API cost and the plan's weekly window on the usage row, a board's estimate; off for a shared screen (:usage and /cost still say it) |
 | `llm.follow-resume` | integer 0–3600 | `20` | Chat: seconds after your last key that follow takes over again while Claude still works (0 = only by your key: C-f in the chat, space F in the code) |
 | `llm.stuck-after` | integer 0–1440 | `10` | Chat: minutes a run of Claude's may print nothing at next to no CPU before a card asks whether it's stuck (0 = never) |
 | `llm.stuck-after-outside` | integer 0–1440 | `30` | Chat: …and for a run whose work may go on elsewhere — granted a daemon's socket (Docker's), run outside the sandbox on your y, connected outside its processes — with no time limit of its own (a run all under its own `timeout` isn't asked before that ends, two hours at most) (0 = as llm.stuck-after) |

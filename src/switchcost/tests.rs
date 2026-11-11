@@ -125,16 +125,20 @@ fn a_forks_first_request_reads_the_context_and_writes_the_instructions_again() {
     let d = c.dollars.unwrap();
     assert!((d - (106_087.0 * 0.2 + 94_147.0 * 8.0) / 1e6).abs() < 1e-9, "{d}");
     assert_eq!(
-        fork_said(&c, Billing::Subscription, "main"),
+        fork_said(&c, Billing::Subscription, "main", true),
         "read again, plus the project's instructions a second time (≈ 94k tokens): it starts at ≈ 200k, about \
          twice main's. Its first message ≈ API $0.77."
     );
-    assert!(fork_said(&c, Billing::Api, "main").ends_with(" Its first message ≈ $0.77."));
+    assert!(fork_said(&c, Billing::Api, "main", true).ends_with(" Its first message ≈ $0.77."));
+    // `llm.cost` off: no price — on the plan its limits, on the key the size alone
+    let plan = fork_said(&c, Billing::Subscription, "main", false);
+    assert!(plan.ends_with("twice main's. Its first message counts toward your plan's limits."), "{plan}");
+    assert!(fork_said(&c, Billing::Api, "main", false).ends_with("about twice main's."));
     // Not seen here: the measured size, said so
     let guessed = fork_cost(Some(106_087), None, "claude-opus-5-5", prices).unwrap();
     assert_eq!((guessed.write, guessed.seen), (INSTRUCTIONS_MEASURED, false));
     assert_eq!(
-        fork_said(&guessed, Billing::Subscription, "main"),
+        fork_said(&guessed, Billing::Subscription, "main", true),
         "read again, plus the project's instructions a second time (not seen here: ≈ 95k tokens, as once \
          measured): it starts at ≈ 201k, about twice main's. Its first message ≈ API $0.78."
     );
@@ -142,10 +146,13 @@ fn a_forks_first_request_reads_the_context_and_writes_the_instructions_again() {
     let long = fork_cost(Some(300_000), Some(94_147), "opus", prices).unwrap();
     assert_eq!(long.dollars, None);
     assert_eq!(
-        fork_said(&long, Billing::Subscription, "main"),
+        fork_said(&long, Billing::Subscription, "main", true),
         "read again, plus the project's instructions a second time (≈ 94k tokens): it starts at ≈ 394k, about \
          1.3× main's. Its first message counts toward your plan's limits."
     );
-    assert!(fork_said(&long, Billing::Api, "main").ends_with(" Its first message: no price for this model."));
+    assert!(
+        fork_said(&long, Billing::Api, "main", true)
+            .ends_with(" Its first message: no price for this model.")
+    );
     assert_eq!(fork_cost(None, Some(94_147), "claude-opus-5-5", prices), None, "no request reported yet");
 }

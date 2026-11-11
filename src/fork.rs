@@ -193,7 +193,7 @@ fn asked(ed: &mut Editor, source: WorkspaceId, mut making: Making, files: Files)
         saving: false,
         failed: None,
     };
-    let card = card(&f, ed.weakness_due());
+    let card = card(&f, ed.weakness_due(), ed.config.llm.cost);
     ed.push_offer(card);
 }
 
@@ -449,7 +449,8 @@ fn left_said(f: &Files, src: &str) -> Option<String> {
 }
 
 /// The fork card for `f` — `weakness`: it says `billing::WEAKNESS` when it bills the key (not said yet).
-pub fn card(f: &Forking, weakness: bool) -> Offer {
+/// `money`: its first message's price said (`llm.cost`).
+pub fn card(f: &Forking, weakness: bool, money: bool) -> Offer {
     let (m, src) = (&f.making, f.from.name.as_str());
     let (folder, under) = match (m.path.file_name(), m.path.parent()) {
         (Some(n), Some(p)) => (n.to_string_lossy().into_owned(), crate::allow::tilde(p)),
@@ -492,7 +493,7 @@ pub fn card(f: &Forking, weakness: bool) -> Offer {
             let prices = &crate::sandboxpack::get().price;
             let cost = crate::switchcost::fork_cost(f.tokens, f.instructions, &f.model, prices);
             let cost = match cost {
-                Some(c) => crate::switchcost::fork_said(&c, m.billing, src),
+                Some(c) => crate::switchcost::fork_said(&c, m.billing, src, money),
                 None => {
                     "read again, plus the project's instructions a second time; its size isn't reported yet."
                         .into()
@@ -547,7 +548,7 @@ pub fn card(f: &Forking, weakness: bool) -> Offer {
 
 /// Card `id` says `f` now — what it decides changed, so its `rev` moves (a `y` answers what was in sight).
 fn replace(ed: &mut Editor, id: u64, f: Forking) {
-    let new = card(&f, ed.weakness_due());
+    let new = card(&f, ed.weakness_due(), ed.config.llm.cost);
     let Some(o) = ed.offers.iter_mut().find(|o| o.id == id) else { return };
     (o.question, o.what, o.warning, o.warnings) = (new.question, new.what, new.warning, new.warnings);
     o.rev += 1;

@@ -8403,6 +8403,108 @@ mod tests {
         assert_eq!(shown.map(|s| s.1).as_deref(), Some("≈ API $0.018"));
     }
 
+    /// `llm.cost` off (`:set llm.cost false` — a shared screen, a recording): the usage row keeps the cache and the
+    /// context and says no cost, nor the plan's weekly window though it presses — wide and narrow, no gap or stray `·`
+    /// where they were; on again, both are back. `:usage`, asked for, says the same either way.
+    #[test]
+    fn llm_cost_off_keeps_money_off_the_usage_row() {
+        let conv = "cda055cc-67c1-4da7-9120-68435b027d4f";
+        let mut events = vec![serde_json::json!({"type": "system", "subtype": "init", "session_id": conv,
+            "model": "m", "claude_code_version": "2.1.288"})];
+        for line in include_str!("usage_stream.jsonl").lines() {
+            events.push(serde_json::from_str(line).unwrap());
+            if line.contains("total_cost_usd") {
+                break;
+            }
+        }
+        let mut ed = editor("");
+        fake_claude_stream(&mut ed, &events);
+        feed(&mut ed, "<space>lhi<ret>");
+        settle_until(&mut ed, |ed| {
+            !ed.workspace.claude.chat.as_ref().unwrap().busy() && ed.workspace.claude.usage.turns.len() == 1
+        });
+        // (on the plan, its weekly window pressing: 93 %, a warning due on the row)
+        let now = crate::usage::now_ms();
+        let u = &mut ed.workspace.claude.usage;
+        u.key_source = Some("none".into());
+        u.account =
+            Some(crate::usage::Account { organization: None, plan: Some("Claude Max".into()), login: 1 });
+        ed.limits.login = Some(1);
+        ed.limits.seen(crate::limits::Report {
+            readings: vec![crate::limits::Reading {
+                window: crate::limits::WEEKLY.into(),
+                percent: Some(93),
+                resets_at_ms: Some(now + 3 * 86_400_000),
+                status: Some(crate::limits::Status::Allowed),
+                seen_at_ms: now,
+                from: crate::limits::Source::Event,
+            }],
+            ..crate::limits::Report::default()
+        });
+        let footer = |ed: &mut Editor, w: u16| -> String {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, w, 40).unwrap();
+            let mut vt = vt100::Parser::new(40, w, 0);
+            vt.process(&bytes);
+            let rows: Vec<String> = vt.screen().rows(0, w).collect();
+            let row = rows.iter().find(|r| r.contains("● warm")).unwrap_or_else(|| panic!("{rows:#?}"));
+            row.trim_end().to_string()
+        };
+        let at = crate::usage::until(crate::log::Zone::Here, ed.workspace.claude.usage.cold_at().unwrap());
+        let usage = |ed: &mut Editor| {
+            feed(ed, ":usage<ret>");
+            assert_eq!(ed.doc().title.as_deref(), Some("usage"));
+            let text = ed.doc().text.to_string();
+            ed.close_doc(ed.doc().id);
+            text
+        };
+        // On: the cost and the weekly window, wide and narrow
+        let wide = footer(&mut ed, 240);
+        assert!(wide.contains("weekly 93 % · resets ") && wide.contains("≈$0.018"), "{wide:?}");
+        let narrow = footer(&mut ed, 120);
+        assert!(narrow.contains("weekly 93 %"), "{narrow:?}");
+        let asked = usage(&mut ed);
+        assert!(asked.contains("$0.018"), "{asked}");
+        // The session list's row: the session's total, as `≈ API`
+        let list = |ed: &mut Editor| -> String {
+            // (`space W`'s, wherever the keys are)
+            ed.session_list();
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 240, 40).unwrap();
+            let mut vt = vt100::Parser::new(40, 240, 0);
+            vt.process(&bytes);
+            let rows: Vec<String> = vt.screen().rows(0, 240).collect();
+            // (`enter` on the session in front: the list used, closed)
+            ed.sessions_enter();
+            assert!(!ed.sessions_list_keys(), "the list closed");
+            let name = format!("▎ {}  ", ed.workspace.label());
+            let row = rows.iter().find(|r| r.contains(&name) && r.contains("warm until"));
+            row.unwrap_or_else(|| panic!("the list's row: {rows:#?}")).to_string()
+        };
+        let row = list(&mut ed);
+        assert!(row.contains("≈ API $0.018"), "{row:?}");
+        // Off: neither, the rest laid out as ever
+        feed(&mut ed, ":set llm.cost false<ret>");
+        assert!(!ed.config.llm.cost);
+        let wide = footer(&mut ed, 240);
+        let rest = format!("● warm until {at}  ctx 4% of 200k  read 7.9k write 8.1k in 18 out 185");
+        assert!(wide.ends_with(&rest), "no gap where they were: {wide:?}");
+        let narrow = footer(&mut ed, 120);
+        assert!(narrow.contains(&format!("● warm until {at}  ctx 4%")), "{narrow:?}");
+        for row in [&wide, &narrow] {
+            let words = row.trim_start_matches(|c: char| c != '●');
+            assert!(!words.contains('$') && !words.contains('≈') && !words.contains("weekly"), "{row:?}");
+            assert!(!words.contains("   ") && !words.contains(" ·") && !words.ends_with(' '), "{row:?}");
+        }
+        assert_eq!(usage(&mut ed), asked, ":usage says the same");
+        let row = list(&mut ed);
+        assert!(!row.contains('$') && !row.contains("≈ API"), "the list's row: {row:?}");
+        // On again: back
+        feed(&mut ed, ":set llm.cost true<ret>");
+        let wide = footer(&mut ed, 240);
+        assert!(wide.contains("weekly 93 %") && wide.contains("≈$0.018"), "{wide:?}");
+    }
+
     fn follow_project(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("tarae-follow-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

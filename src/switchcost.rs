@@ -149,7 +149,8 @@ pub fn fork_cost(
 /// instructions a second time (≈ 94k tokens): it starts at ≈ 200k, about twice main's. Its first message ≈ API
 /// $0.77.` — money as the chat's row says it: `≈ $0.77` on the key, `≈ API $0.77` where the session isn't on it (what
 /// the API would charge, not what you pay).
-pub fn fork_said(c: &ForkCost, to: Billing, src: &str) -> String {
+/// `money` off (`llm.cost`): no price — on the plan its limits said, on the key nothing more.
+pub fn fork_said(c: &ForkCost, to: Billing, src: &str, money: bool) -> String {
     let tokens = crate::usage::tokens;
     let instructions = match c.seen {
         true => format!("≈ {} tokens", tokens(c.write)),
@@ -163,13 +164,15 @@ pub fn fork_said(c: &ForkCost, to: Billing, src: &str) -> String {
         _ => String::new(),
     };
     let first = match c.dollars {
-        Some(d) if to == Billing::Api => format!("Its first message ≈ {}.", crate::usage::dollars(d)),
-        Some(d) => format!("Its first message ≈ API {}.", crate::usage::dollars(d)),
-        None if to == Billing::Api => "Its first message: no price for this model.".into(),
-        None => "Its first message counts toward your plan's limits.".into(),
+        _ if !money && to == Billing::Api => String::new(),
+        _ if !money => " Its first message counts toward your plan's limits.".into(),
+        Some(d) if to == Billing::Api => format!(" Its first message ≈ {}.", crate::usage::dollars(d)),
+        Some(d) => format!(" Its first message ≈ API {}.", crate::usage::dollars(d)),
+        None if to == Billing::Api => " Its first message: no price for this model.".into(),
+        None => " Its first message counts toward your plan's limits.".into(),
     };
     format!(
-        "read again, plus the project's instructions a second time ({instructions}): it starts at ≈ {}{times}. {first}",
+        "read again, plus the project's instructions a second time ({instructions}): it starts at ≈ {}{times}.{first}",
         tokens(c.starts())
     )
 }
@@ -321,6 +324,12 @@ impl Editor {
                 Some(Effort::Rewrites) => {}
                 Some(Effort::Unknown) | None => s.maybe = true,
             }
+        }
+        // (money only while it's on the screen — `llm.cost`: the tokens it writes again said instead)
+        if let Cost::Warm { dollars, .. } = &mut s.cost
+            && !self.config.llm.cost
+        {
+            *dollars = None;
         }
         Some(s)
     }

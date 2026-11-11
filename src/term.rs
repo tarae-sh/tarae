@@ -18137,7 +18137,8 @@ fn rail_board(editor: &Editor, rv: &crate::reviewer::Reviewer, w: usize) -> Vec<
                 let time = format!(" {}", timer(crate::clock::since(rv.started), !editor.moving()));
                 if fits(&head, &time) {
                     head.push(tone(Tone::Faint, time));
-                    if let Some(c) = rv.cost {
+                    // (only while money is on the screen — `llm.cost`)
+                    if let Some(c) = rv.cost.filter(|_| editor.config.llm.cost) {
                         let said = [format!(" · ${c:.2} so far"), format!(" · ${c:.2}")];
                         if let Some(s) = said.into_iter().find(|s| fits(&head, s)) {
                             head.push(tone(Tone::Faint, s));
@@ -19807,7 +19808,8 @@ fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
     let s = Style::default();
     let u = &editor.workspace.claude.usage;
     let (billing, zone) = (editor.workspace.claude.billing, editor.interface.zone);
-    let usage = usage_spans(u, compacts, &editor.limits, billing, (now_ms, zone), w, [s; 4]).is_some();
+    let money = (billing, editor.config.llm.cost);
+    let usage = usage_spans(u, compacts, &editor.limits, money, (now_ms, zone), w, [s; 4]).is_some();
     // (its top line, the transcript, the input's line, its rows, the hint row, the usage row — `draw_chat`)
     let rule = (at.y + at.h).checked_sub(input_h + 2 + usize::from(usage))?;
     // (against the screen's left edge — the chat filling it — no gutter cell before it)
@@ -20379,7 +20381,7 @@ fn draw_chat(
         &editor.workspace.claude.usage,
         crate::idlecompact::next_at(editor, &editor.workspace, now_ms),
         &editor.limits,
-        editor.workspace.claude.billing,
+        (editor.workspace.claude.billing, editor.config.llm.cost),
         (now_ms, editor.interface.zone),
         w,
         [accent, dim, faint, warn_fg],
@@ -21322,13 +21324,14 @@ fn draw_chat(
 /// warns, or 80 % and over) and claude runs on the plan (`limits::on_plan`, from claude's start — before any turn):
 /// `weekly 93 % · resets Sun 15:00` in warning after the cache, its reset outlasting the cost and the context; below
 /// that, and the plan's name ever, are `:usage`'s. An API session's row starts with `api` (dim: a state, not
-/// something asking — D5), always there, never folded. None: nothing reported in this conversation yet, nor a
+/// something asking — D5), always there, never folded. `money` off (`llm.cost`): no cost and no weekly window — the
+/// groups left laid out as ever, no gap where they were. None: nothing reported in this conversation yet, nor a
 /// window pressing, on the plan. Styles: accent, dim, faint, warning.
 fn usage_spans(
     u: &crate::usage::Usage,
     compacts: Option<u64>,
     limits: &crate::limits::Limits,
-    billing: crate::billing::Billing,
+    (billing, money): (crate::billing::Billing, bool),
     (now_ms, zone): (u64, crate::log::Zone),
     w: usize,
     [accent, dim, faint, warn]: [Style; 4],
@@ -21342,7 +21345,7 @@ fn usage_spans(
     let reported = conv.is_some_and(|c| c.last.is_some()) || turn.is_some();
     // (another login's since this claude started: the limits known are the other account's — #3)
     let other_login = matches!((&u.account, limits.login), (Some(a), Some(l)) if a.login != l);
-    let weekly = crate::limits::on_plan(u.key_source.as_deref(), u.plan_event)
+    let weekly = (money && crate::limits::on_plan(u.key_source.as_deref(), u.plan_event))
         .then(|| limits.get(crate::limits::WEEKLY, now_ms))
         .flatten()
         .filter(|r| !other_login && crate::limits::pressing(r));
@@ -21399,7 +21402,7 @@ fn usage_spans(
     };
     // (the API price by claude's own table, not what a subscription pays — #161: said so, `≈`)
     let cost = |long: bool| -> Vec<Span> {
-        let Some(t) = turn else { return Vec::new() };
+        let Some(t) = turn.filter(|_| money) else { return Vec::new() };
         let label = if long { "turn ≈ API " } else { "≈" };
         match t.cost {
             Some(c) => vec![sp(label.into(), faint), sp(dollars(c), dim)],
@@ -21474,7 +21477,7 @@ pub(crate) fn usage_row_for_test(ed: &Editor, w: usize) -> Vec<crate::markdown::
         &ed.workspace.claude.usage,
         crate::idlecompact::next_at(ed, &ed.workspace, now),
         &ed.limits,
-        ed.workspace.claude.billing,
+        (ed.workspace.claude.billing, ed.config.llm.cost),
         (now, ed.interface.zone),
         w,
         [Style::default(); 4],
@@ -27370,8 +27373,15 @@ mod tests {
         use crate::billing::Billing;
         let (u, limits) = (crate::usage::Usage::default(), crate::limits::Limits::default());
         let text = |b, w| {
-            let spans =
-                usage_spans(&u, None, &limits, b, (0, crate::log::Zone::Here), w, [Style::default(); 4]);
+            let spans = usage_spans(
+                &u,
+                None,
+                &limits,
+                (b, true),
+                (0, crate::log::Zone::Here),
+                w,
+                [Style::default(); 4],
+            );
             spans.map(|v| v.into_iter().map(|s| s.text).collect::<String>())
         };
         assert_eq!(text(Billing::Api, 80).as_deref(), Some("api"));
@@ -27405,7 +27415,7 @@ mod tests {
             limits.seen(Report { readings: vec![weekly], ..Report::default() });
             let styles = [Style::default(), Style::default(), Style::default(), warn];
             let here = (now, crate::log::Zone::Here);
-            usage_spans(&u, None, &limits, crate::billing::Billing::Subscription, here, 80, styles)
+            usage_spans(&u, None, &limits, (crate::billing::Billing::Subscription, true), here, 80, styles)
         };
         assert_eq!(row(41, Status::Allowed), None, "41 %: nothing on the row");
         let pressing = row(93, Status::Allowed).expect("93 %: the row");

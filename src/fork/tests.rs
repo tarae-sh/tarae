@@ -473,7 +473,7 @@ fn the_card_says_what_isnt_carried_and_what_the_first_message_costs() {
         saving: false,
         failed: None,
     };
-    let o = card(&f, false);
+    let o = card(&f, false, true);
     let lines: Vec<&str> = o.question.split('\n').collect();
     assert_eq!(lines[0], "Branch fix-2 at a1b2c3d, fix's HEAD — it brings into main, as fix.");
     let left = lines.iter().position(|l| l.starts_with("5210 new files of fix's aren't carried")).unwrap();
@@ -492,20 +492,20 @@ fn the_card_says_what_isnt_carried_and_what_the_first_message_costs() {
     // written again), on the plan — what the API would charge
     (f.tokens, f.instructions, f.model) = (Some(106_087), Some(94_147), "claude-opus-5-5".into());
     assert!(
-        card(&f, false).question.contains(
+        card(&f, false, true).question.contains(
             "\nIts conversation: fix's, at turn 14 — read again, plus the project's instructions a second time (≈ \
              94k tokens): it starts at ≈ 200k, about twice fix's. Its first message ≈ API $0.77.\n"
         ),
         "{}",
-        card(&f, false).question
+        card(&f, false, true).question
     );
     // No conversation yet: the files alone
     f.from.conversation = None;
-    assert!(card(&f, false).question.contains("\nIts conversation: none yet — a new one.\n"));
+    assert!(card(&f, false, true).question.contains("\nIts conversation: none yet — a new one.\n"));
     assert!(told(&f.from, "fix-2").starts_with("This session was forked from session fix: it's now fix-2"));
     // A save that failed: said in warning, its `y` back
     (f.go, f.failed) = (false, Some("a.txt wasn't saved".into()));
-    let o = card(&f, false);
+    let o = card(&f, false, true);
     let last = o.question.split('\n').count() - 1;
     assert!(o.question.ends_with("\n\na.txt wasn't saved — y tries again."), "{}", o.question);
     assert_eq!(o.warning, Some(last..last + 1));
