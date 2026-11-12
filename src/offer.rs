@@ -2594,6 +2594,22 @@ impl crate::editor::Editor {
         self.push_offer(card);
     }
 
+    /// Card `id` says something new, its `rev` moved on from `was` by a sync that follows what it's about (#535, #537).
+    /// Yours (`Offer.yours`) and never drawn yet, no key was meant for its old words: the keys it has, or was to be
+    /// handed as its first frame drew it (`card_next`), are its as it is now. A card that came on its own is never
+    /// focused by it; once in sight, keys it had go, as for any card that changes (`plugin_card_renew`): a key meant
+    /// for what it said isn't an answer to what it says now.
+    pub(crate) fn offer_renewed(&mut self, id: u64, was: u64) {
+        let carried =
+            self.offers.iter().find(|o| o.id == id).is_some_and(|o| o.yours && o.drawn.get().is_none());
+        if self.card_next == Some((id, was)) {
+            self.card_next = carried.then_some((id, was + 1));
+        }
+        if self.card_focus == Some((id, was)) {
+            self.card_focus = carried.then_some((id, was + 1));
+        }
+    }
+
     /// `c` on a session's end card with work in no commit: committed on its branch first, then asked again.
     pub fn offer_commit_first(&mut self) {
         if !self.offers.first().is_some_and(Offer::commits_first) {
@@ -3081,7 +3097,15 @@ impl crate::editor::Editor {
             }
             What::ChangeSet { whose, .. } => crate::refactor::decline_all(self, whose),
             What::Instructions(b) => crate::instructions::answer(self, *b, false),
-            What::ReviewEnd { .. } => self.set_status("still reviewing — space v m marks a file viewed"),
+            What::ReviewEnd { session, .. } => {
+                // (#535: a commit first waited for this end — let go, said: nothing goes on behind the review)
+                let mut waits = None;
+                self.with_workspace(session, |ed| waits = ed.workspace.commit_waits.take());
+                match waits {
+                    Some(w) => self.set_status(format!("still reviewing — {}", w.then.not_asked(&w.name))),
+                    None => self.set_status("still reviewing — space v m marks a file viewed"),
+                }
+            }
             What::Rebase(m) => {
                 self.bring_declined(&m);
                 self.set_status(format!("Not rebased — {} as it is, nothing brought", m.branch))

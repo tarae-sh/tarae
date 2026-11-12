@@ -1025,6 +1025,7 @@ fn every_act_that_takes_a_workspace_to_the_front_puts_itself_off_whole() {
             unsaved: Vec::new(),
             bring: false,
             left_out: Vec::new(),
+            review: false,
         }
     }
     fn ending(dir: &Path) -> crate::worktree::Ending {

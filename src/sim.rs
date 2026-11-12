@@ -42,6 +42,7 @@ mod codecard;
 mod codeclock;
 mod codetrust;
 mod commit;
+mod commitfirst;
 mod confighold;
 mod cutrest;
 mod diskracy;

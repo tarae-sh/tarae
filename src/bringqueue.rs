@@ -664,7 +664,14 @@ impl Editor {
         }
         if !check.unclean.is_empty() {
             let (changed, left_out) = (check.unclean, check.left_out);
-            let h = crate::rebase::Held { moved: m, changed, unsaved: Vec::new(), bring: true, left_out };
+            let h = crate::rebase::Held {
+                moved: m,
+                changed,
+                unsaved: Vec::new(),
+                bring: true,
+                left_out,
+                review: false,
+            };
             return self.bring_queue_unclean(id, h);
         }
         if check.highs > 0 {

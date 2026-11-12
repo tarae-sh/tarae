@@ -580,6 +580,29 @@ impl Then {
             }
         }
     }
+
+    /// What a commit first let go before it began says (#535: the review it waited for kept): nothing committed,
+    /// and how to ask again.
+    pub fn not_asked(&self, name: &str) -> String {
+        match self {
+            Then::End => {
+                format!("nothing committed, {name} not ended — :workspace-end {name} once the review ends")
+            }
+            Then::Bring(_) => {
+                format!("nothing committed, nothing brought — :workspace-bring {name} once the review ends")
+            }
+            Then::SessionNew { .. } => "nothing committed, no session made".to_string(),
+        }
+    }
+}
+
+/// A card's commit first waiting for its checkout's code review to end (#535): what `worktree::commit_first` was
+/// asked, asked again then.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitWaits {
+    pub name: String,
+    pub then: Then,
+    pub message: Option<String>,
 }
 
 /// A commit a card's answer opened the message of (`c` on an end card or a bring's held card, `y` on the
@@ -1044,6 +1067,8 @@ impl Editor {
         // A code review open keeps every buffer in its REVIEW keys: the message couldn't be typed, and a
         // draft landed as an edit waiting there — ended first, said
         if self.workspace.code_review.is_some() {
+            // (a card's commit first is never left set by a refusal: a later `c` of the tab's would carry it)
+            self.workspace.commit_first = None;
             let key = if draft { "C" } else { "c" };
             return self.set_warning(format!(
                 "a code review is open — end it first (space v q), then {key} writes the commit message"

@@ -1288,20 +1288,26 @@ fn ready_or_held(
     unsaved: &[PathBuf],
 ) -> Bringing {
     let r = ready(root, name, base.clone(), start, unsaved);
-    if matches!(&r, Ok(m) if m.ahead == 0) {
+    let changed = crate::rebase::unclean(root).filter(|c| !c.is_empty());
+    // (nothing of its own, behind and clean: its move up card — with changes, untracked ones too, the held card below:
+    // a move up would leave them and bring nothing, #536)
+    if matches!(&r, Ok(m) if m.ahead == 0) && changed.is_none() {
         return r.map_or_else(Bringing::Refused, Bringing::Ready);
     }
-    let changed = crate::rebase::unclean(root).filter(|c| !c.is_empty());
-    let moved = |ahead: usize| -> Option<crate::rebase::Moved> {
+    // (nothing of its own: how far its base moved past it — its commit first's bring is the rebase then, #536)
+    let behind = || -> Option<crate::rebase::Moved> {
         let branch = current_branch(root)?;
         let base = base_or_start(base.clone(), start).ok()?;
-        Some(crate::rebase::Moved { root: root.into(), name: name.into(), branch, base, moved: 0, ahead })
+        let tip = local_branch(root, &base).ok()?;
+        let moved = count(root, &format!("HEAD..{tip}"));
+        Some(crate::rebase::Moved { root: root.into(), name: name.into(), branch, base, moved, ahead: 0 })
     };
     match (r, changed) {
         (Ok(m), Some(c)) => Bringing::Held(Box::new(crate::rebase::Held::bring(m, c))),
-        // (behind its base as well: `ready`'s own words, what holds its move up — #186)
-        (Err(e), Some(c)) => match moved(0) {
-            Some(m) if e.starts_with("nothing to bring") && !e.contains("can't move up") => {
+        // (nothing of its own, its base moved or not: the held card with `c` all the same — #536: behind its base,
+        // the same case was `ready`'s refusal in a toast, no card)
+        (Err(e), Some(c)) => match behind() {
+            Some(m) if e.starts_with("nothing to bring") => {
                 Bringing::Held(Box::new(crate::rebase::Held::bring(m, c)))
             }
             _ => Bringing::Refused(e),
@@ -2693,6 +2699,12 @@ impl Editor {
             return self.set_error(format!("{name} isn't open any more"));
         };
         self.workspace_switch(id);
+        // (#535: a review open there keeps every buffer in its keys and its diff on the changes this commit takes —
+        // its end asked first, on its own card with its holds; the commit goes on once it ends, `n` lets it go)
+        if self.workspace.code_review.is_some() {
+            self.workspace.commit_waits = Some(crate::gitpanel::CommitWaits { name, then, message });
+            return crate::codereview::close_asked(self);
+        }
         let said = format!("Staging {name}'s changes…");
         let work = move || {
             let left_out = kept_out(&root, &crate::rebase::unclean(&root).unwrap_or_default());
@@ -4798,19 +4810,13 @@ mod tests {
         assert!(says(&ed, &format!("Moved behind up to main — now at {}", &main[..7])), "{}", said(&ed));
         assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), main);
         assert_eq!(std::fs::read_to_string(wt.join("c.txt")).unwrap(), "c\n", "its checkout followed");
-        // Changes in its checkout: said why not, nothing moves
+        // Changes in its checkout: no move up — the held card, `c` to commit them (#536), nothing moves
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "main again"]);
         std::fs::write(wt.join("a.txt"), "mine\n").unwrap();
         feed(&mut ed, ":workspace-bring<ret>");
-        settle_until(&mut ed, |ed| says(ed, "bring behind:") || card(ed, title).is_some());
-        assert!(
-            says(
-                &ed,
-                "can't move up to main's 1 commit: it has changes in a.txt — commit or stash them first"
-            ),
-            "{}",
-            said(&ed)
-        );
+        let held = "Bring behind: changes in no commit";
+        settle_until(&mut ed, |ed| says(ed, "bring behind:") || card_anywhere(ed, held).is_some());
+        assert!(card(&ed, title).is_none() && card_anywhere(&ed, held).is_some(), "{}", said(&ed));
         assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), main);
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
@@ -9326,6 +9332,187 @@ mod tests {
         assert!(h.question.starts_with("new.txt changed and isn't in a commit") && h.commits_first());
         assert!(!preflighting(&ed, a));
         drop(ed);
+    }
+
+    /// #536 (the full video's take 2): `board` with changes and no commits, main 2 commits ahead — `:workspace-bring`
+    /// was only a toast ("nothing to bring — … can't move up to main's 2 commits …"), where `dates`, the same case with
+    /// main not moved, got the held card. The same act gets the same card: the held card says main moved, its `c`
+    /// commits them (Claude's draft, `:w`), then the bring asked again is the rebase onto main's tip.
+    #[test]
+    fn a_bring_behind_a_moved_base_with_changes_gets_the_commit_first_card_then_the_rebase() {
+        let (_s, repo, dir) = place("bring-behind-commit-first");
+        let mut ed = editor(&repo, &dir);
+        let wt = new_session(&mut ed, "board");
+        std::fs::write(wt.join("a.txt"), "mine\n").unwrap();
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "main moves"]);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "and again"]);
+        ed.workspace_switch(WorkspaceId::HOME);
+        let title = "Bring board: changes in no commit";
+        let held = |ed: &Editor| card_anywhere(ed, title).cloned();
+        feed(&mut ed, ":workspace-bring board<ret>");
+        settle_until(&mut ed, |ed| held(ed).is_some() || says(ed, "bring board:"));
+        let h = held(&ed).unwrap_or_else(|| panic!("the held card, not the refusal: {}", said(&ed)));
+        assert_eq!(
+            h.question,
+            "board has no commits past main, and main moved 2 commits since — its changes are in no commit: a.txt.\n\n\
+             c commits it first (Claude's draft, :w), then the bring is asked again, a rebase onto main's tip first."
+        );
+        assert_eq!(card_in_sight(&mut ed), ['c', 'g', 'n']);
+        let reply = json!({"type": "result", "result": "Mine"});
+        ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{reply}'")];
+        feed(&mut ed, "c");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        crate::term::render(&mut ed, &mut Vec::new(), 112, 30).unwrap();
+        feed(&mut ed, "a:w<ret>");
+        let rebase = "Bring board into main";
+        settle_until(&mut ed, |ed| card_anywhere(ed, rebase).is_some() || says(ed, "bring board:"));
+        assert_eq!(git_in(&wt, &["log", "-1", "--format=%s"]), "Mine");
+        let o = card_anywhere(&ed, rebase).unwrap_or_else(|| panic!("the rebase card: {}", said(&ed)));
+        assert!(matches!(o.what, crate::offer::What::Rebase(_)), "{:?}", o.what);
+        assert!(
+            o.question.contains("main moved 2 commits since board left it; board has 1 commit."),
+            "{}",
+            o.question
+        );
+    }
+
+    /// #535 (the full video's take 2): `c` on the held bring card, a code review open in that checkout — the card went
+    /// and nothing else came, the log alone saying the review had to end first (and its changes staged meanwhile). The
+    /// card says it first; `c` asks the review's end on its own card (its holds kept): `n` there lets the commit go,
+    /// said, nothing staged; `y` ends the review and the commit's draft opens, the bring asked again after it.
+    #[test]
+    fn c_on_a_held_bring_card_asks_the_open_reviews_end_first() {
+        let (_s, repo, dir) = place("bring-review-first");
+        let mut ed = editor(&repo, &dir);
+        let wt = new_session(&mut ed, "board");
+        std::fs::write(wt.join("a.txt"), "two\n").unwrap();
+        feed(&mut ed, "<space>vv");
+        settle_until(&mut ed, |ed| ed.workspace.code_review.as_ref().is_some_and(|r| !r.files.is_empty()));
+        let title = "Bring board: changes in no commit";
+        let held = |ed: &Editor| card_anywhere(ed, title).cloned();
+        // (yours: it has the keys as its first frame draws it — its words renewed before that frame or not)
+        let asked = |ed: &mut Editor| {
+            ed.workspace_switch(WorkspaceId::HOME);
+            feed(ed, ":workspace-bring board<ret>");
+            settle_until(ed, |ed| held(ed).is_some() || says(ed, "bring board:"));
+            crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
+            let front = ed.offers.first().map(|o| (o.id, o.rev));
+            assert_eq!(
+                ed.card_focus,
+                front,
+                "the held card has the keys: {:?}",
+                ed.offers.first().map(|o| &o.title)
+            );
+            crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
+        };
+        asked(&mut ed);
+        let q = held(&ed).unwrap_or_else(|| panic!("{}", said(&ed))).question;
+        assert!(
+            q.ends_with(
+                "\n\nc ends board's review first (its card asks), commits it (Claude's draft, :w), then the bring is \
+                 asked again."
+            ),
+            "{q}"
+        );
+        // c: the review's end asked — nothing staged yet
+        let end = "End board's review?";
+        feed(&mut ed, "c");
+        settle_until(&mut ed, |ed| card(ed, end).is_some() || ed.workspace.committing.is_some());
+        assert!(card(&ed, end).is_some(), "the review's end asked: {}", said(&ed));
+        assert!(ed.workspace.commit_waits.is_some());
+        // (asked by `c`: its `y` goes on to the commit, said on it)
+        let chain = "\n\ny ends it, then board's commit (Claude's draft, :w).";
+        assert!(card(&ed, end).unwrap().question.contains(chain), "{}", card(&ed, end).unwrap().question);
+        assert_eq!(
+            git_in(&wt, &["diff", "--cached", "--name-only"]),
+            "",
+            "nothing staged before the review ends"
+        );
+        // n: the review stays, the commit let go — said
+        card_in_sight(&mut ed);
+        feed(&mut ed, "n");
+        assert!(
+            says(
+                &ed,
+                "still reviewing — nothing committed, nothing brought — :workspace-bring board once the review ends"
+            ),
+            "{}",
+            said(&ed)
+        );
+        assert!(ed.workspace.commit_waits.is_none() && ed.workspace.code_review.is_some());
+        assert_eq!(git_in(&wt, &["diff", "--cached", "--name-only"]), "");
+        // The end asked by `space v q`: the ordinary card, no commit after its `y`
+        feed(&mut ed, "<space>vq");
+        let q = card(&ed, end).unwrap_or_else(|| panic!("{}", said(&ed))).question.clone();
+        assert!(!q.contains("y ends it") && !q.contains("'s commit"), "{q}");
+        card_in_sight(&mut ed);
+        feed(&mut ed, "n");
+        // Again, y on the end card: the review ends, its changes staged and the draft asked, the bring after it
+        asked(&mut ed);
+        let reply = json!({"type": "result", "result": "Two"});
+        ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{reply}'")];
+        feed(&mut ed, "c");
+        settle_until(&mut ed, |ed| card(ed, end).is_some());
+        card_in_sight(&mut ed);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        assert!(ed.workspace.code_review.is_none(), "the review ended");
+        assert!(says(&ed, "board's review ended — its changes' commit next"), "{}", said(&ed));
+        let then = ed.workspace.committing.as_ref().and_then(|c| c.then.clone());
+        assert_eq!(then, Some(crate::gitpanel::Then::Bring("board".into())));
+        assert_eq!(git_in(&wt, &["diff", "--cached", "--name-only"]), "a.txt");
+    }
+
+    /// #535's chain across `h`: `c` with a review whose high-risk change no one looked at asks its end, held — `h` goes
+    /// to the change (the card steps aside), and the commit first still waits behind it: looked at, the card is back
+    /// with its `y` and says it goes on to the commit; `y` ends the review and the commit's draft opens.
+    #[test]
+    fn the_commit_first_waits_across_the_held_end_cards_h() {
+        let (_s, repo, dir) = place("bring-review-h");
+        std::fs::write(repo.join("b.rs"), "fn b() {}\n").unwrap();
+        git_in(&repo, &["add", "b.rs"]);
+        git_in(&repo, &["commit", "-qm", "b"]);
+        let mut ed = editor(&repo, &dir);
+        let wt = new_session(&mut ed, "board");
+        std::fs::write(wt.join("b.rs"), "fn b() { unsafe { c() } }\n").unwrap();
+        feed(&mut ed, "<space>vv");
+        settle_until(&mut ed, |ed| ed.workspace.code_review.as_ref().is_some_and(|r| !r.files.is_empty()));
+        ed.workspace_switch(WorkspaceId::HOME);
+        feed(&mut ed, ":workspace-bring board<ret>");
+        let title = "Bring board: changes in no commit";
+        settle_until(&mut ed, |ed| card_anywhere(ed, title).is_some() || says(ed, "bring board:"));
+        card_in_sight(&mut ed);
+        feed(&mut ed, "c");
+        let end = "End board's review?";
+        settle_until(&mut ed, |ed| card(ed, end).is_some() || ed.workspace.committing.is_some());
+        let o = card(&ed, end).unwrap_or_else(|| panic!("{}", said(&ed))).clone();
+        assert!(o.held.is_some(), "held by the change no one looked at: {}", o.question);
+        assert!(!o.question.contains("y ends it"), "no y yet, nothing said of it: {}", o.question);
+        // h: to the change, the card aside — the chain kept
+        card_in_sight(&mut ed);
+        feed(&mut ed, "h");
+        let on_b = |ed: &Editor| ed.doc().path.as_ref().is_some_and(|p| p.ends_with("b.rs"));
+        settle_until(&mut ed, on_b);
+        assert!(card(&ed, end).is_some_and(|o| o.aside), "stepped aside, still up");
+        assert!(ed.workspace.commit_waits.is_some(), "h keeps the commit first waiting");
+        // Looked at: the card back with its y, saying where it goes
+        crate::term::render(&mut ed, &mut Vec::new(), 112, 30).unwrap();
+        feed(&mut ed, "<space>vh");
+        let o = card(&ed, end).unwrap().clone();
+        assert!(o.held.is_none() && !o.aside, "freed and back: {}", o.question);
+        assert!(
+            o.question.contains("\n\ny ends it, then board's commit (Claude's draft, :w)."),
+            "{}",
+            o.question
+        );
+        let reply = json!({"type": "result", "result": "Unsafe b"});
+        ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{reply}'")];
+        card_in_sight(&mut ed);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        assert!(ed.workspace.code_review.is_none(), "the review ended");
+        let then = ed.workspace.committing.as_ref().and_then(|c| c.then.clone());
+        assert_eq!(then, Some(crate::gitpanel::Then::Bring("board".into())));
     }
 
     /// Take 2: `c` on the end card left `.env` out, and the end asked again with it still there said nothing — as if

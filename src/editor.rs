@@ -3542,6 +3542,10 @@ impl Editor {
         crate::codereview::land(self);
         crate::grammar::seen_sync(self);
         self.offer_view_sync();
+        // (cards that follow what they're about while up: a review's end card its review — #537; a bring's held card
+        // a review open in its checkout — #535)
+        crate::codereview::end_card_sync(self);
+        self.held_cards_sync();
         self.offer_group_sync();
         crate::notes::stale_sync(self);
         crate::stuck::sync(self);
@@ -20647,6 +20651,56 @@ mod tests {
         feed(&mut ed, "n");
         assert!(ed.offers.is_empty() && !ed.card_has_keys());
         assert_eq!(text(&ed), "one two\n");
+    }
+
+    /// A card renewed before any frame drew it (`offer_renewed`, #535: a held bring card's words following a review)
+    /// keeps the keys only if your own key opened it: one that came on its own is never focused by a renewal — even one
+    /// `C-q` reached before its first frame.
+    #[test]
+    fn a_renewal_hands_on_the_keys_only_to_your_own_undrawn_card() {
+        use crate::offer::{Offer, What};
+        let mut ed = editor("one two\n");
+        let renew = |ed: &mut Editor| {
+            let (id, was) = (ed.offers[0].id, ed.offers[0].rev);
+            ed.offers[0].rev += 1;
+            ed.offer_renewed(id, was);
+        };
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 20).unwrap();
+        // Came on its own: no keys, renewed or not — nor after C-q before its frame
+        let own =
+            Offer::new("Another".into(), "x = 1", "", String::new(), What::ProjectTrust { hash: [0; 32] });
+        ed.push_offer(own);
+        assert!(!ed.offers[0].yours);
+        renew(&mut ed);
+        frame(&mut ed);
+        assert!(!ed.card_has_keys(), "a card that came on its own isn't focused by a renewal");
+        ed.offers.clear();
+        ed.push_offer(Offer::new(
+            "Again".into(),
+            "x = 2",
+            "",
+            String::new(),
+            What::ProjectTrust { hash: [1; 32] },
+        ));
+        ed.card_focus_front();
+        renew(&mut ed);
+        frame(&mut ed);
+        assert!(!ed.card_has_keys(), "nor one C-q reached before its frame");
+        ed.offers.clear();
+        ed.card_focus = None;
+        // Yours: the keys at once, kept through a renewal before its first frame
+        let was = ed.events.set_asked(Some(ed.input_seq));
+        let end =
+            What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() };
+        ed.push_offer(Offer::new("End the review?".into(), "2 files not viewed.", "", String::new(), end));
+        ed.events.set_asked(was);
+        assert!(ed.offers[0].yours && ed.card_has_keys());
+        renew(&mut ed);
+        frame(&mut ed);
+        assert!(ed.card_has_keys(), "your own card keeps its keys");
+        // Drawn, then renewed: its keys go, as any card's that changes
+        renew(&mut ed);
+        assert!(!ed.card_has_keys(), "drawn with its old words: the keys go");
     }
 
     /// A focused card whose text changes (`Offer.rev` — asked again, joined, its group grown) lets go of the keys: a

@@ -271,6 +271,9 @@ pub struct Held {
     pub bring: bool,
     /// Of `changed`, what a commit first leaves out (`worktree::kept_out` — a bring's only).
     pub left_out: Vec<(String, crate::worktree::KeptOut)>,
+    /// A code review is open in its checkout: `c` asks the review's end first (#535 — a commit waits for it), said on
+    /// the card. Follows the review while the card is up (`Editor::held_cards_sync`).
+    pub review: bool,
 }
 
 impl Held {
@@ -278,7 +281,7 @@ impl Held {
     /// files: a worker's).
     pub fn bring(moved: Moved, changed: Vec<String>) -> Held {
         let left_out = crate::worktree::kept_out(&moved.root, &changed);
-        Held { moved, changed, unsaved: Vec::new(), bring: true, left_out }
+        Held { moved, changed, unsaved: Vec::new(), bring: true, left_out, review: false }
     }
 
     /// Whether `s` answers it: a rebase's, nothing unsaved (a buffer's text isn't on disk for git to stash).
@@ -298,11 +301,20 @@ impl Held {
         if self.bring {
             let c = &self.changed;
             // (nothing of its own yet: all its work is in those changes — take 1's case)
-            let mut q = match m.ahead {
-                0 => format!(
+            let mut q = match (m.ahead, m.moved) {
+                (0, 0) => format!(
                     "{} has no commits past {} — its changes are in no commit: {}.",
                     m.name,
                     m.base,
+                    named(c)
+                ),
+                // (#536: its base moved too — the bring after the commit is a rebase onto it)
+                (0, moved) => format!(
+                    "{} has no commits past {}, and {} moved {} since — its changes are in no commit: {}.",
+                    m.name,
+                    m.base,
+                    m.base,
+                    crate::worktree::commits(moved),
                     named(c)
                 ),
                 _ => format!(
@@ -318,10 +330,21 @@ impl Held {
             let left = crate::worktree::left_out_line(&self.left_out);
             match (self.commits(), left) {
                 (true, left) => {
-                    q.push_str(&format!(
-                        "\n\nc commits {} first (Claude's draft, :w), then the bring is asked again.",
-                        them(c)
-                    ));
+                    let again = match (m.ahead, m.moved) {
+                        (0, moved) if moved > 0 => {
+                            format!("the bring is asked again, a rebase onto {}'s tip first", m.base)
+                        }
+                        _ => "the bring is asked again".to_string(),
+                    };
+                    // (#535: a review open there is ended first — its own card, its holds kept)
+                    q.push_str(&match self.review {
+                        true => format!(
+                            "\n\nc ends {}'s review first (its card asks), commits {} (Claude's draft, :w), then {again}.",
+                            m.name,
+                            them(c)
+                        ),
+                        false => format!("\n\nc commits {} first (Claude's draft, :w), then {again}.", them(c)),
+                    });
                     if let Some(l) = left {
                         q.push_str(&format!("\n{l}"));
                     }
@@ -1408,7 +1431,8 @@ impl Editor {
                     ed.bring_queue_rebased(Err("changes an earlier rebase set aside are still there".into()));
                 }
                 (Err(changed), None) if !unsaved.is_empty() || (!stash && !changed.is_empty()) => {
-                    ed.push_offer(Held { moved: m, changed, unsaved, bring: false, left_out: Vec::new() }.card());
+                    let h = Held { moved: m, changed, unsaved, bring: false, left_out: Vec::new(), review: false };
+                    ed.push_offer(h.card());
                     // (the queue never stashes for you: its card asks, a single bring after)
                     ed.bring_queue_rebased(Err(
                         "changes not in a commit in its checkout — its card asks".into()
@@ -1477,6 +1501,40 @@ impl Editor {
                 }
             }),
         );
+    }
+
+    /// A bring's held card follows its checkout's code review while it's up (#535): its `c` says the review's end comes
+    /// first while one is open there, and stops saying it once none is. Its `rev` moves only when its words do.
+    pub(crate) fn held_cards_sync(&mut self) {
+        let all = || std::iter::once(&self.workspace).chain(&self.workspaces);
+        let reviewing = |root: &std::path::Path| all().any(|l| l.root == root && l.code_review.is_some());
+        let cards = all().flat_map(|l| &l.parked).chain(&self.offers);
+        let stale: Vec<(u64, bool)> = cards
+            .filter_map(|o| match &o.what {
+                What::RebaseHeld(h) if h.bring && reviewing(&h.moved.root) != h.review => {
+                    Some((o.id, !h.review))
+                }
+                _ => None,
+            })
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        let mut renewed = Vec::new();
+        let parked =
+            std::iter::once(&mut self.workspace).chain(&mut self.workspaces).flat_map(|l| &mut l.parked);
+        for o in parked.chain(&mut self.offers) {
+            let Some(&(_, review)) = stale.iter().find(|(id, _)| *id == o.id) else { continue };
+            let What::RebaseHeld(h) = &mut o.what else { continue };
+            h.review = review;
+            let card = h.card();
+            (o.question, o.decided) = (card.question, card.decided);
+            renewed.push((o.id, o.rev));
+            o.rev += 1;
+        }
+        for (id, rev) in renewed {
+            self.offer_renewed(id, rev);
+        }
     }
 
     /// `s` on the held card: the rebase, its changes stashed for it and put back after.
@@ -2750,7 +2808,14 @@ impl Editor {
                     ed.with_workspace(id, |ed| {
                         (ed.workspace.bring_go, ed.workspace.bring_rebased) = (false, false)
                     });
-                    let h = Held { moved: m, changed: unclean, unsaved: Vec::new(), bring: true, left_out };
+                    let h = Held {
+                        moved: m,
+                        changed: unclean,
+                        unsaved: Vec::new(),
+                        bring: true,
+                        left_out,
+                        review: false,
+                    };
                     return ed.push_offer(h.card());
                 }
                 ed.with_workspace(id, |ed| {

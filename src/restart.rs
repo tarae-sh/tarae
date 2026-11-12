@@ -3541,6 +3541,7 @@ mod tests {
             unsaved: Vec::new(),
             bring: false,
             left_out: Vec::new(),
+            review: false,
         };
         ed.workspace_by_id(id).unwrap().parked.push(held.card());
         ed.restart = Some(Restart {

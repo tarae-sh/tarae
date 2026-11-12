@@ -3792,6 +3792,8 @@ fn latest_looks(
 /// After a look: a card held for high-risk changes (the review's end, a bring — `Offer.gate`) whose every
 /// one has had a look since gets its yes back, saying so — the next `y` is an answer to it as it is now.
 pub fn held_sync(ed: &mut Editor) {
+    // (the review's end card goes by the review as it is — #537; the rest by their gate)
+    end_card_sync(ed);
     // (each against its own session's looks — up, or parked in any session)
     let cards =
         || std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked).chain(&ed.offers);
@@ -3808,7 +3810,7 @@ pub fn held_sync(ed: &mut Editor) {
             o.warning = None;
             // (stepped aside for its `h`: up again with its letters)
             o.aside = false;
-            o.question.push_str("\n\nEach has had a look since.");
+            o.question.push_str(LOOKED_SINCE);
             o.rev += 1;
             freed = true;
         }
@@ -4276,6 +4278,12 @@ pub fn close(ed: &mut Editor) {
         }
     }
     end(ed);
+    // (#535: a card's commit first waited for this end — on with it now, said)
+    if let Some(w) = ed.workspace.commit_waits.take() {
+        ed.set_status(format!("{}'s review ended — its changes' commit next", w.name));
+        let root = ed.workspace.root.clone();
+        ed.commit_first(root, w.name, w.then, w.message);
+    }
 }
 
 /// The review ends (closed, or another one taking its place).
@@ -5256,13 +5264,36 @@ pub fn close_asked(ed: &mut Editor) {
 
 /// `close_asked`'s card — or the end at once, nothing left to ask.
 fn close_card(ed: &mut Editor) {
+    let Some(said) = close_said(ed) else { return };
+    if !said.asks {
+        return close(ed);
+    }
     let Some(r) = ed.workspace.code_review.as_ref() else { return };
+    let name = ed.workspace.label().to_string();
+    let what = crate::offer::What::ReviewEnd { session: ed.workspace.id, started: r.started };
+    let mut card =
+        crate::offer::Offer::new(format!("End {name}'s review?"), &said.question, "", String::new(), what);
+    (card.held, card.warning, card.gate) = (said.held, said.warning, said.gate);
+    ed.push_offer(card);
+}
+
+/// The end card's words for the front's review as it is now (`close_said`).
+struct CloseSaid {
+    question: String,
+    /// Files left not viewed or high-risk changes not looked at: something to ask (else it ends at once).
+    asks: bool,
+    held: Option<String>,
+    warning: Option<std::ops::Range<usize>>,
+    gate: Vec<crate::risk::Key>,
+}
+
+/// What the front's review's end card says now — None: no review. Built anew while the card is up
+/// (`end_card_sync`, #537): its held count and places are the review's own as you look.
+fn close_said(ed: &Editor) -> Option<CloseSaid> {
+    let r = ed.workspace.code_review.as_ref()?;
     let left: Vec<&File> = r.files.iter().filter(|f| !r.viewed(ed, f)).collect();
     let high: Vec<String> =
         r.high_unseen(ed).into_iter().map(|(i, at)| format!("{}:{}", r.files[i].rel, at + 1)).collect();
-    if left.is_empty() && high.is_empty() {
-        return close(ed);
-    }
     // (it names its session and its review, and ends only that one — #159: `y` on it after a trip to another
     // session ended that one's)
     let name = ed.workspace.label().to_string();
@@ -5293,14 +5324,66 @@ fn close_card(ed: &mut Editor) {
             q.push_str("\n\nNo board has read them: space v C has one read them first.");
         }
     }
-    q.push_str("\n\nDrafts stay. Opened again, its marks are kept: a file changed since asks only for its lines since.");
-    let what = crate::offer::What::ReviewEnd { session: ed.workspace.id, started: r.started };
-    let mut card = crate::offer::Offer::new(format!("End {name}'s review?"), &q, "", String::new(), what);
-    if !high.is_empty() {
-        (card.held, card.warning) = (Some(held_said(high.len())), warning);
-        card.gate = r.high_unseen_keys(ed);
+    // (#535: asked by a card's `c` — its `y` goes on to the commit; said while it has a `y`)
+    if let Some(w) = ed.workspace.commit_waits.as_ref().filter(|_| high.is_empty()) {
+        let how = if w.message.is_none() { "Claude's draft, :w" } else { ":w" };
+        q.push_str(&format!("\n\ny ends it, then {}'s commit ({how}).", w.name));
     }
-    ed.push_offer(card);
+    q.push_str("\n\nDrafts stay. Opened again, its marks are kept: a file changed since asks only for its lines since.");
+    let (held, gate) = match high.is_empty() {
+        true => (None, Vec::new()),
+        false => (Some(held_said(high.len())), r.high_unseen_keys(ed)),
+    };
+    Some(CloseSaid { question: q, asks: !(left.is_empty() && high.is_empty()), held, warning, gate })
+}
+
+/// What a bring's held card says once its hold went (`held_sync`).
+const LOOKED_SINCE: &str = "\n\nEach has had a look since.";
+
+/// What the review's end card says once its hold went (`end_card_sync`): each looked at, or taken back.
+const NONE_WAITS: &str = "\n\nNo high-risk change waits for a look now.";
+
+/// The front's review's end card while it's up follows the review (#537: "17 high-risk changes not looked at" stayed
+/// while every one was looked at, the review's own line saying 31 of 31): its words, held count, places and gate
+/// built anew from the review's grading as it is — a look, a change taken back, a file graded again —, its yes back
+/// once nothing high-risk is left, said. Its `rev` moves only when what it says does. A card parked behind waits
+/// until its session is in front (the review's grading is the front's).
+pub fn end_card_sync(ed: &mut Editor) {
+    let Some(r) = ed.workspace.code_review.as_ref() else { return };
+    let (session, started) = (ed.workspace.id, r.started);
+    let ours = |o: &crate::offer::Offer| matches!(o.what, crate::offer::What::ReviewEnd { session: s, started: t } if s == session && t == started);
+    // (asked only while such a card is up: the grading isn't read on every event otherwise)
+    if !ed.offers.iter().any(ours) {
+        return;
+    }
+    let Some(said) = close_said(ed) else { return };
+    let (mut freed, mut renewed) = (false, Vec::new());
+    for o in ed.offers.iter_mut().filter(|o| ours(o)) {
+        let was_held = o.held.is_some();
+        let mut question = said.question.clone();
+        // (freed now, or freed before and still: it says so)
+        if said.held.is_none() && (was_held || o.question.ends_with(NONE_WAITS)) {
+            question.push_str(NONE_WAITS);
+        }
+        if question == o.question && said.held == o.held {
+            continue;
+        }
+        freed |= was_held && said.held.is_none();
+        if said.held.is_none() {
+            // (stepped aside for its `h`: up again with its letters)
+            o.aside = false;
+        }
+        (o.question, o.held, o.warning, o.gate) =
+            (question, said.held.clone(), said.warning.clone(), said.gate.clone());
+        renewed.push((o.id, o.rev));
+        o.rev += 1;
+    }
+    for (id, rev) in renewed {
+        ed.offer_renewed(id, rev);
+    }
+    if freed {
+        ed.note("no high-risk change waits for a look — the end card's y is back");
+    }
 }
 
 /// The end card's `y`: review `started` of session `session` ends — only if it's the one in front and still
@@ -5913,6 +5996,68 @@ mod tests {
         feed(&mut ed, "<space>vm<space>vq");
         assert!(ed.workspace.code_review.is_none(), "ended: {:?}", ed.offers.first().map(|o| &o.question));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #537 (the full video's take 2): "End board's review? · y held: 17 high-risk changes not looked at" stayed while
+    /// every one was looked at (the review's line said 31 of 31), clearing only after `n` and `space v q` again. The end
+    /// card follows the review while it's up: one of two looked at, it names the one left; the other taken back by an
+    /// edit (no look, nothing left to look at), its yes is back, said — and `y` ends the review.
+    #[test]
+    fn the_end_cards_held_count_follows_the_review_while_its_up() {
+        let scratch = crate::scratch::Scratch::new("review-end-follows");
+        let dir = scratch.to_path_buf();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let run = |args: &[&str]| {
+            let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+            let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
+            assert!(ok.unwrap().status.success(), "git {args:?}");
+        };
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\nfn x() {}\nfn y() {}\nfn z() {}\n").unwrap();
+        run(&["init", "-q"]);
+        run(&["add", "."]);
+        run(&["commit", "-qm", "x"]);
+        let two = "fn a() {}\nfn b() { unsafe { c() } }\nfn x() {}\nfn y() {}\nfn z() {}\nfn d() { unsafe { e() } }\n";
+        std::fs::write(dir.join("src/a.rs"), two).unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        start_in(&mut ed, dir.clone(), None);
+        settle_until(&mut ed, landed);
+        let high = |ed: &Editor| ed.workspace.code_review.as_ref().map(|r| r.high_unseen(ed).len());
+        assert_eq!(high(&ed), Some(2));
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 30).unwrap();
+        let card = |ed: &Editor| ed.offers.first().cloned().expect("the end card");
+        feed(&mut ed, "<space>vq");
+        let o = card(&ed);
+        assert_eq!(o.held.as_deref(), Some(held_said(2).as_str()));
+        assert!(o.question.contains("2 high-risk changes not looked at"), "{}", o.question);
+        // h: to the first, the card aside; space v h there — one left, named, the card still up and held
+        frame(&mut ed);
+        feed(&mut ed, "h");
+        frame(&mut ed);
+        feed(&mut ed, "<space>vh");
+        assert_eq!(high(&ed), Some(1));
+        let o = card(&ed);
+        assert_eq!(o.held.as_deref(), Some(held_said(1).as_str()), "{}", o.question);
+        assert!(o.question.contains("1 high-risk change not looked at"), "{}", o.question);
+        // (the one left named, the one looked at not)
+        let left = ed.workspace.code_review.as_ref().map(|r| r.high_unseen(&ed)[0].1).unwrap();
+        let looked = if left == 1 { 6 } else { 2 };
+        assert!(o.question.contains(&format!("\n  src/a.rs:{}", left + 1)), "{}", o.question);
+        assert!(!o.question.contains(&format!("\n  src/a.rs:{looked}")), "{}", o.question);
+        // The other taken back by an edit (a review's keys aren't edits: as another way would), then a key — the event
+        // the card follows on: nothing left to look at, its yes back, said
+        let (from, to) = (ed.doc().text.line_to_byte(left), ed.doc().text.line_to_byte(left + 1));
+        ed.doc_mut()
+            .apply(&crate::transaction::Transaction::new(vec![crate::transaction::Change::delete(from, to)]));
+        feed(&mut ed, "gg");
+        // (graded live once its diff is worked out again, on a worker: the card follows on that event)
+        settle_until(&mut ed, |ed| high(ed) == Some(0));
+        let o = card(&ed);
+        assert!(o.held.is_none() && o.question.ends_with(NONE_WAITS), "{}", o.question);
+        frame(&mut ed);
+        ed.card_focus_front();
+        frame(&mut ed);
+        feed(&mut ed, "y");
+        assert!(ed.workspace.code_review.is_none(), "ended: {:?}", ed.offers.first().map(|o| &o.question));
     }
 
     /// #214 (user decision 2026-10-13, B + C): `space v H` takes every high-risk change of the file whose lines

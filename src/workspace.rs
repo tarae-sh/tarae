@@ -182,6 +182,9 @@ pub struct Workspace {
     pub instructions: crate::instructions::Look,
     /// The commit message being opened is a card's answer committed first (`worktree::commit_first`).
     pub commit_first: Option<crate::gitpanel::CommitFirst>,
+    /// A card's commit first waiting for this checkout's code review to end (#535: `c` with a review open asked its
+    /// end card): taken up as the review ends (`codereview::close`), let go by that card's `n`, said.
+    pub commit_waits: Option<crate::gitpanel::CommitWaits>,
     /// Git work waiting its turn (one at a time), each with whether it rewrites the working tree
     /// (`gitpanel::git_do_rewriting`) · one running · reads of the status asked for (the latest lands) · the
     /// last that landed, found or not (below `git_reads`: one is under way — the tab says `reading…`).
@@ -468,6 +471,7 @@ impl Workspace {
             committing: None,
             instructions: Default::default(),
             commit_first: None,
+            commit_waits: None,
             git_queue: Default::default(),
             git_busy: false,
             git_reads: 0,
