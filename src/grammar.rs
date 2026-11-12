@@ -324,7 +324,100 @@ pub fn pretty(lang: &str) -> String {
     }
 }
 
+/// An install's "colors are on" held until the colours it claims are drawn (#551, `Editor.colouring`): the files in sight
+/// it attached again, each until its first tree lands — or its load fails, it closes or its trees go (`dormant`: not
+/// parsed until it's shown again). Past
+/// `opening::SAY_AFTER` the status line says the wait with its timer (`coloring src/main.rs… 1.2s`).
+pub struct Colouring {
+    words: Words,
+    docs: Vec<crate::document::DocId>,
+    since: Instant,
+    said: bool,
+}
+
+/// An install's success, said by its toast's own call (its text written there) once the colours are drawn.
+pub type Words = Box<dyn FnOnce(&mut crate::editor::Editor)>;
+
 impl crate::editor::Editor {
+    /// An install's success, `words`: said as the files in sight it attached again are coloured (`colours_sync`) — at
+    /// once when none waits. The install's job ends before them: each loads its language on a worker, then parses on
+    /// another (#551: the toast was up a second before the colours).
+    pub(crate) fn colours_wait(&mut self, words: Words) {
+        let current = self.doc().id;
+        let views = &self.workspace.views;
+        let mut docs: Vec<_> = self
+            .docs
+            .iter()
+            .filter(|d| d.syntax.is_none() && (d.id == current || views.iter().any(|v| v.doc == d.id)))
+            .map(|d| d.id)
+            .filter(|&id| self.language_of(id).is_some())
+            .collect();
+        // (one still waiting: both wait, the newer words said)
+        let (since, said) = match self.colouring.take() {
+            Some(c) => {
+                let more: Vec<_> = c.docs.into_iter().filter(|d| !docs.contains(d)).collect();
+                docs.extend(more);
+                (c.since, c.said)
+            }
+            None => (crate::clock::now(), false),
+        };
+        if docs.is_empty() {
+            return words(self);
+        }
+        self.colouring = Some(Colouring { words, docs, since, said });
+        if said {
+            return;
+        }
+        self.events.shared_jobs().spawn(move || {
+            crate::event::sleep(crate::opening::SAY_AFTER);
+            move |ed: &mut crate::editor::Editor| match ed.colouring.as_mut().filter(|c| c.since == since) {
+                Some(c) => c.said = true,
+                None => ed.unchanged = true,
+            }
+        });
+    }
+
+    /// Document `id`'s language didn't load: no colours come for it to wait on.
+    pub(crate) fn colours_not_coming(&mut self, id: crate::document::DocId) {
+        if let Some(c) = self.colouring.as_mut() {
+            c.docs.retain(|&d| d != id);
+        }
+    }
+
+    /// Every event's end, after `schedule_parses`: the files an install's words wait on that are coloured now, closed,
+    /// dormant or whose parse gave no tree let go — the last one gone, the words said, in the frame that draws the
+    /// colours. (One gone out of sight meanwhile is still waited for: it's parsed all the same, and back in sight
+    /// before its tree it would show the words over plain code.)
+    pub(crate) fn colours_sync(&mut self) {
+        let Some(mut c) = self.colouring.take() else { return };
+        c.docs.retain(|&id| {
+            let Some(d) = self.docs.iter().find(|d| d.id == id) else { return false };
+            // (no syntax: its load on its way — one that failed let it go, `colours_not_coming`)
+            d.syntax.as_ref().is_none_or(|s| s.tree.is_none() && !s.dormant && (s.dirty || s.in_flight))
+        });
+        match c.docs.is_empty() {
+            true => (c.words)(self),
+            false => self.colouring = Some(c),
+        }
+    }
+
+    /// An install's words waiting past `opening::SAY_AFTER` (`colours_wait`): what's coloured — the file, or how many —
+    /// and since when, the status line's `coloring src/main.rs… 1.2s`.
+    pub fn colouring_said(&self) -> Option<(String, Instant)> {
+        let c = self.colouring.as_ref().filter(|c| c.said)?;
+        let what = match c.docs.as_slice() {
+            [one] => {
+                let d = self.docs.iter().find(|d| d.id == *one)?;
+                match d.path.as_deref() {
+                    Some(p) => self.shown(p).display().to_string(),
+                    None => d.display_name_short(),
+                }
+            }
+            many => format!("{} files", many.len()),
+        };
+        Some((format!("coloring {what}"), c.since))
+    }
+
     /// A language feature (test·debug) was requested but the grammar is missing — ask again, at the front,
     /// even for a language already asked about.
     /// The card states the intended work ("…then run the test?") and resumes `then` once downloaded.

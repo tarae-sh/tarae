@@ -54,6 +54,7 @@ mod follow_pane;
 mod fork;
 mod gitbase;
 mod gittab;
+mod grammarcolours;
 mod hosts;
 mod hoverrest;
 mod idlecompact;

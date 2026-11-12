@@ -1024,6 +1024,9 @@ pub struct Editor {
     pub showing: Option<crate::opening::Opening>,
     /// The shown open whose read is on a worker now (one at a time: the files passed over meanwhile never read).
     pub show_reading: Option<DocId>,
+    /// An install's "colors are on", held until the files in sight it attached again are coloured (#551,
+    /// `Editor::colours_wait`).
+    pub(crate) colouring: Option<crate::grammar::Colouring>,
     /// An open's read runs right where it's asked, not on a worker — on in tests (their `open(…).unwrap()` reads at
     /// once), off where a test or simulation is about the worker's path.
     pub read_inline: bool,
@@ -1606,6 +1609,7 @@ impl Editor {
             opening: None,
             showing: None,
             show_reading: None,
+            colouring: None,
             read_inline: cfg!(test),
             status: None,
             should_quit: false,
@@ -3532,6 +3536,7 @@ impl Editor {
         self.focus_sync();
         self.layout_keep();
         self.schedule_parses();
+        self.colours_sync();
         self.lsp_flush();
         self.inlay_schedule();
         self.git_schedule();
@@ -4880,6 +4885,7 @@ impl Editor {
             || crate::web::page::reading_in_sight(self)
             || self.opening_said().is_some()
             || self.rebase_exit_said().is_some()
+            || self.colouring_said().is_some()
             || self.offer_busy();
         // (the working sign held still where nothing moves on a clock: a frame a second, for the time waited — its timers
         // say whole seconds there, `term::running`)
@@ -5824,19 +5830,26 @@ impl Editor {
             return;
         }
         doc.language_failed = result.is_err();
+        // (a load that failed before an install landed, back after it: loaded again — a grammar that's here never gets
+        // the card, nor is held; the cache's look only, no disk)
+        let again = matches!(&result, Err(e) if e.starts_with("no grammar")
+            && syntax::Loader::global().loaded(&spec.name).is_some());
+        // (an install's words wait on no colours that aren't coming — #551)
+        if result.is_err() && !again {
+            self.colours_not_coming(id);
+        }
+        let Some(doc) = self.docs.iter_mut().find(|d| d.id == id) else { return };
         match result {
-            // (an offer held for it is let go: its grammar is here now — #538)
+            // (an offer held for it is let go: its grammar is here now — #538. The language it has already — a second
+            // load of it landing, two installs': its trees kept, else its code went plain again, #551 — by name: the
+            // loader keeps one library a language, but two loads racing past its cache each make their own data)
             Ok(lang) => {
                 doc.grammar_held = None;
-                doc.syntax = Some(syntax::Syntax::new(lang))
+                if !doc.syntax.as_ref().is_some_and(|s| s.lang.name == lang.name) {
+                    doc.syntax = Some(syntax::Syntax::new(lang))
+                }
             }
-            // (a load that failed before an install landed, back after it: loaded again — a grammar that's here never
-            // gets the card, nor is held; the cache's look only, no disk)
-            Err(e)
-                if e.starts_with("no grammar") && syntax::Loader::global().loaded(&spec.name).is_some() =>
-            {
-                self.load_language(id, spec)
-            }
+            Err(_) if again => self.load_language(id, spec),
             // (only Claude's turn or a review opened it, its code not in front of you yet: offered once the user takes it
             // up or a review shows it — #208, #534)
             Err(e)
@@ -5888,69 +5901,92 @@ impl Editor {
             let results = std::sync::Mutex::new(Vec::new());
             let r = crate::grammar::install(&names, false, |p| results.lock().unwrap().push(p));
             let results = results.into_inner().unwrap();
-            move |ed: &mut Editor| {
-                use crate::grammar::Progress;
-                let mut resume = None;
-                let mut failed: Vec<String> = results
-                    .iter()
-                    .filter_map(|p| match p {
-                        Progress::Failed { name, why } => Some(format!("{name}: {why}")),
-                        _ => None,
-                    })
-                    .collect();
-                let whole_ok = r.is_ok();
-                if let Err(e) = r {
-                    failed.push(e);
-                }
-                let built = results.iter().filter(|p| matches!(p, Progress::Done { .. })).count();
-                if offer.is_some() {
-                    // If every reason is the same (no network, etc.), report it once
-                    let whys: Vec<&str> = results
-                        .iter()
-                        .filter_map(|p| match p {
-                            Progress::Failed { why, .. } => Some(why.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    let reason = match whys.first() {
-                        Some(w) if whole_ok && whys.iter().all(|x| x == w) => w.to_string(),
-                        _ => failed.join("; "),
-                    };
-                    let what = offer.and_then(|id| ed.offer_by_id(id)).map(|o| o.what.clone());
-                    if let (Some(crate::offer::What::Grammars { lang, then, .. }), Some(id)) = (what, offer) {
-                        let ok = failed.is_empty();
-                        ed.offer_finished(id, if ok { Ok(()) } else { Err(reason) });
-                        if ok {
-                            ed.set_success(format!("{lang} colors are on"));
-                            resume = then;
-                        }
-                    }
-                } else if failed.is_empty() {
-                    ed.set_success(match built {
-                        0 => "Grammars already up to date".to_string(),
-                        1 => "Grammar installed — colors are on".to_string(),
-                        n => format!("{n} grammars installed — colors are on"),
-                    });
-                } else {
-                    ed.set_error(format!(
-                        "grammar install failed — {} (needs git and a C compiler)",
-                        failed.join("; ")
-                    ));
-                }
-                let here: Vec<String> = results
-                    .iter()
-                    .filter_map(|p| match p {
-                        Progress::Done { name, .. } | Progress::Skipped { name } => Some(name.clone()),
-                        Progress::Failed { .. } => None,
-                    })
-                    .collect();
-                ed.grammars_here(&here);
-                // Work that stopped for lack of a grammar (tests, debugging) — continue it now
-                if let Some(r) = resume {
-                    ed.resume(r);
+            move |ed: &mut Editor| ed.grammars_installed(&results, r, offer)
+        });
+    }
+
+    /// An install's end (`install_grammars`'s job, on the main loop): its card (`offer`) or a toast says how it went —
+    /// "colors are on" only in the frame that draws them (#551: the files in sight load their language and parse again
+    /// first, two workers' round trips after this — `colours_wait`) —, the files without colours attached again, and the
+    /// work that stopped for want of the grammar goes on.
+    pub(crate) fn grammars_installed(
+        &mut self,
+        results: &[crate::grammar::Progress],
+        r: Result<(), String>,
+        offer: Option<u64>,
+    ) {
+        use crate::grammar::Progress;
+        let mut resume = None;
+        let mut on: Option<crate::grammar::Words> = None;
+        let mut failed: Vec<String> = results
+            .iter()
+            .filter_map(|p| match p {
+                Progress::Failed { name, why } => Some(format!("{name}: {why}")),
+                _ => None,
+            })
+            .collect();
+        let whole_ok = r.is_ok();
+        if let Err(e) = r {
+            failed.push(e);
+        }
+        let built = results.iter().filter(|p| matches!(p, Progress::Done { .. })).count();
+        if offer.is_some() {
+            // If every reason is the same (no network, etc.), report it once
+            let whys: Vec<&str> = results
+                .iter()
+                .filter_map(|p| match p {
+                    Progress::Failed { why, .. } => Some(why.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let reason = match whys.first() {
+                Some(w) if whole_ok && whys.iter().all(|x| x == w) => w.to_string(),
+                _ => failed.join("; "),
+            };
+            let what = offer.and_then(|id| self.offer_by_id(id)).map(|o| o.what.clone());
+            if let (Some(crate::offer::What::Grammars { lang, then, .. }), Some(id)) = (what, offer) {
+                let ok = failed.is_empty();
+                self.offer_finished(id, if ok { Ok(()) } else { Err(reason) });
+                if ok {
+                    on = Some(Box::new(move |ed: &mut Editor| {
+                        ed.set_success(format!("{lang} colors are on"))
+                    }));
+                    resume = then;
                 }
             }
-        });
+        } else if failed.is_empty() {
+            match built {
+                0 => self.set_success("Grammars already up to date"),
+                1 => {
+                    on = Some(Box::new(|ed: &mut Editor| ed.set_success("Grammar installed — colors are on")))
+                }
+                n => {
+                    on = Some(Box::new(move |ed: &mut Editor| {
+                        ed.set_success(format!("{n} grammars installed — colors are on"))
+                    }))
+                }
+            }
+        } else {
+            self.set_error(format!(
+                "grammar install failed — {} (needs git and a C compiler)",
+                failed.join("; ")
+            ));
+        }
+        let here: Vec<String> = results
+            .iter()
+            .filter_map(|p| match p {
+                Progress::Done { name, .. } | Progress::Skipped { name } => Some(name.clone()),
+                Progress::Failed { .. } => None,
+            })
+            .collect();
+        self.grammars_here(&here);
+        if let Some(words) = on {
+            self.colours_wait(words);
+        }
+        // Work that stopped for lack of a grammar (tests, debugging) — continue it now
+        if let Some(r) = resume {
+            self.resume(r);
+        }
     }
 
     /// Grammars `names` are here — an install built them or found them up to date (`install_grammars`, on the main
@@ -14983,6 +15019,67 @@ mod tests {
                 ed.handle_event(ev.expect("its load again, landed"));
             }
         }
+    }
+
+    /// #551 (the full video's take 3): an install's "colors are on" is said in the frame that draws them — the file in
+    /// sight loads its language on a worker, then parses on another, after the install's job ended (the toast was up a
+    /// second before the colours) —; a wait past `opening::SAY_AFTER` (a big file's) is on the status line with its timer
+    /// meanwhile, and gone as the colours come.
+    #[test]
+    fn a_grammars_colors_are_said_once_its_file_is_coloured() {
+        let rust = syntax::spec("rust").expect("rust's pack");
+        if syntax::Loader::global().load(rust).is_err() {
+            return;
+        }
+        let s = crate::scratch::Scratch::new("grammar-colours");
+        let file = s.join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let mut ed = Editor::new(Config::default());
+        ed.workspace.root = s.to_path_buf();
+        ed.open(&file).unwrap();
+        let coloured = |ed: &Editor| ed.doc().syntax.as_ref().is_some_and(|s| s.tree.is_some());
+        let on = |ed: &Editor| ed.toasts.iter().any(|t| t.text.contains("colors are on"));
+        let status = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 100, 24).unwrap();
+            let mut p = vt100::Parser::new(24, 100, 0);
+            p.process(&bytes);
+            p.screen().rows(0, 100).last().unwrap_or_default()
+        };
+        // Results handled as the loop does until `done` — at no event's end the words up without the colours
+        let until = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while !done(ed) {
+                let ev = ed.events.recv_timeout(end.saturating_duration_since(std::time::Instant::now()));
+                ed.handle_event(ev.expect("a result"));
+                assert!(!on(ed) || coloured(ed), "'colors are on' up, the file not coloured yet");
+            }
+        };
+        // As the install lands: the file without colours (no grammar before it), its parse held as a big file's read
+        // holds it (`Document.loading`)
+        ed.doc_mut().syntax = None;
+        ed.doc_mut().loading = true;
+        let built = [crate::grammar::Progress::Done { name: rust.grammar.clone(), took: Default::default() }];
+        ed.grammars_installed(&built, Ok(()), None);
+        assert!(!on(&ed), "'colors are on' said as the install's job ended, the file not coloured yet");
+        assert!(!status(&mut ed).contains("coloring"), "unsaid at first");
+        until(&mut ed, &|ed| ed.colouring_said().is_some());
+        let line = status(&mut ed);
+        assert!(line.contains("coloring main.rs…"), "the wait said: {line}");
+        assert!(ed.tick_wanted().is_some(), "its timer asks for frames");
+        assert!(!on(&ed));
+        // The read lands: parsed, coloured — and said, in the same frame
+        ed.doc_mut().loading = false;
+        ed.schedule_parses();
+        until(&mut ed, &on);
+        assert!(coloured(&ed));
+        assert!(!status(&mut ed).contains("coloring"), "the wait's gone");
+        assert!(ed.colouring.is_none());
+        // A second load of its language landing (two installs', each attaching it): its trees kept, not plain again
+        // under the words
+        let id = ed.doc().id;
+        ed.language_loaded(id, rust, syntax::Loader::global().load(rust));
+        assert!(coloured(&ed), "a second load of the same language dropped its colours");
     }
 
     /// #37: a file outside the project that Claude's turn opened (follow shows what it reads there) closes when

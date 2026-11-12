@@ -12613,6 +12613,19 @@ fn draw_statusline(
             keep: OPENING - 1,
         });
     }
+    // An install's "colors are on" waiting past `opening::SAY_AFTER` for the files in sight to be parsed (#551): the code
+    // stays as it is until they land — what's coloured and for how long, faint
+    if let Some((words, since)) = editor.colouring_said() {
+        let faint = Style { fg: ui.linenr.fg, ..ui.status };
+        left.push(Seg { cut: None, text: format!("  {words}…"), style: faint, keep: OPENING });
+        let time = timer(crate::clock::since(since), !editor.moving());
+        left.push(Seg {
+            cut: None,
+            text: format!(" {}", time.trim_start()),
+            style: faint,
+            keep: OPENING - 1,
+        });
+    }
     // The rebase's git closed and not exited past `opening::SAY_AFTER` (#447): what it waits for and how long, faint —
     // read as git left it by `rebase::EXIT_WAIT` at the latest
     if let Some((branch, since)) = editor.rebase_exit_said() {
