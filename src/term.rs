@@ -19462,7 +19462,18 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                 for r in &mut rows {
                     (r.link, r.call) = (look.link.clone(), Some(m.call.clone()));
                 }
+                // (a restored program: what wasn't kept, on its row's card)
+                if m.program.as_ref().is_some_and(|p| p.restored)
+                    && let Some(r) = rows.last_mut()
+                {
+                    restored_card(r, look, hang, &styles);
+                }
                 lines.extend(rows);
+                // (a program's calls under it, then its whole output — `codetool::tool::Shown`; how to stop it while it
+                // runs is the foot's, drawn while the chat has the keys)
+                if let Some(p) = &m.program {
+                    lines.extend(program_rows(p, hang, w, &styles, &m.call));
+                }
                 // (what the sandbox blocked it, under it — its words wrapped hanging under the command, as its row's)
                 if let Some(line) = &m.refused {
                     let text = format!("▲ {line}");
@@ -21298,7 +21309,15 @@ fn draw_chat(
                 hints.push(("↑", "undo clear"));
             }
             // (what's typed first, then the turn — #175)
-            hints.push(("C-c", if c.input.blank() { "stop" } else { "clear" }));
+            hints.push((
+                "C-c",
+                match (c.input.blank(), editor.workspace.claude.programs.is_empty()) {
+                    (false, _) => "clear",
+                    (true, true) => "stop",
+                    // (Claude's program first, then the turn — `chat::key`)
+                    (true, false) => "stop program",
+                },
+            ));
             hints.push(esc);
             hints.push(("C-f", if c.follow.active() { "unfollow" } else { "follow" }));
         }
@@ -22223,6 +22242,118 @@ fn tool_rows(
     vec![folded]
 }
 
+/// A restored conversation's program row (`Shown.restored`): its card says its calls and output weren't kept
+/// (`codetool::tool::NOT_KEPT`) under the row's words whole — a card of its own where the row wasn't cut.
+fn restored_card(row: &mut crate::chat::ChatRow, look: &crate::chat::Look, hang: usize, st: &TrailStyles) {
+    let note = format!("\n{}", crate::codetool::tool::NOT_KEPT);
+    if let Some((_, _, whole)) = row.cut.as_mut() {
+        let at = whole.text.len();
+        if whole.pieces.is_empty() {
+            whole.pieces.push((0..at, whole.style));
+        }
+        whole.text.push_str(&note);
+        whole.pieces.push((at..whole.text.len(), st.faint));
+        return;
+    }
+    let style = if look.pattern { st.string } else { st.dim };
+    let range = if look.range.is_empty() { String::new() } else { format!("  {}", look.range) };
+    let text = format!("{}{range}{note}", look.what);
+    let (a, b) = (look.what.len(), look.what.len() + range.len());
+    let pieces = vec![(0..a, style), (a..b, st.faint), (b..text.len(), st.faint)];
+    let to = row.spans.iter().map(|s| s.text.width()).sum::<usize>().saturating_sub(row.tail);
+    let whole = crate::whole::Whole {
+        key: None,
+        on: crate::whole::On::Transcript,
+        text,
+        style,
+        pieces,
+        cols: (0, 0),
+        state: None,
+        float: None,
+    };
+    row.cut = Some((hang, to.max(hang + 1), whole));
+}
+
+/// A program's rows under its own (`codetool::tool::Shown`): each call its tool's own row (`tool_rows`), hanging under
+/// the program's target (`hang` cells), `▲` when it was refused or failed; then, while it runs, `→ running` with no key
+/// (the stop is the chat's foot's, where the keys are — `codetool::tool::RUNNING`); once it ended, its
+/// output after `→ ` — its first line, the rest on the row's card (`↓ N more lines` there opens it whole in a buffer:
+/// `whole::pressed`) and in the transcript, so `/` and `y` have all of it. A restored one's: none (`restored_card`).
+fn program_rows(
+    p: &crate::codetool::tool::Shown,
+    hang: usize,
+    w: usize,
+    st: &TrailStyles,
+    call: &str,
+) -> Vec<crate::chat::ChatRow> {
+    use crate::chat::ChatRow;
+    use crate::markdown::Span;
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
+    let room = w.saturating_sub(hang).max(8);
+    let mut out = Vec::new();
+    if p.restored {
+        return out;
+    }
+    for row in &p.calls {
+        let glyph = match row.failed {
+            true => sp(crate::chat::Mark::Failed.glyph().into(), st.warn),
+            false => knot(&row.look, false, st),
+        };
+        for mut r in tool_rows(&row.look, None, glyph, &[], room, st) {
+            r.spans.insert(0, sp(" ".repeat(hang), st.faint));
+            r.skip += hang;
+            if let Some(c) = r.cut.as_mut() {
+                (c.0, c.1) = (c.0 + hang, c.1 + hang);
+            }
+            (r.link, r.call) = (row.look.link.clone(), Some(call.to_string()));
+            out.push(r);
+        }
+    }
+    // (running: where its output comes)
+    let Some(text) = &p.output else {
+        out.push(ChatRow {
+            spans: vec![
+                sp(" ".repeat(hang), st.faint),
+                sp(format!("→ {}", crate::codetool::tool::RUNNING), st.faint),
+            ],
+            skip: hang,
+            call: Some(call.to_string()),
+            ..ChatRow::default()
+        });
+        return out;
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let first = lines.first().copied().unwrap_or_default();
+    // (its lines one paragraph in the transcript, as a folded thought's; its card keeps them)
+    let joined = lines.join(" ");
+    let head = if lines.len() > 1 { format!("{first} …") } else { first.to_string() };
+    // (the row's cut is the chat's, `ChatRow.cut`, whole as the output — as `tool_rows`' is)
+    let shown = crate::whole::fit(&head, room.saturating_sub(2).max(4)).shown().to_string();
+    let lead = hang + 2;
+    let mut r = ChatRow {
+        spans: vec![sp(" ".repeat(hang), st.faint), sp("→ ".into(), st.faint), sp(shown.clone(), st.dim)],
+        skip: lead,
+        call: Some(call.to_string()),
+        ..ChatRow::default()
+    };
+    crate::chatdoc::keep_whole(&mut r, &joined);
+    if shown != joined {
+        let whole = crate::whole::Whole {
+            key: None,
+            on: crate::whole::On::Transcript,
+            text: text.trim_end().to_string(),
+            style: st.dim,
+            pieces: Vec::new(),
+            cols: (0, 0),
+            state: None,
+            float: None,
+        };
+        r.cut = Some((lead, lead + shown.width(), whole));
+    }
+    out.push(r);
+    out
+}
+
 /// The most rows the run card (`run_card`) takes — past them its last says where the rest is.
 const RUN_CARD_MAX: usize = 12;
 
@@ -23080,6 +23211,16 @@ fn follow_thread(
                 // (what the sandbox blocked it, under it, as the chat says it)
                 if let Some(line) = &m.refused {
                     rows.push((refused_spans(line, hang, inner, st), None));
+                }
+                // (a program's calls and its state — running, with no key: the keys are in the code here, its stop at
+                // the chat's foot, the timer in this card's head; or its output — as the chat says them)
+                if let Some(p) = &m.program {
+                    let links = |l: Option<crate::chat::Link>| l.filter(|_| links);
+                    rows.extend(
+                        program_rows(p, hang, inner, st, &m.call)
+                            .into_iter()
+                            .map(|r| (r.spans, links(r.link))),
+                    );
                 }
                 // (the row in hand is the knot's own, its first — counted from the bottom)
                 if in_hand {
@@ -30730,6 +30871,55 @@ mod tests {
                 .map(|y| s.cell(y, x0 + 1).unwrap().contents() == "▎")
         };
         assert_eq!((bar_on("cargo test"), bar_on(said)), (Some(true), Some(false)), "the run's row in hand");
+    }
+
+    /// The code tool's piece c, the design session's answers (2026-11-12): a program running says `→ running` under
+    /// its row, with no key, in the chat and on the follow card alike; its stop is the chat's foot's `C-c stop program`,
+    /// drawn only while the chat has the keys; a restored conversation's program row has nothing under it, its card
+    /// saying its calls and output weren't kept.
+    #[test]
+    fn a_running_programs_row_names_no_key_its_stop_is_the_chats_foot_and_a_restored_one_says_what_wasnt_kept()
+     {
+        use crate::codetool::tool::{NOT_KEPT, RUNNING, Running, Shown};
+        let below = |rows: &[String]| {
+            let run = rows.iter().position(|r| r.contains("▸ run    cargo test")).expect("the row");
+            rows.get(run + 1).map(|r| r.trim().to_string()).unwrap_or_default()
+        };
+        let mut ed = threaded_turn();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs[5].program = Some(Box::default());
+        c.msgs[5].changed();
+        assert_eq!(below(&chat_rows(&mut ed, 120, "Done now.")), format!("→ {RUNNING}"), "the chat: no key");
+        // (its stop at the chat's foot while the chat has the keys — not once they're in the code)
+        ed.workspace.claude.programs.push(Running::drawn_only());
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Writing;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
+        let s = screen_at(&mut ed, 120).screen().contents();
+        assert!(s.contains("C-c stop program"), "the chat's foot: {s}");
+        ed.workspace.set_at(crate::workspace::Here::Code);
+        let s = screen_at(&mut ed, 120).screen().contents();
+        assert!(!s.contains("stop program") && !s.contains("C-c stops"), "no key the code can't honour: {s}");
+        ed.workspace.claude.programs.clear();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Writing);
+        c.msgs.pop();
+        let run = c.msgs[5].look.clone().unwrap();
+        c.follow.gaze =
+            Some(crate::follow::Gaze { call: "x1".into(), ..crate::follow::Gaze::new(run, None, None) });
+        assert_eq!(below(&follow_card(&mut ed, 160)), format!("→ {RUNNING}"), "the follow card: no key");
+
+        let mut ed = threaded_turn();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs[5].program = Some(Box::new(Shown { restored: true, ..Default::default() }));
+        c.msgs[5].changed();
+        let rows = chat_rows(&mut ed, 120, "Done now.");
+        assert!(!below(&rows).contains('→'), "nothing under it: {rows:#?}");
+        let card = ed.screen.cut_spots.borrow().iter().find_map(|s| match &s.3 {
+            crate::whole::Cut::Text(w) if w.text.contains(NOT_KEPT) => Some(w.text.clone()),
+            _ => None,
+        });
+        let card = card.expect("its row's card");
+        assert!(card.starts_with("cargo test"), "the row's words whole, then what wasn't kept: {card:?}");
     }
 
     /// The chat's rows from right after its gutter (its padding, then its text) on, from the question's row to the

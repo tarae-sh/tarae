@@ -1950,6 +1950,7 @@ fn frames_of_frictions30() {
             then: None,
             log: false,
             moved: None,
+            more: Vec::new(),
         };
         s.ed.workspace.claude.chat.as_mut().unwrap().reads.push_back(p);
         crate::reads::next(&mut s.ed);
@@ -2003,6 +2004,7 @@ fn frames_of_the_read_card_with_its_repository() {
             then: None,
             log: false,
             moved: None,
+            more: Vec::new(),
         };
         let (q, warning) = crate::reads::card_text(&p, true, Some((&repo, &Default::default())), None);
         let what = crate::offer::What::Read { pending: Box::new(p), keep: true, folder: Some(repo.clone()) };

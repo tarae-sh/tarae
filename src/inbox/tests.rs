@@ -106,6 +106,7 @@ fn read_waiting(since: Instant) -> crate::reads::Pending {
         then: None,
         log: false,
         moved: None,
+        more: Vec::new(),
     }
 }
 

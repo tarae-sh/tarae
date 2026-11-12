@@ -58,28 +58,28 @@ pub const PRELUDE: &str = "Object.assign(globalThis, Object.fromEntries([\"read\
      \"definition\", \"references\", \"diagnostics\", \"git\", \"output\"].map((n) => [n, (i) => tool(n, i)])));";
 
 /// What Claude reads of the tool, every request (the plan's §6: under 900 tokens).
-pub const DESCRIPTION: &str = "Run a JavaScript program in tarae to compute from text — count, group, filter, \
-compare — instead of reading all of it into the conversation. Its functions are tarae's read-only tools: the same \
-input as the tool of that name (the common fields below), the same gate and cards as your own calls, and the answer's \
-text as you'd get it — or { error } when it's refused or fails. You get back what the program prints and returns, \
-20 KB at most (the user sees it whole).
+pub const DESCRIPTION: &str = "Run JavaScript in tarae to compute from text (count, group, filter, compare) instead \
+of reading it all into the conversation: worth it when the answer is much smaller than the text. Its functions are \
+tarae's read-only tools: same input, limits, cards and answer text as your own calls ({ error } if refused or \
+failed). You get what the program prints and returns, cut past 20 KB (the user sees it whole).
 
-The program is the body of an async function: await at the top, return a JSON value. Plain JavaScript: no type \
-annotations, no eval, no import. Nothing outside but these calls: no files, network, clock or environment. Calls \
-awaited together (Promise.all) run side by side; 64 calls at most. A program that loops too long, builds huge strings \
-or sorts too much stops at a limit and says so: do less in one program, or split it.
+Await at the top level; return a JSON value. Plain JavaScript: no type annotations, eval \
+or import. Nothing outside but these calls: no files, network, clock or environment. Each program starts fresh. \
+Calls awaited together (Promise.all) run side by side. A program makes 64 calls at most. Too much work stops at a limit, saying so: do \
+less, or split it.
 
-type Answer = string | { error: string };
-declare function read(input: { files: string[] }): Promise<Answer>;
+type Answer = Promise<string | { error: string }>;
+declare function read(input: { files: string[] }): Answer;
+/** A count line, then — lines: each file's path, its hits under it as \"  12: text\" (\"  in fn f (10–40)\" before them); files: a path a line; count: \"path:3\" a line. */
 declare function search(input: { pattern: string; path?: string; glob?: string; literal?: boolean; \
-output?: \"lines\" | \"files\" | \"count\"; limit?: number; offset?: number }): Promise<Answer>;
-declare function symbols(input: { path: string; line?: number }): Promise<Answer>;
+output?: \"lines\" | \"files\" | \"count\"; limit?: number; offset?: number }): Answer;
+declare function symbols(input: { path: string; line?: number }): Answer;
 declare function definition(input: { symbol?: string; path?: string; line?: number; \
-kind?: \"definition\" | \"implementation\" | \"type\" }): Promise<Answer>;
-declare function references(input: { path: string; symbol: string; line?: number }): Promise<Answer>;
-declare function diagnostics(input?: { paths?: string[] }): Promise<Answer>;
-declare function git(input: { args: string[]; offset?: number }): Promise<Answer>;
-/** A run's whole output as tarae kept it, by the id its answer names (\"run#12\") — this conversation's last 8 runs. */
+kind?: \"definition\" | \"implementation\" | \"type\" }): Answer;
+declare function references(input: { path: string; symbol: string; line?: number }): Answer;
+declare function diagnostics(input?: { paths?: string[] }): Answer;
+declare function git(input: { args: string[]; offset?: number }): Answer;
+/** A run's whole output, by the id its answer names (\"run#12\"): this conversation's last 8 runs. */
 declare function output(id: string): Promise<{ command: string; ended: string; exit: number | null; ms: number; \
 lines: string[] } | { error: string }>;
 declare function print(...values: unknown[]): void;";
@@ -102,12 +102,78 @@ pub fn lists(ed: &Editor) -> bool {
     ed.workspace.claude.chat.as_ref().is_some_and(|c| c.code)
 }
 
+/// A program that threw: its row says so first (`chat::Look::failed`, its mark `▲`): `failed · TypeError: …`.
+pub const FAILED: &str = "failed · ";
+
+/// A program a limit or the user's stop ended (`Ended.stopped`): its row says so first, the stop's kind after it —
+/// `stopped · at its time limit (10.0s of running): …`, `stopped · the user stopped it (C-c) …` (`row_end`).
+pub const STOPPED: &str = "stopped · ";
+
+/// While a program runs, its last row says so — where its output comes once it ends (`term::program_rows`), in the
+/// chat and on the follow card alike, with no key: how to stop it is the chat's foot's (`C-c stop program`, drawn only
+/// while the chat has the keys — `chat::key`'s `C-c`: the program first, then the turn); the follow card's head has the
+/// timer (the design session, 2026-11-12).
+pub const RUNNING: &str = "running";
+
+/// A program's row's end once it ended in an error (`why`; `stopped`: a limit or a stop, `Ended.stopped`): `stopped · `
+/// and the stop's words after their own `stopped` (`at its time limit …`, `the user stopped it …`), or `failed · ` and
+/// the error's first line.
+pub fn row_end(why: &str, stopped: bool) -> String {
+    let first = why.lines().next().unwrap_or_default();
+    match stopped {
+        true => {
+            let rest =
+                first.strip_prefix("stopped: ").or_else(|| first.strip_prefix("stopped ")).unwrap_or(first);
+            format!("{STOPPED}{rest}")
+        }
+        false => format!("{FAILED}{first}"),
+    }
+}
+
+/// What a program stopped by the user's `C-c` tells Claude (after `stopped: `).
+pub const STOPPED_BY_YOU: &str = "the user stopped it (C-c) — go on without it, or ask them";
+
+/// What the chat shows of a program under its row (`chat::Msg.program`): its calls as handed out, each a row with its
+/// answer's verdict, and once it ends its whole output — what it printed and returned, never cut (Claude's answer is cut
+/// past `LIMITS.output`; the row's card and the buffer it opens show all of it: the description's "the user sees it
+/// whole").
+#[derive(Clone, Debug, Default)]
+pub struct Shown {
+    pub calls: Vec<Row>,
+    /// Its whole output, once it ended.
+    pub output: Option<String>,
+    /// A restored conversation's (`chats::msgs_of`): its calls and output weren't saved — its row's card says so
+    /// (`NOT_KEPT`, `term::restored_card`), nothing under it. Saving them waits for S2.
+    pub restored: bool,
+}
+
+/// What a restored conversation's program row says on its card (`Shown.restored`).
+pub const NOT_KEPT: &str = "Its calls and output weren't kept with the conversation.";
+
+/// One call of a program, as its row under the program's says it.
+#[derive(Clone, Debug)]
+pub struct Row {
+    /// Its id in the program (`codetool::Call.id`).
+    pub id: u32,
+    pub look: crate::chat::Look,
+    /// Refused or failed: its words are its range, its mark `▲`.
+    pub failed: bool,
+}
+
 /// A program of the chat's under way.
 pub struct Running {
     /// Its number: its calls' (`tools::Inner.program`).
     pub key: u32,
     /// The chat's `code` call, answered as it ends.
     call: Option<Call>,
+    /// Its row in the chat (the `code` call's tool_use id), when one was found (`attach`).
+    row: Option<String>,
+    /// Its latest batch's number, its calls not judged yet (answered, or asking on a card) and the reads held for its
+    /// card (`hold`); rung as the batch is judged or the program ends, so the bound's wait ends with it.
+    batch: u32,
+    unjudged: Vec<u32>,
+    held: Vec<crate::reads::Pending>,
+    judged: Arc<crate::event::Wake>,
     pub watch: Arc<Watch>,
     /// The program while it waits on its calls (None: a step runs).
     program: Option<Box<Program>>,
@@ -126,6 +192,12 @@ impl Running {
         self.order.iter().copied().filter(|id| !self.answers.contains_key(id))
     }
 
+    /// Its reads held for its batch's card (`hold`), on no card yet; its batch's calls not judged yet.
+    #[cfg(test)]
+    pub fn holding(&self) -> (usize, usize) {
+        (self.held.len(), self.unjudged.len())
+    }
+
     /// Its calls answered and not given back yet (one before them waits).
     #[cfg(test)]
     pub fn held(&self) -> impl Iterator<Item = u32> + '_ {
@@ -136,6 +208,26 @@ impl Running {
     #[cfg(test)]
     pub fn between_steps(&self) -> bool {
         self.program.is_some()
+    }
+
+    /// (tests that draw: a program under way — no call, no engine, nothing it waits on)
+    #[cfg(test)]
+    pub fn drawn_only() -> Running {
+        let watch = Watch::new(&LIMITS);
+        Running {
+            key: NEXT.fetch_add(1, Ordering::Relaxed),
+            call: None,
+            row: None,
+            batch: 0,
+            unjudged: Vec::new(),
+            held: Vec::new(),
+            judged: Arc::default(),
+            watch,
+            program: None,
+            order: VecDeque::new(),
+            answers: BTreeMap::new(),
+            calls: Vec::new(),
+        }
     }
 }
 
@@ -176,9 +268,15 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
         .to_string();
     let key = NEXT.fetch_add(1, Ordering::Relaxed);
     let watch = Watch::new(&LIMITS);
+    let row = attach(ed, &src);
     ed.workspace.claude.programs.push(Running {
         key,
         call: Some(call),
+        row,
+        batch: 0,
+        unjudged: Vec::new(),
+        held: Vec::new(),
+        judged: Arc::default(),
         watch: watch.clone(),
         program: None,
         order: VecDeque::new(),
@@ -188,6 +286,66 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     let jobs = ed.events.jobs();
     super::start_job(&jobs, load(), prelude(), src, LIMITS, watch, move |ed, next| stepped(ed, key, next));
     Ok(())
+}
+
+/// The chat row of the `code` call whose program is `src`: the newest waiting call of it with no program yet — its
+/// program's rows start under it, its range saying how to stop it.
+fn attach(ed: &mut Editor, src: &str) -> Option<String> {
+    let c = ed.workspace.claude.chat.as_mut()?;
+    let ids: Vec<&str> = (c.calls.iter())
+        .filter(|k| k.name == "mcp__tarae__code" && k.input["src"].as_str() == Some(src))
+        .map(|k| k.id.as_str())
+        .collect();
+    let m = c.msgs.iter_mut().rev().find(|m| m.program.is_none() && ids.contains(&m.call.as_str()))?;
+    m.program = Some(Box::default());
+    m.changed();
+    Some(m.call.clone())
+}
+
+/// What program `key`'s row shows, changed by `f` (no row: nothing).
+fn show(ed: &mut Editor, key: u32, f: impl FnOnce(&mut crate::chat::Look, &mut Shown)) {
+    let Some(row) = find(ed, key).and_then(|r| r.row.clone()) else { return };
+    show_at(ed, &row, f);
+}
+
+fn show_at(ed: &mut Editor, row: &str, f: impl FnOnce(&mut crate::chat::Look, &mut Shown)) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let Some(m) = c.msgs.iter_mut().rev().find(|m| m.call == row) else { return };
+    let (Some(look), Some(shown)) = (m.look.as_mut(), m.program.as_mut()) else { return };
+    f(look, shown);
+    m.changed();
+}
+
+/// A program's call as its row says it: the tool's own row (`chat::look`), `output`'s as a read of the run's output.
+fn inner_look(root: &std::path::Path, name: &str, arg: &Value) -> crate::chat::Look {
+    let look = |verb, what: String| crate::chat::Look {
+        verb,
+        what,
+        pattern: false,
+        range: String::new(),
+        link: None,
+    };
+    match name {
+        "output" => look("read", format!("{} output", arg.as_str().unwrap_or("a run's"))),
+        _ if BINDINGS.contains(&name) => crate::chat::look(root, &format!("mcp__tarae__{name}"), arg),
+        other => look("use", other.to_string()),
+    }
+}
+
+/// A call's answer as its row ends: a lookup's verdict (`12 references in 3 files`), a run's output's lines — or, refused
+/// or failed, its words.
+fn verdict(v: &Value) -> (String, bool) {
+    match v {
+        Value::String(text) => (crate::nav::verdict(text).unwrap_or_default(), false),
+        Value::Object(o) if o.contains_key("error") => {
+            (o["error"].as_str().unwrap_or_default().to_string(), true)
+        }
+        Value::Object(o) => {
+            let n = o.get("lines").and_then(Value::as_array).map_or(0, Vec::len);
+            (crate::nav::count(n, "line"), false)
+        }
+        _ => (String::new(), false),
+    }
 }
 
 fn find(ed: &mut Editor, key: u32) -> Option<&mut Running> {
@@ -210,24 +368,93 @@ fn stepped(ed: &mut Editor, key: u32, next: Next) {
     // (stopped as its step ended: its end is said now)
     if let Some(why) = r.watch.stopped() {
         let r = programs.remove(at);
-        return finish(ed, r, Ended::failed(super::stopped_words(&why, &LIMITS)));
+        return finish(ed, r, Ended::stop(super::stopped_words(&why, &LIMITS)));
     }
     r.program = Some(program);
     r.order.extend(calls.iter().map(|c| c.id));
     r.calls.extend(calls.iter().cloned());
+    // (its reads outside the project come on one card once the batch is judged, or at the bound — `hold`)
+    r.batch += 1;
+    r.unjudged = calls.iter().map(|c| c.id).collect();
+    let (batch, judged) = (r.batch, r.judged.clone());
+    let seen = judged.rings();
     // (a batch's searches share the walkers one search has: eight together walk on `THREADS` threads, not 32)
     let searches = calls.iter().filter(|c| c.name == "search").count().max(1);
     let share = (crate::grep::THREADS / searches).max(1) as u8;
     for c in calls {
         dispatch(ed, key, c, share);
     }
+    if find(ed, key).is_some_and(|r| r.batch == batch && !r.unjudged.is_empty()) {
+        ed.events.jobs().spawn(move || {
+            judged.sleep(JUDGED_WITHIN, seen);
+            move |ed: &mut Editor| judged_out(ed, key, batch)
+        });
+    }
     pump(ed, key);
+}
+
+/// How long a batch's reads outside the project wait for the rest of its verdicts before their card comes (the design
+/// session's bound): the gate judges a batch in milliseconds; one judged later gets a card of its own.
+pub const JUDGED_WITHIN: Duration = Duration::from_millis(300);
+
+/// A read of program call `inner` that asks on a card (`reads::tool_ask`): held while its batch is judged, so the card
+/// comes once, complete, and never grows after it's shown — a place joining a moment before `y` would be granted unread.
+/// Given back (Some) to wait for a card of its own when it's judged after its batch's card came (or the bound), or when
+/// its card warns (`Pending::warned`: never in a batch — judged now, its card its own); None: held, or its program is
+/// gone (nothing waits for it).
+pub fn hold(ed: &mut Editor, inner: Inner, p: crate::reads::Pending) -> Option<crate::reads::Pending> {
+    let (key, id) = (inner.program, u32::from(inner.id));
+    let r = find(ed, key)?;
+    if !r.unjudged.contains(&id) {
+        return Some(p);
+    }
+    if p.warned() {
+        judged_one(ed, key, id);
+        return Some(p);
+    }
+    r.held.push(p);
+    judged_one(ed, key, id);
+    None
+}
+
+/// Call `id` of program `key` judged: answered, or held for the card. The batch's last: its card.
+fn judged_one(ed: &mut Editor, key: u32, id: u32) {
+    let Some(r) = find(ed, key) else { return };
+    r.unjudged.retain(|&u| u != id);
+    if r.unjudged.is_empty() {
+        release(ed, key);
+    }
+}
+
+/// The bound came for batch `batch` of program `key`: its card comes with what's held; a call judged later asks alone.
+fn judged_out(ed: &mut Editor, key: u32, batch: u32) {
+    match find(ed, key).filter(|r| r.batch == batch && !r.unjudged.is_empty()) {
+        Some(r) => {
+            r.unjudged.clear();
+            release(ed, key);
+        }
+        None => ed.unchanged = true,
+    }
+}
+
+/// Program `key`'s held reads on their card: one alone, today's card; more, one card for them all (`Pending.more`).
+fn release(ed: &mut Editor, key: u32) {
+    let Some(r) = find(ed, key) else { return };
+    r.judged.ring();
+    // (in the order the program asked, whichever the gate judged first)
+    crate::sorting::by_key(&mut r.held, |p| p.then.as_ref().and_then(|t| t.call.program()).map(|i| i.id));
+    let mut held = std::mem::take(&mut r.held).into_iter();
+    let Some(mut first) = held.next() else { return };
+    first.more = held.collect();
+    crate::reads::queue(ed, first);
 }
 
 /// Call `c` of program `key` starts: the tool of its name, through its own gate, its answer to `answered`.
 fn dispatch(ed: &mut Editor, key: u32, c: Asked, share: u8) {
     let Some(outer) = find(ed, key).and_then(|r| r.call.clone()) else { return };
     let name = recorded(&c.name);
+    let look = inner_look(&ed.workspace.root, &c.name, &c.arg);
+    show(ed, key, |_, s| s.calls.push(Row { id: c.id, look, failed: false }));
     ed.workspace.claude.usage.tally.inner(name);
     ed.features.bump(crate::features::Area::Claude, name);
     // (ids are below `CALLS`, 64: the host holds the engine to it)
@@ -296,9 +523,17 @@ fn given(ed: &mut Editor, inner: Inner, v: Value) {
     // (its program ended or was stopped: nothing waits for it)
     let (key, id) = (inner.program, u32::from(inner.id));
     let Some(r) = find(ed, key) else { return };
-    if r.order.contains(&id) {
-        r.answers.insert(id, v);
+    if !r.order.contains(&id) {
+        return;
     }
+    let (range, failed) = verdict(&v);
+    r.answers.insert(id, v);
+    judged_one(ed, key, id);
+    show(ed, key, |_, s| {
+        if let Some(row) = s.calls.iter_mut().find(|row| row.id == id) {
+            (row.look.range, row.failed) = (range, failed);
+        }
+    });
     pump(ed, key);
 }
 
@@ -317,6 +552,21 @@ fn pump(ed: &mut Editor, key: u32) {
 /// The chat's call answered with how the program ended: what it printed and returned, cut at the tool's limit (an
 /// error, if it ended in one).
 fn finish(ed: &mut Editor, mut r: Running, end: Ended) {
+    // (its row: how it ended, and its whole output — the user's, never cut)
+    if let Some(row) = &r.row {
+        let whole = end.shown();
+        // (its row keeps the program's length; a stop or a failure says so first, `▲` its mark)
+        let failed = end.result.as_ref().err().map(|e| row_end(e, end.stopped));
+        show_at(ed, row, |look, s| {
+            if let Some(f) = failed {
+                look.range = f;
+            }
+            s.output = Some(whole);
+        });
+    }
+    // (a card it asked on goes with it: nothing waits for its answer — nor the bound's wait)
+    r.judged.ring();
+    crate::reads::program_ended(ed, r.key);
     let Some(call) = r.call.take() else { return };
     let text = end.answer(LIMITS.output).text;
     let r = match end.result {
@@ -340,7 +590,7 @@ pub fn stop_all(ed: &mut Editor, why: &str) {
     *programs = stepping;
     for r in waiting {
         let words = super::stopped_words(&super::Why::Host(why.into()), &LIMITS);
-        finish(ed, r, Ended::failed(words));
+        finish(ed, r, Ended::stop(words));
     }
 }
 

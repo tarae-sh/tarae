@@ -96,6 +96,22 @@ pub struct Pending {
     /// It reads under a moved home's default place (`Caps::moved_said`): the line its card, a refusal and the
     /// answer after a `y` carry — the user sees why `n` is likely right (#521).
     pub moved: Option<String>,
+    /// A code program's batch: the other reads its calls handed out together asked for, on this one card
+    /// (`codetool::tool::hold`) — `y` lets each through once, `n` refuses them all; never offered longer. None of
+    /// them `warned`.
+    pub more: Vec<Pending>,
+}
+
+impl Pending {
+    /// Its card warns: files named like keys among what it reads, a place where keys are, a token-like line found
+    /// there, or a moved home's default place (`moved`: its line on its own card, #521). Never one of a program's batch (`codetool::tool::hold`): it asks on a card of its own, its warning with
+    /// it, so one `y` on a list never lets it through among harmless places (the design session, 2026-11-12).
+    pub fn warned(&self) -> bool {
+        !self.look.keys.is_empty()
+            || self.class == crate::cards::Class::Secret
+            || self.look.at.as_deref().is_some_and(|at| self.found.said(at).is_some())
+            || self.moved.is_some()
+    }
 }
 
 /// A call of tarae's in-process tools that reads where Read would ask (`Gate::judge`): it waits on the same
@@ -302,7 +318,8 @@ pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
     if let Some(no) = said_no(c, &look) {
         return crate::tools::answer(ed, then.call, Err(no));
     }
-    c.reads.push_back(Pending {
+    let program = then.call.program();
+    let p = Pending {
         request_id: String::new(),
         generation,
         input: then.args.clone(),
@@ -316,7 +333,22 @@ pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
         then: Some(then),
         log,
         moved,
-    });
+        more: Vec::new(),
+    };
+    // (a program's: held until its batch is judged, then on one card — `codetool::tool::hold`)
+    let p = match program {
+        Some(inner) => crate::codetool::tool::hold(ed, inner, p),
+        None => Some(p),
+    };
+    if let Some(p) = p {
+        queue(ed, p);
+    }
+}
+
+/// `p` waits for its card: after the others waiting, on the card once none is up.
+pub fn queue(ed: &mut Editor, p: Pending) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    c.reads.push_back(p);
     refold(ed);
     next(ed);
 }
@@ -994,6 +1026,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
         then: None,
         log: false,
         moved: None,
+        more: Vec::new(),
     };
     let keep = p
         .look
@@ -1138,6 +1171,7 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
                 // (no Read in the chat: tarae's `read` and `search` judge the log — `Gate::is_log`)
                 log: false,
                 moved,
+                more: Vec::new(),
             });
             refold(ed);
             next(ed);
@@ -1536,29 +1570,83 @@ pub fn next(ed: &mut Editor) {
     let key_kept =
         |k: &PathBuf| crate::caps::Caps::storable(&crate::allow::Grant::Key(k.clone())) == Scope::Always;
     // (nor a search too big to look through for them: a longer yes would hold for nothing — it asks again)
-    let keep = p.look.at.as_deref().is_some_and(keepable) && p.look.keys.iter().all(key_kept) && !p.look.cut;
+    // (a program's batch: once, each place — a lasting yes is given one place at a time)
+    let keep = p.more.is_empty()
+        && p.look.at.as_deref().is_some_and(keepable)
+        && p.look.keys.iter().all(key_kept)
+        && !p.look.cut;
     // (its repository, or — beside another read waiting or let through once — its folder for longer: #102;
     // once it's been looked through for tokens — till then the place alone: `refold`. The log: the file alone)
     let others = others(c);
     let folder = (keep && !p.log).then(|| folder_for(ed, &p, &others, home.as_deref())).flatten();
     let why = not_whole(ed, &p, folder.as_ref().map(|(f, _)| f.as_path()));
-    let (q, warning) =
-        card_text(&p, keep, folder.as_ref().map(|(f, found)| (f.as_path(), found)), why.as_deref());
+    let (q, warning, warnings) = match p.more.is_empty() {
+        true => {
+            let f = folder.as_ref().map(|(f, found)| (f.as_path(), found));
+            let (q, warning) = card_text(&p, keep, f, why.as_deref());
+            (q, warning, Vec::new())
+        }
+        false => (batch_text(&p), None, Vec::new()),
+    };
     let asked = crate::cards::Asked::new(crate::cards::Why::Read, crate::cards::Request::Read(p.class))
         .about(&p.look.given);
     // (a file named like a key — in the project, or outside it by its name: the key card, `y` once)
     // (a code program's read: its card says so — the same gate, the same answers, `codetool::tool`)
     let program = p.then.as_ref().is_some_and(|t| t.call.program().is_some());
     let title = match (!p.look.keys.is_empty(), program) {
-        (true, false) => KEYS_TITLE,
-        (false, false) => TITLE,
-        (true, true) => SCRIPT_KEYS_TITLE,
-        (false, true) => SCRIPT_TITLE,
+        _ if !p.more.is_empty() => {
+            format!("Claude's program wants to read — {} places outside the project", 1 + p.more.len())
+        }
+        (true, false) => KEYS_TITLE.into(),
+        (false, false) => TITLE.into(),
+        (true, true) => SCRIPT_KEYS_TITLE.into(),
+        (false, true) => SCRIPT_TITLE.into(),
     };
     let what = crate::offer::What::Read { pending: Box::new(p), keep, folder: folder.map(|(f, _)| f) };
-    let mut o = crate::offer::Offer::new(title.into(), &q, "", String::new(), what).asked(asked);
-    o.warning = warning;
+    let mut o = crate::offer::Offer::new(title, &q, "", String::new(), what).asked(asked);
+    (o.warning, o.warnings) = (warning, warnings);
     ed.push_offer(o);
+}
+
+/// A program's batch card's text: each place it reads, a line each with its class (`cards::Class::place`) — the
+/// card's own rules cut a long one, its whole under the pointer; then where it goes and what `y` and `n` do. No
+/// warning lines: a place with one never rides in a batch (`Pending::warned`).
+pub fn batch_text(p: &Pending) -> String {
+    let mut q = String::new();
+    for w in std::iter::once(p).chain(&p.more) {
+        let at = place_of(w);
+        let what = match w.look.tool.as_str() {
+            "Grep" => format!("searches {at} for {}", pattern_shown(&w.look.pattern).0),
+            _ => at,
+        };
+        q.push_str(&format!("{what}  · {}\n", w.class.place()));
+    }
+    q.push_str("\nWhat it reads goes to Claude's program, and what the program returns to Claude.");
+    q.push_str("\n\ny lets each of them through once; n refuses them all.");
+    q
+}
+
+/// Where a batch card's read goes, as it says it.
+fn place_of(w: &Pending) -> String {
+    w.look.at.as_ref().map_or_else(|| w.look.given.clone(), |a| a.display().to_string())
+}
+
+/// What a program's batch card's `v` shows: each search's whole pattern the card cut, after the place it searches —
+/// a single card's `details`, for any of its places, not only the first.
+pub fn batch_details(p: &Pending) -> Option<String> {
+    let cut = std::iter::once(p)
+        .chain(&p.more)
+        .filter(|w| w.look.tool == "Grep" && pattern_shown(&w.look.pattern).1);
+    let all: Vec<String> = cut
+        .map(|w| {
+            format!(
+                "\nThe whole pattern searched for in {}:\n\n{}\n",
+                place_of(w),
+                pattern_text(&w.look.pattern)
+            )
+        })
+        .collect();
+    (!all.is_empty()).then(|| all.concat())
 }
 
 /// The files named like keys a card lists by name; the rest are counted.
@@ -1652,7 +1740,7 @@ pub fn pattern_shown(pattern: &str) -> (String, bool) {
 /// What a read card's `v` shows after its text: a search's whole pattern, when the card cut it.
 pub fn details(look: &Look) -> Option<String> {
     let cut = look.tool == "Grep" && pattern_shown(&look.pattern).1;
-    cut.then(|| format!("The whole pattern:\n\n{}\n", pattern_text(&look.pattern)))
+    cut.then(|| format!("\nThe whole pattern:\n\n{}\n", pattern_text(&look.pattern)))
 }
 
 /// The user's answer on the card: None = no; else allowed, for once or longer (`a`, `A` — only when the
@@ -1665,6 +1753,9 @@ pub fn answer(
     keep: bool,
     folder: Option<PathBuf>,
 ) {
+    if !p.more.is_empty() {
+        return answer_batch(ed, id, p, scope.is_some());
+    }
     ed.offer_finished(id, Ok(()));
     // (the user's own ask is answered whatever claude process runs now — no call of one waits on it)
     if let Some(own) = p.own.clone() {
@@ -1745,6 +1836,33 @@ pub fn answer(
     next(ed);
 }
 
+/// A program's batch card answered (`Pending.more`): `y` lets each read through once, `n` refuses each — that no holding
+/// for its place until the turn ends, as a single card's does.
+fn answer_batch(ed: &mut Editor, id: u64, mut p: Pending, yes: bool) {
+    ed.offer_finished(id, Ok(()));
+    if ed.workspace.claude.chat.as_ref().is_none_or(|c| c.generation() != p.generation) {
+        return;
+    }
+    let more = std::mem::take(&mut p.more);
+    let root = ed.workspace.root.clone();
+    for w in std::iter::once(p).chain(more) {
+        let shown = w.look.at.as_ref().map_or_else(|| w.look.given.clone(), |a| a.display().to_string());
+        if let (Some(c), Some(at)) = (ed.workspace.claude.chat.as_mut(), w.look.at.clone()) {
+            match yes {
+                true if w.look.keys.is_empty() && !c.read_once.contains(&at) => c.read_once.push(at),
+                true => {}
+                false => c.read_no.push((at.clone(), !at.starts_with(&root))),
+            }
+        }
+        let no = format!(
+            "the user chose not to let your program read {shown} — ask them if you need it (this no holds for the \
+             rest of the turn)"
+        );
+        reply(ed, w, yes, &no);
+    }
+    next(ed);
+}
+
 /// The answer on the card asking about files named like keys the user's own act would send (`ask_own`):
 /// `a`/`A` open them as the read card's do; then a chip's `y` lets the chat input's message with that chip
 /// carry them — that message only (`input_pass`) —, `n` keeps them to their names, said where the user looks,
@@ -1773,6 +1891,21 @@ fn own_answer(ed: &mut Editor, p: Pending, own: Own, scope: Option<Scope>, keep:
     if ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy()) {
         crate::chat::send_queued(ed);
     }
+}
+
+/// Code program `key` ended (`codetool::tool::finish`): its reads waiting for a card go with it — the one up dropped,
+/// the queued ones taken out, none answered (nothing waits for them) — and the next ask comes up.
+pub fn program_ended(ed: &mut Editor, key: u32) {
+    let of =
+        |p: &Pending| p.then.as_ref().and_then(|t| t.call.program()).is_some_and(|i| ({ i.program }) == key);
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.reads.retain(|p| !of(p));
+    }
+    let up = |w: &crate::offer::What| matches!(w, crate::offer::What::Read { pending, .. } if of(pending));
+    if ed.session_cards().any(|o| up(&o.what)) {
+        ed.drop_cards_for(up, "dropped — the program that asked ended");
+    }
+    next(ed);
 }
 
 /// The turn ended: nothing waits for these asks any more, and what its runs made asks again. (A card the
@@ -1858,6 +1991,7 @@ mod tests {
             then: None,
             log,
             moved,
+            more: Vec::new(),
         });
         ed.workspace.claude.chat = Some(chat);
         next(&mut ed);
@@ -1892,6 +2026,7 @@ mod tests {
             then: None,
             log: true,
             moved: None,
+            more: Vec::new(),
         });
         ed.workspace.claude.chat = Some(chat);
         next(&mut ed);

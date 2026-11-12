@@ -8,8 +8,10 @@ use serde_json::{Value, json};
 
 use super::*;
 
-/// A stand-in engine: `start`'s source is a script of replies (separated by 0x1e), given one a step. Two replies
-/// act: `!` spins until the fuel runs out, `@` ends with the last answer as the program's value.
+/// A stand-in engine: `start`'s source is a script of replies (separated by 0x1e), given one a step. Four replies
+/// act: `!` spins until the fuel runs out, `@` ends with the last answer as the program's value, `+` grows its
+/// memory from 1 MB to 64 MB and a page (no maximum of its own) and gives the next reply whatever the grow said,
+/// `#` traps.
 const STAND_IN: &str = r#"(module
   (memory (export "memory") 16)
   (global $heap (mut i32) (i32.const 0x10000))
@@ -35,6 +37,14 @@ const STAND_IN: &str = r#"(module
     (i32.const 0x80000))
   (func $reply (param $ans i32) (param $len i32) (result i32) (local $r i32)
     (local.set $r (call $next))
+    (if (i32.and (i32.eq (i32.load (local.get $r)) (i32.const 1))
+                 (i32.eq (i32.load8_u offset=4 (local.get $r)) (i32.const 0x2b)))
+      (then
+        (drop (memory.grow (i32.const 1009)))
+        (local.set $r (call $next))))
+    (if (i32.and (i32.eq (i32.load (local.get $r)) (i32.const 1))
+                 (i32.eq (i32.load8_u offset=4 (local.get $r)) (i32.const 0x23)))
+      (then unreachable))
     (if (i32.and (i32.eq (i32.load (local.get $r)) (i32.const 1))
                  (i32.eq (i32.load8_u offset=4 (local.get $r)) (i32.const 0x21)))
       (then (loop $l (br $l))))
@@ -111,6 +121,48 @@ fn calls_come_together_and_are_answered_one_by_one() {
     );
 }
 
+/// tarae's own memory cap, alone (the real engine's 100 MB case can't tell it from the module's maximum and QuickJS's
+/// heap limit): the stand-in has neither, so only `Limits.memory` refuses its grow past 64 MB — and the program ends
+/// at its memory limit, said with its kind first and the way out, whether the engine then traps (an allocator's
+/// abort) or says an error of its own.
+#[test]
+fn a_program_past_the_memory_cap_ends_at_its_memory_limit() {
+    let e = stand_in();
+    let limits = Limits { fuel: 1 << 30, ..LIMITS };
+    let words = "stopped at its memory limit (64 MB): do less in one program, or split it";
+    for then in ["#", "error\n{\"error\":\"its own words\"}"] {
+        let end = ended(Program::start(&e, &script(&["+", then]), limits));
+        assert_eq!(end.result, Err(words.into()), "after {then:?}");
+        assert!(end.stopped, "a limit's ending");
+    }
+    // the engine's own out of memory with no grow refused: its heap limit was the bound met, and the words say it
+    let heap = "error\n{\"error\":\"InternalError: out of memory\"}";
+    let end = ended(Program::start(&e, heap, limits));
+    let said = "stopped at its memory limit (48 MB): do less in one program, or split it";
+    assert_eq!((end.result, end.stopped), (Err(said.into()), true));
+    // after a refused grow the cap is the bound met, whatever the engine then says
+    let end = ended(Program::start(&e, &script(&["+", heap]), limits));
+    assert_eq!(end.result, Err(words.into()));
+    // a program that copes with the refusal ends as it says
+    let end = ended(Program::start(&e, &script(&["+", "done\n{\"done\":1}"]), limits));
+    assert_eq!(end.result, Ok(Some(json!(1))));
+    // with room for it, the grow is no ending: the trap after it is the engine's own
+    let roomy = Limits { memory: 128 << 20, ..limits };
+    let end = ended(Program::start(&e, &script(&["+", "#"]), roomy));
+    assert_eq!(end.result, Err("the engine stopped: unreachable".into()));
+}
+
+/// `ENGINE_HEAP` is the figure the pinned engine was built with: a re-pin that moves `glue.c`'s heap limit moves the
+/// words' figure with it, or this fails.
+#[test]
+fn the_engines_heap_limit_is_glues() {
+    let glue = include_str!("../../xtask/quickjs/glue.c");
+    let line = glue.lines().find(|l| l.starts_with("#define MEMORY_LIMIT ")).expect("glue.c's MEMORY_LIMIT");
+    assert_eq!(line, format!("#define MEMORY_LIMIT ({} << 20)", ENGINE_HEAP >> 20));
+    // (whole MB, as the words say it; inside the cap: the bound a program meets first)
+    const { assert!(ENGINE_HEAP.is_multiple_of(1 << 20) && ENGINE_HEAP < LIMITS.memory) };
+}
+
 #[test]
 fn an_engine_that_breaks_the_protocol_ends_the_program_with_words() {
     let e = stand_in();
@@ -146,12 +198,13 @@ fn an_engine_that_breaks_the_protocol_ends_the_program_with_words() {
 fn the_fuel_and_the_step_limit_end_a_program_with_their_words() {
     let e = stand_in();
     for jit in [true, false] {
-        let fuel = error(Program::start(&e, "!", Limits { jit, ..SMALL }));
+        let fuel = ended(Program::start(&e, "!", Limits { jit, ..SMALL }));
         assert_eq!(
-            fuel,
-            "stopped at the limit of one program's work (what the steps don't count too: strings, JSON, sorting): \
-             do less in one program, or split it"
+            fuel.result.unwrap_err(),
+            "stopped at its work limit (what the steps don't count too: strings, JSON, sorting): do less in one \
+             program, or split it"
         );
+        assert!(fuel.stopped, "a limit is a stop, not a failure");
     }
     let (p, _) = calls(Program::start(
         &e,
@@ -159,7 +212,7 @@ fn the_fuel_and_the_step_limit_end_a_program_with_their_words() {
         SMALL,
     ));
     assert!(
-        error(p.answer(0, &json!(1))).contains("of one program's work"),
+        error(p.answer(0, &json!(1))).starts_with("stopped at its work limit"),
         "the fuel is the whole program's, resumes too"
     );
     let steps = r#"error
@@ -169,12 +222,17 @@ fn the_fuel_and_the_step_limit_end_a_program_with_their_words() {
     assert_eq!(
         end.result,
         Err(
-            "stopped at the limit of 20000 steps (a step is 10,000 loop turns and branches): do less in one \
+            "stopped at its step limit (20000 steps; a step is 10,000 loop turns and branches): do less in one \
              program, or split it"
                 .into()
         )
     );
-    assert_eq!((end.printed.as_str(), end.steps), ("before\n", 20001));
+    assert_eq!((end.printed.as_str(), end.steps, end.stopped), ("before\n", 20001, true));
+    // (an error the program threw is no stop: its row says `failed`)
+    let threw = r#"error
+{"error":"TypeError: no","steps":3,"printed":"","printed_bytes":0}"#;
+    let end = ended(Program::start(&e, threw, SMALL));
+    assert_eq!((end.result, end.stopped), (Err("TypeError: no".into()), false));
 }
 
 #[test]
@@ -252,12 +310,15 @@ fn what_claude_reads_is_cut_at_the_limit_and_says_so() {
         printed_bytes: printed.len() as u64,
         steps: 1,
         fuel: 1,
+        stopped: false,
     };
     assert_eq!(end(Ok(Some(json!(2))), "").text(), "returned: 2");
     assert_eq!(end(Ok(Some(json!("a\nb"))), "x\n").text(), "x\nreturned:\na\nb");
     assert_eq!(end(Ok(None), "").text(), "returned nothing, printed nothing");
     assert_eq!(end(Ok(None), "x").text(), "x\n");
     assert_eq!(end(Err("TypeError: no".into()), "before\n").text(), "before\nerror: TypeError: no");
+    // (the user's copy under the row: no `error: ` — the row's `▲` says it)
+    assert_eq!(end(Err("TypeError: no".into()), "before\n").shown(), "before\nTypeError: no");
     let mut over = end(Ok(None), "x\n");
     over.printed_bytes = 5 << 20;
     assert_eq!(over.text(), "x\n… print() kept its first 1024 KB, of 5242880 bytes printed\n");
@@ -320,17 +381,17 @@ fn a_program_runs_as_jobs_and_lands_on_the_main_loop() {
 fn the_clocks_words_say_its_limit_and_the_way_out() {
     assert_eq!(
         time_limit(CLOCK_JIT),
-        "stopped at the limit of one program's time (10.0s of running): do less in one program, or split it"
+        "stopped at its time limit (10.0s of running): do less in one program, or split it"
     );
     assert_eq!(
         time_limit(CLOCK_INTERPRETER),
-        "stopped at the limit of one program's time (1m 00s of running): do less in one program, or split it"
+        "stopped at its time limit (1m 00s of running): do less in one program, or split it"
     );
     assert_eq!(Limits { jit: true, ..LIMITS }.clock(), CLOCK_JIT);
     assert_eq!(Limits { jit: false, ..LIMITS }.clock(), CLOCK_INTERPRETER);
 }
 
-/// The host's stop (the user's `esc`, the turn's end) ends a program running — at the runtime's next check, from
+/// The host's stop (the user's `C-c`, the turn's end) ends a program running — at the runtime's next check, from
 /// another thread — or waiting, at its next step; its words say who, and the first reason is kept.
 #[test]
 fn the_hosts_stop_ends_a_program_running_or_waiting() {
@@ -345,15 +406,15 @@ fn the_hosts_stop_ends_a_program_running_or_waiting() {
         });
         crate::event::sleep(Duration::from_millis(20));
         watch.stop("the turn ended");
-        watch.stop("esc");
+        watch.stop("C-c");
         assert_eq!(error(run.join().unwrap()), "stopped: the turn ended", "running, jit {jit}");
         assert_eq!(watch.stopped(), Some(Why::Host("the turn ended".into())));
 
         let watch = Watch::new(&limits);
         let pending = "pending\n{\"pending\":[{\"id\":0,\"name\":\"x\"}]}";
         let (p, _) = calls(Program::start_with(&e, &script(&[pending, "@"]), limits, watch.clone()));
-        watch.stop("esc");
-        assert_eq!(error(p.answer(0, &json!(1))), "stopped: esc", "waiting, jit {jit}");
+        watch.stop("C-c");
+        assert_eq!(error(p.answer(0, &json!(1))), "stopped: C-c", "waiting, jit {jit}");
         assert_eq!(watch.steps(), 2);
     }
 }
@@ -465,8 +526,8 @@ fn the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean() {
         (end.result.unwrap_err(), end.steps, end.printed)
     };
     let words = format!(
-        "stopped at the limit of {} steps (a step is 10,000 loop turns and branches): do less in one program, or \
-         split it",
+        "stopped at its step limit ({} steps; a step is 10,000 loop turns and branches): do less in one program, \
+         or split it",
         LIMITS.steps
     );
     let words = words.as_str();
@@ -483,8 +544,24 @@ fn the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean() {
     // memory
     let big = limit("const s = 'x'.repeat(1 << 30); return s.length;").0;
     assert!(big.starts_with("RangeError: string too long"), "{big}");
-    let grow = limit("const a = []; for (;;) a.push('x'.repeat(1 << 20) + a.length);").0;
-    assert!(grow.starts_with("InternalError: out of memory"), "{grow}");
+    // (the engine's heap limit is met first here, inside the cap: the words say its figure, never the cap's)
+    let memory = "stopped at its memory limit (48 MB): do less in one program, or split it";
+    let grow = ok(&e, "const a = []; for (;;) a.push('x'.repeat(1 << 20) + a.length);");
+    assert_eq!((grow.result, grow.stopped), (Err(memory.into()), true));
+    // 100 MB kept ends it, at the heap limit's words. This proves one of the three bounds holds, not which — the module's own maximum
+    // (`inside.sh`'s `--max-memory`, 64 MB), QuickJS's heap limit (`glue.c`, 48 MB, met first) and `Limits.memory`
+    // each hold alone; tarae's own, the last, is `a_program_past_the_memory_cap_ends_at_its_memory_limit`'s
+    let kept = ok(
+        &e,
+        "const a = []; for (let i = 0; i < 100; i++) a.push('x'.repeat(1 << 20) + i); return a.length;",
+    );
+    assert_eq!(kept.result, Err(memory.into()));
+    // the engine's own `out of memory` passes a `catch` (QuickJS-ng throws it so): still the limit
+    let caught = ok(
+        &e,
+        "let a = []; try { for (;;) a.push('x'.repeat(1 << 20) + a.length); } catch (x) { a = null; return 'ok'; }",
+    );
+    assert_eq!(caught.result, Err(memory.into()));
     assert_eq!(
         ok(&e, "return typeof a + typeof print").result,
         Ok(Some(json!("undefinedfunction"))),

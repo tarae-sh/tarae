@@ -344,6 +344,7 @@ extern "C" fn bulk_helper(ctx: *mut Ctx, fr: *mut u64, pc: u32) -> u64 {
         m: &inst.module,
         mem: &mut inst.memory,
         memory_max: inst.memory_max,
+        grow_refused: &mut inst.grow_refused,
         tables: &mut inst.tables,
         table_max: &inst.table_max,
         elems: &mut inst.elems,

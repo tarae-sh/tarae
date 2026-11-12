@@ -16,7 +16,7 @@
 //!   `start` and every `resume` — never the waits between, on a card or an answer — is held to `Limits::clock`
 //!   (10 s under the JIT, 60 s under the interpreter) by a watchdog that sets the instance's interrupt
 //!   (`tarae_wasm::Interrupt`, checked wherever the runtime charges fuel). The host can set it at any moment too
-//!   (`Watch::stop`: the user's `esc`, the turn's end). Steps, fuel and the clock each say what stopped the
+//!   (`Watch::stop`: the user's `C-c` in the chat, the turn's end). Steps, fuel and the clock each say what stopped the
 //!   program, and the one way out (`REMEDY`).
 //! - **Never on the key or frame path**: loading and every `start` and `resume` run on a worker (`start_job`,
 //!   `answer_job`); the `Program` travels between them and the main loop.
@@ -46,8 +46,9 @@ pub struct Limits {
     /// Interrupt-handler calls, each 10,000 of a program's loop turns and branches (or a stretch of a regex's
     /// matching).
     pub steps: u32,
-    /// The engine's linear memory (the engine's own heap limit, 48 MB, comes first: an `out of memory` the program
-    /// can see).
+    /// The engine's linear memory (the engine's own heap limit, `ENGINE_HEAP`, comes first: an `out of memory` that
+    /// passes the program's `catch`). A grow past it is refused; either way the program ends at its memory limit,
+    /// said with the bound that was met (`memory_limit`).
     pub memory: usize,
     /// The runtime's fuel for the whole program, every `resume` included.
     pub fuel: u64,
@@ -76,6 +77,11 @@ pub const CALLS: u32 = 64;
 
 /// The bytes of what a program printed the engine keeps (`glue.c`'s `PRINTED_MAX`); past it, only counted.
 const PRINTED_MAX: usize = 1 << 20;
+
+/// The engine's own heap limit (`glue.c`'s `MEMORY_LIMIT`, its `JS_SetMemoryLimit`), inside `Limits::memory`: on the
+/// real engine the bound a program meets first, so its ending says this figure (`memory_limit`). Re-read at a
+/// re-pin (`xtask/quickjs/pin`'s list); `tests::the_engines_heap_limit_is_glues` holds it to `glue.c`.
+pub const ENGINE_HEAP: usize = 48 << 20;
 
 /// The fuel a step of bytecode costs, for a loop of up to 20 statements a turn (`tests::measure`, QuickJS-ng
 /// v0.18.0: 1.6×10⁸ an empty loop's, 2.5×10⁹ arithmetic's, 3.4×10¹⁰ twenty statements', 1.7×10¹¹ a hundred's —
@@ -169,6 +175,9 @@ pub struct Ended {
     pub steps: u32,
     /// The runtime's fuel it burnt.
     pub fuel: u64,
+    /// Its error is a stop — a limit, or the host's (`Watch::stop`) — not one the program threw or the engine's: its
+    /// row says `stopped`, not `failed` (`tool::finish`).
+    pub stopped: bool,
 }
 
 /// What Claude reads of an ended program: `text`, `shown` bytes of the `whole`'s.
@@ -181,11 +190,27 @@ pub struct Answer {
 
 impl Ended {
     fn failed(why: impl Into<String>) -> Ended {
-        Ended { result: Err(why.into()), printed: String::new(), printed_bytes: 0, steps: 0, fuel: 0 }
+        let result = Err(why.into());
+        Ended { result, printed: String::new(), printed_bytes: 0, steps: 0, fuel: 0, stopped: false }
     }
 
-    /// The whole of it, as the user sees it: what it printed, then what it returned or why it ended.
+    /// Ended by a limit or the host: `why` says which (`stopped at its … limit`, `stopped: …`).
+    fn stop(why: impl Into<String>) -> Ended {
+        Ended { stopped: true, ..Ended::failed(why) }
+    }
+
+    /// The whole of it, as Claude reads it: what it printed, then what it returned or why it ended (`error: …`).
     pub fn text(&self) -> String {
+        self.told("error: ")
+    }
+
+    /// The whole of it, as the user sees it under its row: an error without `error: ` — the row's `▲` says it, and a
+    /// stop's words lead with their kind (`stopped at its time limit …`).
+    pub fn shown(&self) -> String {
+        self.told("")
+    }
+
+    fn told(&self, error: &str) -> String {
         let mut out = self.printed.clone();
         if self.printed_bytes > self.printed.len() as u64 {
             if !out.ends_with('\n') {
@@ -205,7 +230,7 @@ impl Ended {
             Ok(Some(v)) => out.push_str(&format!("returned: {v}")),
             Ok(None) if out.is_empty() => out.push_str("returned nothing, printed nothing"),
             Ok(None) => {}
-            Err(e) => out.push_str(&format!("error: {e}")),
+            Err(e) => out.push_str(&format!("{error}{e}")),
         }
         out
     }
@@ -282,7 +307,7 @@ struct Ledger {
 pub enum Why {
     /// Its running time reached the limit.
     Clock,
-    /// The host, saying why (the user's `esc`, the turn's end: piece c's words).
+    /// The host, saying why (the user's `C-c`, the turn's end: `tool::STOPPED_BY_YOU`, `tool::turn_over`).
     Host(String),
 }
 
@@ -431,6 +456,8 @@ pub struct Program {
     fuel: u64,
     /// Its step limit, for the words when it's met.
     steps: u32,
+    /// Its memory limit, the same.
+    memory: usize,
 }
 
 /// Why a step stopped short of a reply.
@@ -475,7 +502,7 @@ impl Program {
             Ok(i) => i,
             Err(t) => {
                 watch.close();
-                return Next::Ended(Ended::failed(stopped(Stop::Trap(t), &watch)));
+                return Next::Ended(stopped(Stop::Trap(t), &watch));
             }
         };
         inst.set_interrupt(watch.flag.clone());
@@ -487,6 +514,7 @@ impl Program {
             asked: 0,
             fuel: limits.fuel,
             steps: limits.steps,
+            memory: limits.memory,
         };
         let whole = format!("{prelude}{src}");
         let (init, bytes, steps) = (engine.init, whole.as_bytes(), limits.steps as i32);
@@ -579,7 +607,13 @@ impl Program {
         let fuel = self.fuel - self.inst.fuel();
         let (head, mut body) = match read {
             Ok(r) => r,
-            Err(s) => return Next::Ended(Ended { fuel, ..Ended::failed(stopped(s, &self.watch)) }),
+            // (a trap after the cap said no to more memory: an allocator's abort, say)
+            Err(Stop::Trap(t))
+                if self.inst.grow_refused() && !matches!(t, Trap::OutOfFuel | Trap::Interrupted) =>
+            {
+                return Next::Ended(Ended { fuel, ..Ended::stop(memory_limit(self.memory)) });
+            }
+            Err(s) => return Next::Ended(Ended { fuel, ..stopped(s, &self.watch) }),
         };
         let word = head.split(' ').next().unwrap_or_default();
         match word {
@@ -589,10 +623,21 @@ impl Program {
             },
             "done" | "error" => {
                 let steps = body["steps"].as_u64().unwrap_or(0) as u32;
+                // (the bound met: the cap, when it refused a grow — else the engine's own heap limit)
+                let out_of_memory = match word == "error" {
+                    false => None,
+                    true if self.inst.grow_refused() => Some(self.memory),
+                    true => body["error"]
+                        .as_str()
+                        .is_some_and(|e| e.starts_with(ENGINE_OUT_OF_MEMORY))
+                        .then_some(ENGINE_HEAP),
+                };
+                let stopped = word == "error" && (body["stopped"] == "steps" || out_of_memory.is_some());
                 let result = match word {
                     // (no `done` key: it returned `undefined`, which JSON leaves out)
                     "done" => Ok(body.get_mut("done").map(Value::take)),
                     _ if body["stopped"] == "steps" => Err(step_limit(self.steps)),
+                    _ if out_of_memory.is_some() => Err(memory_limit(out_of_memory.unwrap_or_default())),
                     _ => {
                         let e = body["error"].as_str().unwrap_or("an error it didn't say").to_string();
                         let hint = src.filter(|_| body["syntax"] == true).and_then(annotation);
@@ -611,6 +656,7 @@ impl Program {
                     printed_bytes: body["printed_bytes"].as_u64().unwrap_or(0),
                     steps,
                     fuel,
+                    stopped,
                 })
             }
             _ => Next::Ended(Ended::failed(format!(
@@ -647,17 +693,31 @@ impl Program {
 /// What every limit's words end with: the way out.
 const REMEDY: &str = "do less in one program, or split it";
 
-/// The words for a program the step limit ended: the limit itself, and the way out.
+/// The words for a program the step limit ended: its kind first (the row cut after it still says which limit — the
+/// design session, 2026-11-12), the limit itself, and the way out.
 fn step_limit(limit: u32) -> String {
-    format!("stopped at the limit of {limit} steps (a step is 10,000 loop turns and branches): {REMEDY}")
+    format!("stopped at its step limit ({limit} steps; a step is 10,000 loop turns and branches): {REMEDY}")
 }
 
-/// The words for a program the clock ended: the limit itself, and the way out.
+/// How QuickJS-ng (v0.18.0) says its own heap limit (`ENGINE_HEAP`) was met: an `InternalError` thrown past every
+/// `catch`. Said as the memory limit with the heap's figure, as a grow the cap refused is with the cap's.
+const ENGINE_OUT_OF_MEMORY: &str = "InternalError: out of memory";
+
+/// The words for a program that ran out of memory — the cap (`Limits::memory`) refused it more, or the engine's own
+/// heap limit inside it (`ENGINE_HEAP`) was met: its kind first, the bound that was met (never another), and the
+/// way out.
+fn memory_limit(bytes: usize) -> String {
+    format!("stopped at its memory limit ({} MB): {REMEDY}", bytes >> 20)
+}
+
+/// The words for a program the clock ended: its kind first, the limit itself, and the way out.
 pub(crate) fn time_limit(limit: Duration) -> String {
-    format!(
-        "stopped at the limit of one program's time ({} of running): {REMEDY}",
-        crate::term::run_duration(limit)
-    )
+    format!("stopped at its time limit ({} of running): {REMEDY}", crate::term::run_duration(limit))
+}
+
+/// The words for a program the fuel ended: its kind first, what it counts, and the way out.
+fn work_limit() -> String {
+    format!("stopped at its work limit (what the steps don't count too: strings, JSON, sorting): {REMEDY}")
 }
 
 /// The words for a program stopped through its flag (`Watch`), at `limits`' clock.
@@ -668,20 +728,18 @@ pub(crate) fn stopped_words(why: &Why, limits: &Limits) -> String {
     }
 }
 
-/// The words for a step that trapped or broke the protocol: the instance is dropped with it.
-fn stopped(s: Stop, watch: &Watch) -> String {
+/// How a step that trapped or broke the protocol ended: a limit or the host's stop (`Ended.stopped`), or the engine's
+/// failure. The instance is dropped with it.
+fn stopped(s: Stop, watch: &Watch) -> Ended {
     match s {
-        Stop::Trap(Trap::OutOfFuel) => format!(
-            "stopped at the limit of one program's work (what the steps don't count too: strings, JSON, sorting): \
-             {REMEDY}"
-        ),
+        Stop::Trap(Trap::OutOfFuel) => Ended::stop(work_limit()),
         Stop::Trap(Trap::Interrupted) => match watch.stopped() {
-            Some(Why::Clock) => time_limit(watch.limit),
-            Some(why) => stopped_words(&why, &LIMITS),
-            None => "the engine stopped: interrupted".into(),
+            Some(Why::Clock) => Ended::stop(time_limit(watch.limit)),
+            Some(why) => Ended::stop(stopped_words(&why, &LIMITS)),
+            None => Ended::failed("the engine stopped: interrupted"),
         },
-        Stop::Trap(t) => format!("the engine stopped: {t}"),
-        Stop::Engine(why) => format!("the engine {why}"),
+        Stop::Trap(t) => Ended::failed(format!("the engine stopped: {t}")),
+        Stop::Engine(why) => Ended::failed(format!("the engine {why}")),
     }
 }
 

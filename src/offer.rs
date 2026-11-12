@@ -897,9 +897,11 @@ impl Offer {
         }
     }
 
-    /// What its `v` shows after its text, if it's a read card whose search pattern it cut (`reads::details`).
+    /// What its `v` shows after its text, if it's a read card whose search pattern it cut (`reads::details`; a
+    /// program's batch card: any of its places' — `reads::batch_details`).
     pub fn read_details(&self) -> Option<String> {
         match &self.what {
+            What::Read { pending, .. } if !pending.more.is_empty() => crate::reads::batch_details(pending),
             What::Read { pending, .. } => crate::reads::details(&pending.look),
             _ => None,
         }

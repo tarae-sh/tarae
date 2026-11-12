@@ -312,6 +312,7 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
         "check",
         "start",
         "send",
+        "code",
         "use",
     ];
     rows.iter()
@@ -343,6 +344,11 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
                     range: l["range"].as_str().unwrap_or_default().to_string(),
                     link,
                 });
+                // (a program: its calls and output weren't saved — its row's card says so, nothing under it)
+                if verb == "code" {
+                    m.program =
+                        Some(Box::new(crate::codetool::tool::Shown { restored: true, ..Default::default() }));
+                }
             }
             Some(m)
         })
@@ -578,6 +584,30 @@ mod tests {
         let all = load(&scratch, root);
         assert_eq!(all.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["s1"]);
         assert_eq!(msgs_of(&all[0].rows)[0].look.as_ref().unwrap().link, None);
+    }
+
+    /// A program's row comes back as one (`code`, its stop said as it was), marked restored: its calls and output
+    /// weren't saved, and its card says so (`term::restored_card`) — never a `running` row under it.
+    #[test]
+    fn a_programs_row_comes_back_marked_as_not_kept_whole() {
+        let mut tool = Msg::new(Role::Tool, "", "");
+        tool.look = Some(Look {
+            verb: "code",
+            what: "// every strand".into(),
+            pattern: true,
+            range: "stopped · at its time limit (10.0s of running)".into(),
+            link: None,
+        });
+        tool.program = Some(Box::default());
+        let back = msgs_of(&rows_of(&[tool]));
+        let look = back[0].look.as_ref().unwrap();
+        assert_eq!(
+            (look.verb, look.range.as_str()),
+            ("code", "stopped · at its time limit (10.0s of running)")
+        );
+        assert!(look.failed(), "its `▲` kept");
+        let shown = back[0].program.as_ref().expect("a program's row");
+        assert!(shown.restored && shown.calls.is_empty() && shown.output.is_none());
     }
 
     /// #252: the order is by `updated`, so a keep of a conversation's places alone — a note closed, its time as it was —

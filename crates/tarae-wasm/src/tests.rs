@@ -106,7 +106,9 @@ fn memory_data_and_bulk_ops() {
     call(&mut i, "fill", &[Val::I32(16), Val::I32(b'z' as i32), Val::I32(2)]).unwrap();
     assert_eq!(&i.memory()[16..18], b"zz");
     assert_eq!(i32s(&mut i, "grow", &[1]), Ok(1));
+    assert!(!i.grow_refused());
     assert_eq!(i32s(&mut i, "grow", &[5]), Ok(-1), "past the maximum");
+    assert!(i.grow_refused(), "the host can tell");
     assert_eq!(i32s(&mut i, "size", &[]), Ok(2));
     assert_eq!(i32s(&mut i, "load", &[2 * 65536]), Err(Trap::MemoryOutOfBounds));
     assert_eq!(i32s(&mut i, "load", &[-1]), Err(Trap::MemoryOutOfBounds), "addresses are unsigned");

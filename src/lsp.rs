@@ -857,6 +857,10 @@ struct OwnIo {
 /// a notification's ignored. Run on a worker, in the order the messages were sent.
 pub type Serve = Box<dyn FnMut(&str, &Value) -> Option<Value> + Send>;
 
+/// A test's stand-in answering this sends no reply at all: a server that hangs on the question.
+#[cfg(test)]
+pub const NO_REPLY: &str = "(a stand-in's silence: no reply)";
+
 impl Drop for Client {
     /// The process goes — killed now (if it hasn't exited; tarae quitting can't leave it running), then waited
     /// for on a thread of its own, so it never stays behind as a zombie and never holds up the main loop.
@@ -1181,6 +1185,10 @@ impl Client {
                 let answer = serve(&method, &msg["params"]);
                 // (a request has an id and a method; a response to one of its own it never sends)
                 let Some(rid) = msg.get("id").filter(|_| !method.is_empty()).cloned() else { continue };
+                #[cfg(test)]
+                if answer.as_ref().and_then(Value::as_str) == Some(NO_REPLY) {
+                    continue;
+                }
                 replies.push(json!({ "jsonrpc": "2.0", "id": rid, "result": answer.unwrap_or(Value::Null) }));
             }
             replies

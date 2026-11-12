@@ -8115,6 +8115,10 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "samebinary",
     "nine",
     "searchcard",
+    "codedone",
+    "coderun",
+    "codecard",
+    "codecardlong",
     "volumecard",
     "grants",
     "alsoread",
@@ -8301,6 +8305,9 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "nine" if line.contains("wait for the build") => turn.run_long()?,
             "nine" => turn.explain(true, false)?,
             "searchcard" => turn.search_outside()?,
+            // (the code tool's, S1 piece c: a program's rows done, one running to its limit, one at its batch's card —
+            // and one whose place is too long for a line of it)
+            "codedone" | "coderun" | "codecard" | "codecardlong" => turn.code(&script[4..])?,
             "volumecard" => turn.read_volume()?,
             "grants" => turn.grants()?,
             "alsoread" => turn.also_read()?,
@@ -10051,6 +10058,54 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         let pattern = r#""kind":"(grant|run|read)".*"(terminals|pty|tty)".*"answer":"(y|a|s|A)".*"session":"frictions3[0-9]""#;
         let search = json!({"pattern": pattern, "path": format!("{home}/Library/Logs")});
         self.call(1, "search", search)?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The code tool's scenes (S1 piece c; the chat needs `llm.code = true` in the shot's config): `done`, a program
+    /// whose search and read run together, its rows and output; `run`, a loop that runs to the step limit; `card`, two
+    /// reads outside the project handed out together — one card for both; `cardlong`, the same with a search whose
+    /// pattern is longer than the card's lines take (cut with `…`, whole under the pointer).
+    fn code(&mut self, which: &str) -> io::Result<()> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let (before, src, after) = match which {
+            "done" => (
+                "I will count the functions in each file of the code tool with one program.",
+                r#"const [count, readme] = await Promise.all([
+  search({ pattern: "fn ", path: "src", output: "count" }),
+  read({ files: ["README"] }),
+]);
+const rows = count.split("\n").slice(1).map((l) => l.split(":"));
+rows.sort((a, b) => b[1] - a[1]);
+for (const [file, n] of rows) print(`${n.padStart(4)}  ${file}`);
+return { files: rows.length, project: readme.split("\n")[1] };"#
+                    .to_string(),
+                "The engine's host holds most of them; the tool's side is the rest.",
+            ),
+            "run" => (
+                "I will count the crossings with a program.",
+                "// every strand against every other, the slow way\nlet crossings = 0;\nfor (;;) crossings += \"ab\".repeat(1 << 22).replaceAll(\"a\", \"c\").length;\nreturn crossings;".to_string(),
+                "That was too much for one program; I will count them per strand instead.",
+            ),
+            _ => (
+                "The sandbox runtime's notes are outside the project; one program reads both.",
+                format!(
+                    "const [readme, writes] = await Promise.all([\n  read({{ files: [\"{home}/Workspace/sandbox-runtime/README.md\"] }}),\n  search({{ pattern: \"allowWrite\", path: \"{home}/Workspace/sandbox-runtime/src\", output: \"count\" }}),\n]);\nreturn {{ readme: readme.length, writes }};"
+                ),
+                "The user said no; I will go on without those notes.",
+            ),
+        };
+        // (`cardlong`: the card's search with search_outside's pattern, too long for its lines)
+        let src = match which {
+            "cardlong" => src.replace(
+                "pattern: \"allowWrite\"",
+                r#"pattern: "(allowWrite|denyWrite|allowRead|denyRead)\\s*[:=]\\s*\\[.*(home|tmp|cache|ssh|aws|gnupg|keychain|claude)""#,
+            ),
+            _ => src,
+        };
+        self.words(before)?;
+        self.text("\n")?;
+        self.call(1, "code", json!({ "src": src }))?;
+        self.words(after)?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

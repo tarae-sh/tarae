@@ -1179,6 +1179,65 @@ Not kept:
   weak spot, and Haiku's answer is one sample, noisy. That's why R1 only measures, and R2 turns it on per kind, the
   never list kept.
 
+### 2.z The code tool (`llm.code`, off by default)
+
+With `llm.code` on, the chat's Claude has one more tool, `code { src }`: a JavaScript program run inside tarae to
+compute from what the read-only tools give (`codetool.rs`, `codetool/tool.rs`). Only your own config or a trusted
+project turns it on (`trust::RISKY`).
+- **Model-written code runs in tarae's process, every time the tool is used.** The engine is QuickJS-ng, built as a
+  WebAssembly module with no imports, run on tarae-wasm (tarae's own runtime, the one plugins use). The module can't
+  reach the file system, the network, a clock, the environment or a process: it has nothing to call but the host's
+  two exports' answers. A fresh instance runs each program, so nothing is left for the next; `eval` and `Function`
+  are gone, so a tool's answer never becomes code. What the runtime's JIT compiles from it is the part to trust; until
+  an architecture's JIT has had its fuzzing against the interpreter, the tool runs under the interpreter there
+  (G36: aarch64's has, x86-64 runs the interpreter).
+  test: `tests::refuses_what_it_does_not_support` (tarae-wasm's) ·
+  `codetool::tests::the_real_engine_runs_a_program_and_its_calls` ·
+  `codetool::tests::the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean`
+- **It can compute and ask for a read-only call, nothing else.** Its functions are `read`, `search`, `symbols`,
+  `definition`, `references`, `diagnostics`, `git` and `output`. A program can't call `run`, `run_tests`, `edit`,
+  `rename`, `replace`, `plugin`, `ui` or a session tool; a call to one is an `{ error }` it reads. Each call is
+  the same call Claude's own would be, through the same gate. A read outside the project asks on the same card, its
+  title saying the program asks, and your `n` is the program's `{ error }`. A batch's reads outside come on one
+  card that never changes once it's shown (no place joins it a moment before `y`). That card's `y` lets each place
+  through once and keeps nothing; its `n` refuses them all. A place with a warning never rides in a batch: one named
+  like a key, where keys are, or with a token-like line found asks on a card of its own, as a single read does, its
+  warning with it. So one `y` on a list never lets a secret-bearing file through among harmless ones, and a batch card
+  carries no warning lines. The engine refuses a 65th call.
+  test: `codetool::tool::tests::what_a_program_may_not_call_is_an_error_it_reads` ·
+  `codetool::tool::tests::a_programs_read_outside_asks_on_the_same_card_saying_so` ·
+  `codetool::tool::tests::a_batchs_reads_outside_come_on_one_card_and_y_lets_each_through_once` ·
+  `codetool::tool::tests::a_place_named_like_a_key_asks_alone_and_the_batchs_answer_isnt_its` ·
+  `codetool::tool::tests::a_place_with_a_token_asks_alone_with_its_warning` ·
+  `codetool::tool::tests::a_place_where_keys_are_asks_alone_though_not_named_like_one` ·
+  `sim::codecard::a_batchs_card_never_grows_and_each_place_asks_once` ·
+  `sim::codecard::a_place_named_like_a_key_never_rides_in_a_batch` ·
+  `sim::codecard::a_hung_calls_batch_card_comes_at_the_bound` ·
+  `codetool::tests::calls_come_together_and_are_answered_one_by_one` ·
+  `codetool::tests::the_real_engine_runs_a_program_and_its_calls`
+- **A kept output and a tool's answer are data.** They reach the program, and Claude only as what the program prints
+  or returns (cut at 20 KB for Claude; you see it whole).
+  test: `codetool::tool::tests::a_kept_outputs_words_reach_claude_only_as_the_program_prints_them`
+- **`output(id)` gives only this conversation's own runs.** A run's whole output is kept in its own session, for the
+  conversation that ran it, its last 8 runs until you quit. Another session's run id, or another conversation's, is
+  refused.
+  test: `codetool::tool::tests::another_sessions_run_is_refused` ·
+  `codetool::tool::tests::what_a_program_may_not_call_is_an_error_it_reads`
+- **It ends, with words, and the chat carries on.** A program is held to steps (work the engine counts), 64 MB of
+  memory, fuel, and a clock that counts its running only (10 s under the JIT, 60 s under the interpreter), which
+  only the host can set (no module can read or clear it). An endless loop, a regex that backtracks forever or a
+  1 GB string ends the program with what stopped it; so does running out of memory, tarae's own cap or the engine's
+  heap limit inside it (48 MB), each said with its own figure. Your `C-c` in the chat stops it, and so does the turn's end; a
+  card it asked on goes with it.
+  test: `codetool::tests::the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean` ·
+  `codetool::tests::a_program_past_the_memory_cap_ends_at_its_memory_limit` ·
+  `codetool::tests::the_hosts_stop_ends_the_work_the_steps_dont_see` ·
+  `tests::no_module_can_read_or_clear_the_interrupt` (tarae-wasm's) ·
+  `codetool::tool::tests::c_c_in_the_chat_stops_the_program_then_the_turn_and_the_rows_say_so` ·
+  `codetool::tool::tests::the_turns_end_stops_a_program_waiting_on_its_card`
+- **Never on the key or frame path.** A program runs as jobs, one step at a time, its answers given back on the main
+  loop. test: `codetool::tests::a_program_runs_as_jobs_and_lands_on_the_main_loop`
+
 ## 3. What tarae runs as you, outside the sandbox
 
 Not Claude's, but a hostile repository reaches them:
@@ -1230,6 +1289,7 @@ Not Claude's, but a hostile repository reaches them:
 | G33 | macOS: a key read by moving its folder — the key rule closes a file by its name below a place, but not below tools' output (`target/`), the run's own folder (`TMPDIR`) or the installs, and nothing keeps a plain folder from moving there: `mv config target/x && cat target/x/.env` reads it, as does a move into `$TMPDIR` | Seatbelt checks a rename's two paths, not what's in it (as G23) | closed below the project and the granted folders, narrowed in the shared temp folders (your decision, 2026-11-10, srt's way; the temp folders' cap, 2026-11-11): B1 keeps the key itself from moving (`mv .env x && cat x` read it before); a walk at each run's start finds the keys where runs write — the project and the write grants, at most 20,000 entries, then the shared temp folders, level by level over them all under a cap of their own, 5,000 entries — and the folders between each and its place's root, that root too, get literal `file-write-unlink` denies: not moved, not removed (measured: `.sb/key-folders-seatbelt.sh`). Left: a folder the run made itself, a new key in it (the walk didn't see it, as Linux leaves a run's own new key), and what the walk didn't reach (past its caps, another filesystem: named in the run's report; the temp folders' cut said to Claude once a conversation). The known limit, in the shared temp folders: closed for what the capped walk reaches, shallow first — a run that fills a temp folder near its top (or one big folder there: each is read whole or not at all) can push another program's key past the cap, then move its folder and read the key (measured: `.sb/key-folders-seatbelt.sh`'s cap row). A folder's clone is the same hole, and wider: G35, closed by place for every read rule. The lock costs every command's start, so it has a cap: whole keys in the order found (the project's nearest its root first, then the grants', then the temp folders'), each with all its folders, up to 100 folders or 32 KB of their paths, whichever first — the keys past it are named in the run's rules and the cap said to Claude once a conversation; there a folder's move is open (measured: `.sb/key-folders-outside3.sh` — the literals' start grows with the square of their count, and Seatbelt compiles them into one data object of at most 65,535 bytes however many rules hold them). Linux holds (the hidden key's mount keeps its folder busy) (test: `sandbox::tests::a_run_cant_move_or_remove_a_folder_holding_a_key`, `sandbox::keyfolders::tests::the_walk_locks_each_folder_between_a_key_and_its_place`, `sandbox::keyfolders::tests::the_walk_stops_at_its_caps_and_says_what_it_didnt_lock`, `sandbox::keyfolders::tests::a_locked_folders_refusal_is_said_and_offers_its_one_key`, `sandbox::keyfolders::tests::the_temp_folders_are_walked_shallow_first`, `sandbox::keyfolders::tests::the_temp_folders_have_a_cap_of_their_own`, `tools::tests::the_walks_cuts_are_said_once_a_conversation`, `sandbox::tests::a_run_cant_clone_a_folder_where_keys_are_closed`, `sandbox::keyfolders::tests::a_folders_clone_is_refused_by_place_and_said_so`, `sandbox::keyfolders::tests::the_lock_is_one_rule_within_both_caps`, `sandbox::keyfolders::tests::the_lock_takes_whole_keys_in_order`, `sandbox::keyfolders::tests::a_supervised_run_reads_no_folder_for_locks`) |
 | G34 | macOS: a key's mode or group changed through `setattrlist(2)` — B1 closes `chmod`, `chown`, `chflags` and the ACL calls on a file named like a key, but `setattrlist` with `ATTR_CMN_ACCESSMASK` made one 0666 and with `ATTR_CMN_GRPID` gave it the group `everyone` (its flags refused, its times open as `touch`'s) | Seatbelt checks setattrlist's attributes but the flags by the whole `file-write*`, none of its named ops (measured, 2026-11-10: `.sb/b1-seatbelt.sh`, the real test) | its bytes and its name never change, and nothing more is read inside the run (the reads are closed by name, not by mode); the cost is on a shared Mac, where another account may then read it. Kept as built (your decision, 2026-11-10); closing it, a rule of its own |
 | G35 | macOS: what the read rules close read from a folder's clone — Seatbelt checks `clonefile(2)` of a folder (and `fclonefileat`, `copyfile`'s clone) on its source alone, never as a read of what's in it: a clone of the folder above home, made in the run's own folder, read `~/.ssh` from the copy, and so for every place closed by its place or a file by its name, since the sandbox existed (found in G33's review, measured on tarae's profile, 2026-11-11) | the read rules are by path, and a clone copies a tree without a path inside it being read | closed (2026-11-11): the profile refuses every folder's clone, then allows it only where a run reads everything below — tools' output in the project, the run's own folder, an install, a write folder no place of the key rule holds or is held by (a toolchain's cache: uv's and bun's installs) — and there not a folder holding home, a kept place or a token's settings, nor that place (literal and `subpath` parameters). A file's clone is untouched: its own read is checked (B1). Said by its place, no grant lifts it; a copy (`cp -R`) does what's needed (test: `sandbox::tests::a_clone_of_the_folder_above_home_reads_nothing_of_home`, `sandbox::tests::a_run_cant_clone_a_folder_where_keys_are_closed`, `sandbox::keyfolders::tests::a_folders_clone_is_refused_by_place_and_said_so`) |
+| G36 | The code tool (`llm.code`, off by default) runs model-written JavaScript inside tarae's own process, on tarae-wasm's JIT where the architecture's JIT has been fuzzed: a wrong compile there could reach tarae's memory | the program has to run somewhere, and the engine is pinned and fixed, so what an attacker controls is the paths QuickJS takes through the JIT | narrowed: no imports, a fresh instance each program, the JIT run against the interpreter on a JS corpus for an hour before an architecture uses it, the limits above (§2.z); **aarch64's hour passed clean** (2026-11-12, so `LIMITS.jit` is true there): the harness `crates/tarae-wasm/examples/qjs_fuzz.rs`, seeds 10,000,000 to 10,225,329, 225,330 cases compared, 0 differences (every reply whole, every trap, and after every step the fuel left, the memory's hash and length; not compared: the fuel left after an out-of-fuel trap, which the JIT zeroes and the interpreter keeps — a convention of an instance then dropped, read by tests only), on the engine `target/quickjs/quickjs.wasm` sha256 `003861fcc0089dfa9934abe62f1772524fd0a81f51ab2f33bf2059097e3d01df`, QuickJS-ng v0.18.0 built from `xtask/quickjs/pin` (its TAG, SOURCE and IMAGE); redone with tarae-wasm's crate doc's commands (`--from 10000000 --secs 3600`; `--replay SEED` for one case); **a re-pin of the engine or a change to tarae-wasm's `jit/` means the hour again** on each architecture that runs the JIT, and this row's figures replaced, before it lands (the pin's checklist says so); left open: **x86-64 stays on the interpreter** (`LIMITS.jit` false there) until its own hour on a real x86 machine; left: the runtime and the engine's C, as any interpreter's |
 
 ## 5. For a reviewer: where to start
 

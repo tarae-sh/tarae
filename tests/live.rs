@@ -1201,6 +1201,36 @@ fn chat_prompt_tokens() {
     billed(&stream);
 }
 
+/// `chat_prompt_tokens` with `llm.code` on (the code tool, S1 piece d): the same question and project, so the
+/// difference from `chat_prompt_tokens`' first request is what the `code` tool's entry in `tools/list` costs every
+/// request (`codetool::tool::schema`; its own budget 900 tokens).
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn chat_prompt_tokens_with_code() {
+    if !have("claude") {
+        return;
+    }
+    let sb = Sandbox::live("chat-tokens-code");
+    let out = teed(&sb, "code = true\n");
+    sb.write("notes.txt", "alpha\n");
+    let mut t = sb.spawn(&["notes.txt"]);
+    chat_turn(&mut t, "Reply with the single word ok. Use no tools.");
+    let stream = std::fs::read_to_string(&out).unwrap_or_default();
+    let p = prompts(&stream);
+    let cost = measure(&stream, "").cost;
+    eprintln!("TOKENS with code, first request's prompt: {:?} (all requests: {p:?}), ${cost:.4}", p.first());
+    assert!(!p.is_empty(), "claude's usage in its stream");
+    let init = (stream.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()))
+        .find(|v| v["type"] == "system" && v["subtype"] == "init")
+        .expect("its init line");
+    assert!(
+        init["tools"].as_array().is_some_and(|t| t.iter().any(|t| t == "mcp__tarae__code")),
+        "the tool listed: {}",
+        init["tools"]
+    );
+    billed(&stream);
+}
+
 /// `chat_prompt_tokens` in a session's chat (`:session-new` — not the checkout tarae started in): under
 /// `llm.session-tools = "any"` (the default) it lists the session tools as the home chat does, so against `TARAE_BIN`
 /// (the build before the session tools) its first request's prompt is +696 (orchestra P3's measure).

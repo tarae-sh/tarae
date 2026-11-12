@@ -367,6 +367,11 @@ impl Look {
         match self.verb {
             "run" => self.range.starts_with("exit ") || self.range == "killed",
             "test" => self.range.ends_with("failed"),
+            // (a program that ended in an error, a limit or a stop — `codetool::tool::finish`)
+            "code" => {
+                use crate::codetool::tool::{FAILED, STOPPED};
+                self.range.starts_with(FAILED) || self.range.starts_with(STOPPED)
+            }
             "failed" => true,
             _ => false,
         }
@@ -439,6 +444,9 @@ pub struct Msg {
     /// A command's or a test run's row: what the sandbox blocked it, as its panel's line says it (#474a: the same words
     /// under the row — `mark_refused`, at its end).
     pub refused: Option<String>,
+    /// A `code` call's row: its program's calls, each a row under it, and its whole output once it ends
+    /// (`codetool::tool::Shown`).
+    pub program: Option<Box<crate::codetool::tool::Shown>>,
     /// A change's row (`edit`, `write`, `rename`, `replace`): the keys that decided it, each once, `y` before `n`
     /// (`stamp_call` — its review's answers, its card's) — none while undecided, unasked or unknown.
     pub stamps: Vec<crate::stamp::Stamp>,
@@ -565,6 +573,7 @@ impl Msg {
             key_pass: Vec::new(),
             ran: None,
             refused: None,
+            program: None,
             stamps: Vec::new(),
             from: None,
             from_conversation: None,
@@ -4584,6 +4593,15 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             let what = s("command").split_whitespace().collect::<Vec<_>>().join(" ");
             Look { verb: "run", what, pattern: true, range: String::new(), link: None }
         }
+        // (a program: its first line — whole on its card and in the transcript, as a command's — and its length; its
+        // calls under it and its state: `codetool::tool::Shown`)
+        "mcp__tarae__code" => {
+            let src = s("src");
+            let what = src.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_string();
+            let n = src.trim_end().lines().count();
+            let range = if n > 1 { format!("{n} lines") } else { String::new() };
+            Look { verb: "code", what, pattern: true, range, link: None }
+        }
         "mcp__tarae__ui" => Look {
             verb: "ui",
             what: "what's on screen".into(),
@@ -4832,6 +4850,7 @@ const WORDS: &[(&str, &str, &str)] = &[
     ("check", "check", "checking"),
     ("ui", "look", "looking at"),
     ("git", "git", "git"),
+    ("code", "compute", "computing"),
     ("run", "run", "running"),
     ("test", "test", "testing"),
     ("edit", "edit", "editing"),
@@ -5044,6 +5063,9 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
             if !c.input.blank() {
                 c.cleared = Some((c.input.text(), c.input.cursor()));
                 c.input.clear();
+            } else if c.busy() && !ed.workspace.claude.programs.is_empty() {
+                // (a program of Claude's first — told to Claude, its turn goes on; a second `C-c` stops the turn)
+                crate::codetool::tool::stop_all(ed, crate::codetool::tool::STOPPED_BY_YOU);
             } else if c.busy() {
                 stop(ed);
             } else {
@@ -7476,6 +7498,7 @@ mod tests {
             then: None,
             log: false,
             moved: None,
+            more: Vec::new(),
         };
         let card = |ed: &Editor| match ed.offers.first().map(|o| (&o.what, o.question.clone(), o.id)) {
             Some((crate::offer::What::Read { pending, folder, .. }, q, id)) => {
@@ -7574,6 +7597,7 @@ mod tests {
                 then: None,
                 log: false,
                 moved: None,
+                more: Vec::new(),
             };
         let read =
             |r: &Path| pending("Read", serde_json::json!({"file_path": r.join("docs/README")}), Some(r));

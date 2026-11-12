@@ -54,6 +54,21 @@ pub enum Class {
 }
 
 impl Class {
+    /// The place in a card's words (a program's batch card lists each place with it — `reads::batch_text`).
+    pub fn place(self) -> &'static str {
+        match self {
+            Class::OtherCheckout => "another checkout",
+            Class::Temp => "temp",
+            Class::Toolchain => "a toolchain's",
+            Class::Home => "in your home",
+            Class::Elsewhere => "outside your home",
+            Class::OtherHome => "another user's home",
+            Class::Volume => "another disk",
+            Class::Secret => "where keys are",
+            Class::Unknown => "where it leads can't be told",
+        }
+    }
+
     fn word(self) -> &'static str {
         match self {
             Class::OtherCheckout => "other-checkout",

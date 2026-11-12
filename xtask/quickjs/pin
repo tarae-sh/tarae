@@ -4,6 +4,18 @@
 # TAG          QuickJS-ng's release tag (github.com/quickjs-ng/quickjs)
 # SOURCE       the sha256 of codeload.github.com's tarball of TAG — fetch checks it, and build again before use
 # IMAGE        wasi-sdk's image by digest (wasi-sdk 25, clang 19.1.5): never a moving tag
+#
+# At a re-pin, re-read what tarae says of the engine (src/codetool.rs), each against the new build:
+# - the figures glue.c builds in: CALLS (MAX_CALLS), PRINTED_MAX, ENGINE_HEAP (MEMORY_LIMIT, the memory
+#   ending's figure; `the_engines_heap_limit_is_glues` holds it to glue.c);
+# - ENGINE_OUT_OF_MEMORY, the engine's words for its heap limit met;
+# - FUEL_A_STEP and LIMITS.steps, measured again (`codetool::tests::measure`), and the work the steps don't see
+#   (`codetool::tests::HEAVY`);
+# - the fuzz hour again, the JIT against the interpreter on the new build, on each architecture whose
+#   `LIMITS.jit` is true (aarch64), on a quiet machine: tarae-wasm's crate doc has the commands
+#   (`examples/qjs_fuzz.rs`). Clean, G36's row in docs/threat-model.md takes the new seeds, count and the
+#   engine's sha256; not clean, that architecture's `LIMITS.jit` goes false until it is. (A change to
+#   tarae-wasm's `jit/` means the hour too.)
 TAG=v0.18.0
 SOURCE=28bcd89aa3683fd2a946537e5ce3f11cc46b5cbf3383c7561aaef3df5ff9f1dd
 IMAGE=ghcr.io/webassembly/wasi-sdk@sha256:fdebde86990902087ecc470bf993ffec4d646e8fbd2e68c290a44120437622d0

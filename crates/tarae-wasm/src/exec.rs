@@ -167,6 +167,8 @@ pub(super) struct Bulk<'a> {
     pub m: &'a Module,
     pub mem: &'a mut Vec<u8>,
     pub memory_max: usize,
+    /// Set when a `memory.grow` past `memory_max` is refused.
+    pub grow_refused: &'a mut bool,
     pub tables: &'a mut [Vec<u64>],
     pub table_max: &'a [u32],
     pub elems: &'a mut [Vec<u64>],
@@ -183,7 +185,7 @@ pub(super) struct Bulk<'a> {
 /// the work — their instruction's fuel alone would let a loop of big copies run for ever.
 #[inline(never)]
 pub(super) fn bulk(op: Op, fr: &mut [u64], env: Bulk) -> Result<(), Trap> {
-    let Bulk { m, mem, memory_max, tables, table_max, elems, data_live, fuel, interrupt } = env;
+    let Bulk { m, mem, memory_max, grow_refused, tables, table_max, elems, data_live, fuel, interrupt } = env;
     let mut pay = |n: usize| {
         let n = n as u64;
         if *fuel < n {
@@ -254,7 +256,10 @@ pub(super) fn bulk(op: Op, fr: &mut [u64], env: Bulk) -> Result<(), Trap> {
                     mem.resize(new, 0);
                     (old / PAGE) as u64
                 }
-                _ => u32::MAX as u64,
+                _ => {
+                    *grow_refused = true;
+                    u32::MAX as u64
+                }
             };
         }
         Op::MemoryCopy { d, s: src, n } => {
@@ -295,6 +300,7 @@ impl Instance {
             limits,
             memory: mem,
             memory_max,
+            grow_refused,
             globals,
             tables,
             table_max,
@@ -465,8 +471,19 @@ impl Instance {
                     | Op::MemoryFill { .. }
                     | Op::MemoryInit { .. }
                     | Op::DataDrop(_)) => {
-                        let env =
-                            Bulk { m, mem, memory_max: *memory_max, tables, table_max, elems, data_live, fuel, interrupt };
+                        let memory_max = *memory_max;
+                        let env = Bulk {
+                            m,
+                            mem,
+                            memory_max,
+                            grow_refused,
+                            tables,
+                            table_max,
+                            elems,
+                            data_live,
+                            fuel,
+                            interrupt,
+                        };
                         bulk(op, fr, env)?;
                     }
                     Op::RefIsNull { dst, a } => s!(dst) = (s!(a) == NULL) as u64,
