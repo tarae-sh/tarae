@@ -711,7 +711,7 @@ pub(crate) fn make(
 /// A Short's AAC: its true peak at most this (dBTP, as encoded — a player decodes the AAC, not the WAV), with this much
 /// room below it aimed at, and this near the aim enough; the limiter's ceiling moved this many times at most.
 pub(crate) const AAC_PEAK_DB: f32 = -1.0;
-const AAC_MARGIN_DB: f32 = 0.3;
+pub(crate) const AAC_MARGIN_DB: f32 = 0.3;
 const AAC_NEAR_DB: f32 = 0.2;
 pub(crate) const AAC_TRIES: usize = 4;
 
@@ -761,6 +761,32 @@ pub(crate) fn aac_peak(ffmpeg: &Path, wav: &Path, form: Form) -> std::result::Re
     };
     let _ = std::fs::remove_file(&m4a);
     peak
+}
+
+/// A sound's AAC heard back (`aac_heard`): its integrated loudness (LUFS) and true peak (dBTP) as `ebur128` reads
+/// them, and its two sides decoded.
+pub(crate) struct HeardBack {
+    pub(crate) lufs: f32,
+    pub(crate) peak: f32,
+    pub(crate) sides: [Vec<f32>; 2],
+}
+
+/// `wav` as AAC, heard back: encoded as the MP4's sound is (`form`'s rate) into a file beside it, its integrated
+/// loudness and true peak (`loudness`) and its two sides decoded (`decoded_sides`), the file removed.
+pub(crate) fn aac_heard(ffmpeg: &Path, wav: &Path, form: Form) -> std::result::Result<HeardBack, String> {
+    let m4a = wav.with_extension("heard.m4a");
+    let out =
+        aac_command(ffmpeg, wav, &m4a, form).output().map_err(|e| format!("{}: {e}", ffmpeg.display()))?;
+    let heard = match out.status.success() {
+        true => loudness(ffmpeg, &m4a).and_then(|(lufs, peak)| {
+            let sides =
+                decoded_sides(ffmpeg, &m4a, Duration::from_secs(24 * 3600)).map_err(|e| e.to_string())?;
+            Ok(HeardBack { lufs, peak, sides })
+        }),
+        false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    };
+    let _ = std::fs::remove_file(&m4a);
+    heard
 }
 
 /// ffmpeg to encode `wav` into `m4a` as `form`'s MP4 carries its sound.

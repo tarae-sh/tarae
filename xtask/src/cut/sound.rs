@@ -23,9 +23,10 @@
 //! - **Who leads** follows the picture's speed, the levels by distance (`Mix`, the edit list's `[sound]`, else
 //!   `WIDE_UNDER_LU` and `LEAD_OVER_LU`): where the keys may sound (`realtime`), the bed `under` LU under the keys' own
 //!   loudness (each alone); on a sped span and the cards it leads, `over` LU over that; eased `DUCK_US` — down before
-//!   the stretch, up after it. The whole aims at no loudness: it's said (`cut.txt`), with its quietest and loudest
-//!   three seconds.
-//! - **The whole** limited under the ceiling (true peaks) that brings its AAC under `video::AAC_PEAK_DB`, as a Short's.
+//!   the stretch, up after it. `cut.txt` says the whole's quietest and loudest three seconds.
+//! - **The whole** at `CUT_LUFS` as encoded and its AAC under `video::AAC_PEAK_DB` (`search`): a gain over the mix as
+//!   laid for the level, the limiter's ceiling (`sound::SHORT_CEILING_DB`, the keys' cap made for it) never moved, but
+//!   dipped over the AAC frames that came out over the aim — the encoder's overshoot is a frame's own, and uneven.
 
 use std::path::Path;
 use std::time::Duration;
@@ -643,8 +644,120 @@ struct Levels {
     limited: (f32, f32, f32),
 }
 
+/// The AAC frames of `aac` (a try's, decoded) whose true peak came out over the aim (`next_plan`'s): samples from–to,
+/// dBTP.
+fn over_aim(aac: &[Vec<f32>; 2]) -> Vec<(usize, usize, f32)> {
+    let aim = video::AAC_PEAK_DB - video::AAC_MARGIN_DB;
+    let tp = sound::true_peaks_of(&[&aac[0], &aac[1]]);
+    (tp.chunks(AAC_FRAME).enumerate())
+        .filter_map(|(k, c)| {
+            let p = 20.0 * c.iter().fold(0.0f32, |m, v| m.max(*v)).log10();
+            (p > aim).then_some((k * AAC_FRAME, k * AAC_FRAME + c.len(), p))
+        })
+        .collect()
+}
+
+/// The cut's loudness as encoded (LUFS integrated, the MP4's AAC as `ebur128` reads it): take 3's 2160p final's, the
+/// level the user watched it at (2026-11-13; the keys alone stand near −20, the 2026-11-05 decision).
+pub(crate) const CUT_LUFS: f32 = -20.5;
+
+/// A try's sound as mixed: its two sides and the levels they came to.
+type Mixed = ([Vec<f32>; 2], Levels);
+
+/// One try at the cut's sound: the limiter's ceiling (dBTP), the gain over the mix as laid (dB), and where the ceiling
+/// dips (samples from–to, dB under it).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Plan {
+    pub(crate) ceiling: f32,
+    pub(crate) gain: f32,
+    pub(crate) dips: Vec<(usize, usize, f32)>,
+}
+
+impl Default for Plan {
+    fn default() -> Plan {
+        Plan { ceiling: sound::SHORT_CEILING_DB, gain: 0.0, dips: Vec::new() }
+    }
+}
+
+/// A try's AAC as encoded: its loudness (LUFS integrated) and true peak (dBTP) as `ebur128` reads them, and each AAC
+/// frame whose true peak came out over the aim (samples from–to, its true peak in dBTP).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Encoded {
+    pub(crate) lufs: f32,
+    pub(crate) peak: f32,
+    pub(crate) over: Vec<(usize, usize, f32)>,
+}
+
+/// Each try, what its AAC came to (or why not), and which is kept.
+pub(crate) type Searched = (Vec<(Plan, std::result::Result<Encoded, String>)>, usize);
+
+/// The most tries at the cut's sound: each frame dipped can bring another out over (take 3's final2: 17 frames over,
+/// then 2, 1 and 3, kept at the fourth) — and a try is the limiter, the WAV and the AAC alone, about 18 s for ten
+/// minutes, the mix laid once.
+const TRIES: usize = 6;
+
+/// The cut's sound tried until its AAC is right (`kept`), `TRIES` at most: each plan encoded (`encode`),
+/// the next from what it came to (`next_plan`); of the tries, the one under the peak nearest the loudness, else the one
+/// whose AAC came out lowest.
+pub(crate) fn search(mut encode: impl FnMut(&Plan) -> std::result::Result<Encoded, String>) -> Searched {
+    let mut tried: Vec<(Plan, std::result::Result<Encoded, String>)> = Vec::new();
+    let mut plan = Plan::default();
+    loop {
+        let got = encode(&plan);
+        // (one that would be the same again is none)
+        let next = got.as_ref().ok().and_then(|e| next_plan(&plan, e)).filter(|n| *n != plan);
+        tried.push((plan, got));
+        match next {
+            Some(next) if tried.len() < TRIES => plan = next,
+            _ => break,
+        }
+    }
+    let ok = || tried.iter().enumerate().filter_map(|(i, t)| Some((i, t.1.as_ref().ok()?)));
+    let under = ok()
+        .filter(|(_, e)| e.peak <= PEAK_KEPT)
+        .min_by(|a, b| (a.1.lufs - CUT_LUFS).abs().total_cmp(&(b.1.lufs - CUT_LUFS).abs()));
+    let pick =
+        under.or_else(|| ok().min_by(|a, b| a.1.peak.total_cmp(&b.1.peak))).map_or(tried.len() - 1, |t| t.0);
+    (tried, pick)
+}
+
+/// A try's AAC under the peak: `video::AAC_PEAK_DB` as `ebur128` reads it, to its tenth of a dB (−1.0 may be −0.96).
+const PEAK_KEPT: f32 = video::AAC_PEAK_DB - 0.1;
+/// Near enough `CUT_LUFS` (LU).
+const LUFS_NEAR: f32 = 0.2;
+/// An AAC frame (samples at `RATE`): where the encoder's overshoot is found, and how far a dip reaches either side of
+/// the frame it's for.
+pub(crate) const AAC_FRAME: usize = 1024;
+
+/// Whether a try's AAC is the cut's: under the peak (`PEAK_KEPT`), within `LUFS_NEAR` of `CUT_LUFS`.
+fn kept(e: &Encoded) -> bool {
+    e.peak <= PEAK_KEPT && (e.lufs - CUT_LUFS).abs() <= LUFS_NEAR
+}
+
+/// The try after `plan`, from what its AAC came to (`got`); None where it's kept. Its gain moved by the loudness's
+/// distance from `CUT_LUFS` (the limiter barely touching, a dB in is a dB out); the ceiling dipped where the AAC came
+/// out over the aim (`video::AAC_MARGIN_DB` under the peak) — each frame over, from the frame before it to the one
+/// after, by as much as it's over, under any dip already there —; the ceiling itself, and the level with it, never
+/// moved. The encoder's overshoot is a frame's own, and it isn't even: take 3's final2 at one level came out 4 dB over
+/// at 0:25 and 1.4 dB over at most anywhere else, at 3.5 dB more an ordinary 1.4 at 0:25 too; its search, moving the
+/// ceiling by the file's true peak, went from −3.2 dBTP to −8.9 on one frame's +4.4, and kept −5.4: −23.5 LUFS where
+/// −20.5 was meant, 3 dB of room unused.
+pub(crate) fn next_plan(plan: &Plan, got: &Encoded) -> Option<Plan> {
+    if kept(got) {
+        return None;
+    }
+    let aim = video::AAC_PEAK_DB - video::AAC_MARGIN_DB;
+    let mut dips = plan.dips.clone();
+    for &(a, b, peak) in &got.over {
+        let (from, to) = (a.saturating_sub(AAC_FRAME), b + AAC_FRAME);
+        let there = (plan.dips.iter()).filter(|d| d.0 < to && from < d.1).map(|d| d.2).fold(0.0f32, f32::max);
+        dips.push((from, to, there + peak - aim));
+    }
+    Some(Plan { gain: plan.gain + CUT_LUFS - got.lufs, dips, ..plan.clone() })
+}
+
 /// The cut's sound into `wav`: what's heard (`sounds`), the beds read with ffmpeg from `dir` (the edit list's folder),
-/// laid, levelled and limited — the limiter's ceiling moved until the AAC comes out under `video::AAC_PEAK_DB`. What it
+/// laid, levelled and limited — tried until its AAC is at `CUT_LUFS` and under `video::AAC_PEAK_DB` (`search`). What it
 /// made, said (cut.txt's lines). The intro's swing starts `swing_skip` µs into its frames as made (the empty ones left
 /// out): its brush the same, its head (a silence) cut by as much.
 pub(crate) fn make(
@@ -713,7 +826,8 @@ pub(crate) fn make(
     let share = real.iter().map(|(a, b)| b - a).sum::<u64>() as f64 / prog.total.max(1) as f64;
     let d = under(&real, len);
 
-    // (the ceiling moved until the AAC's true peak is under its aim, as a Short's)
+    // (the mix laid once, then tried — a gain over it, the limiter's ceiling dipped where the AAC came out over — until its
+    // AAC is the cut's: `search`)
     let brush = heard.brush.map(Duration::from_micros);
     let brush_len = sound::brush().len();
     let key_at: Vec<u64> = (heard.list.iter())
@@ -732,23 +846,29 @@ pub(crate) fn make(
             (samples(starts[i]).min(len), samples(next).min(len))
         }))
         .collect();
-    let made = |ceiling: f32| -> ([Vec<f32>; 2], Levels) {
-        let mut keys = rendered.mastered(&unit, ceiling);
-        if let (Some(b), Some(i)) = (heard.brush, heard.intro) {
-            let skip = samples(swing_skip).min(brush_len);
-            intro_brush(&mut keys.samples, samples(b) + skip, samples(i), brush_len - skip);
-        }
-        // (the keys in the centre, both sides: the bed's distance from them over both, as its own is)
-        let loud = centred(Some(keys.lufs).filter(|l| l.is_finite()).unwrap_or(sound::SHORT_LUFS));
-        let (x, depth) = bed_gains(loud, cut.mix);
-        let key_peaks = key_peaks(&keys.samples, key_at.iter().copied());
-        let [mut l, mut r] = sides(&keys.samples, &beds, &d, x, depth);
-        let keys_gain = keys.gain;
-        let keys_limited = keys.limited;
-        drop(keys);
-        let c = 10f32.powf(ceiling / 20.0);
-        let peaks = sound::true_peaks_of(&[&l, &r]);
-        let gains = sound::limit_sides(&mut [&mut l, &mut r], &peaks, c);
+    // (the mix before the limiter, the same for every try: the keys at their cap for the ceiling, the beds under them)
+    let ceiling = Plan::default().ceiling;
+    let mut keys = rendered.mastered(&unit, ceiling);
+    drop(rendered);
+    if let (Some(b), Some(i)) = (heard.brush, heard.intro) {
+        let skip = samples(swing_skip).min(brush_len);
+        intro_brush(&mut keys.samples, samples(b) + skip, samples(i), brush_len - skip);
+    }
+    // (the keys in the centre, both sides: the bed's distance from them over both, as its own is)
+    let loud = centred(Some(keys.lufs).filter(|l| l.is_finite()).unwrap_or(sound::SHORT_LUFS));
+    let (x, depth) = bed_gains(loud, cut.mix);
+    let key_peaks = key_peaks(&keys.samples, key_at.iter().copied());
+    let laid = sides(&keys.samples, &beds, &d, x, depth);
+    let (keys_gain, keys_limited) = (keys.gain, keys.limited);
+    drop(keys);
+    // (a gain's true peaks are the gain's times these)
+    let laid_peaks = sound::true_peaks_of(&[&laid[0], &laid[1]]);
+    let made = |plan: &Plan| -> Mixed {
+        let g = 10f32.powf(plan.gain / 20.0);
+        let [mut l, mut r] = [0, 1].map(|s| laid[s].iter().map(|v| v * g).collect::<Vec<f32>>());
+        let peaks: Vec<f32> = laid_peaks.iter().map(|p| p * g).collect();
+        let c = 10f32.powf(plan.ceiling / 20.0);
+        let gains = sound::limit_sides(&mut [&mut l, &mut r], &peaks, c, &plan.dips);
         // (the true peaks after the limiter, bounded from those before it: only the blocks that could be the peak read)
         let tps = sound::true_peak_after(&[&l, &r], &peaks, &gains, &ranges);
         drop(peaks);
@@ -773,12 +893,12 @@ pub(crate) fn make(
             sound::stereo_lufs(&a, &b)
         };
         let levels = Levels {
-            keys: loud,
-            keys_gain,
+            keys: loud + plan.gain,
+            keys_gain: keys_gain + plan.gain,
             keys_limited,
-            key_peaks,
-            lead: alone(0.0),
-            under: alone(1.0),
+            key_peaks: key_peaks.iter().map(|&(at, p)| (at, p + plan.gain)).collect(),
+            lead: alone(0.0) + plan.gain,
+            under: alone(1.0) + plan.gain,
             whole: sound::stereo_lufs(&l, &r),
             true_peak: 20.0 * tps[0].log10(),
             chapter_peaks: tps[1..].iter().map(|p| 20.0 * p.log10()).collect(),
@@ -787,36 +907,26 @@ pub(crate) fn make(
         };
         ([l, r], levels)
     };
-    // (each try's sound written and its AAC measured; only the last held — the one kept made again where it isn't)
-    type Tried = (f32, std::result::Result<f32, String>);
-    let mut ceilings: Vec<Tried> = Vec::new();
-    let mut ceiling = sound::SHORT_CEILING_DB;
-    let measured = |c: &[Tried]| -> Vec<(f32, f32)> {
-        c.iter().filter_map(|(c, p)| Some((*c, *p.as_ref().ok()?))).collect()
-    };
-    let mut last;
-    loop {
-        let (y, levels) = made(ceiling);
-        sound::wav_sides(wav, &[&y[0], &y[1]])?;
-        let peak = video::aac_peak(ffmpeg, wav, video::Form::Wide);
-        let failed = peak.is_err();
-        ceilings.push((ceiling, peak));
-        last = (y, levels);
-        match video::next_ceiling(&measured(&ceilings)) {
-            Some(next) if !failed && ceilings.len() < video::AAC_TRIES => ceiling = next,
-            _ => break,
+    // (each try's sound written, its AAC heard back; only the last held — the one kept made again where it isn't)
+    let mut last: Option<(Plan, Mixed)> = None;
+    let (tried, pick) = search(|plan| {
+        last = None;
+        let y = made(plan);
+        sound::wav_sides(wav, &[&y.0[0], &y.0[1]]).map_err(|e| e.to_string())?;
+        last = Some((plan.clone(), y));
+        let aac = video::aac_heard(ffmpeg, wav, video::Form::Wide)?;
+        Ok(Encoded { lufs: aac.lufs, peak: aac.peak, over: over_aim(&aac.sides) })
+    });
+    let again = last.as_ref().is_none_or(|l| l.0 != tried[pick].0);
+    let ([yl, yr], lv) = match last {
+        Some((_, y)) if !again => y,
+        _ => {
+            drop(last);
+            let y = made(&tried[pick].0);
+            sound::wav_sides(wav, &[&y.0[0], &y.0[1]])?;
+            y
         }
-    }
-    let pick = video::best_ceiling(&measured(&ceilings))
-        .and_then(|c| ceilings.iter().position(|t| t.0 == c))
-        .unwrap_or(ceilings.len() - 1);
-    let again = pick != ceilings.len() - 1;
-    if again {
-        drop(last);
-        last = made(ceilings[pick].0);
-        sound::wav_sides(wav, &[&last.0[0], &last.0[1]])?;
-    }
-    let ([yl, yr], lv) = last;
+    };
     let took = started.elapsed();
 
     // (what it made, said)
@@ -892,17 +1002,32 @@ pub(crate) fn make(
             db(l.1 - q.1)
         ));
     }
-    let tried: Vec<String> = (ceilings.iter())
-        .map(|(c, p)| match p {
-            Ok(p) => format!("{c:.2} → {p:.2}"),
-            Err(e) => format!("{c:.2} → ({e})"),
+    let each: Vec<String> = (tried.iter().enumerate())
+        .map(|(i, (p, e))| {
+            let dipped = match p.dips.len() {
+                0 => "no dip".to_string(),
+                1 => format!("1 dip (to {:.1} dB)", p.dips[0].2),
+                n => format!("{n} dips (to {:.1} dB)", p.dips.iter().map(|d| d.2).fold(0.0f32, f32::max)),
+            };
+            let came = match e {
+                Ok(e) => format!("{:.1} LUFS, {:.2} dBTP, {} frames over", e.lufs, e.peak, e.over.len()),
+                Err(e) => format!("({e})"),
+            };
+            format!("{}{:+.2} dB, {dipped} → {came}", if i == pick { "kept: " } else { "" }, p.gain)
         })
         .collect();
-    said.push(format!("  the limiter's ceiling → the AAC's true peak (dBTP): {}", tried.join(", ")));
+    said.push(format!(
+        "  each try — the gain over the mix, the limiter's ceiling ({:.1} dBTP, never moved) dipped where the AAC came out \
+         over {:.1} → the AAC (aiming at {CUT_LUFS:.1} LUFS, under {:.1} dBTP): {}",
+        ceiling,
+        video::AAC_PEAK_DB - video::AAC_MARGIN_DB,
+        video::AAC_PEAK_DB,
+        each.join("; ")
+    ));
     said.push(format!(
         "  the sound made in {:.1} s: {} tries{}",
         took.as_secs_f64(),
-        ceilings.len(),
+        tried.len(),
         if again { ", the one kept made again" } else { "" }
     ));
     // (each chapter's loudness and true peak)

@@ -820,7 +820,7 @@ fn reach<T>(target: f32, at: f32, made: impl Fn(f32) -> (T, f32)) -> (T, f32) {
 /// sees the peak coming) — never a peak past the ceiling, never a step in the gain. Its largest reduction (dB, positive)
 /// and the sample it's at.
 pub(crate) fn limit(x: &mut [f32], peaks: &[f32], ceiling: f32) -> (f32, usize) {
-    most(&limit_sides(&mut [x], peaks, ceiling))
+    most(&limit_sides(&mut [x], peaks, ceiling, &[]))
 }
 
 /// The largest reduction of a limiter's `gains` (dB, positive) and the sample it's at.
@@ -835,14 +835,27 @@ pub(crate) fn most(gains: &[f32]) -> (f32, usize) {
 }
 
 /// `limit` on a track's sides at once (the cut's left and right): one gain at each sample for every side, from
-/// `peaks` — the larger side's true peak there (`true_peaks_of`) —, so the image never leans. Its gains, one a
-/// sample. One side: `limit`.
-pub(crate) fn limit_sides(sides: &mut [&mut [f32]], peaks: &[f32], ceiling: f32) -> Vec<f32> {
+/// `peaks` — the larger side's true peak there (`true_peaks_of`) —, so the image never leans; the ceiling lowered by
+/// each of `dips` over its samples (from–to, dB under it; the deepest where they meet), approached and left as any peak
+/// is. Its gains, one a sample. One side: `limit`.
+pub(crate) fn limit_sides(
+    sides: &mut [&mut [f32]],
+    peaks: &[f32],
+    ceiling: f32,
+    dips: &[(usize, usize, f32)],
+) -> Vec<f32> {
     const ATTACK_S: f32 = 0.002;
     const RELEASE_S: f32 = 0.060;
     let per = |s: f32| 1.0 - (-1.0 / (s * RATE as f32)).exp();
     let (attack, release) = (per(ATTACK_S), per(RELEASE_S));
     let mut gains: Vec<f32> = peaks.iter().map(|p| (ceiling / p).min(1.0)).collect();
+    for &(a, b, db) in dips {
+        let c = ceiling * 10f32.powf(-db / 20.0);
+        let (a, b) = (a.min(gains.len()), b.min(gains.len()));
+        for (g, p) in gains[a..b].iter_mut().zip(&peaks[a..b]) {
+            *g = g.min((c / p).min(1.0));
+        }
+    }
     let mut g = 1.0f32;
     for n in &mut gains {
         g = n.min(g + (1.0 - g) * release);
@@ -1459,7 +1472,7 @@ mod tests {
         };
         let (mut l, mut r) = (l0.clone(), r0.clone());
         let peaks = true_peaks_of(&[&l0, &r0]);
-        let gains = limit_sides(&mut [&mut l, &mut r], &peaks, 10f32.powf(-2.0 / 20.0));
+        let gains = limit_sides(&mut [&mut l, &mut r], &peaks, 10f32.powf(-2.0 / 20.0), &[]);
         assert!(most(&gains).0 > 6.0, "the limiter at work: {:.1} dB", most(&gains).0);
         check(&gains, "limited");
         let wild: Vec<f32> = (0..n).map(|_| 0.05 + 0.95 * rnd()).collect();
@@ -1556,7 +1569,7 @@ mod tests {
         assert!(true_peak_db(&[&l0]) > true_peak_db(&[&r0]) + 6.0, "the left the larger");
         let (mut l, mut r) = (l0.clone(), r0.clone());
         let ceiling = 10f32.powf(-6.0 / 20.0);
-        let gains = limit_sides(&mut [&mut l, &mut r], &peaks, ceiling);
+        let gains = limit_sides(&mut [&mut l, &mut r], &peaks, ceiling, &[]);
         for i in 0..n {
             for (x, y) in [(l0[i], l[i]), (r0[i], r[i])] {
                 assert!((y - x * gains[i]).abs() < 1e-7, "at {i}: {y} from {x}, the gain {}", gains[i]);

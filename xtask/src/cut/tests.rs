@@ -1525,7 +1525,7 @@ fn ten_minutes_of_the_cuts_sound_timed() {
     lap("(a try) the two sides");
     let tp = crate::sound::true_peaks_of(&[&l, &r]);
     lap("(a try) their true peaks");
-    let gains = crate::sound::limit_sides(&mut [&mut l, &mut r], &tp, 10f32.powf(-2.0 / 20.0));
+    let gains = crate::sound::limit_sides(&mut [&mut l, &mut r], &tp, 10f32.powf(-2.0 / 20.0), &[]);
     lap("(a try) the limiter");
     let _ = crate::sound::stereo_lufs(&l, &r);
     lap("(a try) the whole's loudness");
@@ -3450,6 +3450,88 @@ fn a_zoom_on_a_mask_still_hides_its_cells() {
     assert_eq!(
         first, None,
         "the masked zoom against the erased screen's: the first pixel (x, y) that differs"
+    );
+}
+
+/// A made-up encoder for the sound's search, as take 3's final2 met ffmpeg's: the keys at their cap, so the ceiling moves
+/// their level (−19.7 LUFS at −2 dBTP, the take-3 final's −20.5 at −2.8); 120 AAC frames, every sixth a click the
+/// limiter holds at its ceiling (2 dB over it before), the rest 4 dB under; the encoder 1.5 dB over every frame, but one
+/// click's 7.6 dB over at −20.5 LUFS alone (final2's 0:25: 4 dB over at one level, ordinary at the next).
+fn glitching_encoder(plan: &super::sound::Plan) -> std::result::Result<super::sound::Encoded, String> {
+    let level = -19.7 + (plan.ceiling - crate::sound::SHORT_CEILING_DB) + plan.gain;
+    let aim = video::AAC_PEAK_DB - video::AAC_MARGIN_DB;
+    let frames: Vec<(usize, usize, f32)> = (0..120usize)
+        .map(|k| {
+            let (a, b) = (k * 1024, (k + 1) * 1024);
+            let before = plan.gain + if k % 6 == 0 { plan.ceiling + 2.0 } else { plan.ceiling - 4.0 };
+            let dip = plan.dips.iter().filter(|d| d.0 < b && a < d.1).map(|d| d.2).fold(0.0, f32::max);
+            let over = if k == 42 && (level + 20.5).abs() < 0.1 { 7.6 } else { 1.5 };
+            (a, b, before.min(plan.ceiling - dip) + over)
+        })
+        .collect();
+    let peak = frames.iter().map(|f| f.2).fold(f32::NEG_INFINITY, f32::max);
+    Ok(super::sound::Encoded { lufs: level, peak, over: frames.into_iter().filter(|f| f.2 > aim).collect() })
+}
+
+/// The sound's search lands the cut's loudness with its AAC under −1 dBTP, a try that overshoots or not: one frame's
+/// overshoot of 7.6 dB never takes the whole down (take 3's final2: the ceiling moved from −2.0 to −3.2, a frame came
+/// out at +4.4 dBTP, the search then settled on −5.4 — −23.5 LUFS, −4.0 dBTP, 3 dB of room unused).
+#[test]
+fn the_sounds_search_lands_the_level_whatever_one_frame_overshoots() {
+    let (tried, pick) = super::sound::search(glitching_encoder);
+    let said: Vec<String> = (tried.iter())
+        .map(|(p, e)| {
+            let e = e.as_ref().unwrap();
+            format!(
+                "ceiling {:.2} gain {:+.2} dips {} → {:.2} LUFS {:.2} dBTP",
+                p.ceiling,
+                p.gain,
+                p.dips.len(),
+                e.lufs,
+                e.peak
+            )
+        })
+        .collect();
+    let kept = tried[pick].1.as_ref().unwrap();
+    assert!(
+        kept.peak <= video::AAC_PEAK_DB - 0.1 && (kept.lufs - super::sound::CUT_LUFS).abs() <= 0.2,
+        "kept try {}: {:.2} LUFS, {:.2} dBTP — the tries:\n{}",
+        pick + 1,
+        kept.lufs,
+        kept.peak,
+        said.join("\n")
+    );
+}
+
+/// By hand: a real edit list's sound alone — its take and beds read where the list is, nothing written there —, made as
+/// the cut makes it (but with no held chapter ends: the mascot's plan isn't laid), its `cut.txt` sound lines printed
+/// and the kept WAV's AAC measured as the MP4's would be.
+#[test]
+#[ignore = "by hand: TARAE_CUT_SOUND=<edit list> cargo test --profile shot -p xtask a_real_mixs_sound -- --ignored --nocapture"]
+fn a_real_mixs_sound_by_hand() {
+    let file = std::path::PathBuf::from(std::env::var_os("TARAE_CUT_SOUND").expect("TARAE_CUT_SOUND"));
+    let dir = file.parent().unwrap();
+    let take = Take::read(dir).unwrap();
+    let marks = Marks::read(dir, take.ms()).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    let c = Cut::parse(&text, &file.display().to_string(), &marks).unwrap();
+    let p = Program::new(&c);
+    let keys = crate::record::read_log(&dir.join("keys.bin")).unwrap();
+    let out = tarae_testkit::scratch::Scratch::new("xtask-real-mix");
+    let wav = out.path().join("cut.wav");
+    let ffmpeg = video::ffmpeg().expect("ffmpeg");
+    let started = std::time::Instant::now();
+    let said = super::sound::make(&p, dir, &keys, &marks, (&ffmpeg, 0), &wav).unwrap();
+    let lines: Vec<&String> = said.iter().filter(|l| !l.starts_with("    ")).take(9).collect();
+    for l in lines {
+        println!("{l}");
+    }
+    let aac = video::aac_heard(&ffmpeg, &wav, video::Form::Wide).unwrap();
+    println!(
+        "the kept WAV as AAC: {:.1} LUFS, {:.1} dBTP; {:.0} s",
+        aac.lufs,
+        aac.peak,
+        started.elapsed().as_secs_f64()
     );
 }
 
