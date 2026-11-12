@@ -10964,7 +10964,7 @@ mod tests {
     /// rewrites) or a place read only, the place refused it, as before B1: the report says no key, the panel offers
     /// its folder and not the file, whose grant would leave the same write refused. Once the folder's written, a
     /// change refused there is the name's and offers the file. The file's choice says using where runs write,
-    /// reading elsewhere.
+    /// reading elsewhere. macOS's rule on every host (B1 is Seatbelt's); Linux's refuses no change by the name.
     #[test]
     fn a_keys_change_refused_where_runs_dont_write_is_the_places() {
         use crate::allow::{Allowed, Grant};
@@ -10988,6 +10988,8 @@ mod tests {
             let key_places = vec![shared.clone()];
             let mut p = Policy::for_project(&Env { home: Some(home.into()), key_places, reads, write, ..e });
             p.keys = Some(Vec::new());
+            // (B1's refusal by name is Seatbelt's: macOS's rule on every host — Linux's below)
+            p.supervised = false;
             p
         };
         let p = policy(vec!["~/out".into()]);
@@ -11041,6 +11043,11 @@ mod tests {
         assert_eq!(panel.into_iter().map(|c| c.grant).collect::<Vec<_>>(), [Grant::Key(theirs.clone())]);
         let label = crate::blocked::key_label(&theirs, Some(&opened.key_rules()), root);
         assert!(label.starts_with("allow using "), "{label}");
+        // Linux's rule (`supervised`: its mounts hide what its walk found): no change is refused by the name
+        let (linux, linux_opened) = (Policy { supervised: true, ..p }, Policy { supervised: true, ..opened });
+        for (q, f) in [(&linux, &ours), (&linux, &home.join("q/.env")), (&linux_opened, &theirs)] {
+            assert!(!q.key_refuses_change(f) && !q.key_rules().refuses_change(f), "{f:?}");
+        }
     }
 
     /// R1 fix 6: a place's grant says of the files named like keys in it what the rule its run will have does to one
