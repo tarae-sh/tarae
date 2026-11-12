@@ -257,6 +257,9 @@ pub enum What {
     /// `s` stashes the changes for it and puts them back after (nothing unsaved), `g` shows them in the git
     /// tab, `n` leaves it. No `y`: what it would do is the letter's.
     RebaseHeld(Box<crate::rebase::Held>),
+    /// `:session-new` in a folder in no repository (#513): `y` makes one there and a first commit of its files (a
+    /// file named like a key or with a token found left out), then asks the new session again; `n` not now.
+    RepoMake(Box<crate::worktree::RepoMake>),
     /// A session rebased cleanly (`rebase.rs`): `y` brings it into its base, `p` runs the preflight first and
     /// brings it once that passes, `n` not now.
     Rebased(Box<crate::rebase::Moved>),
@@ -366,6 +369,7 @@ pub const KINDS: &[&str] = &[
     "review-end",
     "rebase",
     "rebase-held",
+    "repo-make",
     "rebased",
     "rebase-resolved",
     "instructions",
@@ -487,6 +491,8 @@ impl What {
             | What::CloseReviewed { .. }
             | What::ReviewEnd { .. }
             | What::SessionNew(_)
+            // (`:session-new` asks afresh)
+            | What::RepoMake(_)
             // (the saves stay: `:workspace-restore` asks afresh)
             | What::WorkspaceRestore(_)
             // (its source's turn and buffers as they were: `:session-fork` asks afresh)
@@ -709,6 +715,7 @@ impl Offer {
                     | What::BranchDelete { .. }
                     | What::ForcePush(_)
                     | What::SessionNew(_)
+                    | What::RepoMake(_)
                     | What::SessionFork(_)
                     | What::WorkspaceEnd(_)
                     | What::WorkspaceRestore(_)
@@ -816,6 +823,8 @@ impl Offer {
                 | What::BranchDelete { .. }
                 | What::ForcePush(_)
                 | What::SessionNew(_)
+                // (its yes makes a repository and a commit of the whole folder)
+                | What::RepoMake(_)
                 // (its yes spends: the whole conversation written again)
                 | What::SessionFork(_)
                 // (its yes spends: a Claude and a cold build a session)
@@ -1168,9 +1177,14 @@ impl Offer {
         matches!(&self.what, What::WorkspaceEnd(e) if e.dirty())
     }
 
-    /// Whether `c` answers it: that card, on a branch to commit on.
+    /// Whether `c` answers it: that card, on a branch to commit on — or a bring's held card with a change a commit
+    /// first takes (#514).
     pub fn commits_first(&self) -> bool {
-        matches!(&self.what, What::WorkspaceEnd(e) if e.dirty() && e.branch.is_some())
+        match &self.what {
+            What::WorkspaceEnd(e) => e.commits_first(),
+            What::RebaseHeld(h) => h.commits(),
+            _ => false,
+        }
     }
 
     /// Whether its answer can last longer than once (`a` this chat · `A` always — `A` only for reads).
@@ -1580,6 +1594,10 @@ impl Offer {
             W::RebaseHeld(_) if self.stashes() => {
                 vec![lasts('s', "Stash, rebase, put back"), plain('g', "Git tab"), plain('n', "Leave it")]
             }
+            W::RepoMake(_) => vec![plain('y', "Make it"), plain('n', "Not now")],
+            W::RebaseHeld(_) if self.commits_first() => {
+                vec![plain('c', "Commit first"), plain('g', "Git tab"), plain('n', "Leave it")]
+            }
             W::RebaseHeld(_) => vec![plain('g', "Git tab"), plain('n', "Leave it")],
             // (its `y` runs the preflight, then brings — polish landing 4; only the card back after that preflight
             // failed has `warnings` (`Moved::failed_card`): `y` a bring anyway there — frictions29 91 —, `p` the
@@ -1744,6 +1762,7 @@ impl Offer {
             W::ReviewEnd { .. } => "review-end",
             W::Rebase(_) => "rebase",
             W::RebaseHeld(_) => "rebase-held",
+            W::RepoMake(_) => "repo-make",
             W::Rebased(_) => "rebased",
             W::RebaseResolved { .. } => "rebase-resolved",
             W::Instructions(_) => "instructions",
@@ -2144,8 +2163,11 @@ impl crate::editor::Editor {
         }
         // (a held rebase: what it'd do is the letter's — stash, or see them)
         if let Some(h) = self.offers[0].held() {
-            let ask =
-                if h.stashes() { "s stashes them for the rebase, g shows them" } else { "g shows them" };
+            let ask = match (h.stashes(), h.commits()) {
+                (true, _) => "s stashes them for the rebase, g shows them",
+                (_, true) => "c commits them first, g shows them",
+                _ => "g shows them",
+            };
             return self.offer_refused(format!("this card has no y — {ask}, n leaves it"));
         }
         // (a hook the card couldn't show isn't run on a yes)
@@ -2247,6 +2269,7 @@ impl crate::editor::Editor {
             What::BranchDelete { top, branch, tip } => self.git_branch_delete_answer(id, top, branch, tip),
             What::ForcePush(f) => self.git_force_push(id, *f),
             What::SessionNew(m) => self.session_make(id, *m),
+            What::RepoMake(r) => self.repo_make(id, *r),
             What::SessionFork(f) => crate::fork::start(self, id, *f),
             What::SessionSet(s) => crate::orchestra::answer(self, id, *s, true),
             What::WorkspaceEnd(e) => self.session_remove(*e, false, Some(id)),
@@ -2576,8 +2599,17 @@ impl crate::editor::Editor {
         }
         let o = self.offers.remove(0);
         self.offer_answered(&o, 'c');
-        if let What::WorkspaceEnd(e) = o.what {
-            self.session_commit_first(*e);
+        match o.what {
+            What::WorkspaceEnd(e) => self.session_commit_first(*e),
+            // (a bring's held card: committed on its branch, then the bring asked again — #514)
+            What::RebaseHeld(h) => {
+                let (root, name) = (h.moved.root.clone(), h.moved.name.clone());
+                if let Some(id) = self.session_at(&root) {
+                    self.with_workspace(id, |ed| ed.workspace.bring_go = false);
+                }
+                self.commit_first(root, name.clone(), crate::gitpanel::Then::Bring(name), None);
+            }
+            _ => {}
         }
     }
 
@@ -3029,6 +3061,9 @@ impl crate::editor::Editor {
             What::BranchDelete { branch, .. } => self.set_status(format!("Kept {branch}")),
             What::ForcePush(f) => self.set_status(format!("Not pushed — {} as it was", f.upstream())),
             What::SessionNew(m) => self.set_status(format!("No session {} — nothing was made", m.branch)),
+            What::RepoMake(r) => {
+                self.set_status(format!("No repository made — :session-new {} needs one", r.name))
+            }
             What::SessionFork(f) => {
                 self.set_status(format!("No fork of {} — nothing was made", f.from.name));
                 // (a `y` taken back: what it held goes)

@@ -636,7 +636,17 @@ pub fn making(
         }
         // The repository's main branch first, the front session's after it (`b` steps)
         None => {
-            let s = sha(&top, "HEAD")?;
+            // (a repository with no commit yet — the no-repository card's first commit not written, `:q` — said so)
+            let s = sha(&top, "HEAD").map_err(|e| {
+                match git(&top, &["symbolic-ref", "-q", "HEAD"], None) {
+                Ok(_) if git(&top, &["rev-parse", "-q", "--verify", "HEAD"], None).is_err() => {
+                    "its repository has no commit yet — a session starts from one: commit (space g), then \
+                     :session-new again"
+                        .to_string()
+                }
+                _ => e,
+            }
+            })?;
             let front = (current_branch(&top).unwrap_or_else(|| s.clone()), s);
             let mut bases: Vec<(String, String)> = main_branch(&top)
                 .and_then(|m| Some((m.clone(), sha(&top, &format!("refs/heads/{m}")).ok()?)))
@@ -851,6 +861,9 @@ pub struct Ending {
     pub brought: Option<String>,
     /// How long what goes is saved at least (`workspace.restore-days`, `endsave.rs`) — the card says it.
     pub days: u64,
+    /// Of `changed`, what a commit first leaves out (`kept_out`): said on the card, as the bring's and the
+    /// no-repository card's say it.
+    pub left_out: Vec<(String, KeptOut)>,
 }
 
 impl Ending {
@@ -863,6 +876,11 @@ impl Ending {
     /// committing first (`c`, on a branch) leads, removing takes `R`/`D`.
     pub fn dirty(&self) -> bool {
         !self.changed.is_empty()
+    }
+
+    /// `c` answers it: work in no commit on a branch, some of it what a commit first takes (not all left out).
+    pub fn commits_first(&self) -> bool {
+        self.branch.is_some() && self.changed.len() > self.left_out.len()
     }
 
     /// Something goes with its checkout that its save keeps (`endsave::keep`) — `both`: its branch goes too. Its changes,
@@ -897,6 +915,9 @@ impl Ending {
             if n > FILES_SHOWN {
                 lines.push(format!("  … and {} more", n - FILES_SHOWN));
             }
+            // (what a commit first leaves out, under the files it's about — before `c`, and after it, why the end
+            // is asked with it still there)
+            lines.extend(left_out_line(&self.left_out));
             decided.end = lines.len();
         }
         if !self.ahead.is_empty() {
@@ -919,7 +940,7 @@ impl Ending {
         // What committing first does, then what removing takes away — in the warning color only where it's for good (new
         // files past what a save takes, what `workspace.keep` loses): a save keeps the rest
         let mut tail: Vec<(String, bool)> = Vec::new();
-        if let (true, Some(b)) = (self.dirty(), &self.branch) {
+        if let (true, Some(b)) = (self.commits_first(), &self.branch) {
             tail.push((format!("Committing first: Claude drafts it, :w commits on {b}."), false));
         }
         if self.dirty() {
@@ -1061,6 +1082,10 @@ pub(crate) fn ending(
         None => Vec::new(),
     };
     let keep = keep_plan(&name, root, &common, &entries);
+    let left_out = match changed.is_empty() {
+        true => Vec::new(),
+        false => kept_out(root, &crate::rebase::unclean(root).unwrap_or_default()),
+    };
     Ok(Ending {
         root: root.to_path_buf(),
         common,
@@ -1075,6 +1100,7 @@ pub(crate) fn ending(
         keep,
         brought: None,
         days: 0,
+        left_out,
     })
 }
 
@@ -1247,7 +1273,211 @@ fn untested(
 fn unclean_held(root: &Path, name: &str, base: Option<String>, start: &Path) -> Option<crate::rebase::Held> {
     let changed = crate::rebase::unclean(root).filter(|c| !c.is_empty())?;
     let moved = ready(root, name, base, start, &[]).ok()?;
-    Some(crate::rebase::Held { moved, changed, unsaved: Vec::new(), bring: true })
+    Some(crate::rebase::Held::bring(moved, changed))
+}
+
+/// `:workspace-bring`'s look, before any card (#514, collab 11-05 #371: changes in no commit stop a bring as they
+/// stop a rebase): what `ready` says — but changes in no commit there are the held card first, with `c` to commit
+/// them, whether it has commits of its own (a preflight would test them and the bring land without them) or none
+/// (all its work is in them: `ready`'s "nothing to bring"). Nothing ahead but behind and clean: its move up card.
+fn ready_or_held(
+    root: &Path,
+    name: &str,
+    base: Option<String>,
+    start: &Path,
+    unsaved: &[PathBuf],
+) -> Bringing {
+    let r = ready(root, name, base.clone(), start, unsaved);
+    if matches!(&r, Ok(m) if m.ahead == 0) {
+        return r.map_or_else(Bringing::Refused, Bringing::Ready);
+    }
+    let changed = crate::rebase::unclean(root).filter(|c| !c.is_empty());
+    let moved = |ahead: usize| -> Option<crate::rebase::Moved> {
+        let branch = current_branch(root)?;
+        let base = base_or_start(base.clone(), start).ok()?;
+        Some(crate::rebase::Moved { root: root.into(), name: name.into(), branch, base, moved: 0, ahead })
+    };
+    match (r, changed) {
+        (Ok(m), Some(c)) => Bringing::Held(Box::new(crate::rebase::Held::bring(m, c))),
+        // (behind its base as well: `ready`'s own words, what holds its move up — #186)
+        (Err(e), Some(c)) => match moved(0) {
+            Some(m) if e.starts_with("nothing to bring") && !e.contains("can't move up") => {
+                Bringing::Held(Box::new(crate::rebase::Held::bring(m, c)))
+            }
+            _ => Bringing::Refused(e),
+        },
+        (r, None) => r.map_or_else(Bringing::Refused, Bringing::Ready),
+    }
+}
+
+/// A repository's first commit as the no-repository card makes it (#513): the user's to change before `:w`.
+const FIRST_MESSAGE: &str = "Initial commit";
+
+/// The files the no-repository card counts at most (a home folder opened by mistake isn't walked whole).
+const FIRST_FILES_MAX: usize = 100_000;
+
+/// Whether `root` is in no repository: no `.git` there nor in a folder above (git's error alone may be another).
+fn no_repository(root: &Path) -> bool {
+    !root.ancestors().any(|a| std::fs::symlink_metadata(a.join(".git")).is_ok())
+}
+
+/// `:session-new` in a folder in no repository (#513): what the card that makes one says and does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoMake {
+    pub root: PathBuf,
+    /// The folder's name, the card's title.
+    pub folder: String,
+    /// `:session-new`'s, asked again once the first commit is in.
+    pub name: String,
+    pub base: Option<String>,
+    /// The files its first commit takes — what git would, its ignore files read, less `left_out`. None: more than
+    /// `FIRST_FILES_MAX`.
+    pub files: Option<usize>,
+    pub left_out: Vec<(String, KeptOut)>,
+}
+
+impl RepoMake {
+    /// The folder looked at as `git add --all` would take it (its `.gitignore`s and the user's own excludes, no
+    /// repository needed), and what its first commit leaves out. Reads the files: a worker's.
+    fn look(root: &Path, name: String, base: Option<String>) -> RepoMake {
+        let mut rels = Vec::new();
+        let mut more = false;
+        let walk = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .ignore(false)
+            .parents(false)
+            .require_git(false)
+            .follow_links(false)
+            .build();
+        for e in walk.flatten() {
+            if e.file_type().is_none_or(|t| t.is_dir()) {
+                continue;
+            }
+            if rels.len() == FIRST_FILES_MAX {
+                more = true;
+                break;
+            }
+            if let Ok(rel) = e.path().strip_prefix(root) {
+                rels.push(rel.to_string_lossy().into_owned());
+            }
+        }
+        crate::sorting::sort(&mut rels);
+        let left_out = kept_out(root, &rels);
+        let folder =
+            root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into());
+        let files = (!more).then(|| rels.len() - left_out.len());
+        RepoMake { root: root.to_path_buf(), folder, name, base, files, left_out }
+    }
+
+    /// Its card: what `y` does first, why the folder needs a repository faint under it, what's left out.
+    pub fn card(&self) -> crate::offer::Offer {
+        let asked = match &self.base {
+            Some(b) => format!(":session-new {} {b}", self.name),
+            None => format!(":session-new {}", self.name),
+        };
+        let commit = match self.files {
+            Some(0) => "an empty first commit".to_string(),
+            Some(n) => format!("a first commit of its {}", crate::nav::count(n, "file")),
+            None => format!("a first commit of its files (over {FIRST_FILES_MAX})"),
+        };
+        let mut q = format!(
+            "y makes a repository here and {commit}, then {asked} is asked again.\nA session is a branch with its \
+             own checkout, so the folder needs a repository."
+        );
+        if self.files != Some(0) {
+            q.push_str(&format!(
+                " The commit's message starts as {FIRST_MESSAGE} — yours to change, then :w."
+            ));
+        }
+        if let Some(l) = left_out_line(&self.left_out) {
+            q.push_str(&format!("\n{l}"));
+        }
+        let mut card = crate::offer::Offer::new(
+            format!("{} isn't a git repository", self.folder),
+            &q,
+            "Making the repository…",
+            format!("Couldn't make a repository in {}", self.folder),
+            crate::offer::What::RepoMake(Box::new(self.clone())),
+        );
+        // (what `y` does, and what it leaves out, at full strength; why, faint)
+        card.decided = Some(0..q.lines().count());
+        card.told = vec![1];
+        card
+    }
+}
+
+/// Why a file is left out of what a card's commit first stages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeptOut {
+    /// Named like a key (`secretnames`, as runs can't read it).
+    Named,
+    /// A token-like line found in it (`tokens::found_in`).
+    Token,
+}
+
+/// Of `rels` (changed in no commit in the checkout at `root`, relative), what a card's commit first leaves out —
+/// a folder with no repository often has no `.gitignore` (#513): a file named like a key (`sandbox::key_named_in`,
+/// below tools' output not) or one holding a token-like line (`tokens::found_in`: settings-like files only). One
+/// gone (a deletion) holds none. Reads the files: a worker's.
+pub(crate) fn kept_out(root: &Path, rels: &[String]) -> Vec<(String, KeptOut)> {
+    let real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out = Vec::new();
+    for rel in rels {
+        let abs = real.join(rel);
+        if !std::fs::symlink_metadata(&abs).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        if crate::sandbox::key_named_in(&real, &abs) {
+            out.push((rel.clone(), KeptOut::Named));
+        } else if !crate::tokens::found_in(&abs).files.is_empty() {
+            out.push((rel.clone(), KeptOut::Token));
+        }
+    }
+    out
+}
+
+/// `git add --all` in the checkout at `root`, no hooks — never a temp file (`disk::NOT_TEMP`), nor `left_out`.
+fn stage_all_but(root: &Path, left_out: &[(String, KeptOut)]) -> Result<String, String> {
+    let out: Vec<String> = left_out.iter().map(|(rel, _)| format!(":(exclude,literal){rel}")).collect();
+    let mut args = vec!["add", "--all", "--", ".", crate::disk::NOT_TEMP];
+    args.extend(out.iter().map(String::as_str));
+    git_no_hooks(root, &args)
+}
+
+/// Why, in a card's words.
+fn kept_out_why(why: KeptOut) -> &'static str {
+    match why {
+        KeptOut::Named => "named like a key",
+        KeptOut::Token => "a token found in it",
+    }
+}
+
+/// One file left out of a commit first, as its message's `#` lines say it.
+pub(crate) fn left_out_said(rel: &str, why: KeptOut) -> String {
+    format!("left out: {rel} — {}; git add it yourself if it belongs", kept_out_why(why))
+}
+
+/// The files left out of a commit first, as a card's line says them (the first few by name): None, none.
+pub(crate) fn left_out_line(left: &[(String, KeptOut)]) -> Option<String> {
+    const NAMED: usize = 3;
+    let (first, _) = left.first()?;
+    if let [(_, why)] = left {
+        return Some(left_out_said(first, *why));
+    }
+    let mut said: Vec<String> = Vec::new();
+    for why in [KeptOut::Named, KeptOut::Token] {
+        let these: Vec<&str> = left.iter().filter(|(_, w)| *w == why).map(|(r, _)| r.as_str()).collect();
+        if these.is_empty() {
+            continue;
+        }
+        let more = these.len().saturating_sub(NAMED);
+        let mut names = these[..these.len().min(NAMED)].join(", ");
+        if more > 0 {
+            names += &format!(" and {more} more");
+        }
+        said.push(format!("{names} — {}", kept_out_why(why)));
+    }
+    Some(format!("left out: {}; git add them yourself if they belong", said.join(" · ")))
 }
 
 /// Its base moved since it left it, and it has commits of its own: a rebase first, not a bring — None when
@@ -2134,9 +2364,14 @@ impl Editor {
         let setting = self.config.workspace_worktrees.clone();
         let said = format!("Looking at what {name} would take…");
         let builds = self.workspace_store.builds.clone();
-        let work = move || making(&root, &name, base.as_deref(), &setting, builds.as_ref());
+        // (a folder in no repository: the card that makes one — #513)
+        let work = move || match making(&root, &name, base.as_deref(), &setting, builds.as_ref()) {
+            Err(_) if no_repository(&root) => Err(Box::new(RepoMake::look(&root, name, base))),
+            r => Ok(r),
+        };
         self.step(self.events.shared_jobs(), "session", said, work, |ed, found| match found {
-            Ok(mut m) => {
+            Err(r) => ed.push_offer(r.card()),
+            Ok(Ok(mut m)) => {
                 // (who pays: by the plan's limits as they stand when the card comes, and whether your key can
                 // be used — D2)
                 ed.api_check(ed.events.shared_jobs(), move |ed, _| {
@@ -2145,7 +2380,38 @@ impl Editor {
                     ed.push_offer(card);
                 });
             }
-            Err(e) => ed.set_error(format!("new session: {e}")),
+            Ok(Err(e)) => ed.set_error(format!("new session: {e}")),
+        });
+    }
+
+    /// `y` on the no-repository card (#513): a repository made in the folder (`gitrepo::init`, the user's own
+    /// defaults, no hook) on a worker, then its first commit — the message buffer starting `Initial commit`, no
+    /// Claude started (a draft would have it read the whole folder), what `kept_out` leaves out said there — and once
+    /// it's in, `:session-new` asked again. Nothing to commit: an empty first commit, then the session asked.
+    pub fn repo_make(&mut self, id: u64, r: RepoMake) {
+        let (root, empty) = (r.root.clone(), r.files == Some(0));
+        let work = move || {
+            crate::gitrepo::init(&root)?;
+            if empty {
+                git_no_hooks(&root, &["commit", "-q", "--allow-empty", "-m", FIRST_MESSAGE])?;
+            }
+            Ok(())
+        };
+        let said = format!("Making a repository in {}…", r.folder);
+        self.step(self.events.shared_jobs(), "session", said, work, move |ed, made: Result<(), String>| {
+            ed.offer_finished(id, made.clone());
+            if made.is_err() {
+                return;
+            }
+            ed.git_refresh();
+            let then = crate::gitpanel::Then::SessionNew { name: r.name.clone(), base: r.base.clone() };
+            match empty {
+                true => {
+                    ed.set_success(format!("Made a repository in {} — an empty first commit", r.folder));
+                    ed.commit_then(Some(then));
+                }
+                false => ed.commit_first(r.root, r.folder, then, Some(FIRST_MESSAGE.into())),
+            }
         });
     }
 
@@ -2396,40 +2662,73 @@ impl Editor {
         });
     }
 
-    /// `c` on the end card: its changes go into a commit on its branch first — its session to the front, all
-    /// of them staged, the message buffer open with Claude's draft (read it, `:w` commits). Once the commit
-    /// is in, the end is asked again (`Committing.then_end`); `:q` in the message keeps the session, its
-    /// changes staged.
+    /// `c` on the end card: its changes go into a commit on its branch first (`commit_first`, Claude's draft);
+    /// once the commit is in, the end is asked again; `:q` in the message keeps the session, its changes staged.
     pub fn session_commit_first(&mut self, e: Ending) {
+        self.commit_first(e.root, e.name, crate::gitpanel::Then::End, None);
+    }
+
+    /// A card's commit first (the end card's and the bring's held card's `c`, the no-repository card's `y`): the
+    /// checkout at `root` (session `name`) to the front, its changes staged — but a file named like a key or with a
+    /// token found (`kept_out`), never a temp file —, the message buffer open: starting with `message`, else Claude's
+    /// draft (read it, `:w` commits). Once the commit is in, `then` is asked again; `:q` in the message leaves its
+    /// changes staged.
+    pub fn commit_first(
+        &mut self,
+        root: PathBuf,
+        name: String,
+        then: crate::gitpanel::Then,
+        message: Option<String>,
+    ) {
         // (a pane's key has its document lent: its session to the front and its staging, once it's back)
         if crate::docpane::lent(self) {
-            crate::docpane::later(self, move |ed| ed.session_commit_first(e));
+            crate::docpane::later(self, move |ed| ed.commit_first(root, name, then, message));
             return;
         }
         let Some(id) =
-            std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == e.root).map(|l| l.id)
+            std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == root).map(|l| l.id)
         else {
-            return self.set_error(format!("{} isn't open any more", e.name));
+            return self.set_error(format!("{name} isn't open any more"));
         };
         self.workspace_switch(id);
-        let said = format!("Staging {}'s changes…", e.name);
-        let root = e.root.clone();
+        let said = format!("Staging {name}'s changes…");
         let work = move || {
-            git_no_hooks(&root, &["add", "--all", "--", ".", crate::disk::NOT_TEMP])
+            let left_out = kept_out(&root, &crate::rebase::unclean(&root).unwrap_or_default());
+            stage_all_but(&root, &left_out)
                 .and_then(|_| crate::gitpanel::status(&root, None).map(crate::gitpanel::Status::with_rows))
+                .map(|st| (st, left_out))
         };
         // (once the saves asked before it are written: what's staged is what was saved, never a temp file —
         // and its session's: the status and the message are that session's, wherever you are when they land)
         self.after_saves(move |ed| {
             ed.step(ed.events.jobs(), "session", said, work, move |ed, read| match read {
-                Ok(st) => {
+                Ok((st, left_out)) => {
                     ed.workspace.git_status = Some(st);
-                    ed.workspace.commit_then_end = true;
-                    ed.git_commit_open(false, true);
+                    let draft = message.is_none();
+                    ed.workspace.commit_first =
+                        Some(crate::gitpanel::CommitFirst { then, message, left_out });
+                    ed.git_commit_open(false, draft);
                 }
-                Err(why) => ed.set_error(format!("commit {}: {why}", e.name)),
+                Err(why) => ed.set_error(format!("commit {name}: {why}")),
             })
         });
+    }
+
+    /// A card's commit first is in: what it asked, asked again.
+    pub(crate) fn commit_then(&mut self, then: Option<crate::gitpanel::Then>) {
+        use crate::gitpanel::Then;
+        let asked = match then {
+            None => return,
+            Some(Then::End) => self.workspace_end(""),
+            Some(Then::Bring(name)) => self.workspace_bring(&name),
+            Some(Then::SessionNew { name, base }) => {
+                self.session_new(&name, base.as_deref());
+                Ok(())
+            }
+        };
+        if let Err(e) = asked {
+            self.set_error(e);
+        }
     }
 
     /// Session `id` closes: the one tarae started in comes to the front first if it was there; what it ran
@@ -2911,9 +3210,8 @@ impl Editor {
             Some(stop) => Bringing::Rebasing(stop),
             None => match moved(&root, &who, base.clone(), &start) {
                 Some(m) => Bringing::Moved(m),
-                None if !now => {
-                    ready(&root, &who, base, &start, &unsaved).map_or_else(Bringing::Refused, Bringing::Ready)
-                }
+                // (changes in no commit: the held card before any preflight — #514)
+                None if !now => ready_or_held(&root, &who, base, &start, &unsaved),
                 // (HEAD moved since its preflight began: that preflight again — #373; changes in no commit: the held
                 // card — #371; else the commit tested lands)
                 None => {
@@ -4116,7 +4414,7 @@ mod tests {
         assert_eq!(saving, 1, "still being written as c was pressed");
         assert_eq!(ed.workspace.root, wt, "to its session");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
-        assert!(ed.workspace.committing.as_ref().is_some_and(|c| c.then_end));
+        assert!(ed.workspace.committing.as_ref().is_some_and(|c| c.then == Some(crate::gitpanel::Then::End)));
         assert_eq!(git_in(&wt, &["show", ":notes.md"]), "saved\ntodo", "staged what was saved");
         assert!(!git_in(&wt, &["ls-files"]).contains(".tmp"), "no temp file staged");
         std::fs::remove_file(&stray).unwrap();
@@ -5275,12 +5573,11 @@ mod tests {
         assert_eq!(review.files.iter().map(|f| f.rel.as_str()).collect::<Vec<_>>(), ["a.txt"]);
         let q = &card(&ed, "feat: conflicts resolved").unwrap().question;
         assert!(q.starts_with("a.txt resolved for commit 1 of 2 ("), "{q}");
-        // (#175: unmerged in git until `y` — the card says so)
+        // (#175: unmerged in git until `y` — the card says `y` stages it)
         assert_eq!(git_in(&wt, &["status", "--porcelain", "a.txt"]), "UU a.txt");
         assert!(
             q.ends_with(
-                " feat a). The review shows it against that commit — not staged yet: y stages it and goes \
-                 on.\n\nm writes the commit's message first — :w there goes on with it.\n\nX aborts the rebase: \
+                " feat a). y stages a.txt and goes on. The review shows it against that commit.\n\nm writes the commit's message first — :w there goes on with it.\n\nX aborts the rebase: \
                  feat goes back as it was."
             ),
             "{q}"
@@ -5957,7 +6254,7 @@ mod tests {
         feed(&mut ed, ":workspace-bring feat<ret>");
         assert!(!says(&ed, "bring feat:"), "{}", said(&ed));
         let q = card(&ed, "feat: conflicts resolved").expect("its card, here").question.clone();
-        assert!(q.contains("not staged yet: y stages it and goes on"), "{q}");
+        assert!(q.contains("). y stages a.txt and goes on. The review shows it"), "{q}");
         assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n']);
         feed(&mut ed, "n");
         // Typed here: feat's rebase goes on, the front staying where it is
@@ -6143,9 +6440,8 @@ mod tests {
             up.question.starts_with(
                 "a.txt resolved for commit 1 of 2 ("
             ) && up.question.contains(
-                " feat a). It also changed .gitignore — not staged by tarae. The review shows them against that \
-                 commit — not staged yet: y stages it and goes on once it is staged or undone in the git tab \
-                 (space g).\n\n"
+                " feat a). .gitignore changed too, and tarae doesn't stage that: stage or undo it in the git tab \
+                 (space g), then y stages a.txt and goes on. The review shows both against that commit.\n\n"
             ),
             "{}",
             up.question
@@ -6153,6 +6449,8 @@ mod tests {
         let held = "y waits until .gitignore is staged or undone — the git tab (space g)";
         assert_eq!(up.held.as_deref(), Some(held));
         let up_rev = up.rev;
+        // (its frame in both themes with `TARAE_FRAMES_DIR` set — `cargo xtask shot` draws one: `TARAE_SHOT_REPLAY`)
+        crate::screen::frames_sized(&mut ed, "rebase-resolved", &[(120, 30)]);
         // (y isn't among its answers, nor `m`, which goes on once its message is written — and pressed, `m` is
         // refused on the card as `y` is: the card stays, no message to write)
         assert_eq!(card_in_sight(&mut ed), ['X', 'n'], "{}", said(&ed));
@@ -6168,8 +6466,9 @@ mod tests {
         let up = card(&ed, "feat: conflicts resolved").expect("the card stays");
         assert!(
             up.question.contains(
-                " feat a). It also changed .gitignore — not staged by tarae. It made late.txt, untracked: y goes on \
-                 without it. The review shows them"
+                " feat a). .gitignore changed too, and tarae doesn't stage that: stage or undo it in the git tab \
+                 (space g), then y stages a.txt and goes on. It made late.txt, untracked: y goes on without it. The \
+                 review shows them against that commit."
             ),
             "{}",
             up.question
@@ -6202,8 +6501,8 @@ mod tests {
         let q = &card(&ed, "feat: conflicts resolved").expect("the card, freed").question;
         assert!(
             q.contains(
-                " feat a). It made late.txt, untracked: a stages it too, y goes on without it. The review shows \
-                 them against that commit — not staged yet: y stages it and goes on.\n\n"
+                " feat a). y stages a.txt and goes on. It made late.txt, untracked: a stages it too, y goes on \
+                 without it. The review shows both against that commit.\n\n"
             ),
             "{q}"
         );
@@ -6259,7 +6558,7 @@ mod tests {
             rechecks(&ed)
         );
         let up = card(&ed, "feat: conflicts resolved").expect("the card, freed");
-        assert!(up.question.contains("not staged yet: y stages it and goes on.\n\n"), "{}", up.question);
+        assert!(up.question.contains("). y stages a.txt and goes on. The review shows"), "{}", up.question);
         assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n'], "{}", said(&ed));
         let git_tab =
             ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git);
@@ -6374,7 +6673,10 @@ mod tests {
         });
         let q = &card(&ed, "feat: conflicts resolved").unwrap().question;
         assert!(
-            q.contains(" feat a). It made notes.txt, untracked: a stages it too, y goes on without it."),
+            q.contains(
+                " feat a). y stages a.txt and goes on. It made notes.txt, untracked: a stages it too, y goes on \
+                 without it."
+            ),
             "{q}"
         );
         assert!(!q.contains("build"), "what was there as git stopped isn't the resolution's: {q}");
@@ -6416,7 +6718,10 @@ mod tests {
         });
         let q = &card(&ed, "feat: conflicts resolved").unwrap().question;
         assert!(
-            q.contains(" feat a). It made part.txt, untracked: a stages it too, y goes on without it."),
+            q.contains(
+                " feat a). y stages a.txt and goes on. It made part.txt, untracked: a stages it too, y goes on \
+                 without it."
+            ),
             "{q}"
         );
         assert!(!q.contains("build"), "{q}");
@@ -8821,17 +9126,18 @@ mod tests {
         let held = |ed: &Editor, name: &str| {
             card_anywhere(ed, &format!("Bring {name}: changes in no commit")).cloned()
         };
-        // On its card: the held card, no preflight
-        std::fs::write(wa.join("new.txt"), "x\n").unwrap();
+        // On its card (made after it came up — one there before is held before any card, #514): the held card, no
+        // preflight
         bring_card_up(&mut ed, "a");
+        std::fs::write(wa.join("new.txt"), "x\n").unwrap();
         card_in_sight(&mut ed);
         feed(&mut ed, "y");
         settle_until(&mut ed, |ed| held(ed, "a").is_some());
         let h = held(&ed, "a").unwrap();
         let q = "new.txt changed and isn't in a commit — its preflight would test it, and the bring lands a's \
-                 commits without it.\n\nCommit or stash it (g shows it), then :workspace-bring a again.";
+                 commits without it.\n\nc commits it first (Claude's draft, :w), then the bring is asked again.";
         assert_eq!(h.question, q);
-        assert!(h.held().is_some() && !h.stashes(), "g only");
+        assert!(h.held().is_some() && !h.stashes() && h.commits_first(), "c, g");
         assert!(!preflighting(&ed, a), "{}", said(&ed));
         ed.offers.retain(|o| o.id != h.id);
         // In the queue: a out at its turn, b on to its preflight — and a file made while it runs: nothing lands
@@ -8847,10 +9153,215 @@ mod tests {
             "{}",
             said(&ed)
         );
-        assert!(held(&ed, "b").is_some(), "{}", said(&ed));
+        // (after its preflight, for what came while it ran: the same card, `c` on it — #514)
+        assert!(held(&ed, "b").is_some_and(|h| h.commits_first()), "{}", said(&ed));
         assert_eq!(git_in(&repo, &["log", "-1", "--format=%s", "main"]), "base");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #513: `:session-new` in a folder in no repository — the card that makes one, yours at once: what `y` does
+    /// first (how many files its first commit takes, `.gitignore` read), why faint, a file named like a key left out
+    /// and said. `y`: `git init`, the files staged but that one, the message buffer starting `Initial commit` with no
+    /// Claude started, the left-out said there; `:w` commits, then the session's card. An empty folder: an empty
+    /// first commit, then the session's card.
+    #[test]
+    fn a_new_session_in_a_folder_with_no_repository_makes_one_first() {
+        let s = crate::scratch::Scratch::new("sessions-norepo");
+        let dir = s.to_path_buf();
+        let folder = dir.join("halil");
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::create_dir_all(folder.join("target")).unwrap();
+        std::fs::write(folder.join("a.txt"), "a\n").unwrap();
+        std::fs::write(folder.join("src/b.rs"), "fn b() {}\n").unwrap();
+        std::fs::write(folder.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(folder.join("target/x.bin"), "x").unwrap();
+        std::fs::write(folder.join(".env"), "X=1\n").unwrap();
+        // (the user's own git defaults: their identity, and the first branch's name)
+        let user = dir.join("gitconfig");
+        let id = "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = trunk\n";
+        std::fs::write(&user, id).unwrap();
+        crate::gitrepo::global_config_for(&dir, &user);
+        let mut ed = editor(&folder, &dir);
+        ed.workspace.git_branch = None;
+        feed(&mut ed, ":session-new dates<ret>");
+        let title = "halil isn't a git repository";
+        settle_until(&mut ed, |ed| card(ed, title).is_some() || says(ed, "new session:"));
+        let o = card(&ed, title).expect("the card, not git's error");
+        assert_eq!(
+            o.question,
+            "y makes a repository here and a first commit of its 3 files, then :session-new dates is asked again.\n\
+             A session is a branch with its own checkout, so the folder needs a repository. The commit's message \
+             starts as Initial commit — yours to change, then :w.\nleft out: .env — named like a key; git add it \
+             yourself if it belongs"
+        );
+        assert!(o.yours, "your :session-new asked for it");
+        assert!(!folder.join(".git").exists(), "nothing made before y");
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| ed.workspace.committing.is_some() || says(ed, "Couldn't"));
+        assert!(folder.join(".git").is_dir(), "{}", said(&ed));
+        assert_eq!(git_in(&folder, &["diff", "--cached", "--name-only"]), ".gitignore\na.txt\nsrc/b.rs");
+        let c = ed.workspace.committing.as_ref().unwrap();
+        let then = crate::gitpanel::Then::SessionNew { name: "dates".into(), base: None };
+        assert_eq!(c.then.as_ref(), Some(&then));
+        let text = ed.docs.iter().find(|d| d.id == c.doc).unwrap().text.to_string();
+        assert!(text.starts_with("Initial commit\n"), "{text}");
+        assert!(
+            text.contains("# left out: .env — named like a key; git add it yourself if it belongs\n"),
+            "{text}"
+        );
+        assert!(ed.workspace.claude.review.is_none(), "no draft: no Claude reads the folder");
+        // (asked again before the first commit is in: said so, not git's word)
+        ed.session_new("other", None);
+        settle_until(&mut ed, |ed| says(ed, "new session:"));
+        assert!(says(&ed, "new session: its repository has no commit yet"), "{}", said(&ed));
+        feed(&mut ed, ":w<ret>");
+        settle_until(&mut ed, |ed| card(ed, "New session: dates").is_some() || says(ed, "commit:"));
+        assert!(card(&ed, "New session: dates").is_some(), "{}", said(&ed));
+        let git = |args: &[&str]| crate::gitrepo::git(&folder, args, None).unwrap().trim().to_string();
+        assert_eq!(git(&["log", "-1", "--format=%s"]), "Initial commit");
+        assert_eq!(git(&["status", "--porcelain"]), "?? .env", "left out, still there");
+        assert_eq!(git(&["branch", "--show-current"]), "trunk", "the user's init.defaultBranch");
+        // An empty folder: an empty first commit, then the session's card
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let mut ed = editor(&empty, &dir);
+        feed(&mut ed, ":session-new dates<ret>");
+        let title = "empty isn't a git repository";
+        settle_until(&mut ed, |ed| card(ed, title).is_some() || says(ed, "new session:"));
+        let q = &card(&ed, title).unwrap().question;
+        assert!(q.starts_with("y makes a repository here and an empty first commit, then"), "{q}");
+        card_in_sight(&mut ed);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| card(ed, "New session: dates").is_some() || says(ed, "Couldn't"));
+        assert!(says(&ed, "Made a repository in empty — an empty first commit"), "{}", said(&ed));
+        let log = crate::gitrepo::git(&empty, &["log", "-1", "--format=%s"], None).unwrap();
+        assert_eq!(log.trim(), "Initial commit");
+    }
+
+    /// #514 (take 1: every session's work was in no commit, and `:workspace-bring` only said "nothing to bring"):
+    /// changes in no commit are the held card at `:workspace-bring` itself, before any bring card or preflight —
+    /// with no commits of its own and with some. `c` commits them on its branch (Claude's draft, `:w`) — never a file
+    /// named like a key, said on the card and in the message — then the bring is asked again.
+    #[test]
+    fn changes_in_no_commit_are_held_before_the_bring_card_and_c_commits_them_first() {
+        let (_s, repo, dir) = place("bring-commit-first");
+        let mut ed = editor(&repo, &dir);
+        let wt = new_session(&mut ed, "dates");
+        std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+        std::fs::write(wt.join(".env"), "X=1\n").unwrap();
+        ed.workspace_switch(WorkspaceId::HOME);
+        let title = "Bring dates: changes in no commit";
+        let held = |ed: &Editor| card_anywhere(ed, title).cloned();
+        feed(&mut ed, ":workspace-bring dates<ret>");
+        settle_until(&mut ed, |ed| held(ed).is_some() || says(ed, "bring dates:"));
+        let h = held(&ed).expect("the held card, not the refusal");
+        assert_eq!(
+            h.question,
+            "dates has no commits past main — its changes are in no commit: .env, b.txt.\n\nc commits them first \
+             (Claude's draft, :w), then the bring is asked again.\nleft out: .env — named like a key; git add it \
+             yourself if it belongs"
+        );
+        assert_eq!(card_in_sight(&mut ed), ['c', 'g', 'n']);
+        feed(&mut ed, "y");
+        assert_eq!(
+            ed.offer_said_now(),
+            Some("this card has no y — c commits them first, g shows them, n leaves it")
+        );
+        // c: b.txt staged, not .env; the draft read and `:w` — then the bring again: .env alone holds it, no `c` now
+        let reply = json!({"type": "result", "result": "Add b"});
+        ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{reply}'")];
+        feed(&mut ed, "c");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        let then = ed.workspace.committing.as_ref().and_then(|c| c.then.clone());
+        assert_eq!(then, Some(crate::gitpanel::Then::Bring("dates".into())));
+        assert_eq!(git_in(&wt, &["diff", "--cached", "--name-only"]), "b.txt");
+        let message = ed.docs.iter().find(|d| d.id == ed.workspace.committing.as_ref().unwrap().doc).unwrap();
+        let left = "# left out: .env — named like a key; git add it yourself if it belongs\n";
+        assert!(message.text.to_string().contains(left), "{}", message.text);
+        crate::term::render(&mut ed, &mut Vec::new(), 112, 30).unwrap();
+        feed(&mut ed, "a:w<ret>");
+        settle_until(&mut ed, |ed| held(ed).is_some_and(|h| !h.commits_first()) || says(ed, "bring dates:"));
+        assert_eq!(git_in(&wt, &["log", "-1", "--format=%s"]), "Add b");
+        assert_eq!(git_in(&wt, &["show", "--name-only", "--format=", "HEAD"]), "b.txt");
+        let h = held(&ed).unwrap();
+        assert!(
+            h.question.ends_with(
+                "\n\nleft out: .env — named like a key; git add it yourself if it belongs — or put it in .gitignore; \
+                 then :workspace-bring dates again (g shows it)."
+            ),
+            "{}",
+            h.question
+        );
+        // .env gone: the bring card
+        ed.offers.retain(|o| o.id != h.id);
+        std::fs::remove_file(wt.join(".env")).unwrap();
+        bring_card_up(&mut ed, "dates");
+        // With commits of its own and a change after them: held as well, before the bring card — no preflight
+        let (a, wa) = committed(&mut ed, "a", "a2.txt", "a\n");
+        std::fs::write(wa.join("new.txt"), "x\n").unwrap();
+        ed.workspace_switch(WorkspaceId::HOME);
+        ed.workspace_bring("a").unwrap();
+        let title = "Bring a: changes in no commit";
+        settle_until(&mut ed, |ed| {
+            card_anywhere(ed, title).is_some() || card(ed, "Bring a into main").is_some()
+        });
+        let h = card_anywhere(&ed, title).expect("held before the bring card");
+        assert!(h.question.starts_with("new.txt changed and isn't in a commit") && h.commits_first());
+        assert!(!preflighting(&ed, a));
+        drop(ed);
+    }
+
+    /// Take 2: `c` on the end card left `.env` out, and the end asked again with it still there said nothing — as if
+    /// the commit first had failed. The end card says what a commit first leaves out, as the bring's held card and the
+    /// no-repository card do: before `c`, and after it; with nothing else to commit, no `c`.
+    #[test]
+    fn the_end_card_says_what_its_commit_first_left_out() {
+        let (_s, repo, dir) = place("end-left-out");
+        let mut ed = editor(&repo, &dir);
+        let wt = new_session(&mut ed, "dates");
+        std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+        std::fs::write(wt.join(".env"), "X=1\n").unwrap();
+        let left = "left out: .env — named like a key; git add it yourself if it belongs";
+        feed(&mut ed, ":workspace-end<ret>");
+        settle_until(&mut ed, |ed| end_card(ed).is_some() || says(ed, "end dates:"));
+        assert!(end_card(&ed).is_some(), "{}", said(&ed));
+        let q = &ed.offers.first().unwrap().question;
+        // (under the files it's about, the reason one is still there)
+        let first = format!(
+            "in no commit yet:\n  new      .env\n  new      b.txt\n{left}\n\nCommitting first: Claude"
+        );
+        assert!(q.contains(&first), "{q}");
+        assert_eq!(card_in_sight(&mut ed), ['c', 'R', 'D', 'n']);
+        // c: b.txt committed, .env left — the end asked again says why it's still there, and has no `c` now
+        let reply = json!({"type": "result", "result": "Add b"});
+        ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{reply}'")];
+        feed(&mut ed, "c");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        assert_eq!(git_in(&wt, &["diff", "--cached", "--name-only"]), "b.txt");
+        crate::term::render(&mut ed, &mut Vec::new(), 112, 30).unwrap();
+        feed(&mut ed, "a:w<ret>");
+        settle_until(&mut ed, |ed| end_card(ed).is_some_and(|e| e.changed.len() == 1) || says(ed, "commit:"));
+        assert_eq!(git_in(&wt, &["log", "-1", "--format=%s"]), "Add b");
+        let o = ed.offers.first().unwrap();
+        let after =
+            format!("1 changed file, in no commit yet:\n  new      .env\n{left}\n1 commit not in main:\n");
+        assert!(o.question.starts_with(&after), "{}", o.question);
+        assert!(!o.question.contains("Committing first"), "{}", o.question);
+        // (at full strength, as the other cards say it)
+        let at = |s: &str| o.question.lines().position(|l| l.starts_with(s)).unwrap();
+        assert!(o.decided_lines().contains(&at(left)) && !o.told.contains(&at(left)), "{o:?}");
+        assert_eq!(card_in_sight(&mut ed), ['R', 'n']);
+        // (its frame in both themes with `TARAE_FRAMES_DIR` set — `cargo xtask shot` draws one: `TARAE_SHOT_REPLAY`)
+        crate::screen::frames_sized(&mut ed, "end-left-out", &[(120, 30)]);
+        feed(&mut ed, "y");
+        assert!(
+            says(&ed, "its changes are in no commit — R removes them anyway, n keeps them"),
+            "{}",
+            said(&ed)
+        );
+        drop(ed);
     }
 
     /// frictions28 S1: one bring card a session. The card a rebase leaves (`Rebased`), held for a high-risk

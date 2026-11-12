@@ -180,8 +180,8 @@ pub struct Workspace {
     pub committing: Option<crate::gitpanel::Committing>,
     /// Its instruction files' look at the main checkout's (`instructions.rs`): one at a time.
     pub instructions: crate::instructions::Look,
-    /// The commit message being opened is for ending the session after it (`worktree.rs`).
-    pub commit_then_end: bool,
+    /// The commit message being opened is a card's answer committed first (`worktree::commit_first`).
+    pub commit_first: Option<crate::gitpanel::CommitFirst>,
     /// Git work waiting its turn (one at a time), each with whether it rewrites the working tree
     /// (`gitpanel::git_do_rewriting`) · one running · reads of the status asked for (the latest lands) · the
     /// last that landed, found or not (below `git_reads`: one is under way — the tab says `reading…`).
@@ -467,7 +467,7 @@ impl Workspace {
             git_discard_asked: None,
             committing: None,
             instructions: Default::default(),
-            commit_then_end: false,
+            commit_first: None,
             git_queue: Default::default(),
             git_busy: false,
             git_reads: 0,
@@ -2118,6 +2118,7 @@ mod tests {
             entries: Vec::new(),
             brought: None,
             days: 30,
+            left_out: Vec::new(),
             keep: crate::workspacekeep::Plan {
                 folders: Vec::new(),
                 differ: Vec::new(),

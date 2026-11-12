@@ -441,6 +441,7 @@ fn the_end_cards_way_back_is_where_something_would_go() {
         keep: Default::default(),
         brought: None,
         days: 30,
+        left_out: Vec::new(),
     };
     let commit = vec![("abc1234".to_string(), "a commit".to_string())];
     let line = "What goes is saved for 30 days — :workspace-restore w brings it back.";

@@ -3615,28 +3615,16 @@ fn take(ed: &mut Editor, whole_file: bool) {
                     r.drawn.len()
                 ),
             );
-            return ed.set_status(match (partly(g), g.piece) {
-                (true, _) => format!(
-                    "this high-risk change was looked at, but {} changed since — {} of them not on screen yet \
-                     ({}): bring them on screen, then space v h with the cursor in the change",
-                    crate::nav::count(g.left(looked).len(), "line"),
-                    lines.len(),
-                    line_ranges(&lines, 3)
-                ),
-                (false, Some((k, n))) if !tall(g) => format!(
-                    "piece {k}/{n} of a tall high-risk change — {} of its {} lines not on screen yet ({}): \
-                     bring it all on screen, then space v h with the cursor in it",
-                    lines.len(),
-                    g.lines,
-                    line_ranges(&lines, 3)
-                ),
-                _ => format!(
-                    "this high-risk change is taller than the pane — {} of its {} lines not on screen yet ({}): \
-                     scroll through them, then space v h with the cursor in it",
-                    lines.len(),
-                    g.lines,
-                    line_ranges(&lines, 3)
-                ),
+            // (#526: the key brings them into sight itself — the next part of one taller than the pane — and takes
+            // nothing on this press: the next, after a presented frame, does — decision F)
+            let change = g.at..g.at + g.lines;
+            let shown = ed.bring_lines(change, &lines);
+            let left = lines.len() - shown.min(lines.len());
+            // (one row of a toast at 80 columns: what this press did, what the next does)
+            return ed.set_status(match (shown, left) {
+                (0, _) => format!("{} not on screen — a taller pane shows them", line_ranges(&lines, 2)),
+                (_, 0) => "the rest shown — space v h takes it".to_string(),
+                _ => format!("{} shown — space v h: {left} more", crate::nav::count(shown, "line")),
             });
         }
         // (the cursor's change, typed on before a frame showing it was presented: once more, now it shows)
@@ -4782,9 +4770,13 @@ fn select_placed(ed: &mut Editor, h: &crate::git::Hunk, place: crate::viewalign:
 fn land_on(ed: &mut Editor, line: usize) {
     let since = ed.workspace.code_review.as_ref().and_then(|r| Some(r.graded(ed, &r.files[r.current(ed)?])));
     let looked = &ed.workspace.looked;
-    let partly = since.iter().flat_map(|g| g.iter()).any(|g| {
+    // (partly looked at: its lines since, as `space v h` brings them — #526: the most of them in sight at once,
+    // never the scrolloff margin pushing its last lines below the pane's foot)
+    let partly = since.iter().flat_map(|g| g.iter()).find(|g| {
         g.at != line && g.keys.iter().any(|k| looked.contains(k)) && g.left(looked).first() == Some(&line)
     });
+    let bring = partly.map(|g| (g.at..g.at + g.lines, g.left(looked)));
+    let partly = bring.is_some();
     // (a piece of a tall change starting there — cardburden 2: that piece selected, not the whole change)
     let piece = since.iter().flat_map(|g| g.iter()).find(|g| g.piece.is_some() && g.at == line && !partly);
     let piece = piece.map(|g| crate::git::Hunk {
@@ -4799,10 +4791,15 @@ fn land_on(ed: &mut Editor, line: usize) {
     // scroll before every look)
     match piece.or_else(|| hunks.iter().find(at).filter(|_| !partly).cloned()) {
         Some(h) => select_placed(ed, &h, crate::viewalign::Place::Top),
-        None => {
-            ed.goto_line(line);
-            ed.align_view(crate::viewalign::Place::Top);
-        }
+        None => match bring {
+            Some((change, lines)) => {
+                ed.bring_lines(change, &lines);
+            }
+            None => {
+                ed.goto_line(line);
+                ed.align_view(crate::viewalign::Place::Top);
+            }
+        },
     }
 }
 
@@ -4845,16 +4842,16 @@ pub fn high_step(ed: &mut Editor, forward: bool) -> bool {
     let look = match rows > 0 && lines > rows {
         _ if since > 0 => {
             format!(
-                "looked at, but {} changed since: space v h once they're on screen",
+                "looked at, but {} changed since: space v h looks at them",
                 crate::nav::count(since, "line")
             )
         }
         false if piece.is_some() => {
             let (k, n) = piece.unwrap_or_default();
-            format!("piece {k}/{n}, {lines} lines: space v h once it's all on screen")
+            format!("piece {k}/{n}, {lines} lines: space v h looks at it")
         }
         true => {
-            format!("{lines} lines, taller than the pane: scroll through it, then space v h")
+            format!("{lines} lines, taller than the pane: space v h shows it a part at a time")
         }
         false => "space v h looks at it".to_string(),
     };
@@ -6243,7 +6240,7 @@ mod tests {
         frame(&mut ed);
         feed(&mut ed, "]h");
         assert!(
-            status(&ed).contains("20 lines, taller than the pane: scroll through it, then space v h"),
+            status(&ed).contains("20 lines, taller than the pane: space v h shows it a part at a time"),
             "{}",
             status(&ed)
         );
@@ -6255,21 +6252,19 @@ mod tests {
         );
         feed(&mut ed, "<space>vh");
         assert_eq!(left(&ed), 1, "not all of it was on screen");
-        // (which lines: the change's end, past the pane's foot — named, so they can be found)
+        // (#526: the key brought the next part into sight itself, the cursor in it — which lines, and how many below)
         assert!(
-            status(&ed).contains("this high-risk change is taller than the pane —")
-                && status(&ed).contains("of its 20 lines not on screen yet (lines ")
-                && status(&ed).contains("–25): scroll through them"),
+            status(&ed).contains(" lines shown — space v h: ") && status(&ed).ends_with(" more"),
             "{}",
             status(&ed)
         );
-        // The cursor on one line of it is no shortcut: unread, not taken either
-        feed(&mut ed, ";");
-        frame(&mut ed);
         assert!(ed.doc().selection().primary().to() - ed.doc().selection().primary().from() <= 1);
+        // Pressed again before a frame showed that part: no look (decision F), the same part said
+        let said = status(&ed);
         feed(&mut ed, "<space>vh");
-        assert_eq!(left(&ed), 1, "the cursor on it, most of it unread");
-        assert!(status(&ed).contains("lines not on screen yet"), "{}", status(&ed));
+        assert_eq!(left(&ed), 1, "no frame presented it");
+        assert_eq!(status(&ed), said);
+        frame(&mut ed);
         // Scrolled through, a selection kept (select mode's `C-d` extends it), a frame between the keys
         let through = |ed: &mut Editor| {
             feed(ed, "v");
@@ -6300,11 +6295,9 @@ mod tests {
         frame(&mut ed);
         feed(&mut ed, "<space>vh");
         assert_eq!(left(&ed), 1, "its rewritten line was never drawn: {}", status(&ed));
-        assert!(status(&ed).contains("1 of its 20 lines not on screen yet (line 24)"), "{}", status(&ed));
-        // That line brought on screen: taken, from the cursor in the change
-        ed.goto_line(23);
+        assert!(status(&ed) == "the rest shown — space v h takes it", "{}", status(&ed));
+        // That line brought on screen by the key: the next press, after a frame, takes it
         frame(&mut ed);
-        ed.goto_line(10);
         feed(&mut ed, "<space>vh");
         assert_eq!(left(&ed), 0, "{}", status(&ed));
         std::fs::remove_dir_all(&dir).ok();
@@ -7248,15 +7241,87 @@ mod tests {
         feed(&mut ed, "]h");
         assert_eq!(ed.cursor_line(), 64, "landed on the line, not the change's top");
         assert!(status(&ed).contains("looked at, but 1 line changed since:"), "{}", status(&ed));
-        // Not drawn yet (no frame since `]h`): not taken, and which line is said
+        // Not drawn yet (no frame since `]h`): not taken, the line brought into sight and said
         feed(&mut ed, "<space>vh");
         assert_eq!(left(&ed), 1, "{}", status(&ed));
-        assert!(status(&ed).contains("not on screen yet (line 65)"), "{}", status(&ed));
+        assert_eq!(status(&ed), "the rest shown — space v h takes it");
         // On screen: taken
         frame(&mut ed);
         feed(&mut ed, "<space>vh");
         assert_eq!(left(&ed), 0, "{}", status(&ed));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #526 (take 1's loop): a change looked at, then its last lines changed — at the pane's foot, past the
+    /// scrolloff margin, the cursor in the change: `space v h` brings them into sight itself and takes nothing;
+    /// the next press, after a frame, takes it.
+    #[test]
+    fn space_v_h_brings_a_partly_looked_at_changes_lines_into_sight_then_takes_it() {
+        let base = text_of(60, |i| format!("fn f{i}() {{}}"));
+        let mut now: Vec<String> = base.lines().map(str::to_string).collect();
+        now.splice(20..20, (0..9).map(|i| format!("fn g{i}() {{ unsafe {{ x() }} }}")));
+        let (_s, mut ed, _dir) = reviewing("foot", &[("a.rs", &base, &(now.join("\n") + "\n"))]);
+        let left = |ed: &Editor| ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(ed).len());
+        let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 14).unwrap();
+        let all: Vec<crate::risk::Key> = highs(&ed).iter().flat_map(|g| g.keys.clone()).collect();
+        ed.workspace.looked.extend(all);
+        // Its last three lines rewritten (27–29)
+        let at: Vec<usize> = (26..29).map(|l| ed.doc().text.line_to_byte(l)).collect();
+        edited(&mut ed, at.into_iter().map(|p| crate::transaction::Change::insert(p, "pub ")).collect());
+        assert_eq!(left(&ed), 1);
+        // The cursor on the change's first line at the margin's foot: the lines since below the pane
+        frame(&mut ed);
+        let rows = ed.viewport.0;
+        assert!(rows > 11, "a pane of {rows} rows");
+        ed.goto_line(20);
+        let so = ed.config.scrolloff;
+        ed.doc_mut().set_top(20 - (rows - 1 - so));
+        frame(&mut ed);
+        assert!(ed.doc().top + rows <= 26, "below the foot: top {}", ed.doc().top);
+        feed(&mut ed, "<space>vh");
+        assert_eq!(left(&ed), 1, "brought, not taken: {}", status(&ed));
+        assert_eq!(status(&ed), "the rest shown — space v h takes it");
+        assert!((20..29).contains(&ed.cursor_line()), "the cursor in the change: {}", ed.cursor_line());
+        // The frame shows them where the key put them (the margin moved nothing): the next press takes it
+        frame(&mut ed);
+        feed(&mut ed, "<space>vh");
+        assert_eq!(left(&ed), 0, "{}", status(&ed));
+    }
+
+    /// #526: a change taller than the pane, nothing in it to cut at — each `space v h` shows its next part, the
+    /// last part says the rest is on screen, and the press after it takes the change: one key, the whole loop.
+    #[test]
+    fn space_v_h_shows_a_tall_change_a_part_at_a_time_then_takes_it() {
+        let base = text_of(10, |i| format!("fn f{i}() {{}}"));
+        let mut now: Vec<String> = base.lines().map(str::to_string).collect();
+        let body = (0..38).map(|_| "    unsafe { x() };".to_string());
+        let added = std::iter::once("fn g() {".to_string()).chain(body).chain(["}".to_string()]);
+        now.splice(5..5, added);
+        let (_s, mut ed, _dir) = reviewing("parts", &[("a.rs", &base, &(now.join("\n") + "\n"))]);
+        let left = |ed: &Editor| ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(ed).len());
+        let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 12).unwrap();
+        frame(&mut ed);
+        feed(&mut ed, "]h");
+        frame(&mut ed);
+        let mut said = Vec::new();
+        for _ in 0..12 {
+            feed(&mut ed, "<space>vh");
+            if left(&ed) == 0 {
+                break;
+            }
+            said.push(status(&ed));
+            frame(&mut ed);
+        }
+        assert_eq!(left(&ed), 0, "{said:#?}");
+        let (last, parts) = said.split_last().expect("parts said");
+        assert_eq!(last, "the rest shown — space v h takes it", "{said:#?}");
+        assert!(
+            !parts.is_empty()
+                && parts.iter().all(|s| s.contains(" shown — space v h: ") && s.ends_with(" more")),
+            "{said:#?}"
+        );
     }
 
     /// The review of `files` (as `reviewing`), a frame drawn (the pane's height known) and its document's tree in
@@ -7403,7 +7468,14 @@ mod tests {
         crate::term::render(&mut ed, &mut Vec::new(), 100, 12).unwrap();
         feed(&mut ed, "<space>vh");
         let status = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-        assert!(status.contains("taller than the pane —") && status.contains(" of its 40 lines"), "{status}");
+        // (#526: its next part brought into sight — what's shown and left counted to the function's end, line 41, not
+        // the change's, 49: its 40 lines but the pane's first rows, drawn from line 1)
+        let counts = |s: &str| -> Option<(usize, usize)> {
+            let (shown, more) = s.split_once(" lines shown — space v h: ")?;
+            Some((shown.parse().ok()?, more.strip_suffix(" more")?.parse().ok()?))
+        };
+        let unread = 41 - ed.viewport.0;
+        assert_eq!(counts(&status).map(|(shown, more)| shown + more), Some(unread), "{status}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7851,6 +7923,7 @@ mod tests {
         feed(&mut ed, "<space>vh");
         assert_eq!(left(&ed), 1, "its last `}}`s never drawn");
         // Scrolled through: taken
+        frame(&mut ed);
         feed(&mut ed, "v");
         for _ in 0..8 {
             feed(&mut ed, "<C-d>");

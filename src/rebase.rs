@@ -260,6 +260,8 @@ impl Moved {
 /// A bring's (`bring`, #371): changes in no commit on its base's tip, untracked too — its preflight would test them
 /// and the bring land its commits without them: `g` only (set aside for a preflight, they'd vanish from under its
 /// Claude for its whole run).
+/// A bring's (#514): `c` commits them first (`worktree::commit_first`, Claude's draft) and asks the bring again —
+/// but a file named like a key or with a token found (`left_out`), said on the card.
 #[derive(Clone, Debug)]
 pub struct Held {
     pub moved: Moved,
@@ -267,12 +269,26 @@ pub struct Held {
     pub changed: Vec<String>,
     pub unsaved: Vec<String>,
     pub bring: bool,
+    /// Of `changed`, what a commit first leaves out (`worktree::kept_out` — a bring's only).
+    pub left_out: Vec<(String, crate::worktree::KeptOut)>,
 }
 
 impl Held {
+    /// A bring's held card for `changed` in `moved`'s checkout, with what a commit first would leave out (reads the
+    /// files: a worker's).
+    pub fn bring(moved: Moved, changed: Vec<String>) -> Held {
+        let left_out = crate::worktree::kept_out(&moved.root, &changed);
+        Held { moved, changed, unsaved: Vec::new(), bring: true, left_out }
+    }
+
     /// Whether `s` answers it: a rebase's, nothing unsaved (a buffer's text isn't on disk for git to stash).
     pub fn stashes(&self) -> bool {
         !self.bring && self.unsaved.is_empty()
+    }
+
+    /// Whether `c` answers it: a bring's, with a change a commit first takes.
+    pub fn commits(&self) -> bool {
+        self.bring && self.changed.len() > self.left_out.len()
     }
 
     pub fn card(&self) -> Offer {
@@ -281,18 +297,49 @@ impl Held {
         let them = |files: &[String]| if it(files) { "it" } else { "them" };
         if self.bring {
             let c = &self.changed;
-            let q = format!(
-                "{} changed and {} in a commit — its preflight would test {}, and the bring lands {}'s commits \
-                 without {}.\n\nCommit or stash {} (g shows {}), then :workspace-bring {} again.",
-                named(c),
-                if it(c) { "isn't" } else { "aren't" },
-                them(c),
-                m.branch,
-                them(c),
-                them(c),
-                them(c),
-                m.name,
-            );
+            // (nothing of its own yet: all its work is in those changes — take 1's case)
+            let mut q = match m.ahead {
+                0 => format!(
+                    "{} has no commits past {} — its changes are in no commit: {}.",
+                    m.name,
+                    m.base,
+                    named(c)
+                ),
+                _ => format!(
+                    "{} changed and {} in a commit — its preflight would test {}, and the bring lands {}'s commits \
+                     without {}.",
+                    named(c),
+                    if it(c) { "isn't" } else { "aren't" },
+                    them(c),
+                    m.branch,
+                    them(c),
+                ),
+            };
+            let left = crate::worktree::left_out_line(&self.left_out);
+            match (self.commits(), left) {
+                (true, left) => {
+                    q.push_str(&format!(
+                        "\n\nc commits {} first (Claude's draft, :w), then the bring is asked again.",
+                        them(c)
+                    ));
+                    if let Some(l) = left {
+                        q.push_str(&format!("\n{l}"));
+                    }
+                }
+                // (all of them named like a key or holding a token: none a commit of tarae's takes)
+                (false, Some(l)) => q.push_str(&format!(
+                    "\n\n{l} — or put {} in .gitignore; then :workspace-bring {} again (g shows {}).",
+                    them(c),
+                    m.name,
+                    them(c)
+                )),
+                (false, None) => q.push_str(&format!(
+                    "\n\nCommit or stash {} (g shows {}), then :workspace-bring {} again.",
+                    them(c),
+                    them(c),
+                    m.name
+                )),
+            }
             let mut card = Offer::new(
                 format!("Bring {}: changes in no commit", m.name),
                 &q,
@@ -300,7 +347,8 @@ impl Held {
                 format!("Couldn't bring {}", m.branch),
                 What::RebaseHeld(Box::new(self.clone())),
             );
-            card.decided = Some(0..1);
+            // (what's decided: the first paragraph, and what `c` does and leaves out)
+            card.decided = Some(if self.commits() { 0..q.lines().count() } else { 0..1 });
             return card;
         }
         let q = match self.stashes() {
@@ -1360,7 +1408,7 @@ impl Editor {
                     ed.bring_queue_rebased(Err("changes an earlier rebase set aside are still there".into()));
                 }
                 (Err(changed), None) if !unsaved.is_empty() || (!stash && !changed.is_empty()) => {
-                    ed.push_offer(Held { moved: m, changed, unsaved, bring: false }.card());
+                    ed.push_offer(Held { moved: m, changed, unsaved, bring: false, left_out: Vec::new() }.card());
                     // (the queue never stashes for you: its card asks, a single bring after)
                     ed.bring_queue_rebased(Err(
                         "changes not in a commit in its checkout — its card asks".into()
@@ -1776,7 +1824,11 @@ impl Editor {
         let r = self.workspace.rebase.as_ref().expect("a rebase");
         let (stop, branch, name) = (&r.stop, &r.branch, self.workspace.label());
         let n = stop.files.len() + r.also.tracked.len() + r.also.made.len();
-        let shown = if n == 1 { "it" } else { "them" };
+        let shown = match n {
+            1 => "it",
+            2 => "both",
+            _ => "them",
+        };
         let them = if stop.files.len() == 1 { "it" } else { "them" };
         let resolved = r.stage == Stage::Resolved;
         // (short: the card shares the code's room with the review it's about and the task panel — what `y`
@@ -1788,10 +1840,8 @@ impl Editor {
         let is = |v: &[String]| if v.len() == 1 { "is" } else { "are" };
         // (`a` once nothing holds `y` — it stages what `y` does, and these)
         let stages_made = resolved && tracked.is_empty() && !made.is_empty();
+        // (#524: one act a sentence, what to do first — in the held line's and `:rebase-continue`'s words)
         let mut also = String::new();
-        if !tracked.is_empty() {
-            also.push_str(&format!(" It also changed {} — not staged by tarae.", named(tracked)));
-        }
         if !made.is_empty() {
             also.push_str(&format!(
                 " It made {}, untracked: {}y goes on without {}.",
@@ -1812,18 +1862,21 @@ impl Editor {
             (Stage::Resolved, _) => (
                 format!("{name}: conflicts resolved"),
                 format!(
-                    "{} resolved for {}.{also} The review shows {shown} against that commit — not staged yet: \
-                     y stages {them} and goes on{}.",
+                    "{} resolved for {}. {}y stages {} and goes on.{also} The review shows {shown} against that \
+                     commit.",
                     named(&stop.files),
                     stop.at(),
                     match tracked.is_empty() {
                         true => String::new(),
                         false => format!(
-                            " once {} {} staged or undone in the git tab (space g)",
+                            "{} changed too, and tarae doesn't stage {}: stage or undo {} in the git tab (space g), \
+                             then ",
+                            named(tracked),
+                            if tracked.len() == 1 { "that" } else { "those" },
                             it(tracked),
-                            is(tracked)
                         ),
                     },
+                    named(&stop.files),
                 ),
             ),
             (_, false) => (
@@ -2689,6 +2742,7 @@ impl Editor {
         self.events.shared_jobs().spawn(move || {
             let head = git(&root, &["rev-parse", "HEAD"], None).ok().map(|h| h.trim().to_string());
             let unclean = unclean(&root).unwrap_or_default();
+            let left_out = crate::worktree::kept_out(&root, &unclean);
             move |ed: &mut Editor| {
                 // (changes in no commit: the preflight would test them, the bring land its commits without them —
                 // stopped as a rebase is, its held card up, #371)
@@ -2696,9 +2750,8 @@ impl Editor {
                     ed.with_workspace(id, |ed| {
                         (ed.workspace.bring_go, ed.workspace.bring_rebased) = (false, false)
                     });
-                    return ed.push_offer(
-                        Held { moved: m, changed: unclean, unsaved: Vec::new(), bring: true }.card(),
-                    );
+                    let h = Held { moved: m, changed: unclean, unsaved: Vec::new(), bring: true, left_out };
+                    return ed.push_offer(h.card());
                 }
                 ed.with_workspace(id, |ed| {
                     (ed.workspace.bring_after_preflight, ed.workspace.bring_rebased) = (true, rebased);

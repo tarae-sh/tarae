@@ -60,12 +60,9 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "theme" => set(editor, &format!("theme {rest}"), false),
         // A commit message: `:q` cancels (closes it), `:wq`/`:x` commits — not the whole editor
         "q" | "quit" | "q!" | "quit!" if editor.in_commit_message() => {
-            let then_end = editor.workspace.committing.take().is_some_and(|c| c.then_end);
+            let then = editor.workspace.committing.take().and_then(|c| c.then);
             editor.close_current(true)?;
-            editor.set_status(match then_end {
-                true => "commit canceled — the session stays, its changes staged",
-                false => "commit canceled",
-            });
+            editor.set_status(then.as_ref().map_or("commit canceled", crate::gitpanel::Then::canceled));
             Ok(())
         }
         "wq" | "x" | "write-quit" if editor.in_commit_message() => write(editor, rest, false),

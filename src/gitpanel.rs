@@ -549,13 +549,48 @@ pub enum Deleting {
     Ask { tip: String, lost: Vec<(String, String)> },
 }
 
-/// A commit being written: its message buffer, the repository, whether it amends · whether its session
-/// ends once it's in (`c` on a session's end card — `worktree.rs`).
+/// A commit being written: its message buffer, the repository, whether it amends · what's asked again once it's
+/// in (a card's answer committed first — `CommitFirst`).
 pub struct Committing {
     pub doc: DocId,
     pub top: PathBuf,
     pub amend: bool,
-    pub then_end: bool,
+    pub then: Option<Then>,
+}
+
+/// What a card's commit-first answer asks again once its commit is in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Then {
+    /// `c` on a session's end card: the end.
+    End,
+    /// `c` on a bring's held card (#514): `:workspace-bring` of that session.
+    Bring(String),
+    /// `y` on the no-repository card (#513): `:session-new` as it was typed.
+    SessionNew { name: String, base: Option<String> },
+}
+
+impl Then {
+    /// What `:q` in its message says: the commit canceled, and what stays.
+    pub fn canceled(&self) -> &'static str {
+        match self {
+            Then::End => "commit canceled — the session stays, its changes staged",
+            Then::Bring(_) => "commit canceled — nothing brought, its changes staged",
+            Then::SessionNew { .. } => {
+                "commit canceled — no session made; the repository stays, its files staged"
+            }
+        }
+    }
+}
+
+/// A commit a card's answer opened the message of (`c` on an end card or a bring's held card, `y` on the
+/// no-repository card): what's asked again once it's in, the message it starts with (None: an empty one), and the
+/// files left out of what was staged (`worktree::kept_out` — named like a key, a token found), said below the
+/// scissors line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitFirst {
+    pub then: Then,
+    pub message: Option<String>,
+    pub left_out: Vec<(String, crate::worktree::KeptOut)>,
 }
 
 /// The line in a commit message's buffer that it and what's below it are left out at — git's scissors line, as
@@ -1015,6 +1050,13 @@ impl Editor {
             ));
         }
         let (top, branch) = (st.top.clone(), st.branch.clone());
+        // (a card's commit first: the message it starts with, and what was left out of the staging, said)
+        let first = self.workspace.commit_first.as_ref().filter(|_| !amend);
+        let start = first.and_then(|f| f.message.clone()).unwrap_or_default();
+        let prefilled = !start.is_empty();
+        let left_out: Vec<String> = first
+            .map(|f| f.left_out.iter().map(|(rel, why)| crate::worktree::left_out_said(rel, *why)).collect())
+            .unwrap_or_default();
         if amend {
             // (read now, before the amend makes a new HEAD — said as the buffer opens)
             let top = top.clone();
@@ -1041,7 +1083,7 @@ impl Editor {
                 let own = PathBuf::from(dir.trim()).join(MESSAGE_DIR);
                 std::fs::create_dir_all(&own).map_err(|e| format!("{}: {e}", own.display()))?;
                 let file = own.join("COMMIT_EDITMSG");
-                let last = if amend { git(top, &["log", "-1", "--format=%B"], None)? } else { String::new() };
+                let last = if amend { git(top, &["log", "-1", "--format=%B"], None)? } else { start };
                 // (the message, every line kept as written — a `#127: …` too, frictions #146 — then the scissors
                 // line, it and what's below it left out: `git_saved`)
                 let mut text = format!("{}\n\n{SCISSORS}\n{SCISSORS_SAID}", last.trim_end());
@@ -1057,12 +1099,15 @@ impl Editor {
                     let (letter, rel) = l.split_once('\t').unwrap_or(("M", l));
                     text += &format!("#   {} {}\n", &letter[..1], rel.replace('\t', " → "));
                 }
+                for l in &left_out {
+                    text += &format!("# {l}\n");
+                }
                 std::fs::write(&file, text).map_err(|e| e.to_string())?;
                 Ok(file.to_string_lossy().into_owned())
             }),
             Box::new(move |ed, r| match r {
                 Ok(file) if file.is_empty() => {
-                    ed.workspace.commit_then_end = false;
+                    ed.workspace.commit_first = None;
                     // (what's to stage, as the tab last read it — the commit's own read found nothing staged)
                     let changed = ed.workspace.git_status.as_ref().is_some_and(|s| !s.unstaged.is_empty());
                     let then = if draft { "C" } else { "c" };
@@ -1074,7 +1119,7 @@ impl Editor {
                     })
                 }
                 Ok(file) => {
-                    let then_end = std::mem::take(&mut ed.workspace.commit_then_end);
+                    let then = ed.workspace.commit_first.take().map(|f| f.then);
                     // (in front as it's read — went to another file meanwhile: among your buffers, `:wq` there commits
                     // all the same, said as it lands "ready — space b")
                     ed.open_file_then_behind(std::path::Path::new(&file), false, move |ed, r| {
@@ -1085,7 +1130,7 @@ impl Editor {
                         let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
                         doc.throwaway = true;
                         doc.set_selection(crate::selection::Selection::point(0));
-                        ed.workspace.committing = Some(Committing { doc: id, top, amend, then_end });
+                        ed.workspace.committing = Some(Committing { doc: id, top, amend, then });
                         if let Some(spec) = crate::syntax::spec(COMMIT_LANG) {
                             if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id) {
                                 d.language = Some(COMMIT_LANG);
@@ -1096,17 +1141,17 @@ impl Editor {
                             return;
                         }
                         ed.workspace.leave(crate::workspace::Here::Side);
-                        // A new message: typed at once. Amending: the last message is there to change, not to
-                        // type over the top of — normal mode
+                        // A new message: typed at once. Amending, or one a card started with (`Initial commit`):
+                        // the message is there to change, not to type over the top of — normal mode
                         if draft {
                             ed.commit_draft();
-                        } else if !amend {
+                        } else if !amend && !prefilled {
                             ed.mode = crate::editor::Mode::Insert;
                         }
                     });
                 }
                 Err(e) => {
-                    ed.workspace.commit_then_end = false;
+                    ed.workspace.commit_first = None;
                     ed.set_error(format!("commit: {e}"))
                 }
             }),
@@ -1121,7 +1166,7 @@ impl Editor {
             let Some(file) = self.docs.iter().find(|d| d.id == id).and_then(|d| d.path.clone()) else {
                 return;
             };
-            let (top, amend, then_end) = (c.top, c.amend, c.then_end);
+            let (top, amend, then) = (c.top, c.amend, c.then);
             let (what, names) = if amend { ("amend", hooks::AMEND) } else { ("commit", hooks::COMMIT) };
             self.git_hooked(what, names, move |ed, pre| {
                 // In the git queue — after a stage still running, never beside another git that writes
@@ -1150,14 +1195,12 @@ impl Editor {
                             let did = if amend { "Amended" } else { "Committed" };
                             ed.set_success(format!("{did} {}", line.trim()));
                             ed.close_doc(id);
-                            // (its session asked to end once its changes were in: asked again, now with none)
-                            if then_end && let Err(e) = ed.workspace_end("") {
-                                ed.set_error(e);
-                            }
+                            // (a card's answer committed first: what it asked, asked again — now with them in)
+                            ed.commit_then(then);
                         }
                         // An empty message aborts — the buffer stays for another try
                         Err(e) => {
-                            ed.workspace.committing = Some(Committing { doc: id, top, amend, then_end });
+                            ed.workspace.committing = Some(Committing { doc: id, top, amend, then });
                             ed.set_error(format!("commit: {e}"));
                         }
                     }),

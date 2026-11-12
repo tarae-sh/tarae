@@ -48,8 +48,8 @@ the change (a test file, and a line for a single test) — when they fail, read 
 watches the run in their editor. To build, lint, format, run a whole test suite or use git, use the run \
 tool: one command per call, it starts at once and its output comes back. Both run in a sandbox: they can write only in the project (not .git, nor build scripts, manifests and tool \
 settings — {protect}, .github, .tarae*.toml…: change those with edit), \
-temp folders and the toolchain's own, and connect to nothing over the network, this machine included, but the ports the user \
-opened (each result says which) — when it blocks something a command needs, run it again with also (that place or \
+temp folders and the toolchain's own; they reach only the ports on this machine the user opened, and other hosts as \
+the sandbox's network is set (each result says how): run what needs a host before planning around it — when it blocks something a command needs, run it again with also (that place or \
 port, and your reason: the user decides on a card), else tell the user (the settings llm.sandbox-ports, \
 llm.sandbox-localhost and llm.sandbox-network open more); never work around it. Tests of dangerous behavior (deleting, overwriting, killing \
 processes, the network) use a harmless stand-in — a marker file made in the test's own temp dir, then checked — \

@@ -127,6 +127,60 @@ impl Editor {
         self.set_top_rows(top);
     }
 
+    /// `space v h` on a high-risk change with lines no frame showed (#526): `want` (ascending, inside `change`) in
+    /// sight from its first, as many as the pane holds, and the cursor on a line of the change the scrolloff margin
+    /// leaves where it is (`term::scroll_to` keeps the cursor `so` rows from either edge, else moves the view) —
+    /// the first wanted line where it can be. What's left of the change fitting, its end at the pane's foot (as
+    /// much of it above as fits); taller, the first wanted line at the top, no margin. How many of `want` are
+    /// now on screen whole.
+    pub(crate) fn bring_lines(&mut self, change: std::ops::Range<usize>, want: &[usize]) -> usize {
+        let last = mv::last_line(&self.doc().text);
+        let Some(&first) = want.first().filter(|&&a| a <= last) else { return 0 };
+        let rows = self.viewport.0.max(1);
+        let so = self.scrolloff();
+        let m = self.measure(first);
+        let a = m.shown_as(first);
+        let end = change.end.min(last + 1).max(a + 1);
+        // (rows of what's left of the change, counted no further than a screen and a row)
+        let mut tall = 0;
+        for l in a..end {
+            tall += m.rows(l);
+            if tall > rows {
+                break;
+            }
+        }
+        let hi = rows.saturating_sub(1 + so);
+        let above = match tall <= rows {
+            // (a short rest: its first line no lower than the margin's edge, so the cursor can be on it)
+            true => (rows - tall).min(hi.saturating_sub(m.removed(a))),
+            false => 0,
+        };
+        let (top, skip) = Self::top_for(&m, a, above);
+        // (the row a line's cursor is on, from the pane's top; None: above it)
+        let row = |l: usize| -> Option<usize> {
+            (l >= top)
+                .then(|| (top..l).map(|t| m.rows(t)).sum::<usize>() + m.removed(l))
+                .map(|r| r - skip.min(r))
+        };
+        let lo = if top == 0 && skip == 0 { 0 } else { so };
+        let fits = |l: usize| row(l).is_some_and(|r| lo <= r && r <= hi);
+        let cursor = match row(a) {
+            _ if fits(a) => a,
+            Some(r) if r > hi => (change.start.max(top)..a).rev().find(|&l| fits(l)).unwrap_or(a),
+            _ => (a..end).find(|&l| fits(l)).unwrap_or(a),
+        };
+        // (shown whole: every row of the line on the pane)
+        let shown = want
+            .iter()
+            .filter(|&&l| l <= last && row(l).is_some_and(|r| r - m.removed(l).min(r) + m.rows(l) <= rows))
+            .count();
+        drop(m);
+        let at = mv::line_start(&self.doc().text, cursor);
+        self.doc_mut().set_selection(Selection::point(at));
+        self.set_top_rows((top, skip));
+        shown
+    }
+
     /// An edit being written over `line` (`writing.rs`): the view so its first row is `above` rows down — where
     /// the review will show it (`term::review_lead`); its head is kept in sight from there (`term::scroll_to`).
     pub fn align_writing(&mut self, line: usize, above: usize) {

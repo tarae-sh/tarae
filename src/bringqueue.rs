@@ -86,6 +86,8 @@ impl Stage {
 struct Check {
     /// Changed in no commit there, untracked too (`rebase::unclean`).
     unclean: Vec<String>,
+    /// Of `unclean`, what a commit first leaves out (`worktree::kept_out`).
+    left_out: Vec<(String, crate::worktree::KeptOut)>,
     /// High-risk changes it brings that no one looked at.
     highs: usize,
     /// The commit its preflight tests.
@@ -642,8 +644,10 @@ impl Editor {
         self.events.shared_jobs().spawn(move || {
             // (git can't say what's high-risk: the bring itself will — and holds then)
             let highs = crate::codereview::highs_between(&root, &base, "HEAD", &rules);
+            let unclean = crate::rebase::unclean(&root).unwrap_or_default();
             let check = Check {
-                unclean: crate::rebase::unclean(&root).unwrap_or_default(),
+                left_out: crate::worktree::kept_out(&root, &unclean),
+                unclean,
                 highs: highs.map(|h| crate::codereview::unseen(&h, &looked).len()).unwrap_or(0),
                 head: crate::worktree::sha(&root, "HEAD").ok(),
             };
@@ -659,8 +663,8 @@ impl Editor {
             return;
         }
         if !check.unclean.is_empty() {
-            let h =
-                crate::rebase::Held { moved: m, changed: check.unclean, unsaved: Vec::new(), bring: true };
+            let (changed, left_out) = (check.unclean, check.left_out);
+            let h = crate::rebase::Held { moved: m, changed, unsaved: Vec::new(), bring: true, left_out };
             return self.bring_queue_unclean(id, h);
         }
         if check.highs > 0 {

@@ -429,20 +429,46 @@ impl TestRun {
     }
 }
 
-/// Strips color codes (`ESC [ … letter`).
+/// Strips a terminal's escape sequences by ECMA-48's grammar (and `\r`): CSI `ESC [` up to a final byte
+/// (`0x40–0x7E`); the strings OSC `ESC ]`, DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _` up to BEL or ST
+/// (`ESC \`); else `ESC`, its intermediates (`0x20–0x2F`: `( ) # %`) and one final byte — rustfmt's
+/// `sgr0` is `ESC ( B ESC [ m`, cargo's links OSC 8.
 pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars().peekable();
     while let Some(c) = it.next() {
-        if c == '\x1b' && it.peek() == Some(&'[') {
-            it.next();
-            for d in it.by_ref() {
-                if d.is_ascii_alphabetic() {
-                    break;
+        if c == '\r' {
+            continue;
+        }
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('[') => {
+                for d in it.by_ref() {
+                    if ('\x40'..='\x7e').contains(&d) {
+                        break;
+                    }
                 }
             }
-        } else if c != '\r' {
-            out.push(c);
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(d) = it.next() {
+                    if d == '\x07' {
+                        break;
+                    }
+                    if d == '\x1b' && it.peek() == Some(&'\\') {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            Some(d) if ('\x20'..='\x2f').contains(&d) => {
+                while it.next_if(|e| ('\x20'..='\x2f').contains(e)).is_some() {}
+                it.next();
+            }
+            // (a one-byte escape: `ESC 7`, `ESC =`, `ESC >` …)
+            _ => {}
         }
     }
     out
@@ -1435,6 +1461,13 @@ mod tests {
     #[test]
     fn strips_color_codes() {
         assert_eq!(strip_ansi("\x1b[32mok\x1b[0m done\r"), "ok done");
+        // rustfmt's coloured diff: each line ends in xterm's sgr0, `ESC ( B ESC [ m` (#515)
+        assert_eq!(strip_ansi("\x1b[31m-old\x1b(B\x1b[m\n\x1b(B\x1b[m+new"), "-old\n+new");
+        // an OSC 8 link, ended by ST or by BEL
+        assert_eq!(strip_ansi("\x1b]8;;file:///a.rs\x1b\\a.rs\x1b]8;;\x1b\\:3"), "a.rs:3");
+        assert_eq!(strip_ansi("\x1b]0;title\x07x"), "x");
+        // one-byte escapes, and a CSI whose final byte isn't a letter
+        assert_eq!(strip_ansi("\x1b7a\x1b8\x1b=b\x1b[2~c"), "abc");
     }
 
     use TestRun as R;

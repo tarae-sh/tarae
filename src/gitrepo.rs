@@ -938,6 +938,16 @@ pub(crate) fn hooked_fed(root: &Path, args: &[&str], input: &str) -> Result<Stri
     finish(&cmd, Some(input.as_bytes())).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+/// A repository made in `dir`, a folder in none (#513, the no-repository card's `y`): `git init` with the user's own
+/// defaults (`init.defaultBranch`, their template folder — it's their repository), no hook run. Blocks: a worker's.
+pub(crate) fn init(dir: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    not_in_this_repository(dir, &["init"]);
+    let mut cmd = base(dir);
+    cmd.args(SAFE).args(NO_HOOKS).args(["init", "-q"]);
+    finish(&cmd, None).map(|_| ())
+}
+
 /// `git` with `NO_HOOKS`.
 pub(crate) fn git_no_hooks(root: &Path, args: &[&str]) -> Result<String, String> {
     repo(root)?.run_no_hooks(args)

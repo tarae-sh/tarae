@@ -2663,8 +2663,11 @@ tarae, not a model, grades every change in a review:
 A person looks at each high-risk change: `space v h` on it, in review mode — or over a selection, every one it
 touches that is on screen (all its lines, or the whole pane); one scrolled past isn't taken (`%` scrolls to the
 file's end, so `%` then `space v h` takes the ones in sight there, not the whole file), and the status line says how many were left. One taller than the
-pane is taken — under the cursor or a selection — only once every line of it has been on screen, scrolled through;
-`]h` and `space v h` say so, and which lines are left (`lines 212–229`). What was drawn is kept line by line: an
+pane is taken — under the cursor or a selection — only once every line of it has been on screen, scrolled through.
+With the cursor in one that has lines no frame showed yet (taller than the pane, a piece, or lines changed since a
+look), `space v h` brings them into sight itself and takes nothing on that press: the next part each press
+(`28 lines shown — space v h: 40 more`), and the last says so (`the rest shown — space v h takes it`), so the key
+you're pressing is the whole loop, whatever the pane's height. What was drawn is kept line by line: an
 added line by its text and which of the file's added lines with that text it is, so a `}` drawn is that `}`
 only. An edit elsewhere in the file takes nothing back, and a line edited since must be on screen again. While one
 waits in the file in front, each key gets a frame of its own, so a held `C-d` can't scroll past lines no frame

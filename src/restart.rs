@@ -2903,7 +2903,7 @@ mod tests {
             doc: ed.doc().id,
             top: dir.clone(),
             amend: false,
-            then_end: false,
+            then: None,
         });
         try_it(&mut ed, "a commit message is open");
         ed.workspace.committing = None;
@@ -2951,7 +2951,7 @@ mod tests {
         // A commit message, an edit's review
         let doc = ed.doc().id;
         ed.workspace_by_id(id).unwrap().committing =
-            Some(crate::gitpanel::Committing { doc, top: back.clone(), amend: false, then_end: false });
+            Some(crate::gitpanel::Committing { doc, top: back.clone(), amend: false, then: None });
         try_it(&mut ed, "a commit message is open");
         ed.workspace_by_id(id).unwrap().committing = None;
         ed.with_workspace(id, |ed| {
@@ -3533,8 +3533,13 @@ mod tests {
             moved: 1,
             ahead: 1,
         };
-        let held =
-            crate::rebase::Held { moved, changed: vec!["a.txt".into()], unsaved: Vec::new(), bring: false };
+        let held = crate::rebase::Held {
+            moved,
+            changed: vec!["a.txt".into()],
+            unsaved: Vec::new(),
+            bring: false,
+            left_out: Vec::new(),
+        };
         ed.workspace_by_id(id).unwrap().parked.push(held.card());
         ed.restart = Some(Restart {
             id: 7,

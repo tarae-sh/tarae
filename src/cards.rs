@@ -1869,6 +1869,7 @@ mod tests {
                     keep: Default::default(),
                     brought: None,
                     days: 7,
+                    left_out: Vec::new(),
                 }
                 .card(),
                 Act::End,

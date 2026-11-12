@@ -500,6 +500,7 @@ pub const AUTO: &[(&str, Auto)] = &[
     ("review-end", Auto::Own),
     ("rebase", Auto::Own),
     ("rebase-held", Auto::Own),
+    ("repo-make", Auto::Own),
     ("rebased", Auto::Never),
     ("rebase-resolved", Auto::Own),
     ("instructions", Auto::Own),
