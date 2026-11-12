@@ -120,6 +120,35 @@ fn the_takes_toolchain_is_your_stable_and_registry_cloned_and_nothing_else() {
     );
 }
 
+/// #525: the clone `record rust-clone` made before the take is taken as it is — what it made, and the variables a clone
+/// at the take's start would give — once: a take marks it taken. Refused where no rust-clone made it, or where it
+/// holds anything else (Finder's `.DS_Store` aside).
+#[test]
+fn a_clone_made_before_the_take_is_taken_as_it_is_and_only_once() {
+    let dir = Scratch::new("xtask-take-rust-again");
+    let yours = a_home(&dir);
+    let to = dir.join("shared/halil-rust");
+    let made = clone(&yours, &to).unwrap();
+    put(&to.join(".DS_Store"), "");
+    let again = reuse(&yours, &to).unwrap();
+    assert_eq!((&again.toolchain, &again.proxies, &again.env), (&made.toolchain, &made.proxies, &made.env));
+    assert_eq!(again.took, Duration::ZERO);
+    mark_taken(&to).unwrap();
+    let e = reuse(&yours, &to).err().unwrap();
+    assert!(e.contains("a take took it already"), "{e}");
+
+    let bare = dir.join("shared/bare");
+    std::fs::create_dir_all(bare.join("rustup")).unwrap();
+    std::fs::create_dir_all(bare.join("cargo")).unwrap();
+    let e = reuse(&yours, &bare).err().unwrap();
+    assert!(e.contains("not a clone record rust-clone made"), "{e}");
+    let used = dir.join("shared/used");
+    clone(&yours, &used).unwrap();
+    put(&used.join("halil/Cargo.toml"), "");
+    let e = reuse(&yours, &used).err().unwrap();
+    assert!(e.contains("holds .record-rust-clone cargo halil rustup"), "{e}");
+}
+
 /// Cargo found outside your home: no proxies, `PATH` as yours with your cargo's `bin` last.
 #[test]
 fn no_proxies_where_a_run_finds_cargo_outside_your_home() {
@@ -170,22 +199,34 @@ fn the_takes_tarae_is_named_by_its_path_never_found_on_path() {
     assert_eq!(take(Some(bin.to_str().unwrap())).unwrap(), std::fs::canonicalize(&bin).unwrap());
 }
 
-/// The take's state and data homes: made new in its home, 0700 and empty, and the two variables naming them — a data
-/// home of yours would hold the grammars you downloaded, and the take shows the first one's card.
+/// The take's state, data and cache homes: the first two made new in its home, the cache where it's given (#519: the
+/// preflight's base copy is there, and fmt prints its path), each 0700 and empty, and the variables naming them — a
+/// data home of yours would hold the grammars you downloaded, and the take shows the first one's card.
 #[test]
-fn the_take_has_a_state_and_a_data_home_of_its_own() {
+fn the_take_has_a_state_a_data_and_a_cache_home_of_its_own() {
     use std::os::unix::fs::MetadataExt;
     let dir = Scratch::new("xtask-take-homes");
-    let env = super::super::take::homes_of_its_own(&dir).unwrap();
+    let (home, cache) = (dir.join("home"), dir.join("shared/halil-cache"));
+    std::fs::create_dir(&home).unwrap();
+    let env = super::super::take::homes_of_its_own(&home, &cache).unwrap();
     let names: Vec<&str> = env.iter().map(|(k, _)| *k).collect();
-    assert_eq!(names, ["XDG_STATE_HOME", "XDG_DATA_HOME"]);
-    for ((_, v), name) in env.iter().zip(["state", "data"]) {
-        assert_eq!(Path::new(v), dir.join(name));
-        assert_eq!(std::fs::metadata(v).unwrap().mode() & 0o777, 0o700, "{name}");
-        assert!(std::fs::read_dir(v).unwrap().next().is_none(), "{name} empty");
+    assert_eq!(names, ["XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]);
+    for ((_, v), at) in env.iter().zip([home.join("state"), home.join("data"), cache.clone()]) {
+        assert_eq!(Path::new(v), at);
+        assert_eq!(std::fs::metadata(v).unwrap().mode() & 0o777, 0o700, "{}", at.display());
+        assert!(std::fs::read_dir(v).unwrap().next().is_none(), "{} empty", at.display());
     }
     // (never one that's there: a home made new holds none)
-    assert!(super::super::take::homes_of_its_own(&dir).is_err());
+    assert!(super::super::take::homes_of_its_own(&home, &cache).is_err());
+    // (a cache that holds anything — the last take's — refused, an empty one taken)
+    let (again, used) = (dir.join("again"), dir.join("used"));
+    std::fs::create_dir(&again).unwrap();
+    std::fs::create_dir_all(used.join("tarae")).unwrap();
+    let e = super::super::take::homes_of_its_own(&again, &used).unwrap_err();
+    assert!(e.contains("not empty"), "{e}");
+    // (the take's own: outside your home and the temp folders, where runs write)
+    let take = Path::new(super::super::take::TAKE_CACHE);
+    assert!(take.starts_with("/Users/Shared") && !take.starts_with(std::env::temp_dir()));
 }
 
 /// rustup's proxy's own variables and `cargo run`'s, set for `cargo xtask`, never reach the take's tarae: its

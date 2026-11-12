@@ -25,7 +25,10 @@
 //! the take's start is another wait — and, as the take's other folders, where it holds anything. Yours are only read.
 //!
 //! `cargo xtask record rust-clone DIR` — the same clone into `DIR` (the runbook's try, and its time), the variables
-//! said.
+//! said. Made into `TAKE_RUST` before a take, `record take --rust-cloned` takes it as it is (`reuse`, #525): Spotlight
+//! indexes a clone's 4 GB for about 8 minutes at ~300 % CPU, and that happens before the take, not in it. A clone says
+//! what it made in `MADE` beside its two homes; a take marks it taken, and a clone taken once is never taken again (the
+//! last take's downloads are in its registry).
 
 use std::ffi::OsString;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -38,6 +41,9 @@ use crate::Result;
 /// Where the take's toolchain is cloned: outside the home, beside its folder and its checkouts. Absent or empty before
 /// a take (`record take` refuses one that holds anything); removed after it, with the checkouts (the runbook).
 pub(crate) const TAKE_RUST: &str = "/Users/Shared/halil-rust";
+
+/// What a clone writes beside its two homes: the toolchain and the proxies it made, and once a take took it, `taken`.
+pub(crate) const MADE: &str = ".record-rust-clone";
 
 /// Yours: the homes the take's are cloned from, your home, and the `PATH` a take's run would find cargo on.
 pub(crate) struct Yours {
@@ -99,20 +105,89 @@ pub(crate) fn clone(yours: &Yours, to: &Path) -> Result<Cloned> {
         let holds = rustup.join("toolchains").join(&toolchain).join("bin");
         proxies = clone_proxies(&yours_bin, &holds, &bin)?;
     }
+    let mut made = toml::Table::new();
+    made.insert("toolchain".into(), toolchain.clone().into());
+    made.insert("proxies".into(), proxies.clone().into());
+    let marker = to.join(MADE);
+    let text = format!(
+        "# What cargo xtask record rust-clone made here (record take --rust-cloned takes it).\n{made}"
+    );
+    std::fs::write(&marker, text).map_err(|e| format!("{}: {e}", marker.display()))?;
+    let env = env_of(yours, to, !proxies.is_empty())?;
+    Ok(Cloned { env, toolchain, proxies, took: started.elapsed() })
+}
+
+/// A clone's `cargo/bin`, where its proxies are.
+fn bin_of(to: &Path) -> PathBuf {
+    to.join("cargo/bin")
+}
+
+/// The variables that give the clone in `to` to a take: its two homes, rustup never installing, and a `PATH` of yours
+/// without rustup's folders, your cargo's `bin` last — the clone's proxies first where it has them.
+fn env_of(yours: &Yours, to: &Path, proxies: bool) -> Result<Vec<(&'static str, OsString)>> {
+    let (bin, yours_bin) = (bin_of(to), yours.cargo.join("bin"));
     let yours_path: Vec<PathBuf> = std::env::split_paths(&yours.path).collect();
-    let path = (!proxies.is_empty())
+    let path = proxies
         .then(|| bin.clone())
         .into_iter()
         .chain(yours_path.iter().filter(|p| **p != yours_bin && !p.starts_with(&yours.rustup)).cloned())
         .chain(yours_path.contains(&yours_bin).then(|| yours_bin.clone()));
     let path = std::env::join_paths(path).map_err(|e| format!("the take's PATH: {e}"))?;
-    let env = vec![
-        ("RUSTUP_HOME", rustup.into_os_string()),
-        ("CARGO_HOME", cargo.into_os_string()),
+    Ok(vec![
+        ("RUSTUP_HOME", to.join("rustup").into_os_string()),
+        ("CARGO_HOME", to.join("cargo").into_os_string()),
         ("RUSTUP_AUTO_INSTALL", "0".into()),
         ("PATH", path),
-    ];
-    Ok(Cloned { env, toolchain, proxies, took: started.elapsed() })
+    ])
+}
+
+/// The clone `record rust-clone` made in `to` earlier, taken as it is (#525) — refused where none made it (no `MADE`),
+/// where `to` holds anything else (a take's checkout, a build), or where a take took it already. What it made, as
+/// `clone` said it (no time: it's there).
+pub(crate) fn reuse(yours: &Yours, to: &Path) -> Result<Cloned> {
+    let again =
+        "make it again: empty it, then `cargo xtask record rust-clone DIR` (or leave --rust-cloned out)";
+    let marker = to.join(MADE);
+    let text = std::fs::read_to_string(&marker)
+        .map_err(|e| format!("{}: {e} — not a clone record rust-clone made; {again}", marker.display()))?;
+    let made: toml::Table = text.parse().map_err(|e| format!("{}: {e} — {again}", marker.display()))?;
+    if made.contains_key("taken") {
+        return Err(format!(
+            "{}: a take took it already (its downloads are in its registry) — {again}",
+            to.display()
+        ));
+    }
+    let mut names: Vec<String> = std::fs::read_dir(to)
+        .map_err(|e| format!("{}: {e}", to.display()))?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n != ".DS_Store")
+        .collect();
+    names.sort();
+    if names != [MADE, "cargo", "rustup"] {
+        return Err(format!(
+            "{} holds {} — not only what record rust-clone made; {again}",
+            to.display(),
+            names.join(" ")
+        ));
+    }
+    let toolchain = made.get("toolchain").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    if toolchain.is_empty() || !to.join("rustup/toolchains").join(&toolchain).is_dir() {
+        return Err(format!("{}: its toolchain {toolchain:?} isn't there — {again}", to.display()));
+    }
+    let proxies: Vec<String> = (made.get("proxies").and_then(|v| v.as_array()).into_iter().flatten())
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    let env = env_of(yours, to, !proxies.is_empty())?;
+    Ok(Cloned { env, toolchain, proxies, took: Duration::ZERO })
+}
+
+/// The clone in `to` taken by a take: never taken again (`reuse`).
+pub(crate) fn mark_taken(to: &Path) -> Result<()> {
+    let marker = to.join(MADE);
+    let mut text = std::fs::read_to_string(&marker).map_err(|e| format!("{}: {e}", marker.display()))?;
+    text.push_str("taken = true\n");
+    std::fs::write(&marker, text).map_err(|e| format!("{}: {e}", marker.display()))
 }
 
 /// Refused where `to` (its nearest folder that's there) isn't on `from`'s volume.

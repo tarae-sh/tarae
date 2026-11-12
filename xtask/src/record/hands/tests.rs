@@ -125,6 +125,145 @@ fn keys_in_the_scenes_words_are_the_bytes_a_terminal_sends() {
     assert!(key_bytes("<nope>").is_err() && key_bytes("C-12").is_err() && key_bytes("").is_err());
 }
 
+/// #522: `key up` is the arrow, `key bs` the backspace — a word that's no key's name is refused, never typed as its
+/// text on camera (take 1's `key up` typed "up").
+#[test]
+fn a_keys_name_is_the_key_and_a_word_is_never_typed_as_text() {
+    let b = |k: &str| key_bytes(k).unwrap();
+    assert_eq!(
+        (b("up"), b("down"), b("left"), b("right")),
+        (b("<up>"), b("<down>"), b("<left>"), b("<right>"))
+    );
+    assert_eq!((b("bs"), b("<bs>"), b("backspace")), (vec![0x7f], vec![0x7f], vec![0x7f]));
+    let e = key_bytes("hi").unwrap_err();
+    assert!(e.starts_with("hi: not a key — a word goes with `type --to WHERE`"), "{e}");
+    // (one character as itself, a non-ASCII one too; the shots' escapes as ever)
+    assert_eq!((b("é"), b(":"), b("\\r")), ("é".as_bytes().to_vec(), b":".to_vec(), b"\r".to_vec()));
+}
+
+/// #522: the git tab answers to `git`, as `state` says it (`keys → git`, region `side:git`), and still to `side` and
+/// `side:git`; the chat's view still never answers to `chat`, though its `to` is `chat` too.
+#[test]
+fn the_git_tab_answers_to_the_name_state_gives_it() {
+    let keys =
+        |to: &str, region: &str| json!({ "keys": { "to": to, "region": region, "takes": "commands" } });
+    let git = keys("git", "side:git");
+    assert!(at("git", &git) && at("side", &git) && at("side:git", &git));
+    assert!(!at("tree", &git) && !at("gi", &git));
+    assert!(!at("chat", &keys("chat", "view:chat")), "the chat's view isn't its input");
+    assert!(!at("git", &keys("pane#3", "code")));
+}
+
+/// #522: the session prompt answers to `session-name` though nothing sent an event as it came: `:`'s prompt turned into
+/// it in the same region, `prompt` (take 1: `session-new⏎` then `dates⏎` with no keys event between), so a wait for
+/// the keys looks at tarae's state again with no news.
+#[test]
+fn a_wait_for_the_keys_sees_a_change_that_sent_no_event() {
+    let hub = Hub::default();
+    let mut asked = 0;
+    let label = "new session from the main branch (C-b another base):";
+    let (c, said) = wait(
+        &Wait::Keys("session-name".into()),
+        crate::PATIENCE,
+        &mut || {
+            asked += 1;
+            // (`:` with `session-new` typed and sent; then the session prompt — no `hub.told` either time)
+            let kind = if asked < 3 { ":" } else { label };
+            Ok(state("prompt", "text", Some(kind), json!([])))
+        },
+        &hub,
+        Instant::now(),
+    );
+    assert_eq!(c, code::HELD, "{said}");
+    assert!(said.starts_with("the keys are in session-name — "), "{said}");
+    assert_eq!(asked, 3);
+    assert!(at("prompt", &state("prompt", "text", Some(label), json!([]))), "and to any prompt");
+}
+
+/// #522 (and #528): an edit's review up is what `wait card` waits for too — any card, or KIND `edit` — said with
+/// whether it has the keys: one Claude's edit raised waits for `C-q`; `space i`'s, your own key's, has them.
+#[test]
+fn a_wait_for_a_card_returns_for_an_edit_review_saying_whether_it_has_the_keys() {
+    let hub = Hub::default();
+    let review = |region: &str| {
+        let mut s = state(region, "answers", None, json!([]));
+        s["inbox"] = json!([{ "id": "edit#s1:review", "session": "s1", "kind": "edit",
+                              "asks": "Change 1 of 1 · Cargo.toml", "up": "review" }]);
+        s
+    };
+    let waits = review("chat");
+    for kind in [None, Some("edit"), Some("edit-review")] {
+        let w = Wait::Card(kind.map(String::from));
+        // (zero patience: the review is up already — it holds at the first look or not at all)
+        let (c, said) = wait(&w, Duration::ZERO, &mut || Ok(waits.clone()), &hub, Instant::now());
+        assert_eq!(c, code::HELD, "{kind:?}: {said}");
+        assert!(
+            said.starts_with(
+                "edit#s1:review edit · \"Change 1 of 1 · Cargo.toml\" · its review up · waits — C-q focuses it — "
+            ),
+            "{kind:?}: {said}"
+        );
+    }
+    let (c, said) =
+        wait(&Wait::Card(None), Duration::ZERO, &mut || Ok(review("edit-review")), &hub, Instant::now());
+    assert_eq!(c, code::HELD, "{said}");
+    assert!(said.contains("its review up · has the keys"), "{said}");
+    // (a wait for another kind of card isn't one for a review)
+    let (c, said) = wait(
+        &Wait::Card(Some("run".into())),
+        Duration::ZERO,
+        &mut || Ok(waits.clone()),
+        &hub,
+        Instant::now(),
+    );
+    assert_eq!(c, code::GAVE_UP, "{said}");
+}
+
+/// #522: `wait turn` counts the turn that ended after the ask though a key came between (take 1: the turn ended, a key
+/// was pressed, the wait came after and missed it) — once: the next `wait turn` waits for the next end. The ask line's
+/// end (`space i`, no turn of the chat's) is its toast, for a wait that names no session.
+#[test]
+fn a_wait_for_a_turn_counts_an_end_before_it_once_and_the_ask_lines_end() {
+    // (each wait's patience zero: what it waits for came already, so it holds at its first look or not at all)
+    let hub = Hub::default();
+    let ago = |ms: u64| Instant::now().checked_sub(Duration::from_millis(ms)).unwrap();
+    let idle = state("chat", "text", None, json!([]));
+    hub.asked(ago(30));
+    hub.told(
+        ago(20),
+        &json!({ "event": "turn", "what": "ended", "session": "s0", "said": "s0 main: turn ended" }),
+    );
+    hub.sent(ago(10));
+    let turn = Wait::Turn(None);
+    let (c, said) = wait(&turn, Duration::ZERO, &mut || Ok(idle.clone()), &hub, hub.since_for(&turn));
+    assert_eq!(c, code::HELD, "{said}");
+    assert!(said.starts_with("s0 main: turn ended — "), "{said}");
+    let (c, said) = wait(&turn, Duration::ZERO, &mut || Ok(idle.clone()), &hub, hub.since_for(&turn));
+    assert_eq!(c, code::GAVE_UP, "returned once: {said}");
+    // (a wait for another session's turn has its own: that end isn't dates')
+    let dates = Wait::Turn(Some("dates".into()));
+    let (c, _) = wait(&dates, Duration::ZERO, &mut || Ok(idle.clone()), &hub, hub.since_for(&dates));
+    assert_eq!(c, code::GAVE_UP);
+
+    // (the ask line: sent, then its review's toast)
+    let hub = Hub::default();
+    hub.asked(ago(30));
+    hub.told(ago(20), &json!({ "event": "toast", "kind": "info", "text": "claude answered in 20.7s" }));
+    let (c, said) = wait(&turn, Duration::ZERO, &mut || Ok(idle.clone()), &hub, hub.since_for(&turn));
+    assert_eq!(c, code::HELD, "{said}");
+    assert!(said.starts_with("the ask line's end: claude answered in 20.7s — "), "{said}");
+    hub.asked(ago(5));
+    hub.told(Instant::now(), &json!({ "event": "toast", "kind": "error", "text": "claude: exited (1)" }));
+    let (c, said) = wait(&turn, Duration::ZERO, &mut || Ok(idle.clone()), &hub, hub.since_for(&turn));
+    assert_eq!(c, code::HELD, "{said}");
+    assert!(said.starts_with("the ask line's end: claude: exited (1)"), "{said}");
+    // (another toast is no one's end)
+    hub.asked(Instant::now());
+    hub.told(Instant::now(), &json!({ "event": "toast", "kind": "info", "text": "claude is reading" }));
+    let (c, _) = wait(&turn, Duration::ZERO, &mut || Ok(idle.clone()), &hub, hub.since_for(&turn));
+    assert_eq!(c, code::GAVE_UP);
+}
+
 #[test]
 fn a_wait_returns_on_its_condition_and_gives_up_at_its_patience_saying_whats_in_front() {
     let hub = Hub::default();
@@ -285,8 +424,8 @@ fn the_way_in_is_its_users_alone_its_keys_and_marks_land_and_it_goes_with_the_ta
     // SAFETY: getuid can't fail.
     assert_eq!((m.mode() & 0o777, m.uid()), (0o700, unsafe { libc::getuid() }), "{}", folder.display());
 
-    let (c, said) = ask(&sock, &json!({ "do": "key", "keys": ["hi", "<ret>"] })).unwrap();
-    assert_eq!((c, said.as_str()), (code::HELD, "sent hi <ret>"));
+    let (c, said) = ask(&sock, &json!({ "do": "key", "keys": ["h", "i", "<ret>"] })).unwrap();
+    assert_eq!((c, said.as_str()), (code::HELD, "sent h i <ret>"));
     until(&mut seen, "got:hi;");
     let (c, said) = ask(&sock, &json!({ "do": "mark", "text": "a friction" })).unwrap();
     assert_eq!(c, code::HELD, "{said}");
@@ -356,6 +495,10 @@ fn a_takes_surroundings_copy_your_config_with_cost_and_auto_cards_off_and_name_g
     assert_eq!(std::fs::read_link(home.join("config/tarae/themes")).unwrap(), yours.join("themes"));
     let git = std::fs::read_to_string(home.join("gitconfig")).unwrap();
     assert!(git.contains("name = halil dev") && git.contains("email = dev@halil.invalid"), "{git}");
+    let template = home.join("git-template");
+    assert!(git.contains(&format!("templateDir = {}\n", template.display())), "{git}");
+    let local = std::fs::read_to_string(template.join("config")).unwrap();
+    assert_eq!(local, "[user]\n\tname = halil dev\n\temail = dev@halil.invalid\n");
     let names: Vec<&str> = env.iter().map(|(k, _)| *k).collect();
     assert_eq!(
         names,
@@ -392,6 +535,38 @@ fn a_takes_surroundings_copy_your_config_with_cost_and_auto_cards_off_and_name_g
     let copy: toml::Table =
         std::fs::read_to_string(dry.join("config/tarae/config.toml")).unwrap().parse().unwrap();
     assert_eq!(copy["workspace"]["worktrees"].as_str(), Some("/w"));
+}
+
+/// #520: Claude Code's own git leaves `GIT_CONFIG_GLOBAL` out and reads `~/.gitconfig` (its "Git user: …"), so a
+/// repository the take makes carries the stand-ins in its own config, from the take's git template — and its worktrees,
+/// the take's other checkouts, share it. git run as Claude Code runs it: that variable gone, a `HOME` whose
+/// `.gitconfig` names someone else (the test's own), no system file.
+#[test]
+fn a_repository_the_take_makes_names_the_stand_ins_where_git_config_global_is_left_out() {
+    let dir = Scratch::new("xtask-take-git");
+    let (take, theirs, repo) = (dir.join("take"), dir.join("home"), dir.join("halil"));
+    for d in [&take, &theirs, &repo] {
+        std::fs::create_dir(d).unwrap();
+    }
+    std::fs::write(theirs.join(".gitconfig"), "[user]\n\tname = someone-else\n").unwrap();
+    crate::record::take::surroundings(&take, None, None, None).unwrap();
+    let git = |at: &std::path::Path, global: bool, args: &[&str]| {
+        let mut c = std::process::Command::new("git");
+        c.current_dir(at).args(args).env_clear().env("PATH", "/usr/bin:/bin").env("HOME", &theirs);
+        c.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CEILING_DIRECTORIES", dir.path());
+        if global {
+            c.env("GIT_CONFIG_GLOBAL", take.join("gitconfig"));
+        }
+        let out = c.output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&repo, true, &["init", "-q"]);
+    assert_eq!(git(&repo, false, &["config", "user.name"]), "halil dev", "not HOME's someone-else");
+    assert_eq!(git(&repo, false, &["config", "user.email"]), "dev@halil.invalid");
+    git(&repo, true, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&repo, true, &["worktree", "add", "-q", "../dates", "-b", "dates"]);
+    assert_eq!(git(&dir.join("dates"), false, &["config", "user.name"]), "halil dev", "a checkout too");
 }
 
 /// The take's fish prompt, its own: the folder's name and git's branch, no login, no machine, no greeting — written in

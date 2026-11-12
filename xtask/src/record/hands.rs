@@ -11,13 +11,16 @@
 //! - `record type --to WHERE [--send] WORDS` — the words typed with the typist's rhythm (`shot::typed`), only where
 //!   tarae has the keys at WHERE; `--send` leaves them standing `ASK_STANDS` (the same constant `cut init` keeps them
 //!   by) and sends the return, WHERE checked again first.
-//! - `record key [--to WHERE] KEY …` — keys in the scenes' words (`space l`, `C-q`, `y`, `<ret>`; `key_bytes`), a
-//!   key's pause after each; with `--to`, the same guard.
+//! - `record key [--to WHERE] KEY …` — keys in the scenes' words (`space l`, `C-q`, `y`, `<ret>`, `up`, `bs`;
+//!   `key_bytes`: a word that's no key's name is refused, never typed as text), a key's pause after each; with `--to`,
+//!   the same guard.
 //! - `record wait WHAT [--for SECS] [--session S]` — until it holds by tarae's state and events (`Wait`): `turn` (a
-//!   turn ended since the hands' last key — an ask's return, a card's `y`), `card [KIND]` (one in front), `keys WHERE`,
-//!   `run` (one ended since that key), `bring` (one ended since). A card that comes in front first (or an edit's review) ends any
-//!   other wait, said: it's answered at once, never waited past. Gives up at its patience (`PATIENCE` unless `--for`); what's in front said
-//!   either way.
+//!   turn ended since the hands' last ask, one no `wait turn` returned yet — keys pressed since or not; the ask line's
+//!   end too, `space i`'s, which is no turn of the chat's), `card [KIND]` (one in front, or an edit's review up: `edit`),
+//!   `keys WHERE`, `run` (one ended since the hands' last key), `bring` (one ended since). A card that comes in front
+//!   first (or an edit's review) ends any other wait, said: it's answered at once, never waited past. tarae's state is
+//!   looked at again at each event and every `RELOOK` with none (not every change sends one). Gives up at its patience
+//!   (`PATIENCE` unless `--for`); what's in front said either way.
 //! - `record state` — tarae's state as its text form, a fact a line (`tarae state`'s).
 //! - `record mark WORDS` — a landmark `mark` at that moment, the words with it (`mark N` in an edit list): a note.
 //! - `record chapter WORDS` — a landmark `chapter`: a chapter starts here, the words its title (`cut init` puts it).
@@ -28,7 +31,8 @@
 //! WHERE is where the keys are by tarae's state (`keys.region`, `docs/design/ui-state.md`, `place`), in these words:
 //! `chat` (the chat's input), `ask` (the ask line, `space i`), `command` (`:`), `comment` (a review's), `session-name`
 //! (a new session's), `prompt` (any prompt), or a region's own name (`code`, `card`, `picker`, `review`,
-//! `edit-review`, `list:sessions` …) or its family's (`side` for `side:git`, `view` for `view:chat`).
+//! `edit-review`, `list:sessions` …) or its family's (`side` for `side:git`, `view` for `view:chat`); a side panel's
+//! tab also as `state` names it (`git` for `side:git`).
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -62,6 +66,14 @@ const PATIENCE: Duration = Duration::from_secs(600);
 
 /// How long a connection's request is waited for once it's made.
 const ASKED_IN: Duration = Duration::from_secs(10);
+
+/// How often a wait looks at tarae's state again with no news: a change that sends no event (`:`'s prompt turning into
+/// the session prompt keeps the region `prompt`, #522) is still seen.
+const RELOOK: Duration = Duration::from_millis(250);
+
+/// What the ask line's end (`space i`: no turn of the chat's, no `turn` event) says, as a toast: its change up for
+/// review (`ask::reviewing`), none made (`ask::ended`); an error starting `claude: ` is its end too.
+const ASK_ENDS: [&str; 2] = ["claude answered in ", "claude: no changes"];
 
 /// The environment variable that names the way in.
 pub(crate) const ENV: &str = "TARAE_RECORD";
@@ -190,6 +202,10 @@ struct HubNow {
     told: Vec<(Instant, Value)>,
     news: u64,
     sent: Option<Instant>,
+    /// When the hands last sent an ask (`type --send`: the chat's, the ask line's).
+    asked: Option<Instant>,
+    /// For each `wait turn [SESSION]`, when it last held: a turn's end is returned once.
+    turns_taken: Vec<(Option<String>, Instant)>,
     ended: bool,
 }
 
@@ -201,7 +217,7 @@ impl Hub {
     /// An event of tarae's, as it came.
     pub(crate) fn told(&self, at: Instant, ev: &Value) {
         let mut now = self.lock();
-        if matches!(ev["event"].as_str(), Some("turn" | "run" | "bring")) {
+        if matches!(ev["event"].as_str(), Some("turn" | "run" | "bring" | "toast")) {
             now.told.push((at, ev.clone()));
         }
         now.news += 1;
@@ -221,8 +237,32 @@ impl Hub {
         self.lock().sent = Some(at);
     }
 
-    fn last_sent(&self) -> Option<Instant> {
-        self.lock().sent
+    /// An ask sent at `at`.
+    pub(crate) fn asked(&self, at: Instant) {
+        self.lock().asked = Some(at);
+    }
+
+    /// Where a wait's events start: for a turn, the last ask (else the last key) — a turn that ended between the ask
+    /// and the wait, keys pressed or not, still counts — but past the end a `wait turn` for the same session already
+    /// returned; for the rest, the hands' last key. Now where neither was.
+    pub(crate) fn since_for(&self, w: &Wait) -> Instant {
+        let now = self.lock();
+        let base = match w {
+            Wait::Turn(_) => now.asked.or(now.sent),
+            _ => now.sent,
+        };
+        let taken = match w {
+            Wait::Turn(who) => now.turns_taken.iter().find(|(w, _)| w == who).map(|(_, at)| *at),
+            _ => None,
+        };
+        base.into_iter().chain(taken).max().unwrap_or_else(Instant::now)
+    }
+
+    /// A `wait turn` for `who` held at `at`: the ends before it are taken.
+    fn turn_taken(&self, who: &Option<String>, at: Instant) {
+        let mut now = self.lock();
+        now.turns_taken.retain(|(w, _)| w != who);
+        now.turns_taken.push((who.clone(), at));
     }
 
     fn news(&self) -> u64 {
@@ -353,7 +393,7 @@ fn act(req: &Value, ctx: &Ctx) -> (i32, String) {
         "wait" => match Wait::parse(req["what"].as_str().unwrap_or_default(), req["arg"].as_str()) {
             Ok(w) => {
                 let patience = req["for_ms"].as_u64().map_or(PATIENCE, Duration::from_millis);
-                let since = ctx.hub.last_sent().unwrap_or_else(Instant::now);
+                let since = ctx.hub.since_for(&w);
                 wait(&w, patience, &mut || ctx.state(), &ctx.hub, since)
             }
             Err(e) => (code::ERROR, e),
@@ -404,6 +444,7 @@ fn typed(ctx: &Ctx, to: &str, text: &str, send: bool) -> (i32, String) {
         return (code::REFUSED, format!("typed {n} characters, not sent: {e}"));
     }
     ctx.write(b"\r");
+    ctx.hub.asked(Instant::now());
     ctx.seen.pause(AFTER_KEY);
     (
         code::HELD,
@@ -439,8 +480,9 @@ fn keyed(ctx: &Ctx, to: Option<&str>, keys: &[String]) -> (i32, String) {
 }
 
 /// A key in the scenes' words as the bytes a terminal sends for it: `space`, `<ret>` (`ret`, `enter`), `<esc>`,
-/// `<tab>`, `<bs>`, the arrows (`<up>` …), `C-x`, `A-x`; any other word as its text at once (the shots' escapes too:
-/// `\r`, `\x1b`). An unknown `<name>` refused.
+/// `<tab>`, `<bs>` (`bs`, `backspace`), the arrows (`<up>`, `up` …), `C-x`, `A-x`; one character as itself; the
+/// shots' escapes (`\r`, `\x1b`). Any other word refused, never typed as text (`key up` typed "up" on camera, #522):
+/// words go with `type`. An unknown `<name>` refused.
 pub(crate) fn key_bytes(k: &str) -> Result<Vec<u8>> {
     let named = |s: &str| -> Option<&'static [u8]> {
         Some(match s {
@@ -449,10 +491,10 @@ pub(crate) fn key_bytes(k: &str) -> Result<Vec<u8>> {
             "esc" | "<esc>" => b"\x1b",
             "tab" | "<tab>" => b"\t",
             "bs" | "<bs>" | "backspace" | "<backspace>" => b"\x7f",
-            "<up>" => b"\x1b[A",
-            "<down>" => b"\x1b[B",
-            "<right>" => b"\x1b[C",
-            "<left>" => b"\x1b[D",
+            "up" | "<up>" => b"\x1b[A",
+            "down" | "<down>" => b"\x1b[B",
+            "right" | "<right>" => b"\x1b[C",
+            "left" | "<left>" => b"\x1b[D",
             "<lt>" => b"<",
             _ => return None,
         })
@@ -483,6 +525,12 @@ pub(crate) fn key_bytes(k: &str) -> Result<Vec<u8>> {
     if k.is_empty() {
         return Err("an empty key".into());
     }
+    if k.chars().count() > 1 && !k.starts_with('\\') {
+        return Err(format!(
+            "{k}: not a key — a word goes with `type --to WHERE`; a key is one character or a name: space ret esc tab \
+             bs up down left right, C-x, A-x"
+        ));
+    }
     Ok(shot::unescape(k))
 }
 
@@ -504,12 +552,15 @@ pub(crate) fn place(s: &Value) -> String {
     }
 }
 
-/// Whether the keys are at `to` in a state.
+/// Whether the keys are at `to` in a state: its place, the family's name (`side` for `side:git`), any prompt for
+/// `prompt`, and a side panel's tab as `state` names it (`git` for `side:git`: its `keys → git`, #522) — never the
+/// chat's view for `chat`, its input.
 pub(crate) fn at(to: &str, s: &Value) -> bool {
     let p = place(s);
     p == to
         || (to == "prompt" && s["keys"]["region"] == "prompt")
         || p.strip_prefix(to).is_some_and(|rest| rest.starts_with(':'))
+        || p.strip_prefix("side:").is_some_and(|tab| tab == to && s["keys"]["to"] == to)
 }
 
 /// Ok where the keys are at `to`; else where they are, said.
@@ -537,6 +588,11 @@ pub(crate) fn front_line(s: &Value) -> String {
     parts.join(" · ")
 }
 
+/// Whether `kind` (a `wait card` KIND) names an edit's review.
+fn is_review(kind: &str) -> bool {
+    matches!(kind, "edit" | "edit-review" | "review")
+}
+
 /// A value as a word: a string as it is, anything else as its JSON.
 fn word(v: &Value) -> String {
     v.as_str().map_or_else(|| v.to_string(), String::from)
@@ -547,11 +603,17 @@ fn in_front(s: &Value) -> impl Iterator<Item = &Value> {
     s["cards"].as_array().into_iter().flatten().filter(|c| c["up"] == "front")
 }
 
-/// What waits for an answer in front besides the cards: an edit's review up (the inbox's `up` `review`), as a line.
+/// What waits for an answer in front besides the cards: an edit's review up (the inbox's `up` `review`), as a line —
+/// with whether it has the keys. One Claude's edit raised waits for `C-q` as a card does (#528); one your own key
+/// opened (`space i`'s) has them at once.
 fn in_review(s: &Value) -> impl Iterator<Item = String> + '_ {
-    (s["inbox"].as_array().into_iter().flatten())
-        .filter(|e| e["up"] == "review")
-        .map(|e| format!("{} {} · {:?} · its review up", word(&e["id"]), word(&e["kind"]), word(&e["asks"])))
+    let keys = match place(s) == "edit-review" {
+        true => "has the keys",
+        false => "waits — C-q focuses it",
+    };
+    (s["inbox"].as_array().into_iter().flatten()).filter(|e| e["up"] == "review").map(move |e| {
+        format!("{} {} · {:?} · its review up · {keys}", word(&e["id"]), word(&e["kind"]), word(&e["asks"]))
+    })
 }
 
 /// A card as a line: its id, kind, title, what it asks, its answers, and whether it has the keys.
@@ -579,9 +641,11 @@ fn card_line(c: &Value) -> String {
 /// What a wait is for.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Wait {
-    /// A turn ended since the hands' last key — that session's (an id, `s1`, or its workspace's name) where said.
+    /// A turn ended since the hands' last ask (`Hub::since_for`), once — that session's (an id, `s1`, or its
+    /// workspace's name) where said; with none said, the ask line's end too (`ASK_ENDS`).
     Turn(Option<String>),
-    /// A card in front — of that kind where said.
+    /// A card in front — of that kind where said; an edit's review up too, where none is said or the kind is `edit`
+    /// (`edit-review`, `review`).
     Card(Option<String>),
     /// The keys at WHERE.
     Keys(String),
@@ -637,7 +701,8 @@ pub(crate) fn judge(w: &Wait, s: &Value, told: &[Value]) -> Option<Verdict> {
     };
     let held = match w {
         Wait::Card(kind) => {
-            in_front(s).find(|c| kind.as_deref().is_none_or(|k| c["kind"] == k)).map(card_line)
+            (in_front(s).find(|c| kind.as_deref().is_none_or(|k| c["kind"] == k)).map(card_line))
+                .or_else(|| kind.as_deref().is_none_or(is_review).then(|| in_review(s).next()).flatten())
         }
         Wait::Keys(to) => at(to, s).then(|| format!("the keys are in {}", place(s))),
         Wait::Turn(who) => ended("turn")
@@ -645,6 +710,15 @@ pub(crate) fn judge(w: &Wait, s: &Value, told: &[Value]) -> Option<Verdict> {
             .map(|e| match e["said"].as_str() {
                 Some(said) => said.to_string(),
                 None => format!("{}'s turn ended", word(&e["session"])),
+            })
+            // (the ask line's end: no turn of the chat's — its toast; its session is the one in front)
+            .or_else(|| {
+                let text = |e: &Value| e["text"].as_str().unwrap_or_default().to_string();
+                let ask_end = |t: &str| ASK_ENDS.iter().any(|a| t.starts_with(a));
+                (who.is_none().then(|| ended("toast")).into_iter().flatten())
+                    .map(|e| (text(e), e["kind"] == "error"))
+                    .find(|(t, error)| ask_end(t) || (*error && t.starts_with("claude: ")))
+                    .map(|(t, _)| format!("the ask line's end: {t}"))
             }),
         Wait::Run => ended("run").find(|e| e["ended"] == true).map(|e| {
             e["said"]
@@ -679,13 +753,21 @@ pub(crate) fn wait(
         let state = ask();
         let s = state.as_ref().unwrap_or(&Value::Null);
         match judge(w, s, &hub.since(since)) {
-            Some(Verdict::Held(l)) => return (code::HELD, format!("{l} — {}", front_line(s))),
+            Some(Verdict::Held(l)) => {
+                if let Wait::Turn(who) = w {
+                    hub.turn_taken(who, Instant::now());
+                }
+                return (code::HELD, format!("{l} — {}", front_line(s)));
+            }
             Some(Verdict::Card(l)) => {
                 return (code::CARD, format!("a card first, waiting for {}: {l} — answer it", w.said()));
             }
             None => {}
         }
-        if !hub.wait_news(news, until) {
+        // (news, or a look again after `RELOOK` with none: not every change sends an event)
+        if !hub.wait_news(news, until.min(Instant::now() + RELOOK))
+            && (hub.ended() || Instant::now() >= until)
+        {
             let why = match hub.ended() {
                 true => "the take ended".to_string(),
                 false => format!("gave up after {:.1} s", begun.elapsed().as_secs_f64()),

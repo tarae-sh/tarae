@@ -1,16 +1,20 @@
 //! The full video's take and its dry run (V3, main's `.sb/full-video-v3-brief.md`).
 //!
-//! - `cargo xtask record take --out DIR --cwd FOLDER --tarae BIN [--size 166x32] [--config FILE]` — the take (`BIN`
+//! - `cargo xtask record take --out DIR --cwd FOLDER --tarae BIN [--rust-cloned] [--size 166x32] [--config FILE]` —
+//!   with `--rust-cloned`, the Rust toolchain `record rust-clone` cloned into `TAKE_RUST` before (`toolchain::reuse`,
+//!   #525: Spotlight indexes a fresh clone for minutes); without it, cloned at its start — the take (`BIN`
 //!   by its path, never a name `PATH` answers: `tarae_bin`), with its surroundings (`surroundings`) in a home made
 //!   new for it under `/tmp` (`/tmp/tarae-take-<uid>-<n>`, 0700): a copy of your tarae config (`FILE`, else
 //!   `$XDG_CONFIG_HOME/tarae/config.toml` or `~/.config/tarae/config.toml`) with `llm.cost = false`,
 //!   `llm.auto-cards = "off"` and `workspace.worktrees` outside the home (`TAKE_WORKTREES`, made where it isn't,
 //!   refused where it holds anything), the rest of that folder (themes, plugins) linked beside it; a state and a data
 //!   home of its own (`homes_of_its_own`: nothing of yours listed — no recent files, no sessions, no grammar you
-//!   downloaded — and a UI socket's path well under `sun_path`); its tarae's `--version` said first; git's name and
-//!   mail the stand-ins (`GIT_NAME`, `GIT_MAIL`) by `GIT_CONFIG_GLOBAL` and the author and committer variables — the
-//!   floor every run of tarae's sandbox keeps (`src/sandbox/runenv.rs`), so tarae's git, `:sh` and Claude's runs all
-//!   commit as them; your Rust toolchain cloned outside the home (`toolchain.rs`, `TAKE_RUST`: made where it isn't,
+//!   downloaded — and a UI socket's path well under `sun_path`) and a cache home outside the home and `/tmp`
+//!   (`TAKE_CACHE`, made where it isn't, refused where it holds anything: the preflight's base copy is there); its
+//!   tarae's `--version` said first; git's name and mail the stand-ins (`GIT_NAME`, `GIT_MAIL`) by `GIT_CONFIG_GLOBAL`
+//!   and the author and committer variables — the floor every run of tarae's sandbox keeps (`src/sandbox/runenv.rs`),
+//!   so tarae's git, `:sh` and Claude's runs all commit as them — and in every repository's own config, by git's
+//!   template (Claude Code's own git leaves `GIT_CONFIG_GLOBAL` out, #520); your Rust toolchain cloned outside the home (`toolchain.rs`, `TAKE_RUST`: made where it isn't,
 //!   refused where it holds anything) as its `RUSTUP_HOME` and `CARGO_HOME`, rustup's proxies first on its `PATH`,
 //!   your `~/.cargo/bin` last, `RUSTUP_AUTO_INSTALL=0`; fish's prompt the take's own (`FISH_PROMPT`: the folder's name
 //!   and git's branch, `halil (main)> `, no greeting — its config home is the take's, where fish would write its
@@ -46,6 +50,13 @@ pub(crate) const TAKE_SIZE: (u16, u16) = (166, 32);
 /// (the user's choice) — else `dates`' and `board`'s builds print a path under it, cargo's every `Compiling`. Absent or
 /// empty before a take (`record take` refuses one that holds anything); removed after it (the runbook).
 pub(crate) const TAKE_WORKTREES: &str = "/Users/Shared/halil-checkouts";
+
+/// The take's cache home (`XDG_CACHE_HOME`, #519): tarae's preflight works in a base copy there (`basetree.rs`), and
+/// fmt's diff printed its path whole — under your home, `~/.cache/tarae/base/…`, before. Outside the home, as the take's
+/// folder and checkouts are, and never under `/tmp` with the take's other homes: every run may write the temp folders,
+/// and tarae makes no run's folder in a cache a run could write (`sandbox::runs_written`) — every run would be refused.
+/// Absent or empty before a take (`record take` refuses one that holds anything); removed after it (the runbook).
+pub(crate) const TAKE_CACHE: &str = "/Users/Shared/halil-cache";
 
 /// Git's name and mail in a take: stand-ins, never yours.
 pub(crate) const GIT_NAME: &str = "halil dev";
@@ -83,7 +94,7 @@ const LEFT_OUT_BY: [&str; 13] = [
     "SSH_",
 ];
 
-const USAGE: &str = "usage: cargo xtask record take --out DIR --cwd FOLDER --tarae BIN [--size 166x32] [--config FILE] | record dry [OUT]";
+const USAGE: &str = "usage: cargo xtask record take --out DIR --cwd FOLDER --tarae BIN [--rust-cloned] [--size 166x32] [--config FILE] | record dry [OUT]";
 
 /// The take's surroundings in `home` (a folder of the take's own): tarae's config there — `config` (your config's
 /// text; None: none) with `llm.cost = false`, `llm.auto-cards = "off"` and, given one, `workspace.worktrees =
@@ -140,10 +151,23 @@ pub(crate) fn surroundings(
             }
         }
     }
+    // (#520: Claude Code's own git — its context's "Git user: …" — leaves GIT_CONFIG_GLOBAL out of its environment
+    // (2.1.322, with GIT_CONFIG_SYSTEM, GIT_CONFIG_COUNT/KEY_n/VALUE_n and GIT_CONFIG_PARAMETERS) and reads your
+    // ~/.gitconfig: a repository's own config outranks that, so every repository the take makes carries the stand-ins
+    // in its .git/config, from git's template — its worktrees, the take's other checkouts, share it)
+    let template = home.join("git-template");
+    let user = format!("[user]\n\tname = {GIT_NAME}\n\temail = {GIT_MAIL}\n");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&template)
+        .map_err(|e| format!("{}: {e}", template.display()))?;
+    let local = template.join("config");
+    std::fs::write(&local, &user).map_err(|e| format!("{}: {e}", local.display()))?;
     let git = home.join("gitconfig");
     let gitconfig = format!(
-        "# The take's git config (cargo xtask record take): the stand-ins' name and mail.\n[user]\n\tname = {GIT_NAME}\n\
-         \temail = {GIT_MAIL}\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n"
+        "# The take's git config (cargo xtask record take): the stand-ins' name and mail, and a template that puts them in \
+         every repository's own config.\n{user}[init]\n\tdefaultBranch = main\n\ttemplateDir = {}\n[commit]\n\tgpgsign = false\n",
+        template.display()
     );
     std::fs::write(&git, gitconfig).map_err(|e| format!("{}: {e}", git.display()))?;
     let fish = home.join("config/fish");
@@ -244,6 +268,7 @@ fn your_config_dir() -> Option<PathBuf> {
 /// `record take …` (the module's doc).
 pub(super) fn take(args: &[String]) -> Result<()> {
     let (mut out, mut cwd, mut size, mut config, mut bin) = (None, None, TAKE_SIZE, None, None);
+    let mut rust_cloned = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} wants a value — {USAGE}"));
@@ -253,6 +278,8 @@ pub(super) fn take(args: &[String]) -> Result<()> {
             "--size" => size = parse_size(value()?)?,
             "--config" => config = Some(PathBuf::from(value()?)),
             "--tarae" => bin = Some(PathBuf::from(value()?)),
+            // (#525: the clone `record rust-clone` made in TAKE_RUST before the take, Spotlight done with it)
+            "--rust-cloned" => rust_cloned = true,
             other => return Err(format!("{other}: {USAGE}")),
         }
     }
@@ -274,8 +301,18 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     folder_for_a_take(&cwd)?;
     let worktrees = Path::new(TAKE_WORKTREES);
     folder_for_a_take(worktrees)?;
-    eprintln!("record take: your Rust toolchain cloned into {} …", toolchain::TAKE_RUST);
-    let rust = toolchain::clone(&toolchain::Yours::here()?, Path::new(toolchain::TAKE_RUST))?;
+    let cache = Path::new(TAKE_CACHE);
+    folder_for_a_take(cache)?;
+    let (yours, at) = (toolchain::Yours::here()?, Path::new(toolchain::TAKE_RUST));
+    let rust = match rust_cloned {
+        true => toolchain::reuse(&yours, at)?,
+        false => {
+            eprintln!("record take: your Rust toolchain cloned into {} …", toolchain::TAKE_RUST);
+            toolchain::clone(&yours, at)?
+        }
+    };
+    // (taken: never taken by another take, whose registry would hold this one's downloads)
+    toolchain::mark_taken(at)?;
     let config = config.or_else(|| your_config_dir().map(|d| d.join("config.toml")));
     let text = match &config {
         Some(f) => match std::fs::read_to_string(f) {
@@ -288,7 +325,7 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     let home = hands::fresh_folder(Path::new("/tmp"), "tarae-take")?;
     let linked = config.as_deref().and_then(Path::parent);
     let mut env = surroundings(&home, text.as_deref(), linked, Some(worktrees))?;
-    let own = homes_of_its_own(&home)?;
+    let own = homes_of_its_own(&home, cache)?;
     let state = home.join("state");
     env.extend(own);
     env.extend(rust.env);
@@ -301,12 +338,15 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     }
     eprintln!(
         "record take: its home {} — your config copied with llm.cost = false, auto-cards off and the checkouts in \
-         {TAKE_WORKTREES}, git as {GIT_NAME} <{GIT_MAIL}>, fish's prompt its own, a state and data home of its own, Rust's {} and registry cloned into \
-         {} in {}{}; tarae in {}",
+         {TAKE_WORKTREES}, git as {GIT_NAME} <{GIT_MAIL}> (its repositories' own config too), fish's prompt its own, a \
+         state and data home of its own, its cache home {TAKE_CACHE}, Rust's {} and registry {}{}; tarae in {}",
         home.display(),
         rust.toolchain,
-        toolchain::TAKE_RUST,
-        crate::cut::run_duration(rust.took),
+        match rust_cloned {
+            true => format!("as record rust-clone made them in {} before the take", toolchain::TAKE_RUST),
+            false =>
+                format!("cloned into {} in {}", toolchain::TAKE_RUST, crate::cut::run_duration(rust.took)),
+        },
         if rust.proxies.is_empty() { "" } else { " (rustup's proxies first on PATH)" },
         cwd.display()
     );
@@ -328,15 +368,21 @@ pub(super) fn take(args: &[String]) -> Result<()> {
 
 /// The take's state and data homes, new in `home` (0700, empty): no recent files, sessions or trust of yours, and no
 /// grammar you downloaded (`$XDG_DATA_HOME/tarae/grammars`) — a release build embeds only the core grammars, so the
-/// first `.rs` file raises the Rust grammar's card, as a first user meets it (the design session, 2026-11-11). The
-/// variables that give them.
-pub(crate) fn homes_of_its_own(home: &Path) -> Result<Vec<(&'static str, OsString)>> {
+/// first `.rs` file raises the Rust grammar's card, as a first user meets it (the design session, 2026-11-11). And its
+/// cache home, `cache` (`TAKE_CACHE`): made where it isn't, refused where it holds anything, 0700. The variables that
+/// give them.
+pub(crate) fn homes_of_its_own(home: &Path, cache: &Path) -> Result<Vec<(&'static str, OsString)>> {
     let mut env = Vec::new();
     for (var, name) in [("XDG_STATE_HOME", "state"), ("XDG_DATA_HOME", "data")] {
         let at = home.join(name);
         std::fs::DirBuilder::new().mode(0o700).create(&at).map_err(|e| format!("{}: {e}", at.display()))?;
         env.push((var, at.into_os_string()));
     }
+    folder_for_a_take(cache)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(cache, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{}: {e}", cache.display()))?;
+    env.push(("XDG_CACHE_HOME", cache.as_os_str().to_owned()));
     Ok(env)
 }
 
