@@ -4,39 +4,39 @@
 //! - **Its words** (`name`): the key by tarae's own name for it, as the hint row writes it (`key.rs`'s `Display`): `j`,
 //!   `space`, `esc`, `enter`, `tab`, `backspace`, `C-q`, `A-x`, `←`. A chord is one pop; a sequence its presses.
 //! - **Two weights, by where the key went** (`Regions`, the take's `keys` events): a **command** (the code in normal
-//!   mode, a card's or the edit review's answer, a list, a panel; `enter`, `esc` and a chord anywhere) in the band's ink,
-//!   bold, `COMMAND_PX`; **typed text** (insert mode, the chat's input, a prompt, the terminal's program) the letter
-//!   itself, `TYPED_PX`, at birth as strong as the band's clock (`draw.rs`'s quiet ink) — a space there pops nothing.
-//!   `keys = "commands"` leaves the typed ones out.
-//! - **Never two over each other** (`pops`, checked by `meets`): a command pressed while the last command's pop is up
-//!   joins it as a sequence (`space l`, a held key counting `j ×12`), back at full strength; typed letters take free
-//!   places left to right across the lane, the oldest in the way ending when there's none.
+//!   mode, a card's answer, the edit review's own key, a list, a panel; `enter`, `esc` and a chord anywhere) in the
+//!   band's ink, bold, `COMMAND_PX`; **typed text** (insert mode, the chat's input, a prompt, the terminal's program, a
+//!   letter a card swallowed or the edit review refused) the letter itself, `TYPED_PX`, faint — a space there pops
+//!   nothing. `keys = "commands"` leaves the typed ones out.
+//! - **Round 1's, as first shown** (the user, 2026-11-12: "처음 방식이 가장 마음에 드는데"): this is V5 round 1's file, put
+//!   back, with what came after it and isn't the look — round 3's places (`Place::Card`, `Place::Review`) and a line
+//!   wider than the lane cut to it with an `…` (`fit`).
+//! - **A held command counts up**: the same command heard again while its pop is up restarts it with a count (`j ×12`).
 //! - **How it moves** (`motion`): at full strength on the key's frame, `RISE` px up over `POP_MS`, slowing, fading over
-//!   its last `FADE_MS`.
-//! - **Where**: the lane `mascot::LANE` wide left of the box, inside the band, from the paws' height: commands
-//!   right-aligned to its right edge, letters from its left. Its letters' ink only, over the ground (`ink`).
+//!   its last `FADE_MS`; each a seeded step aside from the last (`ASIDE_*`), so a burst doesn't stack.
+//! - **Where**: the lane `mascot::LANE` wide left of the box, inside the band, from the paws' height; right-aligned to
+//!   the lane's right edge, never past its left. Its letters' ink only, over the ground (`ink`).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use super::Keys;
 use crate::Result;
 use crate::cut::Program;
 use crate::cut::sound::Struck;
+use crate::rain::Rng;
 use crate::shot::Rgb;
 use crate::video::FPS;
 
-/// A command's life and its fade at the end of it; a typed letter's, shorter: the cut shows typing at 2×, about 20 keys
-/// a second, and the lane holds about nine letters — at 0.4 s about eight are up at once. Each fades over the same
-/// share of its life (`FADE_MS` of `POP_MS`).
 pub(crate) const POP_MS: u64 = 600;
 pub(crate) const FADE_MS: u64 = 350;
-pub(crate) const TYPED_MS: u64 = 400;
 pub(crate) const RISE: usize = 28;
 pub(crate) const COMMAND_PX: f32 = 26.0;
 pub(crate) const TYPED_PX: f32 = 20.0;
-/// The air between two typed letters up at once, and between a command and a letter (px at 1080p).
-const GAP_TYPED: usize = 4;
-const CLEAR: usize = 8;
+/// The step aside from the lane's right edge (px), seeded: a command's, a typed letter's (a fountain, wider).
+const ASIDE_COMMAND: usize = 16;
+const ASIDE_TYPED: usize = 48;
+const POPS: u64 = 3;
 
 /// A key by tarae's own name for it, from its bytes as the take keeps them; None for a key let go (the keyboard
 /// protocol's release). A line the key script types at once is its text.
@@ -220,47 +220,25 @@ impl Regions {
     }
 }
 
-/// A pop: from its frame until the frame it's gone (or restarted, or made room), its whole life (frames: `POP_MS` or
-/// `TYPED_MS`), its words, whether a command, and its place in the lane — its ink's left edge from the lane's left and
-/// its width (px at 1080p).
+/// A pop: from its frame until the frame it's gone (or restarted), its words, whether a command, its step aside (px).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pop {
     pub(crate) from: u64,
     pub(crate) until: u64,
-    pub(crate) life: u64,
     pub(crate) text: String,
     pub(crate) command: bool,
-    pub(crate) x: usize,
-    pub(crate) w: usize,
+    pub(crate) aside: usize,
 }
 
-/// The pops and their counts: commands (pops begun), joined (a command added to the one up), held (a held key's
-/// count), typed, typed letters ended early for room, spaces in typed text, and the names drawn.
+/// The pops and their counts: commands, typed, held (counted restarts), and the names drawn.
 #[derive(Debug, Default)]
 pub(crate) struct Pops {
     pub(crate) list: Vec<Pop>,
     pub(crate) commands: usize,
-    pub(crate) joined: usize,
-    pub(crate) held: usize,
     pub(crate) typed: usize,
-    pub(crate) made_room: usize,
+    pub(crate) held: usize,
     pub(crate) spaces: usize,
     pub(crate) names: Vec<String>,
-}
-
-/// A command pop's words as the hint row writes a sequence: each key by its name, a held one with its count (`space l`,
-/// `j ×12`).
-fn written(words: &[(String, u32)]) -> String {
-    let one = |(w, n): &(String, u32)| match n {
-        1 => w.clone(),
-        n => format!("{w} ×{n}"),
-    };
-    words.iter().map(one).collect::<Vec<_>>().join(" ")
-}
-
-/// Whether two stretches of the lane (from, width) come within `gap` of each other.
-fn near((a, aw): (usize, usize), (b, bw): (usize, usize), gap: usize) -> bool {
-    a < b + bw + gap && b < a + aw + gap
 }
 
 /// Whether a key's name in a typed place is the typing (a character, a line, its editing keys) — `enter`, `esc` and a
@@ -270,19 +248,26 @@ fn typing(name: &str) -> bool {
     !chord && !matches!(name, "enter" | "esc")
 }
 
-/// The pops of the keys heard (`struck`, in order), each typed or a command by `regions`, as `keys` says, laid in the
-/// lane by `width` (a text's ink width at 1080p, px; a command's or a typed letter's) so no two up at once ever share
-/// a column:
-///
-/// - **A command** pressed while the last command's pop is up joins it — the words grow as a sequence (`space l`), the
-///   same key again counts (`j ×12`) —, back at full strength on that press; right-aligned to the lane's right edge.
-///   Words that would outgrow the lane end that pop on this press and begin a new one. A typed letter in its way ends.
-/// - **A typed letter** takes the next free place to the right of the last one (a burst reads left to right; the first
-///   of a burst at the lane's left), left of a command up; none free, the oldest letters in the way end for it.
+/// `text` cut to `lane` px (`width`'s measure) with an `…`: a line the key script typed at once can be wider, and its
+/// ink would run past the lane.
+fn fit(text: String, width: impl Fn(&str) -> usize, lane: usize) -> String {
+    if width(&text) <= lane {
+        return text;
+    }
+    let mut cut = text;
+    while !cut.is_empty() && width(&format!("{cut}…")) > lane {
+        cut.pop();
+    }
+    format!("{cut}…")
+}
+
+/// The pops of the keys heard (`struck`, in order), each typed or a command by `regions`, as `keys` says, seeded; a
+/// text wider than the lane by `width` (its ink at 1080p, px; a command's or a typed letter's) cut to it.
 pub(crate) fn pops(
     struck: &[Struck],
     regions: &Regions,
     keys: Keys,
+    seed: u64,
     width: &dyn Fn(&str, bool) -> usize,
 ) -> Pops {
     let mut p = Pops::default();
@@ -290,16 +275,16 @@ pub(crate) fn pops(
         return p;
     }
     let life = POP_MS * FPS / 1000;
-    let lane = super::LANE;
-    // (the command pop up and its words; the typed letters' pops; where the next letter goes)
-    let mut cmd: Option<(usize, Vec<(String, u32)>)> = None;
-    let mut letters: Vec<usize> = Vec::new();
-    let mut cursor = 0usize;
+    let mut rng = Rng::new(seed, POPS);
+    let mut last_aside = 0usize;
+    // (each command's last pop and its count: a held key restarts it)
+    let mut alive: HashMap<String, (usize, u32)> = HashMap::new();
     let mut sorted: Vec<&Struck> = struck.iter().collect();
     sorted.sort_by_key(|s| s.v);
     for s in sorted {
         let Some(name) = name(&s.bytes) else { continue };
         let typed = regions.typed(s.t, &name, s.answer);
+        let fit = |text: String| fit(text, |t| width(t, !typed), super::LANE);
         if typed && name == "space" {
             p.spaces += 1;
             continue;
@@ -308,78 +293,38 @@ pub(crate) fn pops(
             continue;
         }
         let k = Program::frame_at(s.v);
-        letters.retain(|&i| p.list[i].until > k);
+        if !typed
+            && let Some(&(i, n)) = alive.get(&name)
+            && p.list[i].until > k
+        {
+            p.list[i].until = k;
+            let aside = p.list[i].aside;
+            let text = fit(format!("{name} ×{}", n + 1));
+            p.list.push(Pop { from: k, until: k + life, text, command: true, aside });
+            alive.insert(name, (p.list.len() - 1, n + 1));
+            p.held += 1;
+            continue;
+        }
+        let most = if typed { ASIDE_TYPED } else { ASIDE_COMMAND };
+        let mut aside = rng.range(0.0, most as f64 + 1.0) as usize;
+        for _ in 0..4 {
+            if aside.abs_diff(last_aside) * 3 >= most {
+                break;
+            }
+            aside = rng.range(0.0, most as f64 + 1.0) as usize;
+        }
+        last_aside = aside;
         if !p.names.contains(&name) {
             p.names.push(name.clone());
         }
-        if !typed {
-            let up = cmd.take().filter(|(i, _)| p.list[*i].until > k);
-            let mut words = vec![(name.clone(), 1)];
-            if let Some((i, mut was)) = up {
-                p.list[i].until = k;
-                match was.last_mut() {
-                    Some((w, n)) if *w == name => *n += 1,
-                    _ => was.push((name.clone(), 1)),
-                }
-                if width(&written(&was), true) <= lane {
-                    match was.last() {
-                        Some((_, n)) if *n > 1 => p.held += 1,
-                        _ => p.joined += 1,
-                    }
-                    words = was;
-                }
-            }
-            if words.len() == 1 && words[0].1 == 1 {
+        p.list.push(Pop { from: k, until: k + life, text: fit(name.clone()), command: !typed, aside });
+        match typed {
+            true => p.typed += 1,
+            false => {
                 p.commands += 1;
+                alive.insert(name, (p.list.len() - 1, 1));
             }
-            let text = written(&words);
-            let w = width(&text, true).min(lane);
-            let x = lane - w;
-            for &i in &letters {
-                if near((x, w), (p.list[i].x, p.list[i].w), CLEAR) {
-                    p.list[i].until = k;
-                    p.made_room += 1;
-                }
-            }
-            letters.retain(|&i| p.list[i].until > k);
-            p.list.push(Pop { from: k, until: k + life, life, text, command: true, x, w });
-            cmd = Some((p.list.len() - 1, words));
-            continue;
         }
-        // (a typed letter: left of a command up — which ends, if it leaves no room)
-        let w = width(&name, false).min(lane);
-        let mut limit = match &cmd {
-            Some((i, _)) if p.list[*i].until > k => p.list[*i].x.saturating_sub(CLEAR),
-            _ => lane,
-        };
-        if limit < w {
-            if let Some((i, _)) = cmd.take() {
-                p.list[i].until = k;
-            }
-            limit = lane;
-        }
-        if letters.is_empty() {
-            cursor = 0;
-        }
-        let start = if cursor + w <= limit { cursor } else { 0 };
-        let free = |x: usize| letters.iter().all(|&i| !near((x, w), (p.list[i].x, p.list[i].w), GAP_TYPED));
-        let x = match (start..=limit - w).chain(0..start).find(|&x| free(x)) {
-            Some(x) => x,
-            None => {
-                for &i in &letters {
-                    if near((start, w), (p.list[i].x, p.list[i].w), GAP_TYPED) {
-                        p.list[i].until = k;
-                        p.made_room += 1;
-                    }
-                }
-                start
-            }
-        };
-        let life = TYPED_MS * FPS / 1000;
-        p.list.push(Pop { from: k, until: k + life, life, text: name, command: false, x, w });
-        letters.push(p.list.len() - 1);
-        p.typed += 1;
-        cursor = x + w + GAP_TYPED;
     }
     p.list.sort_by_key(|q| q.from);
     p
@@ -389,25 +334,6 @@ impl Pops {
     /// Each pop's frames up (from, until), in order of their start — what a swing waits for.
     pub(crate) fn busy(&self) -> Vec<(u64, u64)> {
         self.list.iter().map(|q| (q.from, q.until)).collect()
-    }
-
-    /// Where two pops up at once would meet, `height` px tall (a cell's, at 1080p): each pair's first frame where their
-    /// boxes touch (risen as `motion` says) — none, ever, is the rule.
-    pub(crate) fn meets(&self, height: usize) -> Vec<(u64, usize, usize)> {
-        let mut out = Vec::new();
-        for (i, a) in self.list.iter().enumerate() {
-            for (j, b) in self.list.iter().enumerate().skip(i + 1).take_while(|(_, b)| b.from < a.until) {
-                if !near((a.x, a.w), (b.x, b.w), 0) {
-                    continue;
-                }
-                let y = |q: &Pop, k: u64| (motion(k - q.from, q.life).0 * RISE as f32).round() as i64;
-                let hit = (b.from..a.until.min(b.until)).find(|&k| y(a, k).abs_diff(y(b, k)) < height as u64);
-                if let Some(k) = hit {
-                    out.push((k, i, j));
-                }
-            }
-        }
-        out
     }
 
     /// The pops up at frame `k` with their age (frames), oldest first.
@@ -425,15 +351,17 @@ impl Pops {
     }
 }
 
-/// A pop `age` frames into its `life` (frames): how far it has risen (of `RISE`, slowing — ease-out) and how strongly
-/// it's drawn (of 255: full, then fading over its last `FADE_MS` of `POP_MS`'s share).
-pub(crate) fn motion(age: u64, life: u64) -> (f32, u8) {
-    let x = (age as f32 / life.max(1) as f32).clamp(0.0, 1.0);
+/// A pop `age` frames in: how far it has risen (of `RISE`, slowing — ease-out) and how strongly it's drawn (of 255:
+/// full, then fading over its last `FADE_MS`).
+pub(crate) fn motion(age: u64) -> (f32, u8) {
+    let t = age as f32 / FPS as f32;
+    let life = POP_MS as f32 / 1000.0;
+    let x = (t / life).clamp(0.0, 1.0);
     let rise = 1.0 - (1.0 - x) * (1.0 - x);
-    let fade = FADE_MS as f32 / POP_MS as f32;
-    let a = match x < 1.0 - fade {
+    let fade_from = (POP_MS - FADE_MS) as f32 / 1000.0;
+    let a = match t < fade_from {
         true => 1.0,
-        false => ((1.0 - x) / fade).clamp(0.0, 1.0),
+        false => ((life - t) / (FADE_MS as f32 / 1000.0)).clamp(0.0, 1.0),
     };
     (rise, (a * 255.0).round() as u8)
 }

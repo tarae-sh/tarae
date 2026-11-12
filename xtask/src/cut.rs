@@ -1341,17 +1341,16 @@ impl<'c> Program<'c> {
     }
 
     /// What the frame at `v` must stand through to be held still (the take's ms, from–to; none on a card): V4b's
-    /// `camera::STAND_MS` before it — the take's screens the video showed then (from its part's start at the soonest; a
-    /// jump in it is a change too) — and after it, the take's own next `STAND_MS` at that frame's pace: what the video
-    /// would have gone on to show. A screen that changes in it (a running timer, a streaming answer) reads, held, as a
-    /// frozen video.
+    /// `camera::STAND_MS` of video leading into it — the take's screens the video showed then (from its part's start at
+    /// the soonest; a jump in it is a change too) — up to the held frame's own. A screen that changes in it (a running
+    /// timer, a streaming answer, a popup just opened) reads, held, as a frozen video. Only time the video shows counts
+    /// (the design session, 2026-11-12): what the take did after the held frame is never seen, so a cursor moving 0.1 s
+    /// later leaves the held picture whole.
     pub(crate) fn stand_window(&self, v: u64) -> Option<(u64, u64)> {
-        let f = self.frame(v);
-        let t = f.screen?;
+        let t = self.frame(v).screen?;
         let p = self.part(v);
         let a = self.frame(v.saturating_sub(camera::STAND_MS * 1000).max(p.at)).screen.unwrap_or(t);
-        let after = (camera::STAND_MS as f64 * f.speed.unwrap_or(1.0)).round() as u64;
-        Some((a.min(t), t + after))
+        Some((a.min(t), t))
     }
 
     /// The part the video's `v` µs is in (the last past the end).

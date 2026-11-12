@@ -237,20 +237,20 @@ impl<'a> Stage<'a> {
         if let (Some((art, place)), Some(p)) = (&self.mascot, pose) {
             let t = Instant::now();
             video::stamp(&mut px, lay.dims, art.picture(p), (place.x, place.y));
-            if let Some((left, _)) = place.lane {
+            if let Some((left, right)) = place.lane {
                 let s = lay.scale;
                 for &(i, age) in up {
                     let pop = &pops.list[i];
-                    let (rise, a) = pops::motion(age, pop.life);
-                    // (a typed letter at birth as strong as the clock: the ink at the quiet marks' strength)
-                    let (size, a) = match pop.command {
-                        true => (pops::COMMAND_PX, a),
-                        false => (pops::TYPED_PX, (u32::from(a) * u32::from(QUIET) / 255) as u8),
+                    let (rise, a) = pops::motion(age);
+                    let (size, fg) = match pop.command {
+                        true => (pops::COMMAND_PX, self.look.ink),
+                        false => (pops::TYPED_PX, self.look.faint),
                     };
-                    let fg = self.look.ink;
                     let word = words.word(&pop.text, size, fg, pop.command);
-                    // (its ink at its place in the lane: the picture's margin before it)
-                    let x = (left + s.px(pop.x)).saturating_sub(lay.pad);
+                    // (its ink right-aligned to the lane's right edge, a step aside; never past the lane's left)
+                    let x = (right + lay.pad)
+                        .saturating_sub(s.px(pop.aside) + word.0)
+                        .max(left.saturating_sub(lay.pad));
                     let mid =
                         place.y + s.px(mascot::PAWS) - (rise * s.px(pops::RISE) as f32).round() as usize;
                     pops::ink(
@@ -415,7 +415,7 @@ pub(crate) fn make(
         let heard = super::sound::sounds(prog, &keys, marks);
         let hands = Hands::new(&heard.taps);
         let Some(regions) = &regions else { return ((heard.taps, hands, Pops::default()), None) };
-        let pops = pops::pops(&heard.struck, regions, cut.mascot.keys, &width);
+        let pops = pops::pops(&heard.struck, regions, cut.mascot.keys, cut.seed, &width);
         let causes = motions::causes(prog, marks);
         let plan = Plan::new(prog, &hands, &causes, &pops.busy(), &cut.mascot, cut.seed);
         ((heard.taps, hands, pops), Some(plan))
@@ -734,34 +734,17 @@ pub(crate) fn make(
         said.extend(plan.said(&cut.mascot));
         said.push(match cut.mascot.keys {
             mascot::Keys::Off => "the key pops: none (keys = false)".to_string(),
-            k => {
-                // (every frame: no two pops up at once meet — their cells' boxes, risen as they rise)
-                let met = pops.meets(shot::cell(&fonts, pops::COMMAND_PX).1);
-                let met = match met.first() {
-                    None => "no two up at once ever meet (every frame checked)".to_string(),
-                    Some(&(k, i, j)) => format!(
-                        "{} pairs MEET, the first at {}: “{}” and “{}”",
-                        met.len(),
-                        clock(Program::time_of(k) / 1000),
-                        pops.list[i].text,
-                        pops.list[j].text
-                    ),
-                };
-                format!(
-                    "the key pops (keys = {}): {} — {} commands begun, {} joined to the one up, {} a held key's count, {} \
-                     typed ({} ended early for room); {met}; {} spaces in typed text pop nothing, none on a sped span; \
-                     the names drawn: {}",
-                    if k == mascot::Keys::All { "\"all\"" } else { "\"commands\"" },
-                    pops.list.len(),
-                    pops.commands,
-                    pops.joined,
-                    pops.held,
-                    pops.typed,
-                    pops.made_room,
-                    pops.spaces,
-                    pops.names.join(" ")
-                )
-            }
+            k => format!(
+                "the key pops (keys = {}): {} — {} commands, {} typed, {} a held key's count; {} spaces in typed text pop \
+                 nothing, none on a sped span; the names drawn: {}",
+                if k == mascot::Keys::All { "\"all\"" } else { "\"commands\"" },
+                pops.list.len(),
+                pops.commands,
+                pops.typed,
+                pops.held,
+                pops.spaces,
+                pops.names.join(" ")
+            ),
         });
     }
     if !sheet.is_empty() {
