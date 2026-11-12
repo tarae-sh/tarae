@@ -229,6 +229,103 @@ fn the_take_has_a_state_a_data_and_a_cache_home_of_its_own() {
     assert!(take.starts_with("/Users/Shared") && !take.starts_with(std::env::temp_dir()));
 }
 
+/// A take's folder in `/Users/Shared` (everyone's) — here a stand-in in the test's own: one absent made new, 0700; an
+/// empty real folder of yours taken (made 0700); a link to an empty folder refused, the folder it points at left as it
+/// was (`read_dir` would follow it); one that holds anything refused. Another user's can't be made without another
+/// user, so the check is asked on a real folder's metadata with another uid as `me`.
+#[test]
+fn a_takes_folder_is_made_new_or_an_empty_real_folder_of_yours() {
+    use super::super::take::{folder_for_a_take, homes_of_its_own, my_uid, real_and_yours};
+    use std::os::unix::fs::MetadataExt;
+    let dir = Scratch::new("xtask-take-folders");
+    let shared = dir.join("shared");
+    let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().mode() & 0o777;
+    // (absent: made new, 0700)
+    let new = shared.join("halil");
+    folder_for_a_take(&new).unwrap();
+    assert!(new.is_dir() && !new.is_symlink() && mode(&new) == 0o700);
+    // (an empty folder you made, open to others: taken, and made 0700)
+    let empty = shared.join("halil-checkouts");
+    std::fs::create_dir(&empty).unwrap();
+    std::fs::set_permissions(&empty, std::fs::Permissions::from_mode(0o777)).unwrap();
+    folder_for_a_take(&empty).unwrap();
+    assert_eq!(mode(&empty), 0o700);
+    // (a link to an empty folder: refused, by the take's folders and its cache home alike; what it points at untouched)
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = shared.join("halil-cache");
+    symlink(&elsewhere, &link).unwrap();
+    let e = folder_for_a_take(&link).unwrap_err();
+    assert!(e.contains("a link to") && e.contains("not a folder"), "{e}");
+    let home = dir.join("home");
+    std::fs::create_dir(&home).unwrap();
+    let e = homes_of_its_own(&home, &link).unwrap_err();
+    assert!(e.contains("a link to"), "{e}");
+    assert_eq!(mode(&elsewhere), 0o755, "never made 0700 through the link");
+    assert!(link.is_symlink());
+    // (one that holds anything: refused)
+    let full = shared.join("halil-rust");
+    put(&full.join("last-take"), "");
+    let e = folder_for_a_take(&full).unwrap_err();
+    assert!(e.contains("not empty"), "{e}");
+    // (a file: refused)
+    let file = shared.join("a-file");
+    put(&file, "");
+    assert!(folder_for_a_take(&file).unwrap_err().contains("not a folder"));
+    // (another user's: the check on a real folder's metadata, `me` another uid)
+    let m = std::fs::symlink_metadata(&empty).unwrap();
+    assert_eq!(m.uid(), my_uid());
+    real_and_yours(&empty, &m, m.uid()).unwrap();
+    let e = real_and_yours(&empty, &m, m.uid() + 1).unwrap_err();
+    assert!(e.contains(&format!("owned by uid {}, not you", m.uid())), "{e}");
+}
+
+/// The clone `reuse` takes is a real folder of yours, others not writing in it: a link to one refused (the clone
+/// behind it untouched), and one others may write in.
+#[test]
+fn a_clone_behind_a_link_or_open_to_others_is_never_taken() {
+    let dir = Scratch::new("xtask-take-rust-link");
+    let yours = a_home(&dir);
+    let real = dir.join("elsewhere/halil-rust");
+    clone(&yours, &real).unwrap();
+    reuse(&yours, &real).unwrap();
+    let link = dir.join("shared/halil-rust");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    symlink(&real, &link).unwrap();
+    let e = reuse(&yours, &link).err().unwrap();
+    assert!(e.contains("a link to") && e.contains("make it again"), "{e}");
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let e = reuse(&yours, &real).err().unwrap();
+    assert!(e.contains("mode 777, others may write in it"), "{e}");
+}
+
+/// The take's folder outside your real home (#521's follow-up: cargo reads `~/.cargo/config.toml` from the project's
+/// folder up): one under it refused, also through a link into it and before it's there; the home itself too; one
+/// beside it taken.
+#[test]
+fn the_takes_folder_is_refused_under_your_real_home() {
+    use super::super::take::outside_home;
+    let dir = Scratch::new("xtask-take-cwd-home");
+    let home = dir.join("Users/u");
+    std::fs::create_dir_all(home.join("Workspace")).unwrap();
+    let e = outside_home(&home.join("Workspace/halil"), &home).unwrap_err();
+    assert!(e.contains("under your home") && e.contains("cargo reads"), "{e}");
+    assert!(outside_home(&home, &home).is_err());
+    let link = dir.join("Users/Shared-link");
+    symlink(home.join("Workspace"), &link).unwrap();
+    let e = outside_home(&link.join("halil/deep"), &home).unwrap_err();
+    assert!(e.contains("under your home"), "{e}");
+    // (a home given through a link, the folder by its real path)
+    let home_link = dir.join("home-link");
+    symlink(&home, &home_link).unwrap();
+    assert!(outside_home(&home.join("halil"), &home_link).is_err());
+    // (beside it: taken — a name that starts as the home's does too)
+    std::fs::create_dir_all(dir.join("Users/Shared")).unwrap();
+    outside_home(&dir.join("Users/Shared/halil"), &home).unwrap();
+    outside_home(&dir.join("Users/u-shared/halil"), &home).unwrap();
+}
+
 /// rustup's proxy's own variables and `cargo run`'s, set for `cargo xtask`, never reach the take's tarae: its
 /// `RUSTUP_TOOLCHAIN` is tarae's pinned one, which the clone doesn't hold. The clone's own homes and `PATH` do, with
 /// the clone's values over yours.

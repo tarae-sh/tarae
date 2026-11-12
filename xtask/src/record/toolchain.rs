@@ -141,12 +141,24 @@ fn env_of(yours: &Yours, to: &Path, proxies: bool) -> Result<Vec<(&'static str, 
     ])
 }
 
-/// The clone `record rust-clone` made in `to` earlier, taken as it is (#525) — refused where none made it (no `MADE`),
+/// The clone `record rust-clone` made in `to` earlier, taken as it is (#525) — refused where `to` is a link, another
+/// user's or others may write in it (`take::real_and_yours`), where none made it (no `MADE`),
 /// where `to` holds anything else (a take's checkout, a build), or where a take took it already. What it made, as
 /// `clone` said it (no time: it's there).
 pub(crate) fn reuse(yours: &Yours, to: &Path) -> Result<Cloned> {
     let again =
         "make it again: empty it, then `cargo xtask record rust-clone DIR` (or leave --rust-cloned out)";
+    // (`/Users/Shared` is everyone's: a link, or a folder another user made — or others may write in, whatever it
+    // holds — is never taken, as `record take` takes no such folder)
+    let m = std::fs::symlink_metadata(to).map_err(|e| format!("{}: {e} — {again}", to.display()))?;
+    super::take::real_and_yours(to, &m, super::take::my_uid()).map_err(|e| format!("{e}; {again}"))?;
+    if m.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{}: mode {:o}, others may write in it — not only what record rust-clone made; {again}",
+            to.display(),
+            m.mode() & 0o7777
+        ));
+    }
     let marker = to.join(MADE);
     let text = std::fs::read_to_string(&marker)
         .map_err(|e| format!("{}: {e} — not a clone record rust-clone made; {again}", marker.display()))?;

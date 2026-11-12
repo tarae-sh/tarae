@@ -22,8 +22,10 @@
 //!   take's). Its environment is a list of what it keeps (`KEPT`: `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
 //!   `COLORTERM`, the locale, `TMPDIR`) and what it sets, never a list of what it drops: the same from any shell, a
 //!   Claude Code one's plumbing included (`takes_env`); what it left out said first, by prefix and count (`left_out`,
-//!   names only — some are tokens), and its `SHELL` beside it. `FOLDER` (the take's `/Users/Shared/halil`) is made
-//!   where it isn't, refused where it holds anything. Your files are read, never written. Its claude is your config's:
+//!   names only — some are tokens), and its `SHELL` beside it. `FOLDER` (the take's `/Users/Shared/halil`) is refused
+//!   under your home, as real paths (`outside_home`: cargo would read your `~/.cargo/config.toml`). It and the take's
+//!   other folders in `/Users/Shared` (everyone's) are made new, 0700, where they aren't; where they are, taken only as
+//!   an empty real folder of yours — never a link, nor another user's (`folder_for_a_take`). Your files are read, never written. Its claude is your config's:
 //!   run it only as the take, never in a test.
 //! - `cargo xtask record dry [OUT]` — V3's dry run (default `target/rec/record-dry`, made new): the take's motions end
 //!   to end at the take's size by the hands (`hands.rs`), on a scene's tarae with the stand-in Claude (`scenes::live`,
@@ -286,6 +288,10 @@ pub(super) fn take(args: &[String]) -> Result<()> {
     let out = out.ok_or_else(|| format!("--out DIR: where the take goes — {USAGE}"))?;
     let cwd =
         cwd.ok_or_else(|| format!("--cwd FOLDER: the take's folder (/Users/Shared/halil) — {USAGE}"))?;
+    // (refused before anything runs or is made)
+    let real_home =
+        std::env::var_os("HOME").ok_or("no HOME: the take's folder must sit outside your home")?;
+    outside_home(&cwd, Path::new(&real_home))?;
     let bin = tarae_bin(bin.as_deref())?;
     // (the build it is, said before anything is made: the runbook's "check once it's up" compares it with main's tip)
     let version =
@@ -369,8 +375,8 @@ pub(super) fn take(args: &[String]) -> Result<()> {
 /// The take's state and data homes, new in `home` (0700, empty): no recent files, sessions or trust of yours, and no
 /// grammar you downloaded (`$XDG_DATA_HOME/tarae/grammars`) — a release build embeds only the core grammars, so the
 /// first `.rs` file raises the Rust grammar's card, as a first user meets it (the design session, 2026-11-11). And its
-/// cache home, `cache` (`TAKE_CACHE`): made where it isn't, refused where it holds anything, 0700. The variables that
-/// give them.
+/// cache home, `cache` (`TAKE_CACHE`): made where it isn't, 0700, and where it is taken only as an empty real folder of
+/// yours (`folder_for_a_take`). The variables that give them.
 pub(crate) fn homes_of_its_own(home: &Path, cache: &Path) -> Result<Vec<(&'static str, OsString)>> {
     let mut env = Vec::new();
     for (var, name) in [("XDG_STATE_HOME", "state"), ("XDG_DATA_HOME", "data")] {
@@ -379,9 +385,6 @@ pub(crate) fn homes_of_its_own(home: &Path, cache: &Path) -> Result<Vec<(&'stati
         env.push((var, at.into_os_string()));
     }
     folder_for_a_take(cache)?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(cache, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("{}: {e}", cache.display()))?;
     env.push(("XDG_CACHE_HOME", cache.as_os_str().to_owned()));
     Ok(env)
 }
@@ -404,20 +407,113 @@ pub(crate) fn tarae_bin(given: Option<&Path>) -> Result<PathBuf> {
     std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
-/// The take's folder: made where it isn't; refused where it holds anything (a take starts from an empty one).
-pub(super) fn folder_for_a_take(cwd: &Path) -> Result<()> {
-    match std::fs::read_dir(cwd) {
-        Ok(mut d) => match d.next() {
-            None => Ok(()),
-            Some(_) => Err(format!(
-                "{}: not empty — a take starts in an empty folder (move the last take's away)",
-                cwd.display()
-            )),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(cwd).map_err(|e| format!("{}: {e}", cwd.display()))
+/// A take's folder (its working folder, `TAKE_WORKTREES`, `TAKE_CACHE`, `toolchain::TAKE_RUST` — all in
+/// `/Users/Shared`, which everyone may write): made new, 0700, where it isn't (its parent made where that isn't); where
+/// it is, taken only as a real folder of yours (`real_and_yours`: never a link, whatever it points at, nor another
+/// user's) that's empty — a take starts from an empty one — and made 0700. Refused otherwise, with its reason. Once
+/// checked it stays so: `/Users/Shared` is sticky, so no other user can move or replace a folder of yours there.
+pub(crate) fn folder_for_a_take(at: &Path) -> Result<()> {
+    let me = my_uid();
+    match std::fs::symlink_metadata(at) {
+        Ok(m) => {
+            real_and_yours(at, &m, me)?;
+            let mut d = std::fs::read_dir(at).map_err(|e| format!("{}: {e}", at.display()))?;
+            if d.next().is_some() {
+                return Err(format!(
+                    "{}: not empty — a take starts in an empty folder (move the last take's away)",
+                    at.display()
+                ));
+            }
         }
-        Err(e) => Err(format!("{}: {e}", cwd.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = at.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            // (`mkdir`, never over what's there: one made meanwhile is refused, not taken)
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(at)
+                .map_err(|e| format!("{}: {e}", at.display()))?;
+            // (made new just now, so ours — checked all the same, as `hands::fresh_folder` does)
+            let m = std::fs::symlink_metadata(at).map_err(|e| format!("{}: {e}", at.display()))?;
+            real_and_yours(at, &m, me)?;
+        }
+        Err(e) => return Err(format!("{}: {e}", at.display())),
+    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{}: {e}", at.display()))
+}
+
+/// This process's user.
+pub(crate) fn my_uid() -> u32 {
+    // SAFETY: getuid can't fail.
+    unsafe { libc::getuid() }
+}
+
+/// `at` as found there (`m`, its metadata never through a link) taken as a take's folder: a real folder — a link
+/// refused, whatever it points at — owned by `me`. Its reason where it isn't.
+pub(crate) fn real_and_yours(at: &Path, m: &std::fs::Metadata, me: u32) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if m.file_type().is_symlink() {
+        let to = std::fs::read_link(at).map(|t| format!(" to {}", t.display())).unwrap_or_default();
+        return Err(format!(
+            "{}: a link{to}, not a folder — a take's folder is a real one of yours (remove the link)",
+            at.display()
+        ));
+    }
+    if !m.is_dir() {
+        return Err(format!("{}: not a folder — a take's folder is a real one of yours", at.display()));
+    }
+    if m.uid() != me {
+        return Err(format!(
+            "{}: owned by uid {}, not you (uid {me}) — another user may have made it; a take's folder is yours alone \
+             (have it removed, or name another)",
+            at.display(),
+            m.uid()
+        ));
+    }
+    Ok(())
+}
+
+/// Refused where the take's folder `cwd` sits under `home` (your real home), compared as real paths (a link into the
+/// home is under it): cargo reads every `.cargo/config.toml` from a project's folder up to `/` whatever `CARGO_HOME`
+/// says, so yours (`~/.cargo/config.toml`) would shape the take's builds, and a sandbox's word about it could come on
+/// screen (#521's follow-up).
+pub(crate) fn outside_home(cwd: &Path, home: &Path) -> Result<()> {
+    let (c, h) = (real_path(cwd)?, real_path(home)?);
+    if c.starts_with(&h) {
+        return Err(format!(
+            "{}: under your home ({}, as real paths) — cargo reads every .cargo/config.toml from a project's folder \
+             up, whatever CARGO_HOME says, and yours would shape the take's builds: a take's folder sits outside the \
+             home (/Users/Shared/halil)",
+            cwd.display(),
+            h.display()
+        ));
+    }
+    Ok(())
+}
+
+/// `p` as a real path: its nearest ancestor that's there with its links resolved, the rest as written (absolute from
+/// the current folder). Refused where the rest climbs (`..` below what's there).
+fn real_path(p: &Path) -> Result<PathBuf> {
+    let abs = match p.is_absolute() {
+        true => p.to_path_buf(),
+        false => std::env::current_dir().map_err(|e| format!("the current folder: {e}"))?.join(p),
+    };
+    let (mut at, mut rest) = (abs.as_path(), Vec::new());
+    loop {
+        if let Ok(mut real) = std::fs::canonicalize(at) {
+            real.extend(rest.iter().rev());
+            return Ok(real);
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                at = parent;
+            }
+            _ => return Err(format!("{}: a `..` below what's there", p.display())),
+        }
     }
 }
 
