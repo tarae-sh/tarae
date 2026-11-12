@@ -103,6 +103,7 @@ mod turnsheld;
 mod warm;
 mod watchers;
 mod watchgate;
+mod waysin;
 mod weave;
 mod web;
 mod weblinks;

@@ -296,6 +296,12 @@ pub fn reason(c: &crate::chat::Chat) -> String {
     words.filter(|w| !w.is_empty()).or(step).unwrap_or_default()
 }
 
+/// Whether Claude's words in `text` are all the review's head says as its reason (`reason`): the same words, no code
+/// beside them — while the head is in sight the follow card leaves that message out, never a cut of it (#543).
+pub fn said_by_head(text: &str, reason: &str) -> bool {
+    !reason.is_empty() && crate::chat::displayed(text).split_whitespace().eq(reason.split_whitespace())
+}
+
 /// Claude's words without its code, on one line: a fenced block (```` ``` ```` or `~~~`, its language word and its
 /// lines) left out — the review's reason is prose (`…replaces the first: rust let mut threads: …` ran the
 /// code into it).

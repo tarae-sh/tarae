@@ -716,6 +716,9 @@ pub struct Screen {
     pub lists: std::cell::RefCell<Vec<(crate::pane::GroupKind, ListDrawn)>>,
     /// The in-buffer review's change in hand: its first and last screen rows.
     pub review_change: std::cell::Cell<Option<(usize, usize)>>,
+    /// The in-buffer review's head (its title, warnings and Claude's reason): its first and last screen rows — the
+    /// follow card keeps it in sight as it keeps the change in hand, and says nothing it says (#543).
+    pub review_head: std::cell::Cell<Option<(usize, usize)>>,
     /// The in-buffer review's changes: every screen row of one (its header, its lines) and which change — cards
     /// keep off them, a click takes that change in hand.
     pub review_rows: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -2614,32 +2617,58 @@ impl Editor {
                 order.push(p.list);
             }
         }
-        // A card waiting in sight is the round's last stop (P3 §3.8): `C-w w` from the last pane focuses it (backwards
-        // from the first); from the card a window prefix just took the keys from the round goes on (never back to it).
-        // A toast is never a stop: it takes no key (`toast.rs`)
+        // What waits in sight is the round's last stops (P3 §3.8): a waiting card, Claude's waiting edit review (faded in
+        // the code area or its peek, #528) — in the order `C-q` takes them (`in_line`, #544). `C-w w` from the last pane
+        // focuses the first (backwards from the first pane, the last); from one a window prefix just took the keys from
+        // (a card) or that has them (the review), the next after it; past the last the round goes on (never back to
+        // one). A toast is never a stop: it takes no key (`toast.rs`)
+        use crate::inbox::Waiting;
         use crate::pane::Floating;
         let left = self.float_left.take();
-        let card = (self.screen.offer_card.is_some() || self.screen.offer_held)
-            && self.card_waits()
-            && !matches!(left, Some(Floating::Card(l)) if self.offers.first().is_some_and(|o| o.id == l));
-        // (a waiting edit review in sight the same way, after a waiting card — faded in the code area or its peek, #528)
-        let review = !card
-            && self.workspace.claude.review.as_ref().is_some_and(crate::llm::Review::waits)
+        let front = self.offers.first().map(|o| o.id);
+        let card_left = matches!(left, Some(Floating::Card(l)) if front == Some(l));
+        let card = (self.screen.offer_card.is_some() || self.screen.offer_held) && self.card_waits();
+        let rev = self.workspace.claude.review.as_ref();
+        let review = rev.is_some_and(crate::llm::Review::waits)
             && (self.screen.review_area.get().is_some() || self.screen.review_peek.get().is_some());
-        // (the follow card the same way, after a waiting card — #267: from it, the round goes on from the code)
+        let review_has = rev.is_some_and(|r| r.focused);
+        // (every one in the order, the one just left too — where the round goes on from)
+        let mut stops: Vec<(Waiting, bool)> = Vec::new();
+        if let Some(id) = front.filter(|_| card) {
+            stops.push((Waiting::Card(id), !card_left));
+        }
+        if review || review_has {
+            stops.push((Waiting::Review, review));
+        }
+        if stops.len() == 2 && self.review_before_card() {
+            stops.reverse();
+        }
+        if delta < 0 {
+            stops.reverse();
+        }
+        let from = stops.iter().position(|s| match s.0 {
+            Waiting::Card(_) => card_left,
+            Waiting::Review => review_has,
+        });
+        // (the follow card the same way, after them — #267: from it, the round goes on from the code)
         let from_follow = std::mem::take(&mut self.follow_focus) || left == Some(Floating::Follow);
         let follow = !card && !review && !from_follow && self.screen.thought_card.get().is_some();
         let edge = |end: Option<&crate::split::PaneId>| self.at_pane().is_some_and(|h| end == Some(&h));
         let (last, first) = (edge(order.last()) && left.is_none(), edge(order.first()) && left.is_none());
-        if (card || review || follow) && (if delta > 0 { last } else { first }) {
-            if review {
-                return crate::llm::review_focus(self);
-            }
-            if follow {
+        let at_end = if delta > 0 { last } else { first };
+        let stop = match from {
+            Some(i) => stops[i + 1..].iter().find(|s| s.1),
+            None if at_end => stops.iter().find(|s| s.1),
+            None => None,
+        };
+        match stop.map(|s| s.0) {
+            Some(Waiting::Review) => return crate::llm::review_focus(self),
+            Some(Waiting::Card(_)) => return self.card_focus_front(),
+            None if follow && at_end => {
                 self.follow_focus = true;
                 return;
             }
-            return self.card_focus_front();
+            None => {}
         }
         let mut here = self.at_pane().unwrap_or(self.workspace.viewer.focus);
         // (the slot's keys on a group: its detail's)

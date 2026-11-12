@@ -112,6 +112,15 @@ pub enum Next {
     None,
 }
 
+/// What waits here for an answer, as its way in names it (#544): the card in front, or this session's edit review.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waiting {
+    /// The card up in front (its id).
+    Card(u64),
+    /// The front session's edit review.
+    Review,
+}
+
 /// The inbox's order — the one place it's decided: the card the user's own command just made while it's in
 /// front (`yours`, #205 — user decision 2026-10-13: `C-q` and `enter` go to it, Claude's stays stacked), then
 /// what asks for an answer before what doesn't, oldest first, then the order they came in (an entry, how long
@@ -330,6 +339,37 @@ impl Editor {
             }
             None if here && e.up == "review" => Next::Review,
             _ => Next::Go(Box::new(e)),
+        }
+    }
+
+    /// The way in `what` says on itself (a card's bottom line, the review's head or peek), read from where `C-q` goes
+    /// (#544): `C-q` — inside zellij its twin — on the one it reaches (`next_up`; a card whose text is read in its buffer
+    /// takes it first, `card_key`); None on the rest: no pair, their answers faint, nothing naming a key that goes
+    /// elsewhere. A card holding the keys: none — its `C-q` gives them back (its own line says `esc back`).
+    pub fn way_in(&self, what: Waiting) -> Option<String> {
+        let front = self.offers.first().filter(|o| !o.installing()).map(|o| o.id);
+        let reached = match self.next_up() {
+            _ if self.card_has_keys() => None,
+            _ if self.offer_reading() => front.map(Waiting::Card),
+            Next::Card(id) => Some(Waiting::Card(id)),
+            Next::Review => Some(Waiting::Review),
+            // (the card in front about another session: `C-q` goes there and gives it the keys — `inbox_next`)
+            Next::Go(e) if e.card().is_some() && e.card() == front => front.map(Waiting::Card),
+            _ => None,
+        };
+        (reached == Some(what)).then(|| self.key_said("C-q"))
+    }
+
+    /// Whether this session's edit review comes before the card in front in the inbox's order (`in_line`) — `C-w w`'s
+    /// round takes what waits in that order, as `C-q` does (#544).
+    pub fn review_before_card(&self) -> bool {
+        let inbox = self.inbox();
+        let front = self.offers.first().map(|o| o.id);
+        let review = inbox.iter().position(|e| e.up == "review" && e.session_id() == self.workspace.id);
+        let card = inbox.iter().position(|e| e.card().is_some() && e.card() == front);
+        match (review, card) {
+            (Some(r), Some(c)) => r < c,
+            (r, _) => r.is_some(),
         }
     }
 

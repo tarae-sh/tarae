@@ -954,6 +954,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         frames: Default::default(),
         height: Some((h as usize).saturating_sub(1)),
         review_change: Default::default(),
+        review_head: Default::default(),
         review_rows: Default::default(),
         review_text: Default::default(),
         // (its buffers kept: cleared and filled again each frame)
@@ -6294,14 +6295,15 @@ fn draw(
         }
     }
     // The notification card keeps out of every other card's way, off the cursor's row and the review's change
-    // in hand (U9) — or folds into the status line
+    // in hand (U9) and its head, part of the change in hand (#543, #552) — or folds into the status line
     let (fx, fr) = lay.float_area();
     let line = |y0: usize, y1: usize| (fx, y0, fr - fx, y1 + 1 - y0);
     let cursor_row = text_cursor.map(|(_, y)| line(y as usize, y as usize));
     let change = editor.screen.review_change.get().map(|(a, b)| line(a, b));
+    let head = editor.screen.review_head.get().map(|(a, b)| line(a, b));
     let cards =
         [note_rect, follow_rect, offer_rect, ask_rect, peek_rect].into_iter().flatten().map(kept_apart);
-    let taken: Vec<Rect4> = cards.chain([cursor_row, change].into_iter().flatten()).collect();
+    let taken: Vec<Rect4> = cards.chain([cursor_row, change, head].into_iter().flatten()).collect();
     let toast_folded = !draw_toasts(editor, ui, lay, &taken, out)?;
     drew(editor, Kind::Toast, editor.screen.toast_card.get());
     drew(editor, Kind::Hover, run_card(editor, ui, lay, out)?);
@@ -9971,6 +9973,7 @@ fn draw_review(
     let (warned, reason) = review_heads(editor, ui, &rev.reason, &rev.warnings, width);
     let warn = Style { fg: t.try_get("warning").and_then(|s| s.fg).or(ui.accent.fg), ..ui.base };
     let title_h = 1 + warned.len() + reason.len();
+    editor.screen.review_head.set(Some((lay.text_top as usize, lay.text_top as usize + title_h - 1)));
     let body = lay.text_rows.saturating_sub(title_h);
     // Fixed title
     let n = rev.hunks.len();
@@ -10112,7 +10115,9 @@ fn review_peek_at(
     }
     let doc = editor.docs.iter().find(|d| d.id == rev.doc_id)?;
     let (ax, aw) = (lay.work.0, lay.work_w().saturating_sub(usize::from(lay.scrollbar)));
-    let tail = editor.key_said("C-q").width() + " answer".len();
+    // (its way in only where `C-q` reaches it — #544)
+    let way = editor.way_in(crate::inbox::Waiting::Review);
+    let tail = way.as_ref().map_or(0, |k| k.width() + " answer".len());
     let title = format!("Claude's change · {}", review_file(editor, doc));
     // (` ▎ `, the title, three cells, its way in, a cell of air; a cell of air each side of it)
     let w = (3 + title.width() + 3 + tail + 1).min(aw.saturating_sub(2));
@@ -10140,10 +10145,12 @@ fn draw_review_peek(
     let bg = blend(surface.bg, ui.tint, 1.0 - PEEK_STEP).or(surface.bg);
     let text = Style { fg: blend(card.fg, bg, 0.5).or(card.fg), bg, ..Style::default() };
     let bar = Style { fg: blend(ui.accent.fg, bg, 0.6), bg, ..Style::default() };
-    let way = editor.key_said("C-q");
+    // (its way in only where `C-q` reaches it — another waiting first, its title alone: #544)
+    let way = editor.way_in(crate::inbox::Waiting::Review);
     let key = Style { fg: ui.virt.fg, bg, ..Style::default() };
     let faint = Style { fg: ui.linenr.fg, bg, ..Style::default() };
-    let hints = hint_spans(ui, &[(way.as_str(), "answer")], key, faint);
+    let pairs: Vec<(&str, &str)> = way.iter().map(|k| (k.as_str(), "answer")).collect();
+    let hints = hint_spans(ui, &pairs, key, faint);
     let tail: usize = hints.iter().map(|s| s.text.width()).sum();
     let t = crate::whole::fit_left(title, w.saturating_sub(3 + 3 + tail + 1));
     crate::whole::at(crate::whole::On::Card, &t, (x + 3, y), text, (x, x + w));
@@ -10219,11 +10226,13 @@ fn draw_review_header(
     // the cursor say where the keys are. Each in a short form too, for when the row can't hold them whole (beside
     // the chat it cut esc's off)
     let waiting = !rev.focused;
-    // (inside zellij its twin — worked out only where the header says it: it reads where the keys are and the inbox)
+    // (inside zellij its twin — worked out only where the header says it: it reads where the keys are and the inbox; said
+    // only where `C-q` reaches it — another waiting first, none: its answers faint, #544)
     let c_q = match current && waiting {
-        true => editor.key_said("C-q"),
+        true => editor.way_in(crate::inbox::Waiting::Review).unwrap_or_default(),
         false => String::new(),
     };
+    let way: &[(&str, &str)] = if c_q.is_empty() { &[] } else { &[(c_q.as_str(), "answer")] };
     let refused = rev.refused.as_deref().filter(|_| current);
     let esc: &[(&str, &str)] = &[("esc", "back, unanswered")];
     let esc_short: &[(&str, &str)] = &[("esc", "back")];
@@ -10246,13 +10255,13 @@ fn draw_review_header(
             (vec![("", why)], vec![("", why)], Style { fg: warn, ..base })
         }
         _ if current && waiting && left > 1 => (
-            vec![(c_q.as_str(), "answer"), ("y", "accept this one"), ("a", all.as_str()), ("n", "reject")],
-            vec![(c_q.as_str(), "answer"), ("y", "this one"), ("a", all_short.as_str()), ("n", "no")],
+            [way, &[("y", "accept this one"), ("a", all.as_str()), ("n", "reject")]].concat(),
+            [way, &[("y", "this one"), ("a", all_short.as_str()), ("n", "no")]].concat(),
             base,
         ),
         _ if current && waiting => (
-            vec![(c_q.as_str(), "answer"), ("y", "accept"), ("n", "reject")],
-            vec![(c_q.as_str(), "answer"), ("y", "yes"), ("n", "no")],
+            [way, &[("y", "accept"), ("n", "reject")]].concat(),
+            [way, &[("y", "yes"), ("n", "no")]].concat(),
             base,
         ),
         _ if current && left > 1 => (
@@ -12572,10 +12581,15 @@ fn draw_statusline(
     let unseen = inbox.iter().filter(|e| e.asks_answer() && !in_sight(e)).count();
     // (the way in, where nothing drawn says it: a card's bottom line says `C-q answer`, an edit's review in sight its
     // header; its peeks alone, or none drawn, the line does — once)
-    let way_drawn = editor.screen.offer_way.is_some()
-        || editor.card_has_keys()
-        || editor.screen.review_area.get().is_some()
-        || editor.screen.review_peek.get().is_some();
+    // (drawn on what `C-q` reaches, or what holds the keys — where `C-q` lets go or is refused — #544: a card or review in
+    // sight that `C-q` passes over says nothing of it)
+    let review_drawn = editor.screen.review_area.get().is_some() || editor.screen.review_peek.get().is_some();
+    let said_on = |w: crate::inbox::Waiting| editor.way_in(w).is_some();
+    let way_drawn = editor.card_has_keys()
+        || editor.workspace.claude.review.as_ref().is_some_and(|r| r.focused)
+        || editor.offers.first().is_some_and(|o| said_on(crate::inbox::Waiting::Card(o.id)))
+            && editor.screen.offer_way.is_some()
+        || said_on(crate::inbox::Waiting::Review) && review_drawn;
     // What Claude is doing now (`now.rs`), after the mode word — and after whose turn it is where the chip names it: the
     // step and its time, its last sentence, the plan's step — the sentence cut to the room left below, once the rest is in.
     // While the follow card says the step (`short`, focus B1), the turn's cell alone — blank where `▲N waiting` says it
@@ -14489,6 +14503,9 @@ struct OfferCard {
     /// Its way in, first on that line while it waits (`C-q` as said now — `C-q answer`; focused, `esc back` in its
     /// place); None where the line has no room for it.
     way: Option<String>,
+    /// Waiting while `C-q` goes to another (`Editor::way_in`, #544): its way in unsaid — its cells a run of the line, the
+    /// answers where they stand, faint — and no press spot for it.
+    way_unsaid: bool,
     /// Where its way in's words are drawn, as it stands this frame (row, start col, end col) — a press there is its key
     /// (`Screen.offer_way`: waiting, focused; focused, the keys back).
     way_at: Option<(usize, usize, usize)>,
@@ -14922,6 +14939,7 @@ impl OfferCard {
             buttons,
             labels: Vec::new(),
             way: None,
+            way_unsaid: false,
             way_at: None,
             waits: None,
             pad: 0,
@@ -14984,6 +15002,7 @@ impl OfferCard {
             buttons,
             labels: Vec::new(),
             way: None,
+            way_unsaid: false,
             way_at: None,
             waits: None,
             pad: 0,
@@ -15084,7 +15103,9 @@ impl OfferCard {
         // (its text at its reading width: its answers fit the card, never the card its answers — the user, 2026-10-25)
         let quick = editor.preflight_quick().is_some();
         // (as said while it waits, focused or not: the line laid the same both ways, every answer in its cell — #211)
-        let way_key = editor.card_way_said();
+        // (as `C-q` reaches it now where it does — `way_in`, #544 — else as it would: laid the same either way)
+        let way_key =
+            editor.way_in(crate::inbox::Waiting::Card(o.id)).unwrap_or_else(|| editor.card_way_said());
         let mut max_inner = reading;
         // Paragraphs' last rows left a word or two (`proxy`, `run.`): up to `CARD_SLACK` cells wider, never past
         // `widest`, when that takes rows back — the narrowest as short as the widest (piece F: `y Once` made the
@@ -15316,6 +15337,7 @@ impl OfferCard {
                     buttons,
                     labels: labels.iter().map(|(k, l)| (*k, l.to_string())).collect(),
                     way: None,
+                    way_unsaid: false,
                     way_at: None,
                     waits: None,
                     pad: 0,
@@ -15489,6 +15511,9 @@ impl OfferCard {
         };
         let line_w = if has_buttons { answers_line_w(&way_key, &forms[form]) } else { 0 };
         let way = has_buttons.then_some(way_key);
+        // (its way in said only where `C-q` reaches it — laid the same either way, each answer keeping its cell)
+        let way_unsaid =
+            !editor.card_has_keys() && editor.way_in(crate::inbox::Waiting::Card(o.id)).is_none();
         let reads = read.is_some() && !editor.offer_seen_whole() && !editor.offer_viewing();
         let waits = read.filter(|_| reads).map(|i| (i, editor.offer_early.get() == Some((o.id, o.rev))));
         // (read whole, or open in its buffer: its yes says its meaning again, in the form it had — the card's width kept)
@@ -15546,7 +15571,7 @@ impl OfferCard {
             .collect::<Vec<_>>();
         // (its bottom line: `╰─ `, its way in and ` · ` when it stands, then each answer — ` · ` between; the way in's
         // words at its end, focused the shorter `esc back` after a run of the line — `answer_spans`)
-        let way_at = way.as_deref().map(|k| {
+        let way_at = way.as_deref().filter(|_| !way_unsaid).map(|k| {
             let end = x + 3 + way_w(k);
             let said = match editor.card_has_keys() {
                 true => ESC_BACK.0.width() + 1 + ESC_BACK.1.width(),
@@ -15601,6 +15626,7 @@ impl OfferCard {
                 buttons,
                 labels,
                 way,
+                way_unsaid,
                 way_at,
                 waits,
                 pad,
@@ -15661,7 +15687,12 @@ impl OfferCard {
         held: bool,
     ) -> Vec<(String, Style)> {
         let mut spans = Vec::new();
-        if let Some(way) = &self.way {
+        // (unsaid: its cells and the ` · ` after them a run of the line, a cell of air before the answers)
+        let unsaid = self.way.as_ref().filter(|_| self.way_unsaid && !held);
+        if let Some(way) = unsaid {
+            spans.push(("─".repeat(way_w(way) + 2), line));
+            spans.push((" ".to_string(), line));
+        } else if let Some(way) = &self.way {
             let (k, what) = match held {
                 true => (ESC_BACK.0.to_string(), ESC_BACK.1),
                 false => (way.clone(), WAY_IN),
@@ -15675,7 +15706,7 @@ impl OfferCard {
             spans.push((format!(" {what}"), dim));
         }
         for (i, (k, l)) in self.labels.iter().enumerate() {
-            if i > 0 || self.way.is_some() {
+            if i > 0 || self.way.is_some() && unsaid.is_none() {
                 spans.push((" · ".to_string(), line));
             }
             let what = match self.waits {
@@ -16785,8 +16816,11 @@ fn draw_follow_card(
     let plan_row =
         alone.then(|| c.plan.as_ref().and_then(|p| plan_now(p, inner, faint, accent, dim))).flatten();
     // The turn of the stop in hand, its knots and words — the newest at the bottom
+    // (an edit review's head in sight says Claude's words before the edit: the card doesn't say them again — #543)
+    let head_says = editor.screen.review_head.get().and(editor.workspace.claude.review.as_ref());
+    let head_says = head_says.filter(|r| r.ready).map(|r| r.reason.as_str());
     let (turn_rows, hand_row, knots) =
-        follow_thread(c, editor, ui, inner, card, &st, alone, plan_row.is_some());
+        follow_thread(c, editor, ui, inner, card, &st, (alone, plan_row.is_some()), head_says);
     let why = gaze.and_then(|g| g.why.as_deref()).filter(|w| !w.is_empty());
     // A walk-through's stop: how to ask about it, under its words
     // (only once the answer is done — a question can't go while Claude still writes)
@@ -16921,6 +16955,12 @@ fn draw_follow_card(
     let mut current: Vec<usize> =
         editor.screen.review_change.get().map_or(Vec::new(), |(a, b)| (a..=b).collect());
     current.extend(editor.screen.writing_head);
+    // (the review's head is part of the change in hand: kept in sight wherever that is — the gap under it, else the
+    // stack, #543)
+    if let Some((a, b)) = editor.screen.review_head.get() {
+        current.extend(a..=b);
+        changes.extend(a..=b);
+    }
     let and = |a: &[usize], b: &[usize]| -> Vec<usize> { a.iter().chain(b).copied().collect() };
     // (its whole height: yours where you set it, else `BODY` up to half the pane; and in replay the least that keeps
     // the stop in hand whole — its row and the words written right after it, up to the next stop)
@@ -21275,11 +21315,27 @@ fn draw_chat(
         hints.push(("space l", "focus"));
         hints.push(("space L", "hide"));
     } else if c.busy() || crate::chat::slash_list(c).is_some() {
-        // (a card up asks mid-turn: the chat keeps the keys, `C-q` hands them over — frictions26)
-        // (not while it holds them already: given by `C-q`, its answers answer it)
-        if c.busy() && !editor.card_has_keys() && editor.offers.first().is_some_and(|o| !o.installing()) {
+        // (a card up asks mid-turn: the chat keeps the keys, `C-q` hands them over — frictions26 — named by what it
+        // reaches, #544: the card, or Claude's edit review waiting before it; another session's card in front it switches
+        // to. Not while a card holds them already: given by `C-q`, its answers answer it)
+        let reaches = match editor.next_up() {
+            _ if !c.busy() || editor.card_has_keys() => None,
+            crate::inbox::Next::Card(_) => Some("answer card"),
+            crate::inbox::Next::Review
+                if editor.workspace.claude.review.as_ref().is_some_and(crate::llm::Review::waits) =>
+            {
+                Some("answer review")
+            }
+            crate::inbox::Next::Go(e)
+                if e.card().is_some() && e.card() == editor.offers.first().map(|o| o.id) =>
+            {
+                Some("answer card")
+            }
+            _ => None,
+        };
+        if let Some(what) = reaches {
             c_q = editor.key_said("C-q");
-            hints.push((c_q.as_str(), "answer card"));
+            hints.push((c_q.as_str(), what));
         }
         if crate::chat::slash_list(c).is_some() {
             // (the slash list up, #232: the `:` prompt's hints — `enter run` once the line is a name, at once while
@@ -23136,8 +23192,8 @@ fn follow_thread(
     inner: usize,
     card: Style,
     st: &TrailStyles,
-    links: bool,
-    plan_said: bool,
+    (links, plan_said): (bool, bool),
+    head_says: Option<&str>,
 ) -> (Vec<CardRow>, Option<usize>, Vec<bool>) {
     use crate::chat::Role;
     const ENOUGH: usize = 8;
@@ -23231,6 +23287,10 @@ fn follow_thread(
             // Its thinking (italic) and what it said between stops — a new thought goes under the last one instead
             // of taking its place (thinking comes in bursts: a lone "I should" for seconds, read as flicker)
             Role::Thought | Role::Assistant => {
+                // (what the edit review's head in sight says: left out on purpose — not a cut, no `…` for it)
+                if head_says.is_some_and(|s| crate::edits::said_by_head(&m.text, s)) {
+                    continue;
+                }
                 let mut rows = if m.role == Role::Thought {
                     thought_rows(&m.text, inner, st.dim, st.faint, editor)
                 } else {
@@ -31594,6 +31654,160 @@ mod tests {
                 tallest > 6 && card.3 + 2 >= tallest,
                 "{h} rows: tall {tallest}, beside the peek {}",
                 card.3
+            );
+        }
+    }
+
+    /// #543's scene: Claude's turn followed with the chat hidden, its edit's review of three changes focused in the
+    /// code, the head saying Claude's words before the edit (`Between the stops.`); with `grammar`, a grammar card up
+    /// at the bottom right, as the review first showing a file brings one. `crowded`: five changes, the second in hand —
+    /// the first fills the gap under the head — else three, the first in hand.
+    fn review_followed(grammar: bool, crowded: bool) -> Editor {
+        let mut ed = threaded_turn();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Writing);
+        ed.workspace.viewer.keys_to_code();
+        let id = ed.doc().id;
+        let line =
+            |k: usize| (k * 13, k * 13 + 13, "fn main() {}\n".to_string(), format!("fn main_{k}() {{}}\n"));
+        let lines: &[usize] = if crowded { &[5, 7, 9, 11, 13] } else { &[7, 9, 11] };
+        let changes = lines.iter().map(|&k| line(k)).collect();
+        crate::llm::review_with(&mut ed, id, "why does insert clone the name?", changes, None);
+        let rev = ed.workspace.claude.review.as_mut().unwrap();
+        rev.reason = "Between the stops.".into();
+        rev.current = usize::from(crowded);
+        crate::llm::review_focus(&mut ed);
+        assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.focused), "the review focused");
+        if grammar {
+            ed.offer_popups = true;
+            ed.offer_grammar(crate::syntax::spec("python").unwrap());
+            assert_eq!(ed.offers.len(), 1, "the grammar card up");
+        }
+        ed
+    }
+
+    /// The screen at 120×`h`, and the follow card's rows as drawn (its rect, its text row by row).
+    fn follow_card_at(ed: &mut Editor, h: u16) -> ((usize, usize, usize, usize), Vec<String>) {
+        let mut buf = Vec::new();
+        render(ed, &mut buf, 120, h).unwrap();
+        let mut vt = vt100::Parser::new(h, 120, 0);
+        vt.process(&buf);
+        let r = ed.screen.thought_card.get().unwrap_or_else(|| panic!("{h} rows: the follow card"));
+        let rows = (r.1..r.1 + r.3)
+            .map(|y| vt.screen().contents_between(y as u16, r.0 as u16, y as u16, (r.0 + r.2) as u16))
+            .collect();
+        (r, rows)
+    }
+
+    /// Whether `card` (x, y, w, h) keeps off every one of `rows`.
+    fn card_off(card: (usize, usize, usize, usize), rows: &[usize]) -> bool {
+        rows.iter().all(|&y| y < card.1 || y >= card.1 + card.3)
+    }
+
+    /// #543: the edit review's head (its title, `0 of 3 decided`, Claude's reason) stays in sight as the change in hand
+    /// does. With a grammar card standing at the bottom right, the follow card takes the gap under the head — never the
+    /// top gap over it — or, taller, the gap above the card; never a change's rows either way.
+    #[test]
+    fn the_follow_card_keeps_the_edit_reviews_head_in_sight() {
+        let mut ed = review_followed(true, false);
+        for h in [20, 24, 30, 40] {
+            let (card, rows) = follow_card_at(&mut ed, h);
+            let (a, b) = ed.screen.review_head.get().unwrap_or_else(|| panic!("{h} rows: the head"));
+            let head: Vec<usize> = (a..=b).collect();
+            let changes: Vec<usize> = ed.screen.review_rows.borrow().iter().map(|r| r.0).collect();
+            assert!(card_off(card, &head), "{h} rows: the card {card:?} over the head {head:?}\n{rows:#?}");
+            assert!(card_off(card, &changes), "{h} rows: the card {card:?} over a change {changes:?}");
+            if h <= 24 {
+                assert!(
+                    card.1 > b && card.1 + card.3 <= changes[0],
+                    "{h} rows: in the gap under the head ({b}..{}): {card:?}",
+                    changes[0]
+                );
+            }
+        }
+    }
+
+    /// #543, the fallback: where no gap free of every change fits the card (five changes, the second in hand, the first
+    /// filling the gap under the head), the follow card stands on the stack — the grammar card, a row of air between —
+    /// over the other changes' rows, never over the head or the change in hand. With no room on the stack either (19
+    /// rows), it takes the gap under the head over the first change — the head still whole.
+    #[test]
+    fn the_follow_card_stands_on_the_stack_when_the_gap_under_the_head_is_too_short() {
+        let mut ed = review_followed(true, true);
+        for h in [19, 20, 24] {
+            let (card, rows) = follow_card_at(&mut ed, h);
+            let (a, b) = ed.screen.review_head.get().expect("the head");
+            let (c0, c1) = ed.screen.review_change.get().expect("the change in hand");
+            let changes: Vec<usize> = ed.screen.review_rows.borrow().iter().map(|r| r.0).collect();
+            let offer = ed.screen.offer_card.expect("the grammar card");
+            assert!(
+                changes.iter().any(|&y| y > b && y < c0),
+                "{h} rows: a change under the head {changes:?}"
+            );
+            assert!(
+                card_off(card, &(a..=b).collect::<Vec<_>>()),
+                "{h} rows: over the head: {card:?}\n{rows:#?}"
+            );
+            assert!(
+                card_off(card, &(c0..=c1).collect::<Vec<_>>()),
+                "{h} rows: over the change in hand: {card:?}"
+            );
+            assert!(!card_off(card, &changes), "{h} rows: over other changes: {card:?} {changes:?}");
+            match h {
+                19 => assert!(card.1 > b && card.1 + card.3 <= c0, "{h} rows: under the head: {card:?}"),
+                _ => assert_eq!(
+                    card.1 + card.3 + 1,
+                    offer.1,
+                    "{h} rows: on the grammar card, air between: {card:?}"
+                ),
+            }
+        }
+    }
+
+    /// #552: a toast keeps off the edit review's head as it keeps off the change in hand (U9) — the head is part of it
+    /// (#543): `No syntax colors for Rust yet` at the top right covered the end of Claude's reason.
+    #[test]
+    fn a_toast_keeps_off_the_edit_reviews_head() {
+        for h in [24, 30, 40] {
+            let mut ed = review_followed(false, false);
+            ed.set_status("No syntax colors for Rust yet — :grammar-install fetches and builds it");
+            let (_, rows) = follow_card_at(&mut ed, h);
+            let (a, b) = ed.screen.review_head.get().expect("the head");
+            let toast =
+                ed.screen.toast_card.get().unwrap_or_else(|| panic!("{h} rows: the toast\n{rows:#?}"));
+            assert!(
+                card_off(toast, &(a..=b).collect::<Vec<_>>()),
+                "{h} rows: the toast {toast:?} over the head {a}–{b}"
+            );
+        }
+    }
+
+    /// #543: wherever an edit review's head is in sight — the follow card in the gap under it, or at the bottom right with
+    /// no other card up — the card's body leaves out the words the head gives as its reason (here `Between the stops.`),
+    /// left out on purpose: no row of them, no `…` standing for them. With no review, the card says them.
+    #[test]
+    fn the_follow_cards_body_leaves_out_what_the_reviews_head_says() {
+        let said = "Between the stops.";
+        let folds_it = |ed: &Editor, card: (usize, usize, usize, usize)| {
+            ed.screen.cut_spots.borrow().iter().any(|s| {
+                (card.1..card.1 + card.3).contains(&s.0)
+                    && matches!(&s.3, crate::whole::Cut::Text(w) if w.text.contains(said))
+            })
+        };
+        for (grammar, h) in [(true, 20), (true, 24), (false, 30), (false, 40)] {
+            let mut ed = review_followed(grammar, false);
+            let (card, rows) = follow_card_at(&mut ed, h);
+            let text = rows.join("\n");
+            assert!(!text.contains(said), "grammar {grammar}, {h} rows: the head's words again\n{text}");
+            assert!(!folds_it(&ed, card), "grammar {grammar}, {h} rows: a `…` standing for the head's words");
+            assert!(text.contains("Done now."), "grammar {grammar}, {h} rows: its newest words\n{text}");
+            // (the same turn, no review: the card says them)
+            ed.workspace.claude.review = None;
+            let (card, rows) = follow_card_at(&mut ed, h);
+            let text = rows.join("\n");
+            assert!(
+                text.contains(said) || folds_it(&ed, card),
+                "grammar {grammar}, {h} rows, no review: its words\n{text}"
             );
         }
     }
