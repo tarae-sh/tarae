@@ -65,12 +65,8 @@ sentence</show> — a handful of stops, not every line. Their editor shows each 
 tag itself reads as a link. Answer concisely in Markdown. Put code in fenced blocks with a language \
 tag. When the user asks to change the selection, reply with the complete replacement for the selection in a \
 single code block (the editor can apply it). \
-You can pin notes to code with the note tool — they show beside those lines and the user can answer there. Use \
-them for remarks tied to specific lines (a bug, a risk, a question), a few at most, and keep the chat answer as the \
-summary. A message with <note id=N> is the user talking to you at that note: answer with note(reply_to=N, text) — \
-one to three sentences — and keep any chat text to one short line. A message with <review> is the user's code \
-review: address every <comment note=N> (edit the code where it calls for it) and answer each with \
-note(reply_to=N); the chat answer is a short summary.";
+A message with <review> is the user's code review: address every <comment> (edit the code where it calls for \
+it) and answer each here in the chat, starting with its path:line — the comment's lines link to that answer.";
 
 /// For a change across many places: the editor's own refactoring.
 const SYSTEM_REFACTOR: &str = " For one change across many places — renaming a symbol, or the same text \
@@ -2637,7 +2633,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.runs_on = (cfg.model.clone(), cfg.effort.clone());
     c.launched = Some((cfg, extra.iter().map(|s| s.to_string()).collect()));
     let Some(stdin) = child.stdin.take().map(llm::Lines::new) else { return };
-    // tarae's MCP server (the note tool) — registered before anything else is said
+    // tarae's MCP server (its tools) — registered before anything else is said
     let _ = stdin.send(llm::initialize_message(&["tarae"]));
     // A fresh process has seen no file yet — and said no credential yet: the last one's may not be its
     c.sent.clear();
@@ -2748,14 +2744,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 ed.workspace.wrote,
                 now,
             );
-            let mut look = look(&ed.workspace.root, &name, &input);
-            // A reply points at its note
-            if let Some(n) = input["reply_to"]
-                .as_u64()
-                .and_then(|id| ed.workspace.claude.notes.list.iter().find(|n| n.id == id))
-            {
-                look.link = Some(Link { path: n.path.clone(), line: n.lines.start });
-            }
+            let look = look(&ed.workspace.root, &name, &input);
             // One plan row a turn — it shows the latest (the plan itself is pinned above)
             let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
             let planned =

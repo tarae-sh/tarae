@@ -19382,6 +19382,68 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #549: a review comment's turn is told to use only the tools it's handed — the prompt spelled out
+    /// `note(reply_to=N)` after #388 took the chat's `note` away, and Claude apologised for the tool in its answer —
+    /// and is told where its answers go: the chat, each at its comment's path:line (the comment's flag).
+    #[test]
+    fn a_review_comments_turn_is_handed_the_tools_its_told_to_use() {
+        let dir = git_repo("reviewtools", &[("a.rs", "let x = 1;\n")]);
+        std::fs::write(dir.join("a.rs"), "let x = 10;\n").unwrap();
+        let mut ed = editor("");
+        let ready =
+            |ed: &Editor| ed.doc().git_version == ed.doc().version() && ed.doc().review_base.is_some();
+        crate::codereview::start_in(&mut ed, dir.clone(), None);
+        settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ready(ed));
+        feed(&mut ed, "<space>nwhy 10?<ret>");
+        let log = dir.join("stdin.log");
+        let result = serde_json::json!({"type": "result", "result": "addressed"});
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec![
+            "-c".into(),
+            format!(
+                "while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in '{{\"message\"'*) printf '%s\\n' '{result}';; esac; done",
+                log.display()
+            ),
+        ];
+        feed(&mut ed, "<space>vs");
+        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
+        let sent = std::fs::read_to_string(&log).unwrap();
+        assert!(sent.contains("you: why 10?"), "the comment went: {sent}");
+        // What the turn is handed: its tools (tarae's MCP list) and its system prompt (the launch's flag)
+        let msg = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let list = crate::tools::mcp(&mut ed, 0, "r1", &msg).expect("answered");
+        let tools: Vec<String> = (list["result"]["tools"].as_array().unwrap().iter())
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        let (_, extra) = ed.workspace.claude.chat.as_ref().unwrap().launched.clone().expect("launched");
+        let at = extra.iter().position(|a| a == "--append-system-prompt").expect("a system prompt");
+        let prompt = &extra[at + 1];
+        // Every call it spells out (`name(`) and every tool it names ("the name tool") is one of the list's
+        for (i, _) in prompt.match_indices('(') {
+            let name: String =
+                prompt[..i].chars().rev().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            let name: String = name.chars().rev().collect();
+            assert!(
+                name.is_empty() || tools.contains(&name),
+                "the prompt calls {name}( — not a tool: {tools:?}"
+            );
+        }
+        let words: Vec<&str> = prompt.split_whitespace().collect();
+        for w in words.windows(3).filter(|w| w[0] == "the" && w[2].starts_with("tool")) {
+            assert!(
+                tools.iter().any(|t| t == w[1]),
+                "the prompt names the {} tool — not one: {tools:?}",
+                w[1]
+            );
+        }
+        assert!(!tools.iter().any(|t| t == "note"), "the chat has no note tool since #388: {tools:?}");
+        assert!(!prompt.contains("reply_to") && !sent.contains("reply_to"), "no reply to a note asked for");
+        // …and where its answers go: the chat, each at its comment's place
+        assert!(prompt.contains("answer each here in the chat, starting with its path:line"), "{prompt}");
+        assert!(sent.contains("/a.rs\\\" lines=\\\"1-1\\\""), "the comment's place, to cite: {sent}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Against a branch: everything since this branch left `main` — its commits and what's uncommitted.
     #[test]
     fn review_against_a_branch() {
