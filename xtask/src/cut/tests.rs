@@ -701,6 +701,242 @@ fn the_opening_is_the_intro_the_card_then_where_it_ends_and_a_list_without_it_is
     }
 }
 
+// ── The words over where it ends (`label.rs`) ───────────────────────────────────────────────────────────────────────────
+
+/// The made-up cut with words over where it ends (`title`, its small line `small`): the board 3 s.
+fn labelled_with(title: &str, small: &str) -> Cut {
+    let words = format!("for = \"3s\"\nlabel = \"{title}\"\nlabel-line = \"{small}\"\n");
+    cut(&CUT.replace("for = \"3s\"\n", &words)).unwrap()
+}
+
+fn labelled() -> Cut {
+    labelled_with("The result", "shown in the next ten minutes")
+}
+
+/// The frame `off` µs into where it ends.
+fn board_at(p: &Program, off: u64) -> Frame {
+    let e = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap();
+    p.frame(e.at + off)
+}
+
+/// A take's screen (166×32) on the video's own ground, `rows` of text on it (row, column, text; from 0).
+fn ground_screen(rows: &[(u16, u16, &str)]) -> vt100::Parser {
+    let [r, g, b] = video::look(Bg::Dark).ground;
+    let mut s = vt100::Parser::new(32, 166, 0);
+    s.process(format!("\x1b[?25l\x1b[48;2;{r};{g};{b}m\x1b[38;2;191;189;182m\x1b[2J").as_bytes());
+    for (row, col, text) in rows {
+        s.process(format!("\x1b[{};{}H{text}", row + 1, col + 1).as_bytes());
+    }
+    s
+}
+
+/// Frame `f` of cut `c` as the cut draws it over `screen` at `s` (no mascot), and its layout.
+fn drawn_over(c: &Cut, f: &Frame, screen: &vt100::Screen, s: video::Scale) -> (Vec<u8>, super::draw::Layout) {
+    use super::draw::{Stage, Words, layout};
+    let fonts = crate::shot::Fonts::load(s.k()).unwrap();
+    let lay = layout(&fonts, (166, 32), s).unwrap();
+    let look = video::look(Bg::Dark);
+    let pic = crate::shot::render_scaled(screen, &fonts, lay.glyph, s.k());
+    let stage = Stage::new(lay, &look, c, None);
+    let none = (None, &mascot::pops::Pops::default(), &[][..]);
+    (stage.take_frame(&pic, None, f, none, &mut Words::new(&fonts, look.ground, s)), lay)
+}
+
+/// The pixels (indices) where two frames differ above the band's rule.
+fn differ_over(a: &[u8], b: &[u8], lay: &super::draw::Layout) -> Vec<usize> {
+    (0..lay.rule * lay.dims.0).filter(|&i| a[i * 3..][..3] != b[i * 3..][..3]).collect()
+}
+
+/// The words over where it ends come from the list's `label` and `label-line` — another list's words draw another
+/// label, a list without them none —, each one line within its longest, and a small line with no title is refused.
+#[test]
+fn the_words_over_where_it_ends_come_from_the_list() {
+    let c = labelled();
+    assert_eq!(
+        (c.opening.label.as_deref(), c.opening.label_line.as_deref()),
+        (Some("The result"), Some("shown in the next ten minutes"))
+    );
+    let screen = ground_screen(&[]);
+    // (each drawn fully up, before the light's first pass)
+    let at = |c: &Cut| {
+        let f = board_at(&Program::new(c), super::label::FADE_US + 100_000);
+        (f.label, drawn_over(c, &f, screen.screen(), video::Scale::HD))
+    };
+    let (l, (ours, lay)) = at(&c);
+    assert_eq!(l, Some(super::label::Label { shown: 1.0, light: None }));
+    // (another title, the same small line; the same title, another small line: each line the list's own)
+    let (_, (title, _)) = at(&labelled_with("Another thing", "shown in the next ten minutes"));
+    let (_, (small, _)) = at(&labelled_with("The result", "in other words"));
+    let (none, (bare, _)) = at(&cut(CUT).unwrap());
+    assert_eq!(none, None, "no words in the list, none over the board");
+    assert!(!differ_over(&ours, &title, &lay).is_empty(), "the list's own title drawn");
+    assert!(!differ_over(&ours, &small, &lay).is_empty(), "the list's own small line drawn");
+    assert!(differ_over(&ours, &bare, &lay).len() > 1000, "words drawn over the board");
+    let at_line = CUT.lines().position(|l| l == "for = \"3s\"").unwrap() + 2;
+    for (words, said) in [
+        (
+            format!("label = \"{}\"", "x".repeat(LABEL_MAX + 1)),
+            "opening: its label, one line of 1 to 24 characters (25 here)",
+        ),
+        ("label = \"\"".to_string(), "opening: its label, one line of 1 to 24 characters (0 here)"),
+        (
+            format!("label = \"x\"\nlabel-line = \"{}\"", "x".repeat(LABEL_LINE_MAX + 1)),
+            "opening: its label-line, one line of 1 to 48 characters (49 here)",
+        ),
+        (
+            "label-line = \"x\"".to_string(),
+            "opening: label-line is the small line under label, and there's no label",
+        ),
+    ] {
+        let e = cut(&CUT.replace("for = \"3s\"\n", &format!("for = \"3s\"\n{words}\n"))).unwrap_err();
+        assert!(e.starts_with("cut.toml:") && e.contains(said), "{words}: {e}");
+    }
+    let e = cut(&CUT.replace("for = \"3s\"\n", "for = \"3s\"\nlabel-line = \"x\"\n")).unwrap_err();
+    assert!(e.starts_with(&format!("cut.toml:{at_line}: ")), "its line: {e}");
+}
+
+/// While the words over where it ends show, the band says nothing of it — one label for one thing — from the board's
+/// first frame to its last; a list without them keeps the band's `where it ends`.
+#[test]
+fn the_band_leaves_out_where_it_ends_while_the_words_say_it() {
+    use super::draw::{Words, band, layout};
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let look = video::look(Bg::Dark);
+    let lay = layout(&fonts, (166, 32), video::Scale::HD).unwrap();
+    let mut words = Words::new(&fonts, look.ground, video::Scale::HD);
+    let near = |q: &[u8]| q.iter().zip(look.accent).all(|(a, b)| a.abs_diff(b) < 24);
+    for (c, marked) in [(cut(CUT).unwrap(), true), (labelled(), false)] {
+        let p = Program::new(&c);
+        for off in [0, 1_000_000, 2_999_000] {
+            let f = board_at(&p, off);
+            assert!(f.ends && f.label.is_some() != marked, "{off}: {f:?}");
+            let mut px = look.ground.repeat(video::W * video::H);
+            band(&mut px, &lay, &f, &c, (lay.at.0, lay.at.0 + lay.pic.0), &look, &mut words);
+            let accent = px[lay.rule * video::W * 3..].chunks(3).filter(|q| near(q)).count();
+            assert_eq!(accent > 0, marked, "{off} µs in, the band's `where it ends`: {accent} px");
+        }
+    }
+}
+
+/// The light changes only the words' own pixels: a frame lit mid-pass against the same frame unlit differs only on
+/// the words' glyphs (a pixel's edge either side), and somewhere it lights the title to white.
+#[test]
+fn the_light_changes_only_the_words_glyphs() {
+    use super::label::{LIGHT_FROM_US, Label, PASS_US};
+    let c = labelled();
+    let p = Program::new(&c);
+    let screen = ground_screen(&[]);
+    let lit = board_at(&p, LIGHT_FROM_US + PASS_US / 2);
+    let l = lit.label.unwrap();
+    assert_eq!(l.light, Some(0.5), "mid-pass");
+    let unlit = Frame { label: Some(Label { light: None, ..l }), ..lit };
+    let draw = |f: &Frame| drawn_over(&c, f, screen.screen(), video::Scale::HD);
+    let ((lit_px, lay), (unlit_px, _)) = (draw(&lit), draw(&unlit));
+    let (bare_px, _) = draw(&Frame { label: None, ..lit });
+    let w = lay.dims.0;
+    let glyphs: std::collections::HashSet<usize> =
+        differ_over(&unlit_px, &bare_px, &lay).into_iter().collect();
+    let near_glyph = |i: usize| {
+        (0..9).any(|k| {
+            let (dx, dy) = (k % 3, k / 3);
+            (i + dx + dy * w).checked_sub(1 + w).is_some_and(|j| glyphs.contains(&j))
+        })
+    };
+    let changed = differ_over(&lit_px, &unlit_px, &lay);
+    assert!(changed.len() > 100, "the light shows: {} px", changed.len());
+    let stray: Vec<usize> = changed.iter().copied().filter(|&i| !near_glyph(i)).collect();
+    assert!(
+        stray.is_empty(),
+        "{} px lit off the words, the first at ({}, {})",
+        stray.len(),
+        stray[0] % w,
+        stray[0] / w
+    );
+    assert!(changed.iter().any(|&i| lit_px[i * 3..][..3] == [255; 3]), "its core pure white");
+}
+
+/// The light's passes start on their cadence, from its constants: the first once the words are fully up, then one every
+/// `EVERY_US`, each crossing in `PASS_US` and resting `REST_US`.
+#[test]
+fn the_lights_passes_start_on_their_cadence() {
+    use super::label::{EVERY_US, LIGHT_FROM_US, PASS_US, REST_US, at};
+    assert_eq!(EVERY_US, PASS_US + REST_US);
+    let len = LIGHT_FROM_US + 6 * EVERY_US;
+    assert_eq!(at(LIGHT_FROM_US - 1, len).light, None, "none before");
+    for n in 0..5 {
+        let start = LIGHT_FROM_US + n * EVERY_US;
+        let light = |d: u64| at(start + d, len).light;
+        assert_eq!(
+            (light(0), light(PASS_US / 2), light(PASS_US)),
+            (Some(0.0), Some(0.5), Some(1.0)),
+            "pass {n}: from {start} µs"
+        );
+        assert_eq!((light(PASS_US + 1), light(EVERY_US - 1)), (None, None), "pass {n}: its rest");
+    }
+}
+
+/// The pass that meets the fade-out keeps its cadence and fades with the words: never stretched to end neatly, never
+/// cut off; drawn, its light as faint as the words are.
+#[test]
+fn a_pass_running_into_the_fade_out_fades_with_the_words() {
+    use super::label::{EVERY_US, FADE_US, LIGHT_FROM_US, Label, PASS_US, at};
+    let len = 3_000_000;
+    let second = LIGHT_FROM_US + EVERY_US;
+    assert!(
+        second < len - FADE_US && len - FADE_US < second + PASS_US,
+        "the made-up board's second pass meets it"
+    );
+    let off = len - FADE_US / 2;
+    let l = at(off, len);
+    assert!((l.shown - 0.5).abs() < 1e-3, "half gone: {l:?}");
+    assert!(l.light.is_some_and(|p| p > 0.0 && p < 1.0), "mid-pass: {l:?}");
+    assert_eq!(l.light, at(off, 10 * len).light, "the cadence of a board that doesn't end");
+    // (drawn: the core no brighter than the words' half)
+    let c = labelled();
+    let f = board_at(&Program::new(&c), off);
+    assert_eq!(f.label, Some(l));
+    let screen = ground_screen(&[]);
+    let brightest = |f: &Frame| {
+        let (px, lay) = drawn_over(&c, f, screen.screen(), video::Scale::HD);
+        px[..lay.rule * lay.dims.0 * 3].chunks(3).map(|q| q.iter().map(|&v| u32::from(v)).sum::<u32>()).max()
+    };
+    let full = brightest(&Frame { label: Some(Label { shown: 1.0, ..l }), ..f }).unwrap();
+    let fading = brightest(&f).unwrap();
+    assert_eq!(full, 3 * 255, "fully up, the core is white");
+    assert!(fading < 3 * 160, "half gone, so is the light: {fading} of {full}");
+}
+
+/// The panel (the ground at `PANEL`) is drawn only where the board has something under the words: board text under them
+/// is dimmed around the letters; text elsewhere leaves every pixel but the words' own as it was.
+#[test]
+fn the_panel_is_drawn_only_where_the_board_has_something_under_the_words() {
+    let c = labelled();
+    let f = board_at(&Program::new(&c), super::label::FADE_US + 100_000);
+    let bare = Frame { label: None, ..f };
+    let draw = |screen: &vt100::Parser, f: &Frame| drawn_over(&c, f, screen.screen(), video::Scale::HD);
+    // (the words' own pixels: where they draw on an empty board)
+    let empty = ground_screen(&[]);
+    let ((with, lay), (without, _)) = (draw(&empty, &f), draw(&empty, &bare));
+    let glyphs: std::collections::HashSet<usize> = differ_over(&with, &without, &lay).into_iter().collect();
+    assert!(glyphs.len() > 1000);
+    let line = "a row of the board that lies where the words stand, under them and either side".repeat(2);
+    let elsewhere = ground_screen(&[(1, 2, &line[..120]), (2, 2, &line[..120]), (28, 2, &line[..120])]);
+    let under = ground_screen(&[(14, 30, &line[..110]), (15, 30, &line[..110]), (16, 30, &line[..110])]);
+    let ((e_with, _), (e_without, _)) = (draw(&elsewhere, &f), draw(&elsewhere, &bare));
+    let off_words = |a: &[u8], b: &[u8]| -> Vec<usize> {
+        differ_over(a, b, &lay).into_iter().filter(|i| !glyphs.contains(i)).collect()
+    };
+    assert_eq!(off_words(&e_with, &e_without).len(), 0, "nothing under the words: no panel");
+    let ((u_with, _), (u_without, _)) = (draw(&under, &f), draw(&under, &bare));
+    let dimmed = off_words(&u_with, &u_without);
+    assert!(dimmed.len() > 1000, "the board's text under the words: the panel ({} px)", dimmed.len());
+    let ground = video::look(Bg::Dark).ground;
+    let far = |px: &[u8], i: usize| {
+        px[i * 3..][..3].iter().zip(ground).map(|(a, b)| a.abs_diff(b) as u32).sum::<u32>()
+    };
+    assert!(dimmed.iter().all(|&i| far(&u_with, i) < far(&u_without, i)), "dimmed toward the ground");
+}
+
 #[test]
 fn the_small_line_says_the_takes_length_and_the_videos_by_run_duration() {
     let d = Duration::from_millis;
@@ -2062,19 +2298,26 @@ fn a_frame_at_2160p_halved_is_the_1080p_frame() {
     let c = cut(CUT).unwrap();
     let p = Program::new(&c);
     let look = video::look(Bg::Dark);
-    let frames =
-        [("the clock and the speed", at_take(&p, 5_000, 0)), ("a caption", at_take(&p, 12_000, 600))];
-    let drawn = |s: Scale, f: &Frame| {
+    // (and the words over where it ends, the light mid-pass: their glyphs twice the size, the light's band with them)
+    let words = labelled();
+    let lit = board_at(&Program::new(&words), super::label::LIGHT_FROM_US + super::label::PASS_US / 2);
+    assert!(lit.label.is_some_and(|l| l.light.is_some()), "{lit:?}");
+    let frames = [
+        ("the clock and the speed", &c, at_take(&p, 5_000, 0)),
+        ("a caption", &c, at_take(&p, 12_000, 600)),
+        ("the words over where it ends, lit", &words, lit),
+    ];
+    let drawn = |c: &Cut, s: Scale, f: &Frame| {
         let fonts = crate::shot::Fonts::load(s.k()).unwrap();
         let lay = layout(&fonts, size, s).unwrap();
         let pic = crate::shot::render_scaled(screen.screen(), &fonts, lay.glyph, s.k());
-        let stage = Stage::new(lay, &look, &c, None);
+        let stage = Stage::new(lay, &look, c, None);
         let none = (None, &mascot::pops::Pops::default(), &[][..]);
         (stage.take_frame(&pic, None, f, none, &mut Words::new(&fonts, look.ground, s)), lay)
     };
-    for (what, f) in &frames {
+    for (what, c, f) in &frames {
         assert!(f.clock.is_some(), "{what}: {f:?}");
-        let ((small, lay), (big, _)) = (drawn(Scale::HD, f), drawn(Scale::UHD, f));
+        let ((small, lay), (big, _)) = (drawn(c, Scale::HD, f), drawn(c, Scale::UHD, f));
         for (part, rows) in [("the cells", 0..lay.rule - 1), ("the band", lay.rule..video::H)] {
             within(&format!("{what}, {part}"), halved_against(&big, &small, rows, look.ground));
         }

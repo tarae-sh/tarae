@@ -35,6 +35,9 @@
 //! for = "4s"
 //! zoom = "card:Run these checks"           # the camera there, on a target as a [[zoom]]'s: eased in from where
 //!                                         # it ends' start, held to its end (a [[zoom]] is the take's alone)
+//! label = "The result"                    # words centred over where it ends (`label.rs`): a chapter card's title,
+//! label-line = "shown in the next ten minutes"   # and a small line under it; a light crossing both, now and again;
+//!                                         # the band's `where it ends` gone while they show
 //!
 //! [[span]]                                # in the take's order, apart; the rest takes `default`
 //! from = "turn 1 start - 4s"
@@ -91,8 +94,9 @@
 //! What the picture always says, in the band under tarae's cells (never over them): the take's real time (`0:37:12`)
 //! at its left; on a sped span its factor (`▸▸ ×16`) at its right; where time is left out, the clock jumps and a mark
 //! says how much (`+6 min`) for `JUMP_MS`, as loud as the jump is far (`weight`: none under 10 s, the clock's quiet ink to
-//! a minute, the accent from there); over where it ends, `where it ends`. The card of what's built has one small
-//! line the cut makes, never the file (`told`): that it's a real session, how long it took and how long it's shown.
+//! a minute, the accent from there); over where it ends, `where it ends` (unless the opening has a `label`, which
+//! says it). The card of what's built has one small line the cut makes, never the file (`told`): that it's a real
+//! session, how long it took and how long it's shown.
 
 use std::path::Path;
 use std::time::Duration;
@@ -107,6 +111,7 @@ use crate::video::{self, FPS};
 mod check;
 mod draw;
 pub(crate) mod init;
+mod label;
 mod mascot;
 mod mask;
 mod opening;
@@ -156,6 +161,10 @@ pub(crate) const NAME_MAX: usize = 24;
 pub(crate) const LINE_MAX: usize = 60;
 pub(crate) const CODE_MAX: usize = 56;
 pub(crate) const CODE_LINES: usize = 2;
+/// The words over where it ends at their longest (characters): the title (`label.rs`'s size, centred on the board) and
+/// the small line under it.
+pub(crate) const LABEL_MAX: usize = 24;
+pub(crate) const LABEL_LINE_MAX: usize = 48;
 
 const USAGE: &str = "usage: cargo xtask cut FILE [--size 1080p|2160p] | cut init TAKE [--out FILE]";
 
@@ -550,12 +559,15 @@ impl Map {
 // ── The file ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The opening's words and where it ends: the card's name, line and lines of code; then this much (`len`) of the take
-/// from `from` (ms), at 1×, the camera on `zoom`'s target there (its line) where it's given.
+/// from `from` (ms), at 1×, the camera on `zoom`'s target there (its line) where it's given; the words over it
+/// (`label`, its small line `label_line`) where they're given.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Opening {
     pub(crate) name: String,
     pub(crate) line: String,
     pub(crate) code: Vec<String>,
+    pub(crate) label: Option<String>,
+    pub(crate) label_line: Option<String>,
     pub(crate) from: u64,
     pub(crate) len: u64,
     pub(crate) zoom: Option<(String, usize)>,
@@ -1189,14 +1201,14 @@ impl Cut {
     /// The file's `[opening]`: the card's words, each one line within its longest, and where it ends — refused, naming
     /// what's missing, where it isn't there.
     fn opening(top: &toml::Table, src: &Src, marks: &Marks) -> Result<Opening> {
-        const WHAT: &str = "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for (and zoom)";
+        const WHAT: &str = "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for (and zoom, label, label-line)";
         let t = match top.get("opening") {
             Some(toml::Value::Table(t)) => t,
             Some(_) => return Err(src.at(src.key(0, "opening"), "opening: a table, as [opening]")),
             None => return Err(src.at(1, format!("no [opening]: {WHAT}"))),
         };
         let e = Entry { t, line: src.header("opening", None), src, name: "opening" };
-        e.keys(&["name", "line", "code", "at", "for", "zoom"])?;
+        e.keys(&["name", "line", "code", "at", "for", "zoom", "label", "label-line"])?;
         let missing: Vec<&str> =
             ["name", "line", "at", "for"].into_iter().filter(|k| !t.contains_key(*k)).collect();
         if !missing.is_empty() {
@@ -1237,7 +1249,16 @@ impl Cut {
             Some("") => return Err(e.err("zoom", "opening: zoom = \"card:Run these checks\", a target")),
             Some(on) => Some((on.to_string(), e.line("zoom"))),
         };
-        Ok(Opening { name, line, code, from, len, zoom, line_at: e.line })
+        let label = e.text("label")?.map(|s| one_line("label", s, LABEL_MAX)).transpose()?;
+        let label_line =
+            e.text("label-line")?.map(|s| one_line("label-line", s, LABEL_LINE_MAX)).transpose()?;
+        if label.is_none() && label_line.is_some() {
+            return Err(e.err(
+                "label-line",
+                "opening: label-line is the small line under label, and there's no label",
+            ));
+        }
+        Ok(Opening { name, line, code, label, label_line, from, len, zoom, line_at: e.line })
     }
 }
 
@@ -1296,8 +1317,8 @@ pub(crate) enum Card {
 
 /// What one frame shows: the take's screen at its ms, or a card; and what the band says — the take's time, a sped
 /// span's factor, the jump's mark (how much was left out, and how drawn, of 255), whether it's where it ends, a caption
-/// or a chapter with no card (which, how drawn) —; and where in the map it is (the camera's clock), the take part's
-/// frames only.
+/// or a chapter with no card (which, how drawn) —; where in the map it is (the camera's clock), the take part's
+/// frames only; and the words over where it ends (`label.rs`), its frames only, where the opening has them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
     pub(crate) screen: Option<u64>,
@@ -1309,6 +1330,7 @@ pub(crate) struct Frame {
     pub(crate) caption: Option<(usize, u8)>,
     pub(crate) chapter: Option<(usize, u8)>,
     pub(crate) map: Option<u64>,
+    pub(crate) label: Option<label::Label>,
 }
 
 impl Frame {
@@ -1323,6 +1345,7 @@ impl Frame {
             caption: None,
             chapter: None,
             map: None,
+            label: None,
         }
     }
 }
@@ -1463,7 +1486,15 @@ impl<'c> Program<'c> {
             What::Built => Frame::card(Card::Built),
             What::Ends { from } => {
                 let t = (from + off / 1000).min(self.cut.end);
-                Frame { screen: Some(t), card: None, clock: Some(t), ends: true, ..Frame::card(Card::Built) }
+                let label = self.cut.opening.label.as_ref().map(|_| label::at(off, p.len));
+                Frame {
+                    screen: Some(t),
+                    card: None,
+                    clock: Some(t),
+                    ends: true,
+                    label,
+                    ..Frame::card(Card::Built)
+                }
             }
             What::Chapter(i) => Frame::card(Card::Chapter(i)),
             What::End => Frame::card(Card::End),
@@ -1504,6 +1535,7 @@ impl<'c> Program<'c> {
             caption,
             chapter,
             map: Some(m),
+            label: None,
         }
     }
 

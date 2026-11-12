@@ -14,8 +14,10 @@
 //!   (`camera::CROSS`) between two screens that each stand `camera::STAND_MS` of video (`changes`, else a cut), the two
 //!   screens over each other.
 //! - The sheet (`sheet_picks`): each picture taken once its part has come up, never inside a crossing.
-//! - The band (`band`): the clock, the jump's mark, the speed's mark or `where it ends`, the caption; the mascot at the
-//!   keys at its right end (`mascot.rs`), the marks `mascot::GAP` from its box, a caption that would reach them refused.
+//! - The words over where it ends (`label.rs`), where the opening has them, over the board and under the band.
+//! - The band (`band`): the clock, the jump's mark, the speed's mark or `where it ends` (none while the words say it),
+//!   the caption; the mascot at the keys at its right end (`mascot.rs`), the marks `mascot::GAP` from its box, a
+//!   caption that would reach them refused.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
@@ -26,7 +28,7 @@ use super::mascot::motions::{self, Plan};
 use super::mascot::pops::{self, Pops};
 use super::mascot::{self, Art, Hands, Pic, Place};
 use super::{
-    Card, Cut, Frame, Marks, Pace, Program, Weight, What, clock, factor, jumped, opening, sped, told,
+    Card, Cut, Frame, Marks, Pace, Program, Weight, What, clock, factor, jumped, label, opening, sped, told,
     video_time, weight,
 };
 use crate::Result;
@@ -43,8 +45,8 @@ pub(crate) const MARK_PX: f32 = 26.0;
 pub(crate) const QUIET: u8 = 170;
 /// The mark over the take's stretch the opening shows, and its part's name on the sheet.
 pub(crate) const ENDS: &str = "where it ends";
-/// A chapter card's title.
-const CHAPTER_PX: f32 = 56.0;
+/// A chapter card's title (and the words over where it ends, `label.rs`).
+pub(crate) const CHAPTER_PX: f32 = 56.0;
 /// The camera never goes nearer than this: its window at least 1/`ZOOM_MAX` of the screen across.
 pub(crate) const ZOOM_MAX: f32 = 2.0;
 /// A zoom's target is looked for this long after its time (tarae may draw it a frame or two later).
@@ -65,7 +67,8 @@ pub(super) fn run(file: &Path, scale: Scale) -> Result<()> {
     let words = (cut.chapters.iter().map(|c| c.title.as_str()))
         .chain(cut.captions.iter().map(|c| c.text.as_str()))
         .chain([cut.opening.name.as_str(), cut.opening.line.as_str()])
-        .chain(cut.opening.code.iter().map(String::as_str));
+        .chain(cut.opening.code.iter().map(String::as_str))
+        .chain(cut.opening.label.iter().chain(&cut.opening.label_line).map(String::as_str));
     for w in words {
         none_of_yours(&[w.chars().map(String::from).collect()], yours.as_deref())?;
     }
@@ -110,6 +113,7 @@ struct Key {
     pose: Option<Pic>,
     pops: Vec<(usize, u64)>,
     blank: Vec<Blank>,
+    label: Option<super::label::Label>,
 }
 
 /// The screen's picture kept, by what it was drawn of: whose replay, how many screens in, the glyph (px) and the cells
@@ -253,6 +257,15 @@ impl<'a> Stage<'a> {
         match view {
             None => video::blit(&mut px, lay.dims, pic, x0, y0, 255),
             Some(view) => video::resample(&mut px, w, (x0, y0), lay.pic, pic, view),
+        }
+        // (the words over where it ends, on the board as this frame drew it)
+        if let (Some(l), Some(title)) = (f.label, &self.cut.opening.label) {
+            let ink = self.look.ink;
+            let title = words.word(title, label::TITLE_PX, ink, true).clone();
+            let small = (self.cut.opening.label_line.as_ref())
+                .map(|s| words.word(s, label::LINE_PX, ink, false).clone());
+            let cell = shot::cell(words.fonts, label::TITLE_PX).0 * lay.scale.k();
+            label::draw(&mut px, lay, (&title, small.as_ref()), self.look, cell, l);
         }
         let rule_end = self.mascot.as_ref().map_or(x0 + lay.pic.0 - lay.pad, |m| m.1.rule_end);
         for y in lay.rule..lay.rule + lay.scale.k() {
@@ -512,6 +525,16 @@ pub(crate) fn make(
         }
     };
     said.push(format!("the card of what's built: “{}” — “{told}”", cut.opening.name));
+    if let Some(t) = &cut.opening.label {
+        let small = cut.opening.label_line.as_ref().map_or(String::new(), |s| format!(" / “{s}”"));
+        said.push(format!(
+            "the words over where it ends: “{t}”{small} — the band's `{ENDS}` gone; a light from {:.1} s, a pass of \
+             {:.1} s every {:.1} s",
+            label::LIGHT_FROM_US as f64 / 1e6,
+            label::PASS_US as f64 / 1e6,
+            label::EVERY_US as f64 / 1e6
+        ));
+    }
     let end_card = card(&[name, ("tarae.sh", video::LINE_PX, look.ink, false)]);
     let chapter_cards: Vec<Vec<u8>> = (cut.chapters.iter().enumerate())
         .map(|(i, c)| {
@@ -696,6 +719,7 @@ pub(crate) fn make(
             pose,
             pops: up,
             blank,
+            label: f.label,
         };
         if last.as_ref().is_none_or(|l| l.0 != key) {
             let mut px = match f.card {
@@ -1203,6 +1227,8 @@ pub(crate) fn band(
         put(p, left, a);
     }
     let mark = match (f.ends, f.speed.and_then(sped)) {
+        // (the words over where it ends say it: one label for one thing)
+        (true, _) if f.label.is_some() => None,
         (true, _) => Some((ENDS.to_string(), look.accent, 255)),
         (false, Some(s)) => Some((s, look.ink, QUIET)),
         (false, None) => None,
