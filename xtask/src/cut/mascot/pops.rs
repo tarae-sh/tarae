@@ -1,5 +1,6 @@
 //! The keys pop up beside the mascot (the brief's §6, the user: "그 게임에서의 데미지 표시처럼 나타났다 사라지는 이펙트"): a pop
-//! where a key is heard, from the same list as the sound and the taps (`sound::sounds`' `struck`), so none on a sped span.
+//! where a key is heard, from the same list as the sound and the taps (`sound::sounds`' `struck`), so none for a key on a
+//! sped span; there the mascot's own press of fast-forward pops once, `▸▸` rising from its right paw (`presses`).
 //!
 //! - **Its words** (`name`): the key by tarae's own name for it, as the hint row writes it (`key.rs`'s `Display`): `j`,
 //!   `space`, `esc`, `enter`, `tab`, `backspace`, `C-q`, `A-x`, `←`. A chord is one pop; a sequence its presses.
@@ -220,7 +221,8 @@ impl Regions {
     }
 }
 
-/// A pop: from its frame until the frame it's gone (or restarted), its words, whether a command, its step aside (px).
+/// A pop: from its frame until the frame it's gone (or restarted), its words, whether a command, its step aside (px);
+/// `paw`: rising from the right paw (`PAW_X`), not in the lane — the mascot's own press (`presses`).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pop {
     pub(crate) from: u64,
@@ -228,7 +230,14 @@ pub(crate) struct Pop {
     pub(crate) text: String,
     pub(crate) command: bool,
     pub(crate) aside: usize,
+    pub(crate) paw: bool,
 }
+
+/// Pressing fast-forward's pop: its words (the band's `▸▸ ×N` says the speed), and its middle in the box (px at
+/// 1080p, from its left): beside the right paw (down at about 150), clear of the ball's ink (to about 182 at every
+/// height) — risen from the paw over the ball, it read as a mark on the face.
+pub(crate) const PRESS: &str = "▸▸";
+pub(crate) const PAW_X: usize = 200;
 
 /// The pops and their counts: commands, typed, held (counted restarts), and the names drawn.
 #[derive(Debug, Default)]
@@ -239,6 +248,8 @@ pub(crate) struct Pops {
     pub(crate) held: usize,
     pub(crate) spaces: usize,
     pub(crate) names: Vec<String>,
+    /// Pressing fast-forward's pops (`presses`).
+    pub(crate) presses: usize,
 }
 
 /// Whether a key's name in a typed place is the typing (a character, a line, its editing keys) — `enter`, `esc` and a
@@ -300,7 +311,7 @@ pub(crate) fn pops(
             p.list[i].until = k;
             let aside = p.list[i].aside;
             let text = fit(format!("{name} ×{}", n + 1));
-            p.list.push(Pop { from: k, until: k + life, text, command: true, aside });
+            p.list.push(Pop { from: k, until: k + life, text, command: true, aside, paw: false });
             alive.insert(name, (p.list.len() - 1, n + 1));
             p.held += 1;
             continue;
@@ -317,7 +328,14 @@ pub(crate) fn pops(
         if !p.names.contains(&name) {
             p.names.push(name.clone());
         }
-        p.list.push(Pop { from: k, until: k + life, text: fit(name.clone()), command: !typed, aside });
+        p.list.push(Pop {
+            from: k,
+            until: k + life,
+            text: fit(name.clone()),
+            command: !typed,
+            aside,
+            paw: false,
+        });
         match typed {
             true => p.typed += 1,
             false => {
@@ -331,6 +349,22 @@ pub(crate) fn pops(
 }
 
 impl Pops {
+    /// These pops with pressing fast-forward's, one where each hold (frames, from–to) goes down: `PRESS`, a command's
+    /// weight, rising from the right paw. None with the pops off.
+    pub(crate) fn presses(mut self, holds: &[(u64, u64)], keys: Keys) -> Pops {
+        if keys == Keys::Off {
+            return self;
+        }
+        let life = POP_MS * FPS / 1000;
+        for &(a, _) in holds {
+            let text = PRESS.to_string();
+            self.list.push(Pop { from: a, until: a + life, text, command: true, aside: 0, paw: true });
+            self.presses += 1;
+        }
+        self.list.sort_by_key(|q| q.from);
+        self
+    }
+
     /// Each pop's frames up (from, until), in order of their start — what a swing waits for.
     pub(crate) fn busy(&self) -> Vec<(u64, u64)> {
         self.list.iter().map(|q| (q.from, q.until)).collect()

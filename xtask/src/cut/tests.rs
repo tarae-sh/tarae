@@ -1741,7 +1741,7 @@ fn cut_init_holds_a_waited_card_for_its_read_and_its_answer_only() {
 
 // ── The mascot at the keys ──
 
-use super::mascot::{self, Art, Hands, Pose, Side};
+use super::mascot::{self, Art, Hands, Pose, Press, Side};
 
 #[test]
 fn a_keys_side_is_its_half_of_a_qwerty() {
@@ -1779,56 +1779,120 @@ fn the_mascot_taps_where_a_key_is_heard_on_its_side_and_nowhere_else() {
         key(14_000, b"a"),  // 1×, left
         key(14_300, b"j"),  // right
         key(14_600, b"\r"), // a return: both
-        key(14_950, b"y"),  // the key that answers card 1: the stamp's, both
+        key(14_950, b"y"),  // the key that answers card 1: the stamp, its own paw (right), one press
         key(30_000, b"d"),  // left out
     ];
     let s = sounds(&p, &keys, &marks());
-    // (the opening's where it ends shows 55–58 s: card 2's answer at 56 s, its stamp, there at 7 s)
+    // (the opening's where it ends shows 55–58 s: card 2's answer at 56 s, its stamp there at 7 s — no key heard, no
+    // paw)
     assert_eq!(
         s.taps,
         [
-            (7_000_000, Side::Both),
-            (17_500_000, Side::Left),
-            (17_800_000, Side::Right),
-            (18_100_000, Side::Both),
-            (18_500_000, Side::Both)
+            (17_500_000, Side::Left, Press::Key),
+            (17_800_000, Side::Right, Press::Key),
+            (18_100_000, Side::Both, Press::Key),
+            (18_500_000, Side::Right, Press::Stamp)
         ]
     );
-    // (every tap where a key or a stamp sounds, and the sound's own times)
-    let heard: Vec<u64> = s.list.iter().map(|h| h.0.as_micros() as u64).collect();
+    assert_eq!((s.stamps, s.stamps_keyless), (2, 1));
+    // (a tap where every key and every stamp with its key sounds, and the sound's own times)
+    let heard: Vec<u64> = s.list.iter().map(|h| h.0.as_micros() as u64).filter(|&v| v != 7_000_000).collect();
     assert_eq!(s.taps.iter().map(|t| t.0).collect::<Vec<_>>(), heard);
     let hands = Hands::new(&s.taps);
     let at = |us: u64| hands.pose(Program::frame_at(us), false);
     assert_eq!(
         [at(17_500_000), at(17_800_000), at(18_100_000), at(18_500_000), at(7_000_000)],
-        [Pose::Left, Pose::Right, Pose::Both, Pose::Both, Pose::Both]
+        [Pose::Left, Pose::Right, Pose::Both, Pose::Right, Pose::Watch]
     );
     // (between them the hands up; where the 4× key was, no tap: watching)
     assert_eq!(at(17_700_000), Pose::Up);
     let fast = p.video_of(c.map.video(5_000)).unwrap();
     assert_eq!(mascot::pose_at(&hands, Program::frame_at(fast), &p.frame(fast)), Some(Pose::Watch));
-    assert_eq!(hands.taps(), 5);
+    assert_eq!(hands.taps(), 4);
+}
+
+#[test]
+fn a_stamp_is_one_press_of_its_keys_paw_held_as_a_seal_the_other_up() {
+    let stamp = Press::Stamp.hold();
+    assert_eq!((Press::Key.hold(), stamp), (3, 9), "90 ms and 300 ms at 30 fps");
+    // (a y's stamp: the right paw down its nine frames, the left up all through, then both up)
+    let h = Hands::new(&[(1_000_000, Side::Right, Press::Stamp)]);
+    let k = Program::frame_at(1_000_000);
+    let poses: Vec<Pose> = (k..k + stamp + 1).map(|f| h.pose(f, false)).collect();
+    let mut want = vec![Pose::Right; stamp as usize];
+    want.push(Pose::Up);
+    assert_eq!(poses, want);
+    // (an a's, c's or s's: the left)
+    for b in [&b"a"[..], b"c", b"s"] {
+        assert_eq!(mascot::side(b), Side::Left, "{:?}", String::from_utf8_lossy(b));
+    }
+    assert_eq!(mascot::side(b"y"), Side::Right);
+    // (the same paw asked again inside the seal: up one frame first, as for a key)
+    let h = Hands::new(&[(0, Side::Left, Press::Stamp), (100_000, Side::Left, Press::Key)]);
+    assert_eq!((h.pose(1, false), h.pose(2, false), h.pose(3, false)), (Pose::Left, Pose::Up, Pose::Left));
+    // (from the sound: the answering key taps once, the stamp's own press — no tap of its own beside it)
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let s = sounds(&p, &[key(14_950, b"c")], &marks());
+    assert_eq!(s.taps, [(18_500_000, Side::Left, Press::Stamp)]);
+}
+
+/// A card that goes once its work is done (the grammar's, 2.4 s after its y in take 3): the y's own press is the seal,
+/// where the y is heard; the stamp sounds where it did, with no paw of its own.
+#[test]
+fn a_card_answered_before_it_goes_is_pressed_where_its_key_is() {
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let how = |how: &str| {
+        Marks::new(
+            vec![
+                json!({ "what": "card-shown", "id": "card#1", "kind": "grammars", "ms": 12_000 }),
+                json!({ "what": "card-answered", "id": "card#1", "kind": "grammars", "how": how, "ms": 15_000 }),
+            ],
+            120_000,
+        )
+    };
+    let Where::At(at_y) = heard_at(&p, 13_000) else { panic!("13 s is shown at 1x") };
+    let s = sounds(&p, &[key(13_000, b"y")], &how("answered y"));
+    assert_eq!(s.taps, [(at_y[0], Side::Right, Press::Stamp)]);
+    assert_eq!((s.stamps, s.stamps_keyless), (1, 0));
+    assert_eq!(s.list.iter().filter(|h| h.1 == Heard::Stamp).count(), 1, "the stamp's sound where it was");
+    assert_eq!(s.list.iter().filter(|h| matches!(h.1, Heard::Key(_))).count(), 1, "and the y's own");
+    // (not its letter, another key after it, or further back than `ANSWER_WAIT_MS`: a typed key, the stamp no paw)
+    for (keys, how_) in [
+        (vec![key(13_000, b"y")], "answered n"),
+        (vec![key(13_000, b"y"), key(14_000, b"x")], "answered y"),
+        (vec![key(15_000 - super::sound::ANSWER_WAIT_MS - 1, b"y")], "answered y"),
+    ] {
+        let s = sounds(&p, &keys, &how(how_));
+        assert!(s.taps.iter().all(|t| t.2 == Press::Key), "{:?} {how_}", s.taps);
+        assert_eq!(s.stamps_keyless, 1);
+    }
 }
 
 #[test]
 fn a_hand_stays_down_its_hold_and_the_same_hand_again_comes_up_one_frame_first() {
     let frame = 1_000_000 / video::FPS;
     // (alone: down three frames, then up)
-    let one = Hands::new(&[(1_000_000, Side::Left)]);
+    let one = Hands::new(&[(1_000_000, Side::Left, Press::Key)]);
     let k = Program::frame_at(1_000_000);
     let poses: Vec<Pose> = (k..k + 4).map(|f| one.pose(f, false)).collect();
     assert_eq!(poses, [Pose::Left, Pose::Left, Pose::Left, Pose::Up]);
     // (the same hand twice in 60 ms, and in 20 ms: an up frame between)
     for gap in [60_000, 20_000] {
-        let h = Hands::new(&[(0, Side::Right), (gap, Side::Right)]);
+        let h = Hands::new(&[(0, Side::Right, Press::Key), (gap, Side::Right, Press::Key)]);
         let poses: Vec<Pose> = (0..4).map(|f| h.pose(f, false)).collect();
         assert_eq!(poses, [Pose::Right, Pose::Up, Pose::Right, Pose::Right], "{gap} µs apart");
     }
     // (the other hand is no wait: both down together)
-    let h = Hands::new(&[(0, Side::Left), (frame, Side::Right)]);
+    let h = Hands::new(&[(0, Side::Left, Press::Key), (frame, Side::Right, Press::Key)]);
     assert_eq!((h.pose(0, false), h.pose(1, false)), (Pose::Left, Pose::Both));
     // (the space bar: the hand that didn't tap last)
-    let h = Hands::new(&[(0, Side::Left), (500_000, Side::Space), (1_000_000, Side::Space)]);
+    let h = Hands::new(&[
+        (0, Side::Left, Press::Key),
+        (500_000, Side::Space, Press::Key),
+        (1_000_000, Side::Space, Press::Key),
+    ]);
     assert_eq!(h.pose(Program::frame_at(500_000), false), Pose::Right);
     assert_eq!(h.pose(Program::frame_at(1_000_000), false), Pose::Left);
 }
@@ -1836,11 +1900,11 @@ fn a_hand_stays_down_its_hold_and_the_same_hand_again_comes_up_one_frame_first()
 #[test]
 fn the_mascot_watches_after_the_quiet_and_on_a_sped_span_and_never_on_a_card() {
     let quiet = mascot::QUIET_MS * video::FPS / 1000;
-    let h = Hands::new(&[(0, Side::Left)]);
+    let h = Hands::new(&[(0, Side::Left, Press::Key)]);
     assert_eq!((h.pose(quiet - 1, false), h.pose(quiet, false)), (Pose::Up, Pose::Watch));
     assert_eq!(Hands::new(&[]).pose(10, false), Pose::Watch, "no key yet");
     // (typing again: the first key is a tap)
-    let h = Hands::new(&[(0, Side::Left), (5_000_000, Side::Right)]);
+    let h = Hands::new(&[(0, Side::Left, Press::Key), (5_000_000, Side::Right, Press::Key)]);
     assert_eq!(h.pose(Program::frame_at(5_000_000) - 1, false), Pose::Watch);
     assert_eq!(h.pose(Program::frame_at(5_000_000), false), Pose::Right);
     // (on a sped span watching at once, a key a moment before; at 1× and at the 2× fit not)
@@ -1848,7 +1912,7 @@ fn the_mascot_watches_after_the_quiet_and_on_a_sped_span_and_never_on_a_card() {
     let p = Program::new(&c);
     let near = |t: u64| {
         let v = p.video_of(c.map.video(t)).unwrap();
-        let h = Hands::new(&[(v - 200_000, Side::Left)]);
+        let h = Hands::new(&[(v - 200_000, Side::Left, Press::Key)]);
         mascot::pose_at(&h, Program::frame_at(v), &p.frame(Program::time_of(Program::frame_at(v))))
     };
     assert_eq!(
@@ -1856,7 +1920,7 @@ fn the_mascot_watches_after_the_quiet_and_on_a_sped_span_and_never_on_a_card() {
         (Some(Pose::Watch), Some(Pose::Up), Some(Pose::Up))
     );
     // (a card: none)
-    let h = Hands::new(&[(4_000_000, Side::Both)]);
+    let h = Hands::new(&[(4_000_000, Side::Both, Press::Key)]);
     let built = Program::frame_at(4_000_000);
     assert_eq!(p.frame(Program::time_of(built)).card, Some(Card::Built));
     assert_eq!(mascot::pose_at(&h, built, &p.frame(Program::time_of(built))), None);
@@ -2163,7 +2227,7 @@ fn take_at(p: &Program, ms: u64) -> u64 {
 
 /// The motions with taps at `taps` (video µs, the left hand), seeded 7.
 fn plan_of(p: &Program, taps: &[u64], causes: &Causes, busy: &[(u64, u64)], sw: Switches) -> (Plan, Hands) {
-    let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left)).collect::<Vec<_>>());
+    let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left, Press::Key)).collect::<Vec<_>>());
     (Plan::new(p, &hands, causes, busy, &sw, 7), hands)
 }
 
@@ -2174,6 +2238,7 @@ const STILL: Switches = Switches {
     surprise: false,
     stretch: false,
     swing: false,
+    fast: false,
     keys: Keys::All,
 };
 
@@ -2547,6 +2612,48 @@ fn a_whole_body_motion_fits_whole_before_the_next_key_or_is_never_begun() {
     assert!(pl.left_out.iter().any(|l| l.contains("(the swing at ")), "{:?}", pl.left_out);
 }
 
+/// A whole-body motion waits for a stamp's paw to come up, held longer than a key's: in place and in a held end.
+#[test]
+fn a_whole_body_motion_waits_for_a_stamps_paw_to_come_up() {
+    let c = cut(&moving("")).unwrap();
+    let p = Program::new(&c);
+    let swing = STILL.with(|s| s.swing = true);
+    let cs = motions::causes(&p, &marks());
+    let ideal = cs.swing.iter().find(|c| c.said.starts_with("chapter 1's end")).unwrap().v;
+    let mine =
+        |pl: &Plan| pl.placed.iter().find(|m| m.cause.starts_with("chapter 1's end")).cloned().unwrap();
+    // (a tap three frames before the swing's moment: a key's hand is up by then, a stamp's still down)
+    let f = Program::frame_at(ideal) - 3;
+    let with = |press: Press| {
+        let hands = Hands::new(&[(Program::time_of(f), Side::Right, press)]);
+        Plan::new(&p, &hands, &cs, &[], &swing, 7)
+    };
+    assert_eq!(mine(&with(Press::Key)).moved, 0);
+    let m = mine(&with(Press::Stamp));
+    let margin = motions::frames(motions::MARGIN_MS);
+    assert!(m.moved != 0, "{m:?}");
+    assert!(m.from >= f + Press::Stamp.hold() || m.from + m.len + margin <= f, "{m:?} over the paw from {f}");
+
+    // (a held end: past the last stamp's paw coming up, not a key's)
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let mut taps: Vec<u64> =
+        keys_through_both_ends().iter().flat_map(|&t| motions::shown_at(&p, t)).collect();
+    taps.sort_unstable();
+    let cs = motions::causes(&p, &marks());
+    let holds = |press: Press| {
+        let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left, press)).collect::<Vec<_>>());
+        Plan::new(&p, &hands, &cs, &[], &swing, 7).holds
+    };
+    // (the last key's hand is up a frame or more before each card; the stamp's paw past it — longer, by whole tenths)
+    let (keys, stamps) = (holds(Press::Key), holds(Press::Stamp));
+    assert_eq!(keys.len(), 2);
+    for (k, st) in keys.iter().zip(&stamps) {
+        assert_eq!(k.chapter, st.chapter);
+        assert!(st.frames > k.frames, "{k:?} {st:?}");
+    }
+}
+
 #[test]
 fn a_failed_run_surprises_once_in_twenty_seconds_and_a_passed_one_never() {
     for (run, step, want) in [
@@ -2614,7 +2721,7 @@ fn the_blinks_and_glances_are_seeded_by_the_list_the_same_cut_the_same_video() {
     let v0 = take_at(&p, 0);
     // (a typing streak of 10 s)
     let taps: Vec<u64> = (0..67).map(|i| v0 + s(2_000) + s(150) * i).collect();
-    let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left)).collect::<Vec<_>>());
+    let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left, Press::Key)).collect::<Vec<_>>());
     let all = Switches::default();
     let one = Plan::new(&p, &hands, &Causes::default(), &[], &all, c.seed);
     let again = Plan::new(&p, &hands, &Causes::default(), &[], &all, c.seed);
@@ -2763,7 +2870,8 @@ fn a_pop_for_every_heard_key_none_on_a_sped_span_a_chord_one_a_held_key_counted(
             .map(|t| Program::frame_at(t.0))
             .collect::<Vec<_>>()
     );
-    assert_eq!(heard.taps.len(), heard.struck.len() + 2, "the two stamps with no key");
+    assert_eq!(heard.taps.len(), heard.struck.len(), "the two stamps with no key: no tap");
+    assert_eq!(heard.stamps_keyless, 2);
     assert!(ps.list.iter().all(|q| q.command));
     // (a held key: one pop, restarted with its count, never two up at once)
     let held: Vec<Struck> = (0..12)
@@ -2884,6 +2992,7 @@ fn a_pop_stays_in_its_lane_clear_of_the_mascots_ink_the_cells_and_the_marks() {
         text: text.into(),
         command,
         aside,
+        paw: false,
     };
     let pops = Pops {
         list: vec![
@@ -3176,4 +3285,143 @@ fn the_cuts_check_leaves_out_only_what_a_mask_hid() {
     }
     // (no mask: nothing hidden, whatever no frame showed)
     assert_eq!(mask::Tally::new(&[], &hits).hidden(), [false]);
+}
+
+// ── Pressing fast-forward ──
+
+/// `moving`'s take with these spans (take seconds from, to, and its pace: `speed = N` or `out = true`).
+fn spanned(spans: &[(u64, u64, &str)]) -> Cut {
+    let rest: String = (spans.iter())
+        .map(|(a, b, pace)| format!("[[span]]\nfrom = \"{a}s\"\nto = \"{b}s\"\n{pace}\n"))
+        .collect();
+    cut(&moving(&rest)).unwrap()
+}
+
+const FAST: Switches = Switches { fast: true, ..STILL };
+
+/// A stretch past 2×: the right paw held down through it, the face on the screen, and one `▸▸` from that paw where it
+/// goes down; lifted where it ends, the hands over the keys after. Off: watching, as before.
+#[test]
+fn a_fast_stretch_holds_the_right_paw_and_pops_once() {
+    let c = spanned(&[(10, 20, "speed = 8")]);
+    let p = Program::new(&c);
+    let (holds, short) = motions::fast_holds(&p);
+    let (a, b) = holds[0];
+    assert_eq!((holds.len(), short), (1, 0));
+    assert_eq!(a, Program::frame_at(take_at(&p, 10_000)), "down where the stretch begins");
+    assert_eq!(b, Program::frame_at(take_at(&p, 20_000)), "lifted where it ends");
+    let plan = Plan::new(&p, &Hands::new(&[]), &Causes::default(), &[], &FAST, 7);
+    let held = Pic::At(Arms::Right, Face::Raised);
+    assert_eq!(plan.pic(a - 1), Some(Pic::WATCH));
+    assert!((a..b - motions::TURN).all(|k| plan.pic(k) == Some(held)), "{:?}", plan.pic(a));
+    assert_eq!(
+        (plan.pic(b - 1), plan.pic(b)),
+        (Some(Pic::At(Arms::Right, Face::Half)), Some(Pic::At(Arms::Up, Face::Open))),
+        "lifted, the face turned back to the keys"
+    );
+    assert_eq!(plan.fast, holds);
+    let pops = Pops::default().presses(&holds, Keys::All);
+    assert_eq!(
+        pops.list.iter().map(|q| (q.from, q.text.as_str(), q.command, q.paw)).collect::<Vec<_>>(),
+        [(a, pops::PRESS, true, true)]
+    );
+    assert!(Pops::default().presses(&holds, Keys::Off).list.is_empty(), "the pops off: none");
+    // (off: watching through it, as before)
+    let off = Plan::new(&p, &Hands::new(&[]), &Causes::default(), &[], &STILL, 7);
+    assert!((a..b).all(|k| off.pic(k) == Some(Pic::WATCH)));
+}
+
+/// A key shown inside the hold taps the left paw one frame, a frame up after; keys closer than that share the tap; none
+/// is heard or pops.
+#[test]
+fn a_key_inside_a_fast_stretch_taps_the_left_paw() {
+    let c = spanned(&[(10, 20, "speed = 8")]);
+    let p = Program::new(&c);
+    let frame = |t: u64| Program::frame_at(take_at(&p, t));
+    // (the first take ms past 16 s whose frame is the next one: a key a frame after another)
+    let next = (16_001..17_000).find(|&t| frame(t) == frame(16_000) + 1).unwrap();
+    let keys = [key(12_000, b"j"), key(12_010, b"k"), key(16_000, b"l"), key(next, b"h")];
+    let s = sounds(&p, &keys, &marks());
+    assert_eq!(s.sped.len(), 4);
+    let heard = s.list.iter().any(|h| matches!(h.1, Heard::Key(_)));
+    assert!(s.taps.is_empty() && s.struck.is_empty() && !heard, "no tap of its own, no pop, no sound");
+    let hands = Hands::new(&s.taps).sped(&s.sped);
+    let plan = Plan::new(&p, &hands, &Causes::default(), &[], &FAST, 7);
+    let (both, right) = (Pic::At(Arms::Both, Face::Raised), Pic::At(Arms::Right, Face::Raised));
+    let at = |k: u64| plan.pic(k).unwrap();
+    assert_eq!((at(frame(12_000)), at(frame(12_000) + 1)), (both, right));
+    assert_eq!((at(frame(16_000)), at(frame(16_000) + 1)), (both, right), "the next frame's key shares it");
+    assert_eq!((plan.fast_taps, plan.fast_keys), (2, 4));
+}
+
+/// A fast stretch too short to read as a press gets nothing; one just long enough holds.
+#[test]
+fn a_short_fast_stretch_does_nothing() {
+    let c = spanned(&[(10, 12, "speed = 8")]);
+    let p = Program::new(&c);
+    let (holds, short) = motions::fast_holds(&p);
+    assert_eq!((holds.len(), short), (0, 1), "0.25 s of video");
+    let plan = Plan::new(&p, &Hands::new(&[]), &Causes::default(), &[], &FAST, 7);
+    assert!((0..p.frames()).all(|k| !matches!(plan.pic(k), Some(Pic::At(Arms::Right, _)))));
+    assert!(Pops::default().presses(&holds, Keys::All).list.is_empty());
+    let c = spanned(&[(10, 13, "speed = 10")]);
+    let p = Program::new(&c);
+    assert_eq!(motions::fast_holds(&p).1, 1, "0.3 s: a stamp's press, still short");
+    let c = spanned(&[(10, 14, "speed = 8")]);
+    let p = Program::new(&c);
+    let (holds, short) = motions::fast_holds(&p);
+    assert_eq!((holds.len(), short), (1, 0), "0.5 s of video");
+}
+
+/// Two fast stretches with only a cut between are one hold, one press; a stretch at 1× between makes two.
+#[test]
+fn two_fast_stretches_joined_by_a_cut_are_one_hold() {
+    let c = spanned(&[(10, 14, "speed = 8"), (14, 30, "out = true"), (30, 40, "speed = 16")]);
+    let p = Program::new(&c);
+    let (holds, _) = motions::fast_holds(&p);
+    assert_eq!(holds.len(), 1, "{holds:?}");
+    assert_eq!(Pops::default().presses(&holds, Keys::All).presses, 1);
+    let c = spanned(&[(10, 14, "speed = 8"), (14, 16, "speed = 1"), (16, 24, "speed = 16")]);
+    let p = Program::new(&c);
+    assert_eq!(motions::fast_holds(&p).0.len(), 2);
+}
+
+/// A stretch due inside a fast-forward hold doesn't begin there: holding fast-forward isn't idle, and the quiet counts
+/// from the lift (the user's pick, 2026-11-12).
+#[test]
+fn no_stretch_begins_while_fast_forward_is_held() {
+    let c = spanned(&[(5, 45, "speed = 8")]);
+    let p = Program::new(&c);
+    let (holds, _) = motions::fast_holds(&p);
+    let (a, b) = holds[0];
+    let quiet = motions::frames(motions::STRETCH_QUIET_MS);
+    let stretches = |sw: Switches| {
+        let plan = Plan::new(&p, &Hands::new(&[]), &Causes::default(), &[], &sw, 7);
+        plan.placed.iter().filter(|m| m.kind == Kind::Stretch).map(|m| m.from).collect::<Vec<_>>()
+    };
+    // (with no hold, the stretch comes 6 s into the take: inside where the hold is)
+    let due = stretches(STILL.with(|s| s.stretch = true));
+    assert!(due.first().is_some_and(|&k| a <= k && k < b), "{due:?} against the hold {a}–{b}");
+    // (held: none begins in it, the first a whole quiet after the lift)
+    let held = stretches(FAST.with(|s| s.stretch = true));
+    assert!(held.iter().all(|&k| k >= b + quiet), "{held:?} against the hold {a}–{b}");
+}
+
+/// At 2× the keys are heard: nothing of this changes there — every picture the same with it on or off.
+#[test]
+fn at_two_times_nothing_changes() {
+    let all = |speed: &str| {
+        let c = spanned(&[(10, 20, speed)]);
+        let p = Program::new(&c);
+        let s = sounds(&p, &[key(12_000, b"j"), key(16_000, b"f")], &marks());
+        let hands = Hands::new(&s.taps).sped(&s.sped);
+        let pics = |sw: Switches| {
+            let plan = Plan::new(&p, &hands, &Causes::default(), &[], &sw, 7);
+            (0..p.frames()).map(|k| plan.pic(k)).collect::<Vec<_>>()
+        };
+        let on = Switches::default();
+        (s.sped.len(), s.taps.len(), pics(on) == pics(on.with(|s| s.fast = false)))
+    };
+    assert_eq!(all("speed = 2"), (0, 2, true));
+    assert_eq!(all("speed = 8"), (2, 0, false), "past 2× it does");
 }

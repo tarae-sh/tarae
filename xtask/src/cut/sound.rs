@@ -30,7 +30,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use super::mascot::{Side, side};
+use super::mascot::{Press, Side, side};
 use super::{Marks, Pace, Program, What, ms_of, video_time};
 use crate::Result;
 use crate::record::Rec;
@@ -58,6 +58,9 @@ const WINDOW_S: f32 = 3.0;
 const STEP_S: f32 = 1.0;
 /// A key this soon before a card's answer is the answer: the stamp is its sound.
 pub(crate) const STAMP_KEY_MS: u64 = 150;
+/// A card that goes only once its work is done (the grammar's, after its download) is answered by the last key before it,
+/// of its answer's letter, up to this long before: that key's press is the stamp's (the mascot's), its sound its own.
+pub(crate) const ANSWER_WAIT_MS: u64 = 5_000;
 /// The first bed comes in under the intro's last this much (µs), then leads through the card of what's built.
 pub(crate) const BED_UNDER_INTRO_US: u64 = 500_000;
 
@@ -115,17 +118,21 @@ pub(crate) fn stroke(b: &[u8]) -> Option<char> {
 /// What the cut hears, at its video times, and what it doesn't: key strokes heard (one key heard twice where the
 /// opening shows it too), keys not heard for their stretch's speed or because it's left out; stamps heard and not;
 /// where the brush starts (µs) on the end card, and with the intro; and the mascot's taps, one where each key and stamp
-/// is heard (µs, the hand it asks for: `mascot::side`, both for a stamp).
+/// is heard (µs, the hand it asks for: `mascot::side` — a stamp's the answering key's —, typed or a stamp), none for a
+/// stamp with no key heard (`stamps_keyless`); and where each key on a stretch too fast to hear it is shown (`sped`,
+/// video µs: the left paw's taps in a fast-forward hold — no sound, no pop).
 #[derive(Debug, Default)]
 pub(crate) struct Sounds {
     pub(crate) list: Vec<(Duration, Heard)>,
-    pub(crate) taps: Vec<(u64, Side)>,
+    pub(crate) taps: Vec<(u64, Side, Press)>,
+    pub(crate) sped: Vec<u64>,
     pub(crate) struck: Vec<Struck>,
     pub(crate) keys: usize,
     pub(crate) fast: usize,
     pub(crate) out: usize,
     pub(crate) stamps: usize,
     pub(crate) stamps_missed: usize,
+    pub(crate) stamps_keyless: usize,
     pub(crate) brush: Option<u64>,
     pub(crate) intro: Option<u64>,
 }
@@ -143,15 +150,33 @@ pub(crate) struct Struck {
 /// The cut's sounds from the take's input log (`keys`) and its landmarks.
 pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
     let answered: Vec<u64> = marks.of("card-answered").map(ms_of).collect();
+    // (the cards answered by a key further back than `STAMP_KEY_MS`: the answer's time and the key's)
+    let keyed: Vec<&Rec> = keys.iter().filter(|r| super::init::is_key(r)).collect();
+    let waited: Vec<(u64, u64)> = (marks.of("card-answered"))
+        .filter_map(|m| {
+            let a = ms_of(m);
+            let letter = m["how"].as_str()?.strip_prefix("answered ")?;
+            let last = keyed.iter().rev().find(|r| r.us / 1000 <= a)?;
+            let t = last.us / 1000;
+            (a - t > STAMP_KEY_MS && a - t <= ANSWER_WAIT_MS && last.bytes == letter.as_bytes())
+                .then_some((a, t))
+        })
+        .collect();
     let mut s = Sounds::default();
     let us = Duration::from_micros;
     // (the key each answer was, its stamp's pop)
     let mut answer_key: Vec<(u64, Vec<u8>)> = Vec::new();
+    // (a key on a too-fast stretch: where the video shows it)
+    let sped_at = |t: u64| prog.video_of(prog.cut.map.video(t));
     for r in keys.iter().filter(|r| super::init::is_key(r)) {
         let t = r.us / 1000;
         if let Some(&a) = answered.iter().find(|&&a| a >= t && a - t <= STAMP_KEY_MS) {
             if stroke(&r.bytes).is_some() {
                 answer_key.push((a, r.bytes.clone()));
+                // (its stamp unheard on a too-fast stretch: a key pressed there like any other)
+                if heard_at(prog, t) == Where::Fast {
+                    s.sped.extend(sped_at(t));
+                }
             }
             continue;
         }
@@ -159,11 +184,15 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
         match heard_at(prog, t) {
             Where::At(vs) => {
                 s.keys += vs.len();
-                s.taps.extend(vs.iter().map(|&v| (v, side(&r.bytes))));
+                let press = if waited.iter().any(|w| w.1 == t) { Press::Stamp } else { Press::Key };
+                s.taps.extend(vs.iter().map(|&v| (v, side(&r.bytes), press)));
                 (s.struck).extend(vs.iter().map(|&v| Struck { v, t, bytes: r.bytes.clone(), answer: false }));
                 s.list.extend(vs.into_iter().map(|v| (us(v), Heard::Key(c))));
             }
-            Where::Fast => s.fast += 1,
+            Where::Fast => {
+                s.fast += 1;
+                s.sped.extend(sped_at(t));
+            }
             Where::Out => s.out += 1,
         }
     }
@@ -171,9 +200,20 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
         match heard_at(prog, a) {
             Where::At(vs) => {
                 s.stamps += vs.len();
-                s.taps.extend(vs.iter().map(|&v| (v, Side::Both)));
-                if let Some((_, b)) = answer_key.iter().rev().find(|k| k.0 == a) {
-                    (s.struck).extend(vs.iter().map(|&v| Struck { v, t: a, bytes: b.clone(), answer: true }));
+                // (one press, the answering key's paw held as a seal; no key heard, no paw)
+                match answer_key.iter().rev().find(|k| k.0 == a) {
+                    Some((_, b)) => {
+                        s.taps.extend(vs.iter().map(|&v| (v, side(b), Press::Stamp)));
+                        (s.struck).extend(vs.iter().map(|&v| Struck {
+                            v,
+                            t: a,
+                            bytes: b.clone(),
+                            answer: true,
+                        }));
+                    }
+                    // (its key further back: its press was the stamp's, where that key is heard)
+                    None if waited.iter().any(|w| w.0 == a) => {}
+                    None => s.stamps_keyless += vs.len(),
                 }
                 s.list.extend(vs.into_iter().map(|v| (us(v), Heard::Stamp)));
             }
@@ -185,6 +225,7 @@ pub(crate) fn sounds(prog: &Program, keys: &[Rec], marks: &Marks) -> Sounds {
     s.list.sort_by_key(|h| h.0);
     s.taps.sort_by_key(|t| t.0);
     s.struck.sort_by_key(|k| k.v);
+    s.sped.sort_unstable();
     s
 }
 

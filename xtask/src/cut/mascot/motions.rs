@@ -27,6 +27,12 @@
 //!   the half-raised; after a watch it starts down `TURN` frames before the key (the arms over the keys), so the eyes are
 //!   on the keyboard when the hand taps. The surprise's start is the one change with no turn. A tap stays a snap.
 //! - **The same cut is the same video**: the blinks and glances come from a sequence seeded by the edit list (`Cut::seed`).
+//! - **Pressing fast-forward** (`fast_holds`, the user's, 2026-11-12: "빨리 감기에서도 누르긴 해야지"): through a stretch too fast
+//!   for its keys (past `KEYS_MAX_SPEED`) the right paw is held down, the face raised to the screen, lifted where it
+//!   ends (the hands over the keys `QUIET_MS` after, as after a key); a `▸▸` pop where it goes down (`pops::presses`).
+//!   Each key shown in it taps the left paw a frame, a frame up after — keys closer share one. Fast stretches with only
+//!   a cut between are one hold; one under `FAST_MIN_MS` of video none. A surprise or swing shows over it; no stretch
+//!   begins in one, its quiet counted from the lift (the user's pick, 2026-11-12).
 //! - Every switch off: V4's mascot, picture for picture (no turn either).
 
 use super::{Arms, Face, Hands, Pic, Pose, QUIET_MS, Switches};
@@ -70,6 +76,38 @@ const RUN_SAID: usize = 72;
 /// The sequences' streams of the edit list's seed.
 const BLINKS: u64 = 1;
 const GLANCES: u64 = 2;
+
+/// A fast stretch shorter than this (video) gets no fast-forward hold: a hold outlasts the stamp's press
+/// (`STAMP_HOLD_MS`, 300 ms) to read as held, not pressed and lifted; and take 3's rough cut has 36 sped bits at about
+/// 0.3 s (a turn's ×4 between half-seconds of a still screen) that a 300 ms line would split a frame either way.
+pub(crate) const FAST_MIN_MS: u64 = 400;
+
+/// The fast-forward holds (frames, from–to, in order): each run of frames shown past `KEYS_MAX_SPEED` — runs with only
+/// a cut between are one, the frames are next to each other — of `FAST_MIN_MS` or more; and how many runs were shorter.
+pub(crate) fn fast_holds(prog: &Program) -> (Vec<(u64, u64)>, usize) {
+    let n = prog.frames();
+    let fast = |k: u64| {
+        let f = prog.frame(Program::time_of(k));
+        f.card.is_none() && f.speed.is_some_and(|s| s > KEYS_MAX_SPEED + 1e-6)
+    };
+    let (mut holds, mut short) = (Vec::new(), 0);
+    let mut k = 0;
+    while k < n {
+        if !fast(k) {
+            k += 1;
+            continue;
+        }
+        let a = k;
+        while k < n && fast(k) {
+            k += 1;
+        }
+        match k - a >= frames(FAST_MIN_MS) {
+            true => holds.push((a, k)),
+            false => short += 1,
+        }
+    }
+    (holds, short)
+}
 
 pub(crate) fn frames(ms: u64) -> u64 {
     ms * FPS / 1000
@@ -247,6 +285,12 @@ pub(crate) struct Plan {
     /// Each chapter's end whose swing had no room, and how long it must be held still before its card for one
     /// (`cut::Program::held`; the cut lays it all again with them).
     pub(crate) holds: Vec<Hold>,
+    /// Pressing fast-forward: each hold (frames, from–to), the left paw's taps in them, the keys shown in them, and the
+    /// fast stretches too short for one.
+    pub(crate) fast: Vec<(u64, u64)>,
+    pub(crate) fast_taps: usize,
+    pub(crate) fast_keys: usize,
+    pub(crate) fast_short: usize,
 }
 
 /// What a whole-body motion's frames must be clear of.
@@ -255,7 +299,9 @@ struct Room<'a> {
     /// Frames not shown before each frame (a prefix sum: a stretch shown wholly when it adds none).
     unshown: Vec<u32>,
     taps: &'a [u64],
-    hold: u64,
+    /// Each tap's hold (frames, its hand up at the tap's frame and this), as `taps`, and the longest.
+    held: &'a [u64],
+    longest: u64,
     margin: u64,
     /// The key pops' frames alive (from, until), in order of their start.
     pops: &'a [(u64, u64)],
@@ -269,6 +315,15 @@ impl Room<'_> {
     fn tap_in(&self, a: u64, b: u64) -> Option<u64> {
         let i = self.taps.partition_point(|&f| f < a);
         self.taps.get(i).copied().filter(|&f| f < b)
+    }
+
+    /// The first tap whose hand is still down at `k` (its hold not past) or that comes before `end`.
+    fn pressed(&self, k: u64, end: u64) -> Option<u64> {
+        let i = self.taps.partition_point(|&f| f < k.saturating_sub(self.longest));
+        (i..self.taps.len())
+            .take_while(|&j| self.taps[j] < end)
+            .find(|&j| self.taps[j] + self.held[j] > k)
+            .map(|j| self.taps[j])
     }
 
     /// Whether a `len`-frame whole-body motion fits from frame `k` among `placed`; else why not, in words. `spaced`: at
@@ -286,7 +341,7 @@ impl Room<'_> {
         if k < TURN || !self.shown(k - TURN, end) {
             return Err("a card or the video's edge".into());
         }
-        if let Some(f) = self.tap_in(k.saturating_sub(self.hold), end) {
+        if let Some(f) = self.pressed(k, end) {
             return Err(format!("a key at {}", secs(f)));
         }
         for p in placed {
@@ -315,8 +370,10 @@ impl Room<'_> {
     /// and the margin — in whole `HOLD_STEP`s (frames). Nothing comes inside a hold: no key maps there, no surprise.
     fn hold_for(&self, card: u64, len: u64, placed: &[Placed]) -> u64 {
         let mut k = card;
-        if let Some(&last) = self.taps[..self.taps.partition_point(|&f| f < card)].last() {
-            k = k.max(last + self.hold + 1);
+        let before = self.taps.partition_point(|&f| f < card);
+        let from = self.taps.partition_point(|&f| f < card.saturating_sub(self.longest));
+        if let Some(up) = (from..before).map(|j| self.taps[j] + self.held[j]).max() {
+            k = k.max(up);
         }
         let i = self.pops.partition_point(|p| p.0 < card);
         if let Some(until) = self.pops[..i].iter().map(|p| p.1).max() {
@@ -445,13 +502,16 @@ impl Plan {
             n,
             unshown,
             taps: hands.tap_frames(),
-            hold: frames(super::HOLD_MS),
+            held: hands.holds(),
+            longest: hands.holds().iter().copied().max().unwrap_or(0),
             margin: frames(MARGIN_MS),
             pops,
         };
         let mut placed: Vec<Placed> = Vec::new();
         let mut left_out = Vec::new();
         let at_take = |k: u64| prog.frame(Program::time_of(k)).clock.unwrap_or(0);
+        // (pressing fast-forward's holds: a surprise or swing placed by its own rules shows over one; a stretch waits)
+        let (fast_held, fast_short) = if sw.fast { fast_holds(prog) } else { (Vec::new(), 0) };
 
         // (the surprises: where each failure is shown, the caps between)
         if sw.surprise {
@@ -549,6 +609,10 @@ impl Plan {
         // (the stretches; and, for the list's tuning, how many other quiets would give)
         let (mut unstretched, mut would_stretch) = (Vec::new(), Vec::new());
         if sw.stretch {
+            // (holding fast-forward isn't idle: no stretch begins in a hold, its quiet counts from the lift — the
+            // user's pick, 2026-11-12)
+            let shown: Vec<bool> =
+                (0..n).map(|k| shown[k as usize] && !fast_held.iter().any(|h| h.0 <= k && k < h.1)).collect();
             let (mine, not) = stretches(&room, &shown, &placed, frames(STRETCH_QUIET_MS), &at_take);
             would_stretch = (STRETCH_TRIED_MS.iter())
                 .map(|&ms| (ms, stretches(&room, &shown, &placed, frames(ms), &at_take).0.len()))
@@ -561,8 +625,26 @@ impl Plan {
         // (the arms and face before the face's own motions: V4's pose — the hands kept over the keys `QUIET_MS` after a
         // whole-body motion, as after a key —, a placed motion's frames over it)
         let quiet = frames(QUIET_MS);
-        let body_ends: Vec<u64> =
-            (placed.iter()).filter(|p| p.kind != Kind::Surprise).map(|p| p.from + p.len).collect();
+        // (pressing fast-forward: the left paw's taps in its holds — a frame down, a frame up)
+        let hold_of = |k: u64| {
+            let i = fast_held.partition_point(|h: &(u64, u64)| h.0 <= k);
+            (i > 0 && k < fast_held[i - 1].1).then(|| i - 1)
+        };
+        let (mut left, mut fast_keys) = (Vec::<u64>::new(), 0);
+        for &f in hands.sped_frames() {
+            if hold_of(f).is_some() {
+                fast_keys += 1;
+                if left.last().is_none_or(|&l| f >= l + 2) {
+                    left.push(f);
+                }
+            }
+        }
+        let mut body_ends: Vec<u64> = (placed.iter())
+            .filter(|p| p.kind != Kind::Surprise)
+            .map(|p| p.from + p.len)
+            .chain(fast_held.iter().map(|h| h.1))
+            .collect();
+        body_ends.sort_unstable();
         let base = |k: u64| -> Pose {
             let p = hands.pose(k, fast[k as usize]);
             let i = body_ends.partition_point(|&e| e <= k);
@@ -580,7 +662,12 @@ impl Plan {
             while at < placed.len() && placed[at].from + placed[at].len <= k {
                 at += 1;
             }
-            let a = arms(base(k));
+            let held = hold_of(k).is_some();
+            let a = match held {
+                true if left.binary_search(&k).is_ok() => Arms::Both,
+                true => Arms::Right,
+                false => arms(base(k)),
+            };
             let pic = match placed.get(at).filter(|p| p.from <= k) {
                 Some(p) => match p.kind {
                     Kind::Surprise if p.typing => {
@@ -590,6 +677,7 @@ impl Plan {
                     Kind::Stretch => Pic::Stretch(nth(&STRETCH, k - p.from)),
                     Kind::Swing => Pic::Swing(nth(&SWING, k - p.from)),
                 },
+                None if held => Pic::At(a, Face::Raised),
                 None if a == Arms::Rest => Pic::WATCH,
                 None => Pic::At(a, Face::Open),
             };
@@ -674,6 +762,10 @@ impl Plan {
             unstretched,
             would_stretch,
             holds,
+            fast_taps: left.len(),
+            fast: fast_held,
+            fast_keys,
+            fast_short,
         }
     }
 
@@ -711,6 +803,21 @@ impl Plan {
             ));
         }
         out.extend(self.left_out.iter().map(|l| format!("  {l}")));
+        if sw.fast {
+            let at: Vec<String> = (self.fast.iter())
+                .map(|&(a, b)| format!("{} ({:.1} s)", secs(a), (b - a) as f64 / FPS as f64))
+                .collect();
+            out.push(format!(
+                "  fast-forward held (the right paw, a ▸▸ pop): {}{}; the left paw tapped {} times for the {} keys shown \
+                 in them; {} fast stretches under {} ms of video: none",
+                self.fast.len(),
+                if at.is_empty() { String::new() } else { format!(", at {}", at.join(", ")) },
+                self.fast_taps,
+                self.fast_keys,
+                self.fast_short,
+                FAST_MIN_MS
+            ));
+        }
         if !self.unstretched.is_empty() {
             out.push(format!(
                 "  watches of {} s or more with no stretch: {}",

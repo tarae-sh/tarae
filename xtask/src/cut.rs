@@ -22,6 +22,7 @@
 //! surprise = true
 //! stretch = true
 //! swing = true
+//! fast = true                             # pressing fast-forward: the right paw held through a stretch past 2×
 //! keys = "all"                            # the key pops beside it (`mascot/pops.rs`): "all", "commands" or false
 //!
 //! [opening]                               # the video's first seconds (`Program`): the intro — the brush's swing
@@ -746,7 +747,7 @@ impl Cut {
             None => mascot::Switches::default(),
             Some(toml::Value::Boolean(b)) => mascot::Switches { on: *b, ..Default::default() },
             Some(toml::Value::Table(t)) => {
-                const KEYS: [&str; 6] = ["blink", "glance", "surprise", "stretch", "swing", "keys"];
+                const KEYS: [&str; 7] = ["blink", "glance", "surprise", "stretch", "swing", "fast", "keys"];
                 let e = Entry { t, line: src.header("mascot", None), src: &src, name: "mascot" };
                 e.keys(&KEYS)?;
                 let on = |key: &str| -> Result<bool> {
@@ -770,13 +771,14 @@ impl Cut {
                     surprise: on("surprise")?,
                     stretch: on("stretch")?,
                     swing: on("swing")?,
+                    fast: on("fast")?,
                     keys,
                 }
             }
             Some(_) => {
                 return Err(root.err(
                     "mascot",
-                    "mascot: true or false, or a table ([mascot]: blink, glance, surprise, stretch, swing, keys)",
+                    "mascot: true or false, or a table ([mascot]: blink, glance, surprise, stretch, swing, fast, keys)",
                 ));
             }
         };

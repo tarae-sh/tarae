@@ -274,10 +274,14 @@ impl<'a> Stage<'a> {
                         false => (pops::TYPED_PX, self.look.faint),
                     };
                     let word = words.word(&pop.text, size, fg, pop.command);
-                    // (its ink right-aligned to the lane's right edge, a step aside; never past the lane's left)
-                    let x = (right + lay.pad)
-                        .saturating_sub(s.px(pop.aside) + word.0)
-                        .max(left.saturating_sub(lay.pad));
+                    // (its ink right-aligned to the lane's right edge, a step aside; never past the lane's left —
+                    // the mascot's own press centred over its right paw)
+                    let x = match pop.paw {
+                        true => (place.x + s.px(pops::PAW_X)).saturating_sub(word.0 / 2),
+                        false => (right + lay.pad)
+                            .saturating_sub(s.px(pop.aside) + word.0)
+                            .max(left.saturating_sub(lay.pad)),
+                    };
                     let mid =
                         place.y + s.px(mascot::PAWS) - (rise * s.px(pops::RISE) as f32).round() as usize;
                     pops::ink(
@@ -440,14 +444,20 @@ pub(crate) fn make(
     let width = |t: &str, command: bool| t.chars().count() * if command { cmd_w } else { typed_w };
     let laid = |prog: &Program<'_>| {
         let heard = super::sound::sounds(prog, &keys, marks);
-        let hands = Hands::new(&heard.taps);
-        let Some(regions) = &regions else { return ((heard.taps, hands, Pops::default()), None) };
-        let pops = pops::pops(&heard.struck, regions, cut.mascot.keys, cut.seed, &width);
+        let hands = Hands::new(&heard.taps).sped(&heard.sped);
+        let keyless = heard.stamps_keyless;
+        let Some(regions) = &regions else { return ((heard.taps, keyless, hands, Pops::default()), None) };
+        let fast = match cut.mascot.fast {
+            true => motions::fast_holds(prog).0,
+            false => Vec::new(),
+        };
+        let pops = pops::pops(&heard.struck, regions, cut.mascot.keys, cut.seed, &width)
+            .presses(&fast, cut.mascot.keys);
         let causes = motions::causes(prog, marks);
         let plan = Plan::new(prog, &hands, &causes, &pops.busy(), &cut.mascot, cut.seed);
-        ((heard.taps, hands, pops), Some(plan))
+        ((heard.taps, keyless, hands, pops), Some(plan))
     };
-    let (prog, (taps, hands, pops), plan, held) = held_ends(cut, laid, |w| moving(take, w));
+    let (prog, (taps, stamps_keyless, hands, pops), plan, held) = held_ends(cut, laid, |w| moving(take, w));
     said.extend(held);
     let planned = planned.elapsed();
     // (the seal made at the picture's size, else 1080p's — smaller, never stretched —, said)
@@ -711,7 +721,15 @@ pub(crate) fn make(
     }
     if let (Some((art, place)), Some(plan)) = (mascot, &plan) {
         let (bw, bh) = mascot::box_at(scale);
-        let of = |s: mascot::Side| taps.iter().filter(|t| t.1 == s).count();
+        let of = |s: mascot::Side| {
+            let stamps = taps.iter().filter(|t| t.1 == s && t.2 == mascot::Press::Stamp).count();
+            let all = taps.iter().filter(|t| t.1 == s).count();
+            match stamps {
+                0 => format!("{all}"),
+                1 => format!("{all} (1 stamp)"),
+                n => format!("{all} ({n} stamps)"),
+            }
+        };
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
         let n = |p: Pic| posed.get(&p).copied().unwrap_or(0);
         let face = |f: mascot::Face| {
@@ -727,7 +745,8 @@ pub(crate) fn make(
             ),
         };
         said.push(format!(
-            "the mascot at the keys ({}): {} taps — {} left, {} right, {} both (returns, stamps), {} on the space bar; on {} \
+            "the mascot at the keys ({}): {} taps — {} left, {} right, {} both (returns), {} on the space bar; a stamp's paw \
+             held {} ms{}; on {} \
              frames: up {}, left {}, right {}, both {}, watching {}, the face half-turned {}, closed {}, raised over typing {}, \
              wide {}, surprised {}, stretching {}, swinging {}; its box {}×{} at ({}, {}), the rule stopping at x {}, the \
              marks ending at x {}{}; {} of {} pictures loaded, {cut_ink}; it cost {:.0} ms to load and shrink, {:.0} ms to lay \
@@ -738,6 +757,11 @@ pub(crate) fn make(
             of(mascot::Side::Right),
             of(mascot::Side::Both),
             of(mascot::Side::Space),
+            mascot::STAMP_HOLD_MS,
+            match stamps_keyless {
+                0 => String::new(),
+                n => format!(", {n} with no key heard no tap"),
+            },
             posed.values().sum::<u64>(),
             open(mascot::Arms::Up),
             open(mascot::Arms::Left),
@@ -768,13 +792,14 @@ pub(crate) fn make(
         said.push(match cut.mascot.keys {
             mascot::Keys::Off => "the key pops: none (keys = false)".to_string(),
             k => format!(
-                "the key pops (keys = {}): {} — {} commands, {} typed, {} a held key's count; {} spaces in typed text pop \
-                 nothing, none on a sped span; the names drawn: {}",
+                "the key pops (keys = {}): {} — {} commands, {} typed, {} a held key's count, {} fast-forward presses (▸▸); \
+                 {} spaces in typed text pop nothing, no key on a sped span; the names drawn: {}",
                 if k == mascot::Keys::All { "\"all\"" } else { "\"commands\"" },
                 pops.list.len(),
                 pops.commands,
                 pops.typed,
                 pops.held,
+                pops.presses,
                 pops.spaces,
                 pops.names.join(" ")
             ),

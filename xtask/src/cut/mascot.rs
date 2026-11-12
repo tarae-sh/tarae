@@ -5,10 +5,14 @@
 //!   intro's swing is: `TARAE_MASCOT_KEYS`, else by the repository's common git folder), shrunk once to `BOX`. Not
 //!   found, or hanji's ground (they're meok's only): the cut is made without it, and says so.
 //! - **A tap** where a key is heard (`sound::sounds`' own list — picture and sound agree), on the key's side of a
-//!   QWERTY (`side`): both hands on a return and where a card is answered. A hand stays down `HOLD_MS`; the same hand
-//!   asked again before it's up comes up for one frame first (`Hands`), so fast typing reads as taps.
+//!   QWERTY (`side`): both hands on a return. A hand stays down `HOLD_MS`; the same hand asked again before it's up
+//!   comes up for one frame first (`Hands`), so fast typing reads as taps. **A stamp** (a card answered) is one press
+//!   of the answering key's own paw, held `STAMP_HOLD_MS` — a seal pressed, not a letter typed —, the other paw up over
+//!   the keys (the user, 2026-11-12: one hand on a lone `y`). A card that goes only once its work is done (the
+//!   grammar's) is pressed where its answering key is heard (`sound::ANSWER_WAIT_MS`); a stamp with no key taps nothing.
 //! - **Watching** where no key has been heard for `QUIET_MS`, and on every span too fast for its keys to be heard: the
-//!   eyes raised to the screen. Every change of pose snaps; nothing else moves.
+//!   eyes raised to the screen. Every change of pose snaps; nothing else moves. (With `[mascot] fast`, a fast span long
+//!   enough is pressing fast-forward instead: `motions::fast_holds`.)
 //! - **Where**: on the take's frames and where it ends, never on a card; its box's right edge at the band's rule's end,
 //!   its foot `FOOT` above the frame's, its head over the rule — the rule stopping short of its ink (`RULE_GAP`) — and
 //!   never over a cell (`place`). The band's marks keep `GAP` from its box — from the key pops' lane where they're on.
@@ -38,6 +42,11 @@ pub(crate) const GAP: usize = 22;
 const RULE_GAP: usize = 26;
 /// A hand stays down this long — at `FPS`, whole frames (90 ms: three).
 pub(crate) const HOLD_MS: u64 = 90;
+/// A stamp's paw stays down this long — at `FPS`, whole frames (300 ms: nine): a seal pressed, not a letter typed (the
+/// design session's range, 250–350 ms; the user: one paw on a lone key). The stamp's own sound — the big key's press,
+/// the settle's tap about 220 ms on, quiet by about 340 ms — is all under the paw, which lifts as it dies away; at
+/// 350 ms (eleven) the paw lay on past it.
+pub(crate) const STAMP_HOLD_MS: u64 = 300;
 /// No key heard this long: watching.
 pub(crate) const QUIET_MS: u64 = 1_500;
 /// The key pops' lane (`pops.rs`): this wide (px), its right edge at the box's left; the pops start at the paws' height,
@@ -170,6 +179,7 @@ impl Pic {
                 Pic::At(_, Face::Open) | Pic::At(Arms::Rest, Face::Raised) => true,
                 Pic::At(_, Face::Half) => sw.moves(),
                 Pic::At(_, Face::Closed) => sw.blink,
+                Pic::At(Arms::Right | Arms::Both, Face::Raised) => sw.glance || sw.fast,
                 Pic::At(_, Face::Raised) => sw.glance,
                 Pic::At(_, Face::Wide) | Pic::Surprise(_) => sw.surprise,
                 Pic::Stretch(_) => sw.stretch,
@@ -197,6 +207,8 @@ pub(crate) struct Switches {
     pub(crate) surprise: bool,
     pub(crate) stretch: bool,
     pub(crate) swing: bool,
+    /// Pressing fast-forward: the right paw held down through a stretch too fast for its keys (`motions::fast_holds`).
+    pub(crate) fast: bool,
     pub(crate) keys: Keys,
 }
 
@@ -209,6 +221,7 @@ impl Default for Switches {
             surprise: true,
             stretch: true,
             swing: true,
+            fast: true,
             keys: Keys::All,
         }
     }
@@ -225,19 +238,20 @@ impl Switches {
     /// Whether any motion is on — the face's turn through its half-raised picture with them: every one off is V4's
     /// mascot, picture for picture.
     pub(crate) fn moves(&self) -> bool {
-        self.blink || self.glance || self.surprise || self.stretch || self.swing
+        self.blink || self.glance || self.surprise || self.stretch || self.swing || self.fast
     }
 
     /// The switches in words, for `cut.txt`.
     pub(crate) fn said(&self) -> String {
         let on = |b: bool| if b { "on" } else { "off" };
         format!(
-            "blink {}, glance {}, surprise {}, stretch {}, swing {}",
+            "blink {}, glance {}, surprise {}, stretch {}, swing {}, fast-forward {}",
             on(self.blink),
             on(self.glance),
             on(self.surprise),
             on(self.stretch),
-            on(self.swing)
+            on(self.swing),
+            on(self.fast)
         )
     }
 }
@@ -279,6 +293,24 @@ pub(crate) fn side(b: &[u8]) -> Side {
     }
 }
 
+/// What a tap is: a key typed (down `HOLD_MS`) or a card's stamp (down `STAMP_HOLD_MS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Press {
+    Key,
+    Stamp,
+}
+
+impl Press {
+    /// How long its hand stays down, in whole frames.
+    pub(crate) fn hold(self) -> u64 {
+        let ms = match self {
+            Press::Key => HOLD_MS,
+            Press::Stamp => STAMP_HOLD_MS,
+        };
+        ((ms * FPS) as f64 / 1000.0).round() as u64
+    }
+}
+
 /// A character's side of a QWERTY.
 fn of_char(c: char) -> Side {
     match "`12345qwertasdfgzxcvb~!@#$%".contains(c.to_ascii_lowercase()) {
@@ -287,23 +319,30 @@ fn of_char(c: char) -> Side {
     }
 }
 
-/// The hands through the video: each hand's down stretches (frames, from–to) and every tap's frame, in order.
+/// The hands through the video: each hand's down stretches (frames, from–to) and every tap's frame, in order, with how
+/// long its press holds (frames).
 #[derive(Debug)]
 pub(crate) struct Hands {
     down: [Vec<(u64, u64)>; 2],
     taps: Vec<u64>,
+    held: Vec<u64>,
+    /// The keys on a stretch too fast for them to be heard: their frames, in order (`sped`) — the left paw's taps
+    /// inside a fast-forward hold, nothing else.
+    sped: Vec<u64>,
 }
 
 impl Hands {
-    /// From the taps (video µs, side): each at the first frame at or after it, down `HOLD_MS` or until one frame before
-    /// its hand's next — a tap with no room for that one frame up is moved to the frame after it.
-    pub(crate) fn new(taps: &[(u64, Side)]) -> Hands {
-        let hold = ((HOLD_MS * FPS) as f64 / 1000.0).round() as u64;
+    /// From the taps (video µs, side, press): each at the first frame at or after it, down its press's hold or until one
+    /// frame before its hand's next — a tap with no room for that one frame up is moved to the frame after it.
+    pub(crate) fn new(taps: &[(u64, Side, Press)]) -> Hands {
         let mut sorted = taps.to_vec();
         sorted.sort_by_key(|t| t.0);
-        let (mut at, mut all): ([Vec<u64>; 2], Vec<u64>) = ([Vec::new(), Vec::new()], Vec::new());
+        // (each hand's taps: frame and hold; every tap's)
+        let mut at: [Vec<(u64, u64)>; 2] = [Vec::new(), Vec::new()];
+        let mut all: Vec<(u64, u64)> = Vec::new();
         let mut last = None;
-        for (v, s) in sorted {
+        for (v, s, press) in sorted {
+            let hold = press.hold();
             let s = match (s, last) {
                 (Side::Space, Some(Side::Left)) => Side::Right,
                 (Side::Space, Some(Side::Right)) => Side::Left,
@@ -317,20 +356,33 @@ impl Hands {
                 _ => &[0, 1],
             };
             let f = (hands.iter())
-                .filter_map(|&h| at[h].last().map(|p| p + 2))
+                .filter_map(|&h| at[h].last().map(|p| p.0 + 2))
                 .fold(Program::frame_at(v), u64::max);
             for &h in hands {
-                at[h].push(f);
+                at[h].push((f, hold));
             }
-            all.push(f);
+            all.push((f, hold));
         }
         all.sort_unstable();
         let down = at.map(|fs| {
             (fs.iter().enumerate())
-                .map(|(i, &f)| (f, fs.get(i + 1).map_or(f + hold, |&n| (f + hold).min(n - 1))))
+                .map(|(i, &(f, hold))| (f, fs.get(i + 1).map_or(f + hold, |n| (f + hold).min(n.0 - 1))))
                 .collect()
         });
-        Hands { down, taps: all }
+        let (taps, held) = all.into_iter().unzip();
+        Hands { down, taps, held, sped: Vec::new() }
+    }
+
+    /// These hands with the keys on the too-fast stretches (video µs), each at the first frame at or after it.
+    pub(crate) fn sped(mut self, keys: &[u64]) -> Hands {
+        self.sped = keys.iter().map(|&v| Program::frame_at(v)).collect();
+        self.sped.sort_unstable();
+        self
+    }
+
+    /// The sped keys' frames, in order.
+    pub(crate) fn sped_frames(&self) -> &[u64] {
+        &self.sped
     }
 
     /// How many taps.
@@ -341,6 +393,11 @@ impl Hands {
     /// Every tap's frame, in order.
     pub(crate) fn tap_frames(&self) -> &[u64] {
         &self.taps
+    }
+
+    /// Each tap's hold (frames), as `tap_frames`.
+    pub(crate) fn holds(&self) -> &[u64] {
+        &self.held
     }
 
     /// The pose at frame `k`; `fast` where its span is too fast for its keys to be heard.
