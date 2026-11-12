@@ -47,11 +47,17 @@ pub(crate) fn shown(prog: &Program, from: u64, to: u64) -> Vec<u64> {
     at
 }
 
-/// `cut.txt`'s lines: every hit (`source` said) the cut shows, by its first video time — or none inside the cut.
-pub(crate) fn said(prog: &Program, hits: &[Hit], source: &str) -> Vec<String> {
+/// `cut.txt`'s lines: every hit (`source` said) the cut shows, by its first video time — or none inside the cut; a hit
+/// the cut's masks hid (`hidden`'s, by the hits' order: `mask::Tally::hidden`) isn't shown, and is counted apart.
+pub(crate) fn said(prog: &Program, hits: &[Hit], hidden: &[bool], source: &str) -> Vec<String> {
     let take = |ms: u64| format!("{}.{:02}", clock(ms), ms % 1000 / 10);
     let mut inside: Vec<(u64, String, bool)> = Vec::new();
-    for h in hits {
+    let mut masked = 0;
+    for (i, h) in hits.iter().enumerate() {
+        if hidden.get(i) == Some(&true) {
+            masked += 1;
+            continue;
+        }
         let at = shown(prog, h.from, h.to);
         let Some(&first) = at.first() else { continue };
         let when: Vec<String> = at.iter().map(|&v| video_time(v)).collect();
@@ -75,9 +81,13 @@ pub(crate) fn said(prog: &Program, hits: &[Hit], source: &str) -> Vec<String> {
     let weak = inside.iter().filter(|i| i.2).count();
     // (a crossing draws only frames the cut shows anyway — the one before it and the one after: its span's)
     let head = format!(
-        "check ({source}): {} strong, {weak} weak inside the cut's spans, crossings included — of the take's {} hits",
+        "check ({source}): {} strong, {weak} weak inside the cut's spans, crossings included — of the take's {} hits{}",
         inside.len() - weak,
-        hits.len()
+        hits.len(),
+        match masked {
+            0 => String::new(),
+            n => format!(", {n} hidden by the masks in every frame that shows them"),
+        }
     );
     match inside.is_empty() {
         true => vec![format!("{head}; none inside the cut")],

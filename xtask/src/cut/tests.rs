@@ -1399,7 +1399,7 @@ fn cut_txt_names_every_check_hit_inside_the_cut_and_none_outside() {
     let hits = vec![hit(12_000, 13_000, "zq", true), hit(30_000, 31_000, "zz", false)];
     let read = parse(&listed(&hits)).unwrap();
     assert_eq!(read, [hits[1].clone(), hits[0].clone()], "the weak listed after the rest");
-    let said = super::check::said(&p, &read, "check.txt");
+    let said = super::check::said(&p, &read, &[], "check.txt");
     let v = video_time(p.video_of(c.map.video(12_000)).unwrap());
     assert_eq!(
         said,
@@ -1414,14 +1414,14 @@ fn cut_txt_names_every_check_hit_inside_the_cut_and_none_outside() {
         ]
     );
     assert_eq!(
-        super::check::said(&p, &read[..1], "check.txt"),
+        super::check::said(&p, &read[..1], &[], "check.txt"),
         [
             "check (check.txt): 0 strong, 0 weak inside the cut's spans, crossings included — of the take's 1 hits; none \
           inside the cut"
         ]
     );
     // (a strong one inside is counted as strong: the rough cut goes to the user only with 0)
-    let strong = super::check::said(&p, &[hit(13_000, 14_000, "zz", false)], "check.txt");
+    let strong = super::check::said(&p, &[hit(13_000, 14_000, "zz", false)], &[], "check.txt");
     assert!(strong[0].starts_with("check (check.txt): 1 strong, 0 weak inside"), "{strong:?}");
     // (where it ends shows its stretch too: a hit there named at both its video times)
     assert_eq!(super::check::shown(&p, 56_000, 57_000).len(), 2);
@@ -2944,4 +2944,236 @@ fn a_pop_stays_in_its_lane_clear_of_the_mascots_ink_the_cells_and_the_marks() {
     }
     // (the box cutting a picture's ink is said: the made-up art's reaches its right and bottom edges)
     assert!(art(60).cut_ink().iter().any(|(n, _)| n == "up"));
+}
+
+/// A 166×32 screen on meok's ground with an `ls -la` line on row 2, a stand-in login `zq` at cells 15–16 on a
+/// highlight (its own colour, to see it go), lines above and below it; `erased`: those two cells written as the
+/// ground's spaces instead.
+fn ls_screen(erased: bool) -> vt100::Parser {
+    let mut p = vt100::Parser::new(32, 166, 0);
+    p.process(b"\x1b[?25l\x1b[48;2;11;14;20m\x1b[2J\x1b[38;2;191;189;182m\x1b[2;1Htotal 8 drwxr-xr-x");
+    p.process(b"\x1b[4;1Hdrwxr-xr-x@ 6 root  wheel\x1b[3;1Hdrwx------@  2 ");
+    match erased {
+        true => p.process(b"  "),
+        false => p.process(b"\x1b[48;2;34;40;52mzq\x1b[48;2;11;14;20m"),
+    }
+    p.process(b"    wheel    64 Nov 12 16:51 .");
+    p
+}
+
+/// A mask on what the check found, `zq` on row 2, over the take's 0–60 s.
+fn zq_mask() -> mask::Mask {
+    let place = mask::Place::Found { kind: "name", found: "zq".into() };
+    mask::Mask { from: 0, to: 60_000, row: 2, place, line: 1, named: "check.txt:4, row 2 name zq".into() }
+}
+
+/// Rectangles of a picture, in px: left, top, right, bottom (the last two not held).
+type Rects = Vec<(usize, usize, usize, usize)>;
+
+/// The masked cells' pixels at 1080p (the renderer's cell at the layout's glyph): each cell's rectangle in the picture.
+fn masked_rects(blank: &[crate::shot::Blank]) -> (Rects, crate::shot::Fonts, f32) {
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let glyph = super::draw::layout(&fonts, (166, 32), video::Scale::HD).unwrap().glyph;
+    let (cw, ch) = crate::shot::cell(&fonts, glyph);
+    let pad = crate::shot::PAD;
+    let rects = (blank.iter())
+        .map(|&(r, a, b)| {
+            let (r, a, b) = (usize::from(r), usize::from(a), usize::from(b));
+            (pad + a * cw, pad + r * ch, pad + b * cw, pad + (r + 1) * ch)
+        })
+        .collect();
+    (rects, fonts, glyph)
+}
+
+/// A mask on the check's place blanks the cells of what it found — the login's two, found on the row as the check reads
+/// it — and draws them in the screen's ground: no letter, not the highlight they stood on.
+#[test]
+fn a_masks_cells_are_drawn_blank_in_the_screens_ground() {
+    let screen = ls_screen(false);
+    let (masks, hits) = (vec![zq_mask()], Vec::new());
+    let mut tally = mask::Tally::new(&masks, &hits);
+    let blank = tally.frame(12_000, screen.screen());
+    assert_eq!(blank, [(2, 15, 17)], "the login's cells on row 2");
+    let (rects, fonts, glyph) = masked_rects(&blank);
+    let (w, _, bare) = crate::shot::render_scaled(screen.screen(), &fonts, glyph, 1);
+    let (_, _, hid) = crate::shot::render_masked(screen.screen(), &fonts, glyph, 1, &blank);
+    let ground = [11u8, 14, 20];
+    let (x0, y0, x1, y1) = rects[0];
+    let mut was = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y * w + x) * 3;
+            was += usize::from(bare[i..i + 3] != ground);
+            assert_eq!(hid[i..i + 3], ground, "({x}, {y}) inside the masked cells");
+        }
+    }
+    assert!(was > 0, "the unmasked picture had the login there");
+}
+
+/// Around a mask nothing changes: every pixel outside its cells is the unmasked picture's — a mask on `rw` of
+/// `drwx------@`, its neighbours inked on every side: `d` and `x` beside it, the lines above and below.
+#[test]
+fn a_masks_neighbours_are_untouched() {
+    let screen = ls_screen(false);
+    let blank = [(2, 1, 3)];
+    let (rects, fonts, glyph) = masked_rects(&blank);
+    let (w, h, bare) = crate::shot::render_scaled(screen.screen(), &fonts, glyph, 1);
+    let (_, _, hid) = crate::shot::render_masked(screen.screen(), &fonts, glyph, 1, &blank);
+    let (x0, y0, x1, y1) = rects[0];
+    let mut differ = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) * 3;
+            if !(x0..x1).contains(&x) || !(y0..y1).contains(&y) {
+                assert_eq!(hid[i..i + 3], bare[i..i + 3], "({x}, {y}) outside the masked cells");
+            } else {
+                differ += usize::from(hid[i..i + 3] != bare[i..i + 3]);
+            }
+        }
+    }
+    assert!(differ > 0, "the mask changed its own cells");
+}
+
+/// The camera's zoom on the masked word still shows it blank: the frame through the zoom, its screen's picture made at
+/// the zoom's glyph as the cut makes it (`Stage::screen_pic`), is the frame of the screen with those cells never
+/// written; and the same screen first drawn unmasked is drawn again once masked, never the kept picture.
+#[test]
+fn a_zoom_on_a_mask_still_hides_its_cells() {
+    use super::draw::{Stage, Words, layout};
+    let size = (166, 32);
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let lay = layout(&fonts, size, video::Scale::HD).unwrap();
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let look = video::look(Bg::Dark);
+    let stage = Stage::new(lay, &look, &c, None);
+    let region = wide_window(Region { x: 15.0, y: 2.0, w: 2.0, h: 1.0 }, size);
+    assert!(region.w < 166.0, "a zoom, not the whole: {region:?}");
+    let view = lay.view(region, size, &fonts);
+    let f = at_take(&p, 12_000, 0);
+    let pops = mascot::pops::Pops::default();
+    let frame = |s: &vt100::Screen, blank: &[crate::shot::Blank], kept: &mut Option<_>| {
+        let (pic, fresh) = stage.screen_pic(kept, s, (false, 1), Some(&view), blank, &fonts);
+        let px = stage.take_frame(
+            pic,
+            Some(&view),
+            &f,
+            (None, &pops, &[][..]),
+            &mut Words::new(&fonts, look.ground, lay.scale),
+        );
+        (px, fresh)
+    };
+    let (screen, mut kept) = (ls_screen(false), None);
+    let blank = [(2, 15, 17)];
+    let (bare, _) = frame(screen.screen(), &[], &mut kept);
+    let (hid, fresh) = frame(screen.screen(), &blank, &mut kept);
+    assert!(fresh, "the same screen, now masked, drawn again");
+    let (erased, _) = frame(ls_screen(true).screen(), &[], &mut None);
+    assert_ne!(bare, erased, "the zoom shows the login unmasked");
+    let first = (0..hid.len()).find(|&i| hid[i] != erased[i]).map(|i| (i / 3 % video::W, i / 3 / video::W));
+    assert_eq!(
+        first, None,
+        "the masked zoom against the erased screen's: the first pixel (x, y) that differs"
+    );
+}
+
+/// A mask that matches no frame is said loudly in `cut.txt`: one past the take's end (take seconds, not refused), one
+/// whose cells are empty in every frame, one on a check place not on its row; the one that hid something says its
+/// frames. A `check = N` that isn't a place's line is refused with the list's line.
+#[test]
+fn a_mask_that_matches_no_frame_is_said() {
+    let text = format!(
+        "{CUT}\n[[mask]]\ncheck = 4\n\n[[mask]]\nfrom = 200.5\nto = 201\nrow = 2\ncells = [15, 16]\n\n[[mask]]\nfrom = 10\n\
+         to = \"turn 1 end\"\nrow = 9\ncells = [0, 40]\n\n[[mask]]\ncheck = 5\n"
+    );
+    let c = cut(&text).unwrap();
+    let base = cut(CUT).unwrap();
+    assert_eq!(c.seed, base.seed, "a mask reshuffles no blink");
+    let check = "0 places\n\nweak — a login under 4 letters as a bare word, not failing:\n   10.00s–30.00s   row  2  name   zq  │ \
+                 drwx------@  2 zq    wheel\n   11.00s–12.00s   row  2  name   zz  │ drwx------@  2 zz    wheel\n2 weak\n";
+    let masks = mask::resolve(&c.masks, Some(check), "cut.toml").unwrap();
+    assert_eq!(masks[0].from, 9_990, "a check place's mask 10 ms wider each side");
+    let hits = Vec::new();
+    let mut tally = mask::Tally::new(&masks, &hits);
+    let screen = ls_screen(false);
+    for t in [10_000, 11_500, 20_000, 39_000] {
+        tally.frame(t, screen.screen());
+    }
+    let said = tally.said("cut.toml");
+    let line = |k: usize| c.masks[k].line;
+    assert_eq!(
+        said,
+        [
+            "masks (4): cells drawn blank in the screen's ground in every frame their span holds, the camera's crops and \
+             zooms too"
+                .to_string(),
+            format!(
+                "  cut.toml:{} — check.txt:4, row 2 name zq, take 0:00:09.99–0:00:30.01: 3 frames covered, something under \
+                 it in 3",
+                line(0)
+            ),
+            format!(
+                "  cut.toml:{} — row 2, cells 15–16, take 0:03:20.50–0:03:21.00: MATCHES NO FRAME: no frame of the video \
+                 shows the take then (left out, or past its end)",
+                line(1)
+            ),
+            format!(
+                "  cut.toml:{} — row 9, cells 0–40, take 0:00:10.00–0:00:40.00: MATCHES NO FRAME: 4 frames covered, its \
+                 cells empty in every one",
+                line(2)
+            ),
+            format!(
+                "  cut.toml:{} — check.txt:5, row 2 name zz, take 0:00:10.99–0:00:12.01: MATCHES NO FRAME: 1 frame \
+                 covered, no zz on row 2 in every one",
+                line(3)
+            ),
+        ]
+    );
+    assert_eq!(tally.loud("cut.toml").len(), 3);
+    let e = mask::resolve(&c.masks, Some("0 places\n"), "cut.toml").unwrap_err();
+    assert_eq!(
+        e,
+        format!("cut.toml:{}: mask: check = 4: check.txt's line 4 isn't a place (it has none)", line(0))
+    );
+    let e = mask::resolve(&c.masks, None, "cut.toml").unwrap_err();
+    assert!(e.ends_with("the take has no check.txt (`cargo xtask record check` writes it)"), "{e}");
+}
+
+/// The cut's own check leaves out a place a mask hid wherever a frame showed it, counted apart — never one a mask
+/// held in its span but missed on the row (its cells elsewhere), nor one no mask holds.
+#[test]
+fn the_cuts_check_leaves_out_only_what_a_mask_hid() {
+    use crate::record::check::Hit;
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let text = "drwx------@  2 zq    wheel    64 Nov 12 16:51 .".to_string();
+    let hits =
+        vec![Hit { from: 12_000, to: 13_000, row: 2, kind: "name", found: "zq".into(), text, weak: false }];
+    let screen = ls_screen(false);
+    let missed = mask::Mask { place: mask::Place::Cells(30, 40), ..zq_mask() };
+    let cases = [
+        ("the mask on what it found", vec![zq_mask()], true),
+        ("a mask on other cells", vec![missed], false),
+    ];
+    for (what, masks, hid) in cases {
+        let mut tally = mask::Tally::new(&masks, &hits);
+        for t in [12_000, 12_500] {
+            tally.frame(t, screen.screen());
+        }
+        assert_eq!(tally.hidden(), [hid], "{what}");
+        let said = super::check::said(&p, &hits, &tally.hidden(), "check.txt");
+        let want = match hid {
+            true => {
+                "check (check.txt): 0 strong, 0 weak inside the cut's spans, crossings included — of the take's 1 \
+                     hits, 1 hidden by the masks in every frame that shows them; none inside the cut"
+            }
+            false => {
+                "check (check.txt): 1 strong, 0 weak inside the cut's spans, crossings included — of the take's 1 \
+                      hits; for the user to decide:"
+            }
+        };
+        assert_eq!(said[0], want, "{what}");
+    }
+    // (no mask: nothing hidden, whatever no frame showed)
+    assert_eq!(mask::Tally::new(&[], &hits).hidden(), [false]);
 }

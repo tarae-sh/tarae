@@ -64,6 +64,16 @@
 //! gain = 4                                # a made bed (the rain): dB on the file as made, its level its own —
 //!                                         # not levelled, no swing; left out: levelled under the keys ([sound])
 //!
+//! [[mask]]                                # cells drawn blank in the screen's ground in every frame of its span,
+//!                                         # the camera's crops and zooms too (`mask.rs`); none if none is named
+//! from = 54.99                            # take seconds, or a time as a span's ("turn 1 start + 2s")
+//! to = 144.38
+//! row = 29                                # from 0, as check.txt's
+//! cells = [14, 15]                        # its first and last cells, from 0
+//!
+//! [[mask]]                                # or a place `record check` found: the take's check.txt line 4 — its
+//! check = 4                               # span, its row, and the cells of what it found wherever they stand
+//!
 //! [sound]                                 # the mix by distance (LU; each left out: its constant, `sound.rs`)
 //! under = 0                               # the bed under the keys' own loudness where they may sound
 //! over = 6                                # the bed where it leads, over that: the swing
@@ -97,6 +107,7 @@ mod check;
 mod draw;
 pub(crate) mod init;
 mod mascot;
+mod mask;
 mod opening;
 mod sound;
 #[cfg(test)]
@@ -620,6 +631,8 @@ pub(crate) struct Cut {
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) captions: Vec<Caption>,
     pub(crate) zooms: Vec<Zoom>,
+    /// The masks as the list names them (`mask.rs`), resolved against the take's check.txt where it's cut.
+    pub(crate) masks: Vec<mask::Entry>,
     pub(crate) beds: Vec<Bed>,
     pub(crate) mix: sound::Mix,
     pub(crate) end: u64,
@@ -727,6 +740,7 @@ impl Cut {
         let root = Entry { t: &top, line: 0, src: &src, name: "the file" };
         root.keys(&[
             "bg", "default", "mascot", "opening", "span", "chapter", "caption", "zoom", "music", "sound",
+            "mask",
         ])?;
         let mascot = match top.get("mascot") {
             None => mascot::Switches::default(),
@@ -766,9 +780,11 @@ impl Cut {
                 ));
             }
         };
-        // (the list as read, but its `[mascot]`: switching a motion or the pops reshuffles no blink)
+        // (the list as read, but its `[mascot]` and its masks: switching a motion or the pops, or hiding a cell,
+        // reshuffles no blink)
         let mut seeded = top.clone();
         seeded.remove("mascot");
+        seeded.remove("mask");
         let seed = (toml::to_string(&seeded).unwrap_or_default().bytes())
             .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
         let bg = match root.text("bg")? {
@@ -987,6 +1003,70 @@ impl Cut {
             zooms.push(Zoom { at, len, on, line: e.line });
         }
 
+        let mut masks: Vec<mask::Entry> = Vec::new();
+        for e in list("mask")? {
+            const CELLS: [&str; 4] = ["from", "to", "row", "cells"];
+            e.keys(&["check", "from", "to", "row", "cells"])?;
+            let what = if let Some(v) = e.t.get("check") {
+                if CELLS.iter().any(|k| e.t.contains_key(*k)) {
+                    return Err(src.at(e.line, "mask: check = N alone, or from, to, row and cells"));
+                }
+                match v {
+                    toml::Value::Integer(n) if *n >= 1 => mask::Spec::Check(*n as usize),
+                    _ => return Err(e.err("check", "mask: check = a line of the take's check.txt, from 1")),
+                }
+            } else {
+                if let Some(k) = CELLS.iter().find(|k| !e.t.contains_key(**k)) {
+                    return Err(
+                        src.at(e.line, format!("mask: no {k} (check = N, or from, to, row and cells)"))
+                    );
+                }
+                // (take seconds as a number, never refused past the take's end: such a mask is said to match nothing)
+                let time = |key: &str| -> Result<u64> {
+                    match e.t.get(key) {
+                        Some(toml::Value::String(_)) => e.time(key, marks),
+                        Some(v) if number(v).is_some_and(|s| s >= 0.0) => {
+                            Ok((number(v).unwrap_or(0.0) * 1000.0).round() as u64)
+                        }
+                        _ => Err(e.err(
+                            key,
+                            format!("mask: {key} = take seconds (54.99) or a time (\"turn 1 start\")"),
+                        )),
+                    }
+                };
+                let (from, to) = (time("from")?, time("to")?);
+                if to <= from {
+                    return Err(e.err(
+                        "to",
+                        format!("mask: it ends ({}) where or before it starts ({})", clock(to), clock(from)),
+                    ));
+                }
+                let row = match e.t.get("row") {
+                    Some(toml::Value::Integer(r)) if (0..=i64::from(u16::MAX)).contains(r) => *r as u16,
+                    _ => return Err(e.err("row", "mask: row = a row of the screen, from 0")),
+                };
+                let cell = |v: &toml::Value| match v {
+                    toml::Value::Integer(c) if (0..=i64::from(u16::MAX)).contains(c) => Some(*c as u16),
+                    _ => None,
+                };
+                let cells = match e.t.get("cells") {
+                    Some(toml::Value::Array(a)) if a.len() == 2 => match (cell(&a[0]), cell(&a[1])) {
+                        (Some(x), Some(y)) if x <= y => Some((x, y)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let cells = cells.ok_or_else(|| {
+                    e.err(
+                        "cells",
+                        "mask: cells = [first, last], columns from 0, the first not after the last",
+                    )
+                })?;
+                mask::Spec::Cells { from, to, row, cells }
+            };
+            masks.push(mask::Entry { what, line: e.line });
+        }
+
         let mut beds: Vec<Bed> = Vec::new();
         for e in list("music")? {
             e.keys(&["chapter", "file", "loop", "gain"])?;
@@ -1098,6 +1178,7 @@ impl Cut {
             chapters,
             captions,
             zooms,
+            masks,
             beds,
             end: marks.end,
         })

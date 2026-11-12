@@ -7,6 +7,7 @@
 //!   `FIND_MS` after), widened to the screen's shape (`wide_window`, never nearer than `ZOOM_MAX`), eased in and out
 //!   as the Shorts' camera moves (`camera::Path`), drawn through `video::view` so a zoom never steps.
 //!   Where it ends has its own path, on its own clock, from the opening's `zoom` (`paths`); a `[[zoom]]` is the take's.
+//! - The masks (`mask.rs`): each frame's cells drawn blank in the screen's own picture, before the camera takes it.
 //! - Crossings (`camera::CROSS_MS`, never a cut): where a part begins (the card of what's built, where it ends, a
 //!   chapter's card, the take after them, the end card) through the ground — the part going out fades to it, then the
 //!   next comes up (`cross_px`) —; where time is left out, and where most of the cells change at once
@@ -33,7 +34,7 @@ use crate::camera::{self, Cells, Region};
 use crate::record::{Replay, Take};
 use crate::recording::Picture;
 use crate::scenes::docshots::none_of_yours;
-use crate::shot::{self, Fonts, PAD, Rgb};
+use crate::shot::{self, Blank, Fonts, PAD, Rgb};
 use crate::video::{self, BAND, H, Scale, W};
 
 /// The band's own words — the clock, the jump's mark, the speed's and `where it ends` — and how strongly the quiet ones (the
@@ -108,7 +109,12 @@ struct Key {
     cross: Option<u8>,
     pose: Option<Pic>,
     pops: Vec<(usize, u64)>,
+    blank: Vec<Blank>,
 }
+
+/// The screen's picture kept, by what it was drawn of: whose replay, how many screens in, the glyph (px) and the cells
+/// drawn blank.
+pub(crate) type Kept = (bool, u64, u32, Vec<Blank>);
 
 /// `text` at `px` (1080p's) in `fg`, drawn at `scale`, kept: the band's words repeat.
 pub(crate) struct Words<'f> {
@@ -206,6 +212,27 @@ impl<'a> Stage<'a> {
     ) -> Stage<'a> {
         let marks_right = mascot.as_ref().map_or(lay.at.0 + lay.pic.0, |m| m.1.marks_right);
         Stage { lay, look, cut, mascot, marks_right, stamping: Default::default() }
+    }
+
+    /// The screen `s` (`which`: whose replay, how many screens in) as a take's frame draws it: at the camera's glyph
+    /// (`view`'s, else the layout's), `blank`'s cells blank in it — so a crop or a zoom resamples them blank —; kept in
+    /// `kept` while the same screen comes at the same glyph with the same cells blank. Whether it was drawn now.
+    pub(crate) fn screen_pic<'k>(
+        &self,
+        kept: &'k mut Option<(Kept, Picture)>,
+        s: &vt100::Screen,
+        which: (bool, u64),
+        view: Option<&video::View>,
+        blank: &[Blank],
+        fonts: &Fonts,
+    ) -> (&'k Picture, bool) {
+        let at = view.map_or(self.lay.glyph, |v| v.px);
+        let want = (which.0, which.1, at as u32, blank.to_vec());
+        let fresh = kept.as_ref().is_none_or(|k| k.0 != want);
+        if fresh {
+            *kept = Some((want, shot::render_masked(s, fonts, at, self.lay.scale.k(), blank)));
+        }
+        (&kept.as_ref().expect("drawn").1, fresh)
     }
 
     /// The take's frame `f`: the screen's picture `pic` (drawn at the layout's glyph, or through `view` at the camera's),
@@ -527,6 +554,11 @@ pub(crate) fn make(
     let reads = take_reads(cut, &windows);
     let lost = lost_zooms(cut, take, &prog, &reads, &found_at);
     let paths = paths(cut, &windows, ends_zoom, size);
+    // (the masks against the take's check.txt, and the check's places, to tell which of them the masks hid)
+    let (hits, source) = super::check::read(dir)?;
+    let check_txt = std::fs::read_to_string(dir.join("check.txt")).ok();
+    let masked = super::mask::resolve(&cut.masks, check_txt.as_deref(), &cut.file)?;
+    let mut masks = super::mask::Tally::new(&masked, &hits);
 
     // (the sheet's pictures: which frames, and what each is marked with)
     let frames = prog.frames();
@@ -569,7 +601,7 @@ pub(crate) fn make(
     let (mut ends, mut replay) = (Replay::new(&take.screen, size), Replay::new(&take.screen, size));
     let mut words = Words::new(&fonts, look.ground, scale);
     let sheet_fonts = Fonts::load(1)?;
-    let mut pic: Option<((bool, u64, u32), Picture)> = None;
+    let mut pic: Option<(Kept, Picture)> = None;
     let mut last: Option<(Key, Vec<u8>)> = None;
     let mut cross: Option<(Vec<u8>, u64, bool)> = None;
     let (mut differ, mut drawn, mut wrote) = (0u64, 0u64, Ok(()));
@@ -609,6 +641,11 @@ pub(crate) fn make(
             true => (true, ends.shown),
             false => (false, replay.shown),
         };
+        // (the masks' cells in this frame, the take's screen at its time)
+        let blank = match f.screen {
+            Some(t) => masks.frame(t, if f.ends { ends.screen() } else { replay.screen() }),
+            None => Vec::new(),
+        };
         let pose = plan.as_ref().and_then(|p| p.pic(k));
         if let Some(p) = pose {
             *posed.entry(p).or_default() += 1;
@@ -630,6 +667,7 @@ pub(crate) fn make(
             cross: share,
             pose,
             pops: up,
+            blank,
         };
         if last.as_ref().is_none_or(|l| l.0 != key) {
             let mut px = match f.card {
@@ -643,13 +681,8 @@ pub(crate) fn make(
                 None => {
                     let s = if f.ends { ends.screen() } else { replay.screen() };
                     let view = (region != all).then(|| lay.view(region, size, &fonts));
-                    let at = view.as_ref().map_or(glyph, |v| v.px);
-                    let want = (screen.0, screen.1, at as u32);
-                    if pic.as_ref().is_none_or(|p| p.0 != want) {
-                        pic = Some((want, shot::render_scaled(s, &fonts, at, scale.k())));
-                        drawn += 1;
-                    }
-                    let p = &pic.as_ref().expect("drawn").1;
+                    let (p, fresh) = stage.screen_pic(&mut pic, s, screen, view.as_ref(), &key.blank, &fonts);
+                    drawn += u64::from(fresh);
                     stage.take_frame(p, view.as_ref(), &f, (pose, &pops, &key.pops), &mut words)
                 }
             };
@@ -790,9 +823,13 @@ pub(crate) fn make(
     )];
     head.extend(spans_said(cut));
     head.push(prog.jumps_said());
-    // (every place `record check` found that the cut shows, strong or weak: said, never hidden)
-    let (hits, source) = super::check::read(dir)?;
-    head.extend(super::check::said(&prog, &hits, source));
+    // (the masks, each with the frames it covered — one that matched none loudly —; then every place `record check`
+    // found that the cut shows, strong or weak, but those the masks hid wherever a frame showed them: said, never hidden)
+    head.extend(masks.said(&cut.file));
+    for l in masks.loud(&cut.file) {
+        eprintln!("cut: {l}");
+    }
+    head.extend(super::check::said(&prog, &hits, &masks.hidden(), source));
     head.push(format!("chapters.txt:\n{}", chapters.trim_end()));
     head.extend(said);
     if let (Some(mut heard), Some(f)) = (heard, &ffmpeg)

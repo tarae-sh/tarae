@@ -130,6 +130,11 @@ pub(crate) fn listed(hits: &[Hit]) -> String {
 /// `listed`'s text read back: each place, the weak ones (listed after their heading) weak — its times to the 10 ms it
 /// wrote, the row's text without its trailing blanks. A line that isn't a place's (a count, a heading) is passed over.
 pub(crate) fn parse(text: &str) -> Result<Vec<Hit>> {
+    Ok(parse_lines(text)?.into_iter().map(|(_, h)| h).collect())
+}
+
+/// `parse`'s places, each with its line in the text (from 1): what a cut's mask names (`check = 4`).
+pub(crate) fn parse_lines(text: &str) -> Result<Vec<(usize, Hit)>> {
     let mut out = Vec::new();
     let mut weak = false;
     for (n, line) in text.lines().enumerate() {
@@ -148,15 +153,10 @@ pub(crate) fn parse(text: &str) -> Result<Vec<Hit>> {
         let row: u16 = row.parse().map_err(|_| bad())?;
         let (kind, found) = rest.trim_start().split_once(' ').ok_or_else(bad)?;
         let kind = ["name", "home", "mail", "money"].into_iter().find(|k| *k == kind).ok_or_else(bad)?;
-        out.push(Hit {
-            from,
-            to,
-            row,
-            kind,
-            found: found.trim().to_string(),
-            text: row_text.to_string(),
-            weak,
-        });
+        out.push((
+            n + 1,
+            Hit { from, to, row, kind, found: found.trim().to_string(), text: row_text.to_string(), weak },
+        ));
     }
     Ok(out)
 }

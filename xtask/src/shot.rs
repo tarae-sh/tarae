@@ -1698,7 +1698,7 @@ pub(crate) fn color(c: vt100::Color, default: Rgb) -> Rgb {
 /// The screen as RGB pixels at `s` times the size: glyphs drawn at `SIZE` × `s`, every other measure the 1×
 /// picture's times `s` — so 2× is the 1× layout at twice the pixels, lines and blocks on whole pixels.
 pub(crate) fn render(screen: &vt100::Screen, fonts: &Fonts, s: usize) -> (usize, usize, Vec<u8>) {
-    draw(screen, fonts, SIZE, s, None)
+    draw(screen, fonts, SIZE, s, None, &[])
 }
 
 /// `render` with the pointer marked at `pointer`'s cell (`@pointer`), when there's one.
@@ -1708,7 +1708,7 @@ pub(crate) fn render_pointed(
     s: usize,
     pointer: Option<Cell>,
 ) -> (usize, usize, Vec<u8>) {
-    draw(screen, fonts, SIZE, s, pointer)
+    draw(screen, fonts, SIZE, s, pointer, &[])
 }
 
 /// The screen as RGB pixels with its glyphs at `size` px, its cells `cell(fonts, size)`, lines a pixel thick, the
@@ -1719,7 +1719,7 @@ pub(crate) fn render_px(
     size: f32,
     pointer: Option<Cell>,
 ) -> (usize, usize, Vec<u8>) {
-    draw(screen, fonts, size, 1, pointer)
+    draw(screen, fonts, size, 1, pointer, &[])
 }
 
 /// `render_px`'s layout `s` times (the full video at 2160p, V4): cells `cell(fonts, size)` × `s`, the margin `PAD` × `s`,
@@ -1730,8 +1730,23 @@ pub(crate) fn render_scaled(
     size: f32,
     s: usize,
 ) -> (usize, usize, Vec<u8>) {
-    draw(screen, fonts, size, s, None)
+    draw(screen, fonts, size, s, None, &[])
 }
+
+/// `render_scaled` with `blank`'s cells drawn blank, in the screen's own ground: no text, no colour, no cursor, no
+/// neighbour's glyph reaching in (the cut's masks, `cut/mask.rs`).
+pub(crate) fn render_masked(
+    screen: &vt100::Screen,
+    fonts: &Fonts,
+    size: f32,
+    s: usize,
+    blank: &[Blank],
+) -> (usize, usize, Vec<u8>) {
+    draw(screen, fonts, size, s, None, blank)
+}
+
+/// Cells drawn blank: a row and its columns `from..to`, from 0.
+pub(crate) type Blank = (u16, u16, u16);
 
 /// A cell on the screen: its row and column, from 0.
 pub(crate) type Cell = (u16, u16);
@@ -1775,14 +1790,18 @@ pub(crate) fn cell(fonts: &Fonts, size: f32) -> (usize, usize) {
     (fonts.regular.metrics('M', size).advance_width as usize, (size * 1.45) as usize)
 }
 
-/// `render`'s drawing with `base` for `SIZE`: the 1× layout at `base` px, `s` times.
+/// `render`'s drawing with `base` for `SIZE`: the 1× layout at `base` px, `s` times; `blank`'s cells blank.
 fn draw(
     screen: &vt100::Screen,
     fonts: &Fonts,
     base: f32,
     s: usize,
     pointer: Option<Cell>,
+    blank: &[Blank],
 ) -> (usize, usize, Vec<u8>) {
+    let blanked = |y: usize, x: usize| {
+        blank.iter().any(|&(r, a, b)| usize::from(r) == y && (usize::from(a)..usize::from(b)).contains(&x))
+    };
     let (rows, cols) = screen.size();
     let (rows, cols) = (rows as usize, cols as usize);
     let size = base * s as f32;
@@ -1817,7 +1836,8 @@ fn draw(
         for x in 0..cols {
             let Some(c) = cell(y, x) else { continue };
             let text = c.contents();
-            if text.trim().is_empty() {
+            // (a masked cell's glyph not drawn, a wide one's when either of its cells is: none of it reaches out)
+            if text.trim().is_empty() || blanked(y, x) || (c.is_wide() && blanked(y, x + 1)) {
                 continue;
             }
             let (fg, _) = colors(c);
@@ -1892,6 +1912,14 @@ fn draw(
         let fg = if cx < cols { cell(cy, cx).map_or(FG, |c| color(c.fgcolor(), FG)) } else { FG };
         let (px, py) = (pad + cx * cw, pad + cy * ch);
         cv.rect(px, py, px + 2 * s, py + ch, fg);
+    }
+    // 3b) The masked cells: the ground over each, whatever was drawn there (its colour, the cursor, a neighbour's reach)
+    for &(r, a, b) in blank {
+        let (y, b) = (usize::from(r), usize::from(b).min(cols));
+        if y < rows && usize::from(a) < b {
+            let (x0, x1, py) = (pad + usize::from(a) * cw, pad + b * cw, pad + y * ch);
+            cv.rect(x0, py, x1, py + ch, bg);
+        }
     }
     // 4) The pointer (`@pointer`): the shot's own mark, over everything tarae drew
     if let Some((row, col)) = pointer {
