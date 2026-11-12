@@ -358,7 +358,11 @@ pub fn card(a: Ask, money: bool) -> crate::offer::Offer {
     // blank before it — back as soon as there's room; the cost and what it reads stay)
     let them = crate::cut::capitalized(them);
     // (a child's: one its parent's Claude proposes always asks — `start`'s `asked`)
-    let not = a.parent.as_ref().map(|p| format!(" (not one {p}'s Claude proposes)")).unwrap_or_default();
+    let not = a
+        .parent
+        .as_ref()
+        .map(|p| format!(" (not one {} Claude proposes)", crate::workspace::possessive(p)))
+        .unwrap_or_default();
     let q = format!(
         "{cost}{n} the changes ({what}) in the background.\n{them} — {} — then a skeptic checks each group \
          of their claims.\n\nA yes holds for this session and its conversation: another board here starts without \

@@ -413,7 +413,7 @@ fn files(n: usize) -> String {
 
 /// What its work under way waits for, said of the source: `main's turn ends`, `you answer what it asks`.
 fn holds_said(holds: &str, src: &str) -> String {
-    holds.replacen("its ", &format!("{src}'s "), 1)
+    holds.replacen("its ", &format!("{} ", crate::workspace::possessive(src)), 1)
 }
 
 /// `7 files not committed (2 new, 1 deleted)`.
@@ -441,9 +441,10 @@ fn left_said(f: &Files, src: &str) -> Option<String> {
     let tops: Vec<String> = f.left_top.iter().map(|(t, n)| format!("{t} {n}")).collect();
     let tops = if tops.is_empty() { String::new() } else { format!(": {}", tops.join(", ")) };
     Some(format!(
-        "{} new {} of {src}'s aren't carried (past {} at once){tops}.",
+        "{} new {} of {} aren't carried (past {} at once){tops}.",
         f.left_out,
         if f.left_out == 1 { "file" } else { "files" },
+        crate::workspace::possessive(src),
         crate::snapshot::NEW_MAX
     ))
 }
@@ -462,8 +463,9 @@ pub fn card(f: &Forking, weakness: bool, money: bool) -> Offer {
         false => format!("it brings into {}, as {src}", m.base),
     };
     let mut q = format!(
-        "Branch {} at {short}, {src}'s HEAD — {brings}.\nIts checkout, {folder}/, goes in\n  {under}\n",
-        m.branch
+        "Branch {} at {short}, {} HEAD — {brings}.\nIts checkout, {folder}/, goes in\n  {under}\n",
+        m.branch,
+        crate::workspace::possessive(src)
     );
     let mut warnings = Vec::new();
     let mut line = |q: &mut String, text: String, warn: bool| {
@@ -474,7 +476,10 @@ pub fn card(f: &Forking, weakness: bool, money: bool) -> Offer {
         *q += &format!("\n{text}");
     };
     let with = match f.files.total() {
-        0 => format!("With it: nothing uncommitted — {src}'s files are its commit's."),
+        0 => format!(
+            "With it: nothing uncommitted — {} files are its commit's.",
+            crate::workspace::possessive(src)
+        ),
         _ => match staged_said(&f.files, src) {
             Some(s) => format!("With it: {} — {s}.", with_said(&f.files)),
             None => format!("With it: {}.", with_said(&f.files)),
@@ -499,13 +504,20 @@ pub fn card(f: &Forking, weakness: bool, money: bool) -> Offer {
                         .into()
                 }
             };
-            format!("Its conversation: {src}'s, at turn {} — {cost}", f.from.turn)
+            format!(
+                "Its conversation: {}, at turn {} — {cost}",
+                crate::workspace::possessive(src),
+                f.from.turn
+            )
         }
     };
     line(&mut q, conversation, false);
     line(
         &mut q,
-        format!("None of {src}'s answers come with it: its runs, reads and hosts ask again."),
+        format!(
+            "None of {} answers come with it: its runs, reads and hosts ask again.",
+            crate::workspace::possessive(src)
+        ),
         false,
     );
     let mut warn = m.billing_said(&mut q, weakness);
@@ -751,12 +763,14 @@ pub fn told(from: &ForkFrom, me: &str) -> String {
     };
     let left = match from.left_out {
         0 => String::new(),
-        n => format!(" {n} new files of {}'s weren't carried.", from.name),
+        n => format!(" {n} new files of {} weren't carried.", crate::workspace::possessive(&from.name)),
     };
     format!(
-        "This session was forked from session {}{at}: it's now {me}, in a checkout and branch of its own with {}'s \
+        "This session was forked from session {}{at}: it's now {me}, in a checkout and branch of its own with {} \
          files as they were. {} goes on apart — its work from here isn't yours.{left}",
-        from.name, from.name, from.name
+        from.name,
+        crate::workspace::possessive(&from.name),
+        from.name
     )
 }
 

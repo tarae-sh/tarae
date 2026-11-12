@@ -539,8 +539,8 @@ fn ask_saying(ed: &mut Editor, id: u64, targets: Vec<Target>, first: &str) {
     let t = &targets[0];
     let what = if build.is_some() { "build" } else { "binary" };
     let title = format!(
-        "{TITLE} {}'s {what}{}?",
-        t.label,
+        "{TITLE} {} {what}{}?",
+        crate::workspace::possessive(&t.label),
         t.head.as_ref().map(|h| format!(" ({h})")).unwrap_or_default()
     );
     let mut q = says(t);
@@ -552,8 +552,8 @@ fn ask_saying(ed: &mut Editor, id: u64, targets: Vec<Target>, first: &str) {
     }
     if let Some(o) = targets.get(1) {
         q.push_str(&format!(
-            "\n\nf — {}'s {what} instead: {}",
-            o.named(),
+            "\n\nf — {} {what} instead: {}",
+            crate::workspace::possessive(&o.named()),
             says(o).replace("\n  ", " ").replace('\n', " ")
         ));
     }
@@ -638,8 +638,10 @@ pub(crate) fn build_or_check(ed: &mut Editor, t: Target) {
         if w.id == ed.workspace.id {
             return crate::tools::ask_made(ed, crate::tools::MadeThen::Restart { target: t });
         }
-        let why =
-            format!("{}'s Claude made a name the sandbox keeps there — answer its card first", w.label());
+        let why = format!(
+            "{} Claude made a name the sandbox keeps there — answer its card first",
+            crate::workspace::possessive(w.label())
+        );
         return cancel(ed, why);
     }
     let task = crate::task::Task { name: "restart build".into(), cmd, cwd: t.root.clone() };

@@ -1521,7 +1521,8 @@ fn ready(
         let nothing = format!("nothing to bring — {branch} has no commits past {base}");
         return match why {
             Some(why) => {
-                Err(format!("{nothing}, and it can't move up to {base}'s {}: {why}", commits(behind)))
+                let base = crate::workspace::possessive(&base);
+                Err(format!("{nothing}, and it can't move up to {base} {}: {why}", commits(behind)))
             }
             None => Ok(crate::rebase::Moved {
                 root: root.into(),
@@ -1599,7 +1600,8 @@ fn bring(
             if !held.is_empty() {
                 let some: Vec<&str> = held.iter().take(3).map(String::as_str).collect();
                 return Err(format!(
-                    "{base}'s checkout has changes in {} it brings ({}{}) — commit, stash or save them first",
+                    "{} checkout has changes in {} it brings ({}{}) — commit, stash or save them first",
+                    crate::workspace::possessive(&base),
                     if held.len() == 1 { "a file".to_string() } else { format!("{} files", held.len()) },
                     some.join(", "),
                     if held.len() > 3 { ", …" } else { "" }
@@ -2528,7 +2530,8 @@ impl Editor {
             return Some(format!("end {name}: {}", r.why(name)));
         }
         if session.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-            return Some(format!("{name}'s Claude is answering — stop it (C-c) or let it finish first"));
+            let whose = crate::workspace::possessive(name);
+            return Some(format!("{whose} Claude is answering — stop it (C-c) or let it finish first"));
         }
         let unsaved: Vec<String> = self
             .docs
@@ -2555,7 +2558,8 @@ impl Editor {
                 continue;
             };
             if let Err(e) = self.ending_asked(&name, true, Some(base), None) {
-                crate::log::line("session", "info", &format!("{name}'s end after its bring: {e}"));
+                let whose = crate::workspace::possessive(&name);
+                crate::log::line("session", "info", &format!("{whose} end after its bring: {e}"));
             }
         }
     }
@@ -2651,7 +2655,10 @@ impl Editor {
                             ed.set_warning(left);
                         }
                         if let BuildDir::Failed(why) = build {
-                            ed.set_warning(format!("{}'s build dir isn't all removed — {why}", e.name));
+                            ed.set_warning(format!(
+                                "{} build dir isn't all removed — {why}",
+                                crate::workspace::possessive(&e.name)
+                            ));
                         }
                         // (only once its checkout is gone — what it runs may judge by that)
                         ed.workspace_ended(&e.root, &e.name);
@@ -2705,7 +2712,7 @@ impl Editor {
             self.workspace.commit_waits = Some(crate::gitpanel::CommitWaits { name, then, message });
             return crate::codereview::close_asked(self);
         }
-        let said = format!("Staging {name}'s changes…");
+        let said = format!("Staging {} changes…", crate::workspace::possessive(&name));
         let work = move || {
             let left_out = kept_out(&root, &crate::rebase::unclean(&root).unwrap_or_default());
             stage_all_but(&root, &left_out)
@@ -2892,7 +2899,8 @@ impl Editor {
         if !again {
             self.workspace_store.drop_asked = Some((id, Instant::now()));
             return self.set_status(format!(
-                "x again drops {name}'s build folder {at} ({}) — its next build starts cold",
+                "x again drops {} build folder {at} ({}) — its next build starts cold",
+                crate::workspace::possessive(&name),
                 size_text(size)
             ));
         }
@@ -2911,13 +2919,16 @@ impl Editor {
                 ed.workspace_store.build_dirs.remove(&id);
                 ed.procs_wake(crate::procs::Wake::Now);
                 match done {
-                    Ok(crate::builds::BuildDir::Freed(size)) => {
-                        ed.set_success(format!("Dropped {name}'s build folder — {} freed", size_text(size)))
-                    }
+                    Ok(crate::builds::BuildDir::Freed(size)) => ed.set_success(format!(
+                        "Dropped {} build folder — {} freed",
+                        crate::workspace::possessive(&name),
+                        size_text(size)
+                    )),
                     Ok(crate::builds::BuildDir::Left(why)) => ed.set_warning(format!("{name}: {why}")),
-                    Ok(crate::builds::BuildDir::Failed(why)) => {
-                        ed.set_error(format!("{name}'s build folder: removing it failed partway — {why}"))
-                    }
+                    Ok(crate::builds::BuildDir::Failed(why)) => ed.set_error(format!(
+                        "{} build folder: removing it failed partway — {why}",
+                        crate::workspace::possessive(&name)
+                    )),
                     Ok(crate::builds::BuildDir::Nothing) => ed.set_status(format!("{name}: nothing to drop")),
                     Err(e) => ed.set_error(format!("{name}: {e}")),
                 }
@@ -3314,7 +3325,8 @@ impl Editor {
                             l.end_when_idle = Some(b.base.clone());
                         }
                     } else if child && let Err(e) = ed.ending_asked(&name, true, Some(b.base.clone()), None) {
-                        crate::log::line("session", "info", &format!("{name}'s end after its bring: {e}"));
+                        let whose = crate::workspace::possessive(&name);
+                        crate::log::line("session", "info", &format!("{whose} end after its bring: {e}"));
                     }
                 }
                 Bringing::Moved(m) => {

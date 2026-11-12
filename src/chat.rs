@@ -1181,8 +1181,8 @@ impl Chat {
         if let Some(from) = parents.first() {
             let n = parents.len();
             parts.push(match n {
-                1 => format!("a message from {from}'s Claude"),
-                _ => format!("{n} messages from {from}'s Claude"),
+                1 => format!("a message from {} Claude", crate::workspace::possessive(from)),
+                _ => format!("{n} messages from {} Claude", crate::workspace::possessive(from)),
             });
         }
         if n > 0 {

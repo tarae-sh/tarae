@@ -302,7 +302,10 @@ pub fn refusal(ev: &Json) -> Option<Money> {
 
 /// Why a switch waits: the session's Claude is answering.
 fn answering(name: &str) -> String {
-    format!("{name}'s Claude is answering — C-c stops it, or switch after its turn")
+    format!(
+        "{} Claude is answering — C-c stops it, or switch after its turn",
+        crate::workspace::possessive(name)
+    )
 }
 
 /// The plan's weekly window at this percent or more: a new session's card asks who pays (D2) · from this, your

@@ -331,7 +331,7 @@ pub fn ask(ed: &mut Editor, which: &str) {
     let which = which.trim().to_string();
     let (root, start) = (ed.workspace.root.clone(), ed.start_root());
     let setting = ed.config.workspace_worktrees.clone();
-    let said = format!("Looking at {which}'s save…");
+    let said = format!("Looking at {} save…", crate::workspace::possessive(&which));
     let work = move || restoring(&root, &which, &setting, &start);
     ed.step(ed.events.shared_jobs(), "session", said, work, |ed, found| match found {
         Ok(mut r) => ed.api_check(ed.events.shared_jobs(), move |ed, _| {

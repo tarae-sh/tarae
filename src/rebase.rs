@@ -102,8 +102,9 @@ impl Moved {
     /// quick set's steps (`quick`) a paragraph it folds first.
     pub fn card(&self, quick: Option<Vec<String>>) -> Offer {
         let (base, branch) = (&self.base, &self.branch);
+        let whose = crate::workspace::possessive(base);
         let q = format!(
-            "Rebase {branch} onto {base}'s tip, run {}, then bring it in?\n\
+            "Rebase {branch} onto {whose} tip, run {}, then bring it in?\n\
              {base} moved {} since {branch} left it; {branch} has {}. A conflict or a failed preflight stops here.",
             preflight_said(&quick),
             crate::worktree::commits(self.moved),
@@ -127,8 +128,9 @@ impl Moved {
     /// `p`; a bring with no preflight is the failed card's `y bring anyway` only (4 % of answers were that `y`).
     pub fn bring_card(&self, quick: Option<Vec<String>>, rebased: bool) -> Offer {
         let (base, them) = (&self.base, if self.ahead == 1 { "it" } else { "them" });
+        let whose = crate::workspace::possessive(base);
         let q = format!(
-            "Run {}, then bring {them} into {base}?\n{} on {base}'s tip. A failed preflight stops here.",
+            "Run {}, then bring {them} into {base}?\n{} on {whose} tip. A failed preflight stops here.",
             preflight_said(&quick),
             crate::worktree::commits(self.ahead),
         );
@@ -153,11 +155,12 @@ impl Moved {
     /// — and `y` runs the preflight again on what's there now (`head`), said in the warning colour.
     pub fn untested_card(&self, quick: Option<Vec<String>>, tested: &str, head: &str) -> Offer {
         let (base, branch, them) = (&self.base, &self.branch, if self.ahead == 1 { "it" } else { "them" });
+        let whose = crate::workspace::possessive(base);
         let short = |s: &str| crate::gitrepo::short_sha(s).to_string();
         let q = format!(
             "Run {} again, then bring {them} into {base}?\n\
              {branch} moved while its preflight ran — it tested {}, {branch} is at {} now. Nothing brought: {} \
-             wasn't tested.\n{} on {base}'s tip. A failed preflight stops here.",
+             wasn't tested.\n{} on {whose} tip. A failed preflight stops here.",
             preflight_said(&quick),
             short(tested),
             short(head),
@@ -186,6 +189,7 @@ impl Moved {
     /// reason and way out whole: up front when nothing failed, after the failure when something did.
     pub fn failed_card(&self, title: &str, how: &Unpassed, failed: Option<(String, Vec<String>)>) -> Offer {
         let (base, them) = (&self.base, if self.ahead == 1 { "it" } else { "them" });
+        let whose = crate::workspace::possessive(base);
         let first = failed.as_ref().and_then(|(_, lines)| crate::preflight::failed_test(lines));
         // (for the card record: names only — the step, the first test, whether it's a stale reference)
         let failing = crate::cards::Failing {
@@ -218,7 +222,7 @@ impl Moved {
         }
         // (`p` runs it again: its answer says so)
         let q = format!(
-            "{} on {base}'s tip now. Bring {them} into {base} anyway?\n\n{risk}",
+            "{} on {whose} tip now. Bring {them} into {base} anyway?\n\n{risk}",
             crate::worktree::commits(self.ahead),
         );
         let mut card = Offer::new(
@@ -239,8 +243,9 @@ impl Moved {
     /// base's tip — a fast-forward in its checkout.
     pub fn up_card(&self) -> Offer {
         let (base, branch) = (&self.base, &self.branch);
+        let whose = crate::workspace::possessive(base);
         let q = format!(
-            "{branch} has no commits past {base} — nothing to bring. It's {} behind: move it up to {base}'s \
+            "{branch} has no commits past {base} — nothing to bring. It's {} behind: move it up to {whose} \
              tip?\n\nA fast-forward in its checkout: nothing of its own to replay, nothing lost.",
             crate::worktree::commits(self.moved),
         );
@@ -318,12 +323,12 @@ impl Held {
                     named(c)
                 ),
                 _ => format!(
-                    "{} changed and {} in a commit — its preflight would test {}, and the bring lands {}'s commits \
+                    "{} changed and {} in a commit — its preflight would test {}, and the bring lands {} commits \
                      without {}.",
                     named(c),
                     if it(c) { "isn't" } else { "aren't" },
                     them(c),
-                    m.branch,
+                    crate::workspace::possessive(&m.branch),
                     them(c),
                 ),
             };
@@ -332,15 +337,16 @@ impl Held {
                 (true, left) => {
                     let again = match (m.ahead, m.moved) {
                         (0, moved) if moved > 0 => {
-                            format!("the bring is asked again, a rebase onto {}'s tip first", m.base)
+                            let base = crate::workspace::possessive(&m.base);
+                            format!("the bring is asked again, a rebase onto {base} tip first")
                         }
                         _ => "the bring is asked again".to_string(),
                     };
                     // (#535: a review open there is ended first — its own card, its holds kept)
                     q.push_str(&match self.review {
                         true => format!(
-                            "\n\nc ends {}'s review first (its card asks), commits {} (Claude's draft, :w), then {again}.",
-                            m.name,
+                            "\n\nc ends {} review first (its card asks), commits {} (Claude's draft, :w), then {again}.",
+                            crate::workspace::possessive(&m.name),
                             them(c)
                         ),
                         false => format!("\n\nc commits {} first (Claude's draft, :w), then {again}.", them(c)),
@@ -877,7 +883,8 @@ fn changes_back(root: &Path, branch: &str, base: &str) -> Aside {
             return Aside::Kept(format!("{e} — {}", crate::aside::kept_at(root, AT, &sha)));
         }
     }
-    let message = format!("tarae: {branch}'s changes in no commit, set aside for its rebase onto {base}");
+    let whose = crate::workspace::possessive(branch);
+    let message = format!("tarae: {whose} changes in no commit, set aside for its rebase onto {base}");
     match crate::aside::store(root, AT, &sha, &message) {
         Ok(()) => Aside::Kept(format!(
             "they're in git's stash as «{message}» — git stash apply {} brings them back",
@@ -2228,7 +2235,8 @@ impl Editor {
         });
         if done.is_ok() && id != self.workspace.id {
             let what = if go_on { "goes on" } else { "is aborted" };
-            self.set_status(format!("{name}'s rebase {what} — its task panel shows it (space W goes there)"));
+            let whose = crate::workspace::possessive(&name);
+            self.set_status(format!("{whose} rebase {what} — its task panel shows it (space W goes there)"));
         }
         done
     }

@@ -2,7 +2,8 @@
 //! input a key a step — it holds `a`, `y`, `n`, `q`, `j`, `tab` and a space —, Claude's edit of a protected file
 //! landing mid-sentence (`refactor::land`: `show`'s path, as #528's `Cargo.toml`), frames at two sizes (the chat beside
 //! the code, and a screen too narrow for both, the chat taking it whole), time passing, `C-q`, `esc`, a press on the
-//! review, `y` / `a` / `n` / `j` once it's focused, and now and then `enter`, the sentence sent. And the reviewed file's
+//! review, `y` / `a` / `n` / `j` once it's focused, and now and then `enter`, the sentence sent (queued while Claude
+//! works — then the sentence's `tab`, the steer key, steers it: the input stays empty). And the reviewed file's
 //! grammar (#534/#538): its language loaded with the grammar missing (a stand-in language whose grammar is never here),
 //! and an install of it landing (`Editor::grammars_here`).
 //!
@@ -139,6 +140,11 @@ fn key_framed(
 ) {
     let (before, typed) = (review(ed), input_of(ed));
     let busy = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy());
+    // (the message `enter` queued while Claude works, the input empty: `tab` — the steer key — steers it)
+    let queued = ed.workspace.claude.chat.as_ref().and_then(|c| {
+        let steers = crate::chat::steerable(c, ed.chat_asking()) == Some(crate::chat::Steerable::Queued);
+        c.queued.clone().filter(|_| steers)
+    });
     let event = crate::event::Event::Key(k.parse::<Key>().unwrap());
     match framed {
         true => sim.batch(ed, event),
@@ -173,6 +179,13 @@ fn key_framed(
             }
         }
         (false, "enter" | "C-q" | "esc") => {}
+        // (a queued sentence steered: it leaves the queue for the turn under way, the input left empty)
+        (false, "tab") if let Some(q) = queued => {
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            if !now.is_empty() || c.queued.is_some() {
+                wrong.set(Some(format!("tab, {q:?} queued, left the input {now:?}, queued {:?}", c.queued)));
+            }
+        }
         // (a letter at the input's end; a space and `tab` too, not in sight as text — what was there kept)
         (false, k) => {
             let grew = now.len() > typed.len() && now.starts_with(&typed);

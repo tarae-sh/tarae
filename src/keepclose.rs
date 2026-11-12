@@ -263,6 +263,7 @@ impl Moves {
     /// instruction files the main checkout changed. One title a base, so a newer tip's card takes its place.
     pub fn card(&self) -> Offer {
         let base = &self.base.1;
+        let whose = crate::workspace::possessive(base);
         let n = self.ws.len();
         let them = if n == 1 { "1 workspace".to_string() } else { format!("{n} workspaces") };
         // (the title says the base moved: the first line, by how much and who's behind)
@@ -292,21 +293,21 @@ impl Moves {
         };
         more.push(match (self.clean().count(), self.conflicting().count()) {
             (_, 0) => format!(
-                "y moves {} onto {base}'s tip {}: {} commits replayed there, {} changes in no commit taken along.",
+                "y moves {} onto {whose} tip {}: {} commits replayed there, {} changes in no commit taken along.",
                 one(n, "it", "them"),
                 idle(n),
                 one(n, "its", "their"),
                 one(n, "its", "their"),
             ),
             (0, c) => format!(
-                "y rebases {} onto {base}'s tip {}. A conflict goes to {} own Claude to resolve, and you review \
+                "y rebases {} onto {whose} tip {}. A conflict goes to {} own Claude to resolve, and you review \
                  that before the rebase goes on.",
                 one(c, "it", "them"),
                 idle(c),
                 one(c, "its", "each one's"),
             ),
             (k, c) => format!(
-                "y moves the clean {} onto {base}'s tip {}, changes in no commit taken along. c \
+                "y moves the clean {} onto {whose} tip {}, changes in no commit taken along. c \
                  rebases the conflicting {} too, {} own Claude resolving it, while it's small.",
                 one(k, "one", "ones"),
                 idle(k),
@@ -941,7 +942,8 @@ fn move_onto(root: &Path, base: &str, between: &dyn Fn()) -> Landed {
         Ok(None) => {}
         Ok(Some(p)) => return as_it_was(Landed::InTheWay(p)),
         Err(e) => {
-            return as_it_was(Landed::Failed(format!("can't tell what {base}'s tip would write over: {e}")));
+            let base = crate::workspace::possessive(base);
+            return as_it_was(Landed::Failed(format!("can't tell what {base} tip would write over: {e}")));
         }
     }
     between();
@@ -1074,7 +1076,8 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
         Landed::InTheWay(p) => (
             ToastKind::Warning,
             format!(
-                "{name} · not moved onto {base} — {p} is there in no commit and {base}'s tip has it; left as it was"
+                "{name} · not moved onto {base} — {p} is there in no commit and {} tip has it; left as it was",
+                crate::workspace::possessive(&base)
             ),
         ),
         Landed::Failed(e) => (ToastKind::Error, format!("{name} · not moved onto {base}: {e}")),

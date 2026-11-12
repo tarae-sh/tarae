@@ -132,7 +132,7 @@ pub fn card(ask: Ask) -> crate::offer::Offer {
         _ => "their bases".into(),
     };
     let tip = match ask.bases.as_slice() {
-        [one] => format!("{one}'s tip"),
+        [one] => format!("{} tip", crate::workspace::possessive(one)),
         _ => "its base's tip".into(),
     };
     // (in the order they come: `a, b, then c`)

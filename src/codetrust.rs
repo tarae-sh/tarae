@@ -360,8 +360,10 @@ impl Editor {
             });
         let at = up.clone().unwrap_or_else(|| root.to_path_buf());
         let name = at.file_name().map_or_else(|| at.display().to_string(), |n| n.to_string_lossy().into());
-        let mut q =
-            format!("Its language servers run {name}'s code as you, outside the sandbox, as they start:\n");
+        let mut q = format!(
+            "Its language servers run {} code as you, outside the sandbox, as they start:\n",
+            crate::workspace::possessive(&name)
+        );
         for (s, words) in &servers {
             q.push_str(&format!("\n  {s} — {words}"));
         }

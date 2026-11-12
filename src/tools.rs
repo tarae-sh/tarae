@@ -5075,7 +5075,10 @@ pub fn run_done(ed: &mut Editor) {
     // (its whole output kept for a code program, and its id named, while the chat lists `code`)
     let kept = crate::codetool::tool::Kept::of_task(r, call.generation);
     let named = |t: String| crate::codetool::tool::named(code, kept.id, t);
-    let on = base.map(|b| format!("On {}'s tree — a copy apart from the project, removed now:\n", b.said()));
+    let on = base.map(|b| {
+        let whose = crate::workspace::possessive(&b.said());
+        format!("On {whose} tree — a copy apart from the project, removed now:\n")
+    });
     let text = named(
         on.unwrap_or_default()
             + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None)),

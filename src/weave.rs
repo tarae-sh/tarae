@@ -1064,8 +1064,9 @@ pub fn go(ed: &mut Editor) {
     let Some(id) = id else {
         return ed.set_status(format!("no workspace here has {name} — its tip is only in git"));
     };
+    let whose = crate::workspace::possessive(&name);
     let Some(root) = sessions(ed).find(|l| l.id == id).map(|l| l.root.clone()) else {
-        return ed.set_status(format!("{name}'s workspace has ended"));
+        return ed.set_status(format!("{whose} workspace has ended"));
     };
     let path = root.join(&rel);
     // (opened only as the weave reads it: never a file named like a key, and a plain file reached through no link —
@@ -1076,19 +1077,19 @@ pub fn go(ed: &mut Editor) {
     match plain(&root, &rel) {
         Ok(_) => {}
         Err(Read::Gone) if ed.docs.iter().any(|d| d.path.as_deref() == Some(path.as_path())) => {}
-        Err(Read::Gone) => return ed.set_status(format!("{rel} is gone from {name}'s workspace")),
+        Err(Read::Gone) => return ed.set_status(format!("{rel} is gone from {whose} workspace")),
         Err(Read::Refused(why)) => {
             crate::log::line("weave", "info", &why);
-            return ed.set_warning(format!("{rel} in {name}'s workspace isn't a plain file — not opened"));
+            return ed.set_warning(format!("{rel} in {whose} workspace isn't a plain file — not opened"));
         }
-        Err(Read::Failed(e)) => return ed.set_error(format!("{rel} in {name}'s workspace: {e}")),
+        Err(Read::Failed(e)) => return ed.set_error(format!("{rel} in {whose} workspace: {e}")),
         Err(Read::Text(_) | Read::TooLarge) => {}
     }
     match ed.workspace_switch(id) {
         crate::workspace::Switched::In => {}
         // (put off whole above: never here)
         crate::workspace::Switched::Later => return,
-        crate::workspace::Switched::Gone => return ed.set_status(format!("{name}'s workspace has ended")),
+        crate::workspace::Switched::Gone => return ed.set_status(format!("{whose} workspace has ended")),
     }
     // (its file may have changed since the weave: the line kept to it)
     ed.open_file_then(&path, false, move |ed, r| match r {

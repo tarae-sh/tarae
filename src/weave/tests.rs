@@ -810,12 +810,12 @@ fn enter_on_a_conflicts_part_goes_to_whose_it_is() {
     press(&mut ed, "<ret>");
     assert_eq!((ed.workspace.id, ed.doc().id), (ids[1], view));
     assert!(ed.messages.iter().any(|m| m.2.contains("no workspace here has main")), "{:?}", ed.messages);
-    // docs's workspace ended meanwhile (its side still in the last weave): said
+    // docs' workspace ended meanwhile (its side still in the last weave): said — never "docs's" (#550)
     let _ = ed.workspace_close(&docs);
     ed.goto_line(part(&ed, "docs"));
     press(&mut ed, "<ret>");
     assert_eq!((ed.workspace.id, ed.doc().id), (ids[1], view));
-    assert!(ed.messages.iter().any(|m| m.2.contains("docs's workspace has ended")), "{:?}", ed.messages);
+    assert!(ed.messages.iter().any(|m| m.2.contains("docs' workspace has ended")), "{:?}", ed.messages);
 }
 
 /// A change that only takes lines out: a head where they went — whose (its prefix in the sign column, its name), how

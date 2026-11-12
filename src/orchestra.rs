@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr as _;
 
 use crate::editor::Editor;
 use crate::event::{SessionId, WorkspaceId};
+use crate::workspace::possessive;
 use crate::worktree::Making;
 
 /// A set of sessions Claude asked for (`sessions_start`), on its card until answered — its call waits on it.
@@ -305,8 +306,8 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
             .filter(|_| money)
             .map(|(c, _)| format!(" — ≈ API {} a time", crate::usage::dollars(c)));
         q += &format!(
-            "\n{}'s Claude is woken as {ends}{}, {} an hour at most.",
-            s.parent_name,
+            "\n{} Claude is woken as {ends}{}, {} an hour at most.",
+            crate::workspace::possessive(&s.parent_name),
             cost.unwrap_or_default(),
             ed.config.llm.parent_wakes
         );
@@ -327,8 +328,13 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
     });
     // (the threat model's §2.x: what a child read reaches its parent's Claude through its reports)
     q += &match n {
-        1 => format!("\n\nWhat its Claude reads, its reports carry to {}'s Claude.", s.parent_name),
-        _ => format!("\n\nWhat their Claudes read, their reports carry to {}'s Claude.", s.parent_name),
+        1 => {
+            format!("\n\nWhat its Claude reads, its reports carry to {} Claude.", possessive(&s.parent_name))
+        }
+        _ => format!(
+            "\n\nWhat their Claudes read, their reports carry to {} Claude.",
+            possessive(&s.parent_name)
+        ),
     };
     if let Some((b, sha)) = first.others.first() {
         let short = crate::gitrepo::short_sha(sha);
@@ -568,9 +574,11 @@ fn to_child(ed: &mut Editor, (from, conversation, wake): (&str, Option<&str>, bo
     // (a card it waits on is said as working, never named: a parent hears only what its own acts came to — the
     // user's decision, orchestra's R2)
     let why = match () {
-        _ if moving => format!("{name}'s checkout is moving onto its base; it goes once that lands"),
+        _ if moving => {
+            format!("{} checkout is moving onto its base; it goes once that lands", possessive(&name))
+        }
         _ if busy => format!("{name} is working; it goes when this turn ends"),
-        _ if starting => format!("{name}'s claude is starting; it goes once it's up"),
+        _ if starting => format!("{} claude is starting; it goes once it's up", possessive(&name)),
         _ if users > 0 => format!("a message of the user's waits in {name}; it goes after it"),
         _ => format!("what you sent {name} before still waits; it goes after it"),
     };
@@ -606,13 +614,14 @@ fn anew(ed: &mut Editor, from: &str) -> Result<(), String> {
     // the message go into the old one, the reset then ending it. Refused, nothing sent, as things are)
     if crate::docpane::lent(ed) {
         return Err(format!(
-            "not sent — {name}'s chat can't start anew while a key of the user's is under way there: send again"
+            "not sent — {} chat can't start anew while a key of the user's is under way there: send again",
+            possessive(&name)
         ));
     }
     let at = ed.workspace.here();
     let hidden = ed.workspace.claude.chat.as_ref().map(|c| c.hidden);
     // (its toast says whose it was in its row's words — not yours: `:chat-new`'s)
-    let said = format!("a new conversation — {from}'s Claude asked for it");
+    let said = format!("a new conversation — {} Claude asked for it", crate::workspace::possessive(from));
     crate::chat::reset_said(ed, &said);
     ed.workspace.set_at(at);
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
@@ -857,26 +866,31 @@ impl News {
     /// whole (`TOLD`: one row drawn, cut, whole on its card and in the transcript).
     fn row(&self) -> String {
         match &self.ended {
-            Ended::Replied(h) if h.is_empty() => format!("{}'s turn ended", self.child),
-            Ended::Replied(h) => format!("{}'s turn ended — “{h}”", self.child),
-            Ended::Stopped => format!("{}'s turn was stopped", self.child),
+            Ended::Replied(h) if h.is_empty() => format!("{} turn ended", possessive(&self.child)),
+            Ended::Replied(h) => format!("{} turn ended — “{h}”", possessive(&self.child)),
+            Ended::Stopped => format!("{} turn was stopped", possessive(&self.child)),
             Ended::Restarted => {
-                format!("{}'s turn was cut off: its claude started again for the settings", self.child)
+                format!(
+                    "{} turn was cut off: its claude started again for the settings",
+                    possessive(&self.child)
+                )
             }
             Ended::Reviewed { stopped: Some(why), .. } => format!("{}: {why}", self.child),
             Ended::Reviewed { board, findings, high, stopped: None } => format!(
-                "{}'s {} is done — {}",
-                self.child,
+                "{} {} is done — {}",
+                possessive(&self.child),
                 if *board { "board" } else { "reviewer" },
                 found(*findings, *high)
             ),
             Ended::Answered { act, key } => format!("you answered {} {} — {key}", act.word(), self.child),
             Ended::NotDone { act: Act::Review, why } => {
-                format!("{}'s review didn't start: {why}", self.child)
+                format!("{} review didn't start: {why}", possessive(&self.child))
             }
-            Ended::NotDone { act: Act::Send, why } => format!("{}'s findings didn't go: {why}", self.child),
+            Ended::NotDone { act: Act::Send, why } => {
+                format!("{} findings didn't go: {why}", possessive(&self.child))
+            }
             Ended::NotDone { act, why } => format!("{} {} has no card: {why}", act.word(), self.child),
-            Ended::Failed(e) => format!("{}'s turn failed: {e}", self.child),
+            Ended::Failed(e) => format!("{} turn failed: {e}", possessive(&self.child)),
         }
     }
 }
@@ -1121,7 +1135,8 @@ pub fn framed(from: &str, text: &str, first: bool) -> String {
     let head = match first {
         true => format!(
             "This message is from Claude in session {from}, which started this session. The user sees this chat and \
-             answers its cards; your final reply goes to {from}'s Claude.\n"
+             answers its cards; your final reply goes to {} Claude.\n",
+            crate::workspace::possessive(&from)
         ),
         false => String::new(),
     };
@@ -1306,8 +1321,8 @@ impl Proposal {
     /// The card's first line under its title.
     pub fn line(&self) -> String {
         match self.why.is_empty() {
-            true => format!("proposed by {}'s Claude", self.by),
-            false => format!("proposed by {}'s Claude — “{}”", self.by, self.why),
+            true => format!("proposed by {} Claude", possessive(&self.by)),
+            false => format!("proposed by {} Claude — “{}”", possessive(&self.by), self.why),
         }
     }
 }
@@ -1396,7 +1411,7 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
     };
     match act {
         Act::Bring | Act::End if busy => {
-            Err(format!("{label}'s Claude is answering — propose it once its turn ends"))
+            Err(format!("{} Claude is answering — propose it once its turn ends", possessive(&label)))
         }
         Act::Bring | Act::End => {
             match act {
@@ -1414,7 +1429,8 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
                 .is_some_and(crate::reviewer::Reviewer::reading)
             {
                 return Err(format!(
-                    "{label}'s reviewer is still reading — sessions with review says what it found so far"
+                    "{} reviewer is still reading — sessions with review says what it found so far",
+                    possessive(&label)
                 ));
             }
             let wake = args["wake"].as_bool() == Some(true);
@@ -1428,7 +1444,9 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
                 true => {
                     "asked — the board's card waits for the user (a board spends; theirs to start)".into()
                 }
-                false => format!("{label}'s reviewer reads its changes — you hear when it's done"),
+                false => {
+                    format!("{} reviewer reads its changes — you hear when it's done", possessive(&label))
+                }
             })
         }
         Act::Send => {
@@ -1438,7 +1456,10 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
                 .filter(|r| r.parent.as_ref().is_some_and(|p| p.parent == me))
                 .ok_or("no review of yours there — session_act review starts one")?;
             if r.reading() {
-                return Err(format!("{label}'s reviewer is still reading — send once it's done"));
+                return Err(format!(
+                    "{} reviewer is still reading — send once it's done",
+                    possessive(&label)
+                ));
             }
             let notes = &child.claude.notes.list;
             let of_run = || notes.iter().filter(|n| r.findings.contains(&n.id));
@@ -1448,7 +1469,8 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
                 return Err(match of_run().any(|n| n.placing) {
                     true => "its findings are still being placed on the lines — send in a moment".into(),
                     false => format!(
-                        "nothing to send — {label}'s reviewer found none, or they were sent or closed"
+                        "nothing to send — {} reviewer found none, or they were sent or closed",
+                        possessive(&label)
                     ),
                 });
             }

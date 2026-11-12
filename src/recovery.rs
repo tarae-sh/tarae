@@ -426,7 +426,7 @@ impl Keeper {
             f.write_all(line.as_bytes())
         });
         if let Err(e) = written {
-            self.failed(format!("{name}'s conversation not kept: {e}"));
+            self.failed(format!("{} conversation not kept: {e}", crate::workspace::possessive(name)));
         }
     }
 
@@ -1018,8 +1018,8 @@ fn chats_back(ed: &mut Editor, left: Vec<Left>) {
             None => {
                 drop(release(ed, &l.dir));
                 ed.set_warning(format!(
-                    "{}'s session isn't here — asked again when tarae next starts",
-                    l.name
+                    "{} session isn't here — asked again when tarae next starts",
+                    crate::workspace::possessive(&l.name)
                 ));
             }
         }

@@ -19272,7 +19272,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             // parent chose) — its bar and words a step down from yours: the person reading the child knows who asked
             Role::User if m.from.is_some() => {
                 let from = m.from.as_deref().unwrap_or_default();
-                let head = crate::whole::fit(&format!("{from}'s Claude"), w);
+                let head = crate::whole::fit(&format!("{} Claude", crate::workspace::possessive(from)), w);
                 let mut sessions = std::iter::once(&editor.workspace).chain(&editor.workspaces);
                 let colour = sessions.find(|l| l.label() == from).map(|l| l.claude.colour);
                 let spans = match colour.filter(|_| !from.is_empty() && head.shown().starts_with(from)) {

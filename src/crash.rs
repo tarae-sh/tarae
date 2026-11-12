@@ -218,9 +218,10 @@ pub fn said(c: &Crashed) -> String {
     match &c.drawing {
         Some(d) => {
             let what = match &d.pane {
-                Pane::Chat => format!("{}'s chat", d.session),
+                Pane::Chat => format!("{} chat", crate::workspace::possessive(&d.session)),
                 Pane::Code(p) => {
-                    format!("{}'s {}", d.session, p.strip_prefix(&d.root).unwrap_or(p).display())
+                    let rel = p.strip_prefix(&d.root).unwrap_or(p).display();
+                    format!("{} {rel}", crate::workspace::possessive(&d.session))
                 }
             };
             if c.held {

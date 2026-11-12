@@ -812,6 +812,15 @@ impl Workspace {
     }
 }
 
+/// A name with its possessive, as tarae writes it for a workspace, a session, its branch or its project: `dates'` for a
+/// name ending in s, `plan's` else — the one way, so none says `dates's` (#550).
+pub fn possessive(name: &str) -> String {
+    match name.ends_with(['s', 'S']) {
+        true => format!("{name}'"),
+        false => format!("{name}'s"),
+    }
+}
+
 /// How a turn ended, as a toast says it: `turn ended` · `turn stopped` · `turn ended: <its error's first
 /// line>` (a warning).
 pub fn turn_end_words(how: &Result<(), String>) -> (crate::editor::ToastKind, String) {
@@ -1725,6 +1734,15 @@ mod tests {
 
     use super::*;
     use crate::lsp_editor::Kind;
+
+    /// #550: a name ending in s takes an apostrophe alone — "End dates' review?", never "dates's".
+    #[test]
+    fn a_name_ending_in_s_takes_an_apostrophe_alone() {
+        assert_eq!(possessive("dates"), "dates'");
+        assert_eq!(possessive("FIXES"), "FIXES'");
+        assert_eq!(possessive("plan"), "plan's");
+        assert_eq!(possessive("main"), "main's");
+    }
 
     fn feed(ed: &mut Editor, keys: &str) {
         let mut chars = keys.chars();

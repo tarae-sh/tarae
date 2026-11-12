@@ -6368,8 +6368,14 @@ impl Editor {
                 // (one about to come — its call held back until the run before it ends: said, #5)
                 match self.cards_coming().as_slice() {
                     [] => self.set_status(crate::inbox::NOTHING),
-                    [one] => self.set_status(format!("no card yet — {one}'s comes once its run ends")),
-                    many => self.set_status(format!("no card yet — {}'s come as runs end", many.join(", "))),
+                    [one] => self.set_status(format!(
+                        "no card yet — {} comes once its run ends",
+                        crate::workspace::possessive(one)
+                    )),
+                    many => self.set_status(format!(
+                        "no card yet — {} come as runs end",
+                        crate::workspace::possessive(&many.join(", "))
+                    )),
                 }
             }
             return;
@@ -19317,15 +19323,14 @@ mod tests {
         }
         // Ending it with files not viewed: asked first, on a card naming them (#10) — n keeps reviewing
         ed.workspace.leave(crate::workspace::Here::Chat);
+        // (#550: a name ending in s takes an apostrophe alone — "End dates' review?", never "dates's")
+        (ed.workspace.name, ed.workspace.git_branch) = ("dates".into(), Some("dates".into()));
         feed(&mut ed, "<space>vq");
         assert!(ed.workspace.code_review.is_some(), "not ended without a word");
         let card = ed.offers.first().map(|o| (o.title.clone(), o.question.clone())).unwrap();
-        let name = ed.workspace.label().to_string();
-        assert_eq!(card.0, format!("End {name}'s review?"));
-        let head = format!(
-            "{name}'s review · uncommitted · 1 of 3 viewed\n\n2 files not viewed — end it anyway?\n\n  b.rs\n  c.rs"
-        );
-        assert!(card.1.starts_with(&head), "{}", card.1);
+        assert_eq!(card.0, "End dates' review?");
+        let head = "dates' review · uncommitted · 1 of 3 viewed\n\n2 files not viewed — end it anyway?\n\n  b.rs\n  c.rs";
+        assert!(card.1.starts_with(head), "{}", card.1);
         feed(&mut ed, "n");
         assert!(ed.workspace.code_review.is_some() && ed.offers.is_empty());
         // y: ended — back to the index as the diff base

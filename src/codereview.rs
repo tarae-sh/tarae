@@ -3009,6 +3009,7 @@ pub fn card_highs(ed: &mut Editor) {
         match high_step(ed, true) {
             true => {
                 step_aside(ed, id);
+                ed.workspace.viewer.keys_to_code();
                 aside_said(ed);
             }
             false => {
@@ -3103,6 +3104,9 @@ fn in_review(ed: &Editor, h: &Held) -> Option<(usize, usize)> {
 /// other it can't) in a buffer of its own, where `space v h` looks at it (`held_seen`).
 pub fn held_go(ed: &mut Editor, card: u64, left: &[Held]) {
     let Some(first) = left.first() else { return };
+    // (the keys go where the eyes are: to the code it shows them in — from the git tab, say, which the review's rail
+    // took the place of, #547)
+    ed.workspace.viewer.keys_to_code();
     if let Some((i, at)) = in_review(ed, first) {
         high_go(ed, i, at);
         ed.set_status(format!(
@@ -4280,7 +4284,10 @@ pub fn close(ed: &mut Editor) {
     end(ed);
     // (#535: a card's commit first waited for this end — on with it now, said)
     if let Some(w) = ed.workspace.commit_waits.take() {
-        ed.set_status(format!("{}'s review ended — its changes' commit next", w.name));
+        ed.set_status(format!(
+            "{} review ended — its changes' commit next",
+            crate::workspace::possessive(&w.name)
+        ));
         let root = ed.workspace.root.clone();
         ed.commit_first(root, w.name, w.then, w.message);
     }
@@ -5271,8 +5278,13 @@ fn close_card(ed: &mut Editor) {
     let Some(r) = ed.workspace.code_review.as_ref() else { return };
     let name = ed.workspace.label().to_string();
     let what = crate::offer::What::ReviewEnd { session: ed.workspace.id, started: r.started };
-    let mut card =
-        crate::offer::Offer::new(format!("End {name}'s review?"), &said.question, "", String::new(), what);
+    let mut card = crate::offer::Offer::new(
+        format!("End {} review?", crate::workspace::possessive(&name)),
+        &said.question,
+        "",
+        String::new(),
+        what,
+    );
     (card.held, card.warning, card.gate) = (said.held, said.warning, said.gate);
     ed.push_offer(card);
 }
@@ -5298,7 +5310,12 @@ fn close_said(ed: &Editor) -> Option<CloseSaid> {
     // session ended that one's)
     let name = ed.workspace.label().to_string();
     let viewed = r.files.len() - left.len();
-    let mut q = format!("{name}'s review · {} · {viewed} of {} viewed\n", r.base.label(), r.files.len());
+    let mut q = format!(
+        "{} review · {} · {viewed} of {} viewed\n",
+        crate::workspace::possessive(&name),
+        r.base.label(),
+        r.files.len()
+    );
     if !left.is_empty() {
         let anyway = if high.is_empty() { " — end it anyway?" } else { "" };
         q.push_str(&format!("\n{} not viewed{anyway}\n", crate::nav::count(left.len(), "file")));
@@ -5327,7 +5344,7 @@ fn close_said(ed: &Editor) -> Option<CloseSaid> {
     // (#535: asked by a card's `c` — its `y` goes on to the commit; said while it has a `y`)
     if let Some(w) = ed.workspace.commit_waits.as_ref().filter(|_| high.is_empty()) {
         let how = if w.message.is_none() { "Claude's draft, :w" } else { ":w" };
-        q.push_str(&format!("\n\ny ends it, then {}'s commit ({how}).", w.name));
+        q.push_str(&format!("\n\ny ends it, then {} commit ({how}).", crate::workspace::possessive(&w.name)));
     }
     q.push_str("\n\nDrafts stay. Opened again, its marks are kept: a file changed since asks only for its lines since.");
     let (held, gate) = match high.is_empty() {
@@ -5804,9 +5821,9 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     };
     match by {
         Some(b) => ed.set_success(format!(
-            "{}'s Claude sent {}'s reviewer's {}",
-            b.from,
-            ed.workspace.label(),
+            "{} Claude sent {} reviewer's {}",
+            crate::workspace::possessive(&b.from),
+            crate::workspace::possessive(ed.workspace.label()),
             crate::nav::count(k, "finding")
         )),
         None => ed.set_success(format!("review sent — {k} comment{}{held}", if k == 1 { "" } else { "s" })),
@@ -9959,6 +9976,37 @@ mod tests {
         assert!(o.held.is_none() && !o.aside, "every one looked at: its y back, up again: {}", o.question);
         // (whole again, waiting to be focused — it changed: a key meant for the review isn't its answer)
         assert!(ed.card_waits() && !ed.offer_bar());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #547 (take 3, 0:44:06): the keys in the git tab (`space g`, the conflict's files staged there), the held
+    /// card's `h` opened the branch review and left them in the tab it no longer showed — `keys → git (commands) · NOT
+    /// ON SCREEN`, `]h` going nowhere. The keys go where the eyes are: `h` gives them to the review it opens.
+    #[test]
+    fn a_bring_cards_h_from_the_git_tab_gives_the_keys_to_the_review_it_opens() {
+        let fns = |names: &str| names.chars().map(|c| format!("fn {c}() {{}}\n")).collect::<String>();
+        let mut a: Vec<String> = fns("abcdefgh").lines().map(str::to_string).collect();
+        a[1] = "fn b() { unsafe { x() } }".into();
+        a[6] = "fn g() { unsafe { z() } }".into();
+        let dir = bring_repo("h-git-tab", &[("a.rs", fns("abcdefgh"))], &[("a.rs", a.join("\n") + "\n")]);
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        bring_card_up(&mut ed, &dir);
+        assert!(ed.offers.first().is_some_and(|o| o.held.is_some()), "held for its high-risk changes");
+        assert!(ed.workspace.code_review.is_none(), "no review open yet: `h` opens it");
+        feed(&mut ed, "<space>g");
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
+        let region = |ed: &Editor| ed.keys_to().region;
+        let git = crate::uistate::Region::Side(crate::sidebar::Mode::Git);
+        assert_eq!(region(&ed), git, "the git tab's");
+        feed(&mut ed, "<C-q>h");
+        settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ed.cursor_line() == 1);
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
+        assert_eq!(region(&ed), crate::uistate::Region::Code, "the review's, where the eyes are");
+        assert!(ed.keys_to().drawn, "in sight");
+        // (the review's keys: `]h` walks it)
+        feed(&mut ed, "]h");
+        assert_eq!(ed.cursor_line(), 6, "{:?}", ed.status);
         std::fs::remove_dir_all(&dir).ok();
     }
 

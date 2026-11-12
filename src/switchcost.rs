@@ -157,10 +157,11 @@ pub fn fork_said(c: &ForkCost, to: Billing, src: &str, money: bool) -> String {
         false => format!("not seen here: ≈ {} tokens, as once measured", tokens(c.write)),
     };
     let times = c.starts() as f64 / c.read.max(1) as f64;
+    let whose = crate::workspace::possessive(src);
     let times = match times {
-        t if t >= 2.5 => format!(", about {t:.0}× {src}'s"),
-        t if t >= 1.75 => format!(", about twice {src}'s"),
-        t if c.read > 0 && t >= 1.05 => format!(", about {t:.1}× {src}'s"),
+        t if t >= 2.5 => format!(", about {t:.0}× {whose}"),
+        t if t >= 1.75 => format!(", about twice {whose}"),
+        t if c.read > 0 && t >= 1.05 => format!(", about {t:.1}× {whose}"),
         _ => String::new(),
     };
     let first = match c.dollars {

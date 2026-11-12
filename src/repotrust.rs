@@ -92,8 +92,8 @@ fn card(
     let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into());
     let joined = joined.map(|j| format!(" · {j} joined")).unwrap_or_default();
     let first = format!(
-        "{}'s settings run commands as you, even unasked.{joined}",
-        crate::trust::visible_line(&name)
+        "{} settings run commands as you, even unasked.{joined}",
+        crate::workspace::possessive(&crate::trust::visible_line(&name))
     );
     let mut lines = vec![first, String::new()];
     let mut warnings = Vec::new();

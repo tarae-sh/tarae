@@ -1,9 +1,10 @@
 //! Sessions and their bring cards, simulated (detsim P1): two sessions with commits of their own, and at random
 //! the card a rebase leaves pushed (as `rebase_ended` does), `:workspace-bring`, a frame drawn, `n` or `y` on the
 //! card in front, a switch of sessions, the user taking their time, a new commit in a session — each step's jobs
-//! and their results interleaved by seed. After every step: one bring card a session (frictions28 S1,
-//! `b56cdf41` — the card a rebase left and a later bring's stood side by side). A landing that grades the others
-//! again is `sim/brings.rs`'s.
+//! and their results interleaved by seed — and a held card's `h` from the git tab (#547). After every step: one bring
+//! card a session (frictions28 S1, `b56cdf41` — the card a rebase left and a later bring's stood side by side), and
+//! the review an `h` opened, once it's up, has the keys — never the git tab it took the place of. A landing that
+//! grades the others again is `sim/brings.rs`'s.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,8 +18,9 @@ use crate::offer::{Offer, What};
 /// The seeds every `cargo test` runs, each twice — as many as fit the scenario's share of the suite's time at
 /// opt-level 0: 36 steps a second there (2026-10-18, macOS, `TARAE_SIM_SEEDS=4`: 832 steps in 23.1 s — git's
 /// processes most of it), ~208 steps a run, so a seed is ~12 s; two keep it under the 30 s the plan gives the
-/// simulations. Seed 0 finds two bring cards in 33 steps with `b56cdf41`'s fix taken out.
-const SEEDS: &[u64] = &[0, 1];
+/// simulations. Seed 0 finds two bring cards in 37 steps with `b56cdf41`'s fix taken out; seed 9, #547's keys left in
+/// the git tab at step 38 with its fix taken out.
+const SEEDS: &[u64] = &[0, 9];
 
 /// The scenario's own steps a run (the jobs' and results' come between them).
 const INPUTS: usize = 40;
@@ -150,7 +152,9 @@ fn run(choices: Choices) -> Vec<String> {
     }
     ed.workspace_switch(crate::event::WorkspaceId::HOME);
     let dir = world.dir.display().to_string();
-    sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &ids), one_bring_card, |ed| print(ed, &dir));
+    let went = std::cell::Cell::new(None);
+    let check = |ed: &Editor| one_bring_card(ed).and_then(|()| keys_to_review(ed, &went));
+    sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &ids, &went), check, |ed| print(ed, &dir));
     let trace = sim.trace().to_vec();
     drop(sim);
     drop(ed);
@@ -158,7 +162,12 @@ fn run(choices: Choices) -> Vec<String> {
 }
 
 /// One of the scenario's steps, said.
-fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(crate::event::WorkspaceId, String, PathBuf)]) -> String {
+fn input(
+    sim: &mut Sim,
+    ed: &mut Editor,
+    ids: &[(crate::event::WorkspaceId, String, PathBuf)],
+    went: &std::cell::Cell<Option<crate::event::WorkspaceId>>,
+) -> String {
     let c = &mut sim.choices;
     let (sid, name, root) = c.pick(ids).clone();
     // (by arm: a rebase's card 3, a bring 3, a frame 3, `n` at once 1, `y` after a frame 1, a switch 2, time
@@ -209,12 +218,27 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(crate::event::WorkspaceId, Stri
             git(&root, &["commit", "-q", "-m", &file]);
             format!("{name}: a commit")
         }
-        // The card in front read, then answered: drawn, focused (a press on it), its key
+        // The card in front read, then answered: drawn, focused (a press on it), its key — a held one's `h` from the
+        // git tab (`space g`: #547's conflict's files staged there)
         8 => {
+            let key = *sim.choices.pick(&['n', 'n', 'y', 'h']);
             crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
+            if key == 'h' {
+                if !ed.offers.first().is_some_and(|o| o.highs().is_some()) {
+                    return "(no held card in front for h)".into();
+                }
+                for k in [' ', 'g'] {
+                    ed.handle_key(Key::plain(Code::Char(k)));
+                }
+                crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
+            }
             ed.card_focus_front();
-            let key = *sim.choices.pick(&['n', 'n', 'y']);
-            format!("(read) {}", answer(ed, key))
+            let said = format!("(read) {}", answer(ed, key));
+            // (the review it opens, in the session it brought to the front: once up there, the keys are its)
+            if key == 'h' && ed.workspace.review_high.is_some() {
+                went.set(Some(ed.workspace.id));
+            }
+            said
         }
         _ => unreachable!("one arm a weight"),
     }
@@ -230,6 +254,24 @@ fn answer(ed: &mut Editor, key: char) -> String {
     crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
     ed.handle_key(Key::plain(Code::Char(key)));
     key.to_string()
+}
+
+/// #547: the review a held card's `h` opened from the git tab, up in the session in front, has the keys — the code's
+/// (or a card's focused since), never the git tab the review's rail took the place of. Judged once, as it lands.
+fn keys_to_review(
+    ed: &Editor,
+    went: &std::cell::Cell<Option<crate::event::WorkspaceId>>,
+) -> Result<(), String> {
+    let ws = &ed.workspace;
+    if went.get() != Some(ws.id) || ws.review_high.is_some() || ws.code_review.is_none() {
+        return Ok(());
+    }
+    went.set(None);
+    let to = ed.keys_to().region;
+    match to == crate::uistate::Region::Code || ed.card_has_keys() {
+        true => Ok(()),
+        false => Err(format!("the review h opened is up, the keys at {}", to.name())),
+    }
 }
 
 /// The cards up and parked, by every session.

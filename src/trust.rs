@@ -477,9 +477,14 @@ impl crate::editor::Editor {
                 false if !last.starts_with(&format!("trust carried from {name} —")) => {
                     self.set_status(format!("trust carried from {name} — answered before it was a repository"))
                 }
-                true if !last.starts_with(&format!("{name}'s trust from before it was a repository dropped")) => {
+                true if !last.starts_with(&format!(
+                    "{} trust from before it was a repository dropped",
+                    crate::workspace::possessive(&name)
+                )) =>
+                {
                     self.set_status(format!(
-                        "{name}'s trust from before it was a repository dropped — the repository's own answer stands"
+                        "{} trust from before it was a repository dropped — the repository's own answer stands",
+                        crate::workspace::possessive(&name)
                     ))
                 }
                 _ => {}

@@ -395,15 +395,18 @@ fn a_card_answered_by_keys_keeps_the_answer_and_its_verdict() {
         let mut frame = Vec::new();
         crate::term::render(ed, &mut frame, 120, 40).unwrap();
         screen.process(&frame);
-        // (the chat's waiting timer moves with the clock alone)
-        screen.screen().contents().replace(|c: char| c.is_ascii_digit(), "0")
+        screen.screen().contents()
     };
+    // (the chat's waiting timer moves with the clock alone — `4ms` then `12ms`, `0.3s`: held still, both frames are
+    // drawn at one time, however long the machine takes between them, #546)
+    crate::clock::hold();
     let before = shown(&mut ed);
     let run = run_of(&ed, id);
     ed.unchanged = false;
     on_event(&mut ed, id, run, StreamEv::Spent(spent()));
     assert!(ed.unchanged);
     assert_eq!(shown(&mut ed), before, "the review's cost changes nothing on screen");
+    crate::clock::release();
     for c in ["C-q", "y"] {
         ed.handle_key(c.parse().unwrap());
     }
