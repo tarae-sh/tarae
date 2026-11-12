@@ -619,6 +619,31 @@ fn fuel_pays_for_moves_and_zeroed_locals() {
     }
 }
 
+/// An out-of-fuel trap leaves no fuel, on both engines, wherever the charge was refused: at a fuel op (a call of a
+/// function whose thousand locals cost more than the half charge left) and at a bulk op (a fill it can't pay for).
+#[test]
+fn an_out_of_fuel_trap_leaves_none_on_both_engines() {
+    let wat = format!(
+        r#"(module (memory 1)
+          (func $big (local {locals}))
+          (func (export "calls") (loop $l (call $big) (br $l)))
+          (func (export "fill") (memory.fill (i32.const 0) (i32.const 7) (i32.const 1000))))"#,
+        locals = "i64 ".repeat(1000)
+    );
+    let bytes = wat::parse_str(&wat).unwrap();
+    for (f, fuel) in [("calls", 10_500), ("fill", 500)] {
+        let left: Vec<u64> = [true, false]
+            .map(|jit| {
+                let m = Module::new(&bytes).unwrap();
+                let mut i = Instance::new(m, Limits { jit, ..Limits::default() }, fuel).unwrap();
+                assert_eq!(call(&mut i, f, &[]), Err(Trap::OutOfFuel), "{f}, jit {jit}");
+                i.fuel()
+            })
+            .into();
+        assert_eq!(left, [0, 0], "{f}: the fuel left after the trap, JIT then interpreter");
+    }
+}
+
 /// Loading is bounded too: locals across a module, params and results per type, tables, and the steps
 /// compiling may take (found by review: small modules took gigabytes, or ten seconds, to load).
 #[test]

@@ -1,8 +1,8 @@
 //! Differential fuzzer for the plugin runtime (`crates/tarae-wasm`).
 //!
 //! Random valid modules (wasm-smith, limited to what the runtime supports) run on tarae's JIT, tarae's
-//! interpreter, and wasmi. JIT and interpreter must agree exactly on every call — results, traps, memory —
-//! fuel and stack limits included. Against wasmi, resource-limit outcomes are skipped (engines count fuel
+//! interpreter, and wasmi. JIT and interpreter must agree exactly on every call — results, traps, memory, the
+//! fuel left (none after an out-of-fuel trap, on both) — fuel and stack limits included. Against wasmi, resource-limit outcomes are skipped (engines count fuel
 //! differently); when wasmi disagrees, wasmtime replays the calls and decides who's right. Each module's byte
 //! mutations also go through the decoder (no panics allowed) and, if still valid, through everything.
 //!
@@ -319,6 +319,10 @@ fn case(bytes: &[u8], rng: &mut Rng) -> Result<usize, String> {
             }
             if jit.memory() != int.memory() {
                 return Err(format!("{name}({a:?}): memory differs between jit and interpreter"));
+            }
+            if jit.fuel() != int.fuel() {
+                let (j, i) = (jit.fuel(), int.fuel());
+                return Err(format!("{name}({a:?}): fuel left differs: jit {j} / interp {i} ({oj:?})"));
             }
             let resource_hit = matches!(&oj, Out::Trap(t) if resource(t));
             if let (true, Some(wi)) = (wasmi_ok, &wi) {

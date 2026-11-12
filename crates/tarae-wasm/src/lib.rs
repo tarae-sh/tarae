@@ -17,23 +17,30 @@
 //! - **Interrupt**: a flag only the host sets (`Interrupt`, from any thread), checked wherever fuel is charged —
 //!   the call ends with `Trap::Interrupted`. It lives outside everything a module addresses (its memory,
 //!   globals, tables, the value stack): no module can read or clear it.
-//! - **Fuzzing**: `examples/qjs_fuzz.rs` runs the code tool's engine (QuickJS-ng, `cargo xtask quickjs`) on
-//!   generated JavaScript, a seed a program, on a fresh instance under the JIT and one under the interpreter, and
-//!   compares every reply whole, every trap, and after every step the fuel left, the memory's hash and length. An
-//!   architecture's JIT runs the code tool only after an hour of it came back clean (G36 in
-//!   `docs/threat-model.md`, with the seeds and the engine's sha256 of the last one); a re-pin of the engine
-//!   (`xtask/quickjs/pin`) or a change to `jit/` means the hour again, on that architecture, on a quiet machine:
+//! - **Fuzzing**: two harnesses, each the JIT against the interpreter.
+//!   - The repository's root `fuzz/` (a crate of its own, outside the workspace with its own lockfile, so
+//!     wasmtime, wasmi and wasm-smith never touch tarae's build): wasm-smith's random modules, a seed each, run
+//!     under the JIT and the interpreter, which must agree on every call exactly (results, traps, memory, the
+//!     fuel left), and on wasmi, wasmtime deciding when wasmi disagrees; each module's byte mutations go through
+//!     the decoder too. Its `spec` binary runs the official spec tests. In `fuzz/`: `cargo run --release --bin
+//!     fuzz -- 300` (seconds; `found/` keeps a finding), `cargo run --release --bin spec -- testsuite/*.wast`.
+//!   - `examples/qjs_fuzz.rs`, the code tool's hour: its engine (QuickJS-ng, `cargo xtask quickjs`) on generated
+//!     JavaScript, a seed a program, on a fresh instance under the JIT and one under the interpreter, comparing
+//!     every reply whole, every trap, and after every step the fuel left, the memory's hash and length. An
+//!     architecture's JIT runs the code tool only after an hour of it came back clean (G36 in
+//!     `docs/threat-model.md`, with the seeds and the engine's sha256 of the last one); a re-pin of the engine
+//!     (`xtask/quickjs/pin`) or a change to `jit/` means the hour again, on that architecture, on a quiet machine:
 //!
-//!   ```text
-//!   cargo build --release -p tarae-wasm --example qjs_fuzz
-//!   target/release/examples/qjs_fuzz target/quickjs/quickjs.wasm --selftest   # sees a planted difference
-//!   target/release/examples/qjs_fuzz target/quickjs/quickjs.wasm --out DIR --from 10000000 --secs 3600 --threads 8
-//!   target/release/examples/qjs_fuzz target/quickjs/quickjs.wasm --replay SEED   # one case: program, both traces
-//!   ```
+//!     ```text
+//!     cargo build --release -p tarae-wasm --example qjs_fuzz
+//!     target/release/examples/qjs_fuzz target/quickjs/quickjs.wasm --selftest   # sees a planted difference
+//!     target/release/examples/qjs_fuzz target/quickjs/quickjs.wasm --out DIR --from 10000000 --secs 3600 --threads 8
+//!     target/release/examples/qjs_fuzz target/quickjs/quickjs.wasm --replay SEED   # one case: program, both traces
+//!     ```
 //!
-//!   Clean is `DIR/summary.txt` saying 0 findings, 0 not compared and 0 controls failed; a finding is
-//!   `findings/<seed>.js` (the program) and `findings/<seed>.txt` (its limits, both traces, the first difference
-//!   marked), and `--replay` with its seed runs it again.
+//!     Clean is `DIR/summary.txt` saying 0 findings, 0 not compared and 0 controls failed; a finding is
+//!     `findings/<seed>.js` (the program) and `findings/<seed>.txt` (its limits, both traces, the first difference
+//!     marked), and `--replay` with its seed runs it again.
 //! - **Plugins** (`plugin`): tarae's plugin API on it — its types, loading and calling one plugin, and the
 //!   thread the editor talks to by messages. The editor's side (commands, the plugins folder, permission cards,
 //!   panels, `tarae plugin`) is tarae's `src/plugin/`; this crate knows nothing of the editor.
@@ -352,7 +359,7 @@ impl Instance {
         &self.module
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // for the examples (qjs_fuzz) and the tests
+    #[cfg_attr(not(test), allow(dead_code))] // for tarae's code tool, fuzz/, the examples (qjs_fuzz, qjs_spike), the tests
     pub fn fuel(&self) -> u64 {
         self.fuel
     }
@@ -386,7 +393,7 @@ impl Instance {
     }
 
     /// An exported global's value.
-    #[allow(dead_code)] // for the tests (the spec tests read globals)
+    #[allow(dead_code)] // for fuzz/ (its spec tests read globals, `fuzz/src/bin/spec.rs`) and the tests
     pub fn global(&self, name: &str) -> Option<Val> {
         let g = self.module.export(name, ExportKind::Global)? as usize;
         Some(Val::from_slot(self.module.globals[g].ty, self.globals[g]))

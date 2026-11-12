@@ -1,8 +1,8 @@
 //! The code tool's fuzz hour (`.sb/codemode-s1-brief.md` §5): QuickJS-ng under the JIT against the interpreter,
 //! on generated JavaScript. Each seed makes one program and its limits; the program runs on a fresh instance under
 //! each, its calls answered alike, and everything is compared: every reply whole (the value, what it printed, the
-//! ending's kind, the steps), every trap, and after every step the fuel left (but after an out-of-fuel trap, `run`),
-//! the linear memory's hash and length, and whether a grow was refused. A difference is a finding, kept with its
+//! ending's kind, the steps), every trap, and after every step the fuel left (after an out-of-fuel trap too: both
+//! engines leave none), the linear memory's hash and length, and whether a grow was refused. A difference is a finding, kept with its
 //! seed and program.
 //!
 //! ```text
@@ -173,11 +173,9 @@ fn run(e: &Engine, c: &Case, jit: bool, guard: &Guard, log: &str) -> Run {
             inst.memory_mut()[p as u32 as usize..p as u32 as usize + text.len()].copy_from_slice(text);
             Ok(p)
         };
-        // (after an out-of-fuel trap the fuel left isn't compared: the JIT's fuel stub zeroes it, the interpreter
-        // keeps the charge it refused — `jit/a64/emit.rs`'s `Stub::Fuel`; the stop point is, by the memory)
-        let state = |inst: &Instance, out_of_fuel: bool| {
+        let state = |inst: &Instance| {
             let m = inst.memory();
-            let fuel = if out_of_fuel { "exhausted".to_string() } else { inst.fuel().to_string() };
+            let fuel = inst.fuel();
             format!("fuel {fuel} mem {:016x} len {} grow_refused {}", hash(m), m.len(), inst.grow_refused())
         };
         let mut reply = (|| {
@@ -193,7 +191,7 @@ fn run(e: &Engine, c: &Case, jit: bool, guard: &Guard, log: &str) -> Run {
             let p = match reply {
                 Err(t) => {
                     trace.push(format!("trap {t:?}"));
-                    trace.push(state(&inst, matches!(t, Trap::OutOfFuel)));
+                    trace.push(state(&inst));
                     return format!("trap:{t:?}");
                 }
                 Ok(p) => p,
@@ -205,7 +203,7 @@ fn run(e: &Engine, c: &Case, jit: bool, guard: &Guard, log: &str) -> Run {
             let Some(text) = m.get(at + 4..at + 4 + len) else { return "bad-reply".into() };
             let text = String::from_utf8_lossy(text).into_owned();
             trace.push(text.clone());
-            trace.push(state(&inst, false));
+            trace.push(state(&inst));
             let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
             if !head.starts_with("pending") {
                 let mut kind = match head {

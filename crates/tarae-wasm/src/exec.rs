@@ -189,6 +189,8 @@ pub(super) fn bulk(op: Op, fr: &mut [u64], env: Bulk) -> Result<(), Trap> {
     let mut pay = |n: usize| {
         let n = n as u64;
         if *fuel < n {
+            // (none left after the trap, as at a fuel op)
+            *fuel = 0;
             return Err(Trap::OutOfFuel);
         }
         *fuel -= n;
@@ -390,6 +392,8 @@ impl Instance {
                     Op::Fuel(n) => {
                         let n = n as u64;
                         if *fuel < n {
+                            // None left after the trap, as the JIT's fuel stub leaves it: the two engines agree
+                            *fuel = 0;
                             return Err(Trap::OutOfFuel);
                         }
                         *fuel -= n;
