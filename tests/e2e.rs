@@ -151,6 +151,44 @@ fn a_subcommand_under_a_low_limit_leaves_no_pin() {
     }
 }
 
+/// #541, as the built binary crashes (`tarae --crash-test`, after the start): its lines on stderr — where and which build,
+/// the report — and a report whose frames are there or said to be none, never an empty part. Run under `cargo test
+/// --release` it's the release binary (`panic = "abort"`, stripped): what it says of itself is printed (its end, its
+/// frames' heading) for the Linux check of what a stripped abort build captures.
+#[test]
+fn a_crash_says_itself_and_keeps_a_report() {
+    let sb = Sandbox::new("crash-test");
+    let out = tarae(BIN)
+        .arg("--crash-test")
+        .env_clear()
+        .envs(sb.env())
+        .current_dir(sb.work())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(
+        lines
+            .first()
+            .is_some_and(|l| l.starts_with("tarae crashed · src/crash.rs:") && l.contains(" · build ")),
+        "{stderr}"
+    );
+    let report = lines.iter().find_map(|l| l.strip_prefix("report: ")).expect("the report's line");
+    let reports = sb.state().join("crashed/reports");
+    let name = Path::new(report).file_name().unwrap();
+    let text = fs::read_to_string(reports.join(name)).unwrap();
+    assert!(text.lines().any(|l| l.starts_with("at        src/crash.rs:")), "{text}");
+    // (what it is, so the next start's warning is never taken for a real crash's)
+    assert!(text.lines().any(|l| l == "message   crash-test: a panic on purpose"), "{text}");
+    let part = text.split_once("\nbacktrace ").map(|(_, p)| p).expect("its frames' part");
+    let (heading, frames) = part.split_once('\n').unwrap_or((part, ""));
+    let none = heading.starts_with("none — ");
+    assert!(none || frames.lines().any(|l| l.contains("0x")), "frames, or the words there are none:\n{text}");
+    println!("crash-test: {:?}, no default message: {}", out.status, !stderr.contains("panicked at"));
+    println!("crash-test: backtrace {heading}, {} frame lines", frames.lines().count());
+}
+
 /// #258: `tarae state --after-input N` past tarae's own wait for its frame (`uisocket::WAIT`, 10 s — a loaded machine's
 /// slow frame) is asked again by the harness until its own patience, never a failure: here the key it waits for is typed
 /// only once the first ask has run out (so this test takes tarae's wait, about 10 s).

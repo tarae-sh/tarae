@@ -180,6 +180,12 @@ sandbox (Seatbelt can't start inside it), on a quiet machine:
   --ignored --exact sandbox::tests::what_the_default_refuses_and_the_base_lets_through` — after a change to
   `sandbox::BASE` or the profile. CI's half reads the recorded lines
   (`sandbox::tests::the_defaults_refusals_are_read_and_judged_from_their_log_lines`).
+- **A crash on purpose**: `tarae --crash-test` (not in the usage) starts as tarae does, then panics as a crash ends it —
+  its three lines, its report, its frames as this build makes them (release: aborted, symbolized from the dSYM
+  beside it, else at the next start from `target/dsyms`). Give it a state of its own (`XDG_STATE_HOME=$(mktemp -d)`):
+  the start in that folder holds nothing then, and your own next start doesn't say it. `cargo test --release --test e2e
+  a_crash_says_itself_and_keeps_a_report -- --nocapture` runs it as the release binary and prints what it captured
+  (`cargo xtask linux test --release --test e2e …` for Linux's stripped build).
 
 ### The toolchain
 

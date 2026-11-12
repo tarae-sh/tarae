@@ -48,7 +48,7 @@ use crate::offer::{Offer, What};
 /// A buffer quiet this long has its copy written…
 const QUIET: Duration = Duration::from_secs(1);
 /// …and one typed into without a pause, this long after its first change not yet kept.
-const MOST: Duration = Duration::from_secs(10);
+pub const MOST: Duration = Duration::from_secs(10);
 /// Buffers larger than this aren't kept (persistent undo's limit too).
 pub const MAX_BYTES: usize = 8 << 20;
 /// How long the end of the process waits for the copies to be written, or removed.
@@ -266,8 +266,11 @@ enum Msg {
     },
     ChatGone(WorkspaceId),
     Rules(Rules),
-    /// Write every copy that waits, now — then answer.
-    Flush(Sender<()>),
+    /// Write every copy that waits, now — then answer with how many buffers have their copy on disk.
+    Flush(Sender<usize>),
+    /// Tests: the keeper panics here (`a_panic_on_the_keepers_thread_waits_for_nothing`).
+    #[cfg(test)]
+    Panic,
     /// Remove every copy and the folder — then answer, and end.
     Clear(Sender<()>),
     /// A gone tarae's copy answered: removed — and with the last of its folder's cards, the folder if it's
@@ -352,8 +355,10 @@ impl Keeper {
                 Some(Msg::Flush(done)) => {
                     let all: Vec<DocId> = self.waiting.keys().copied().collect();
                     all.into_iter().for_each(|id| self.write(id));
-                    let _ = done.send(());
+                    let _ = done.send(self.kept.len());
                 }
+                #[cfg(test)]
+                Some(Msg::Panic) => panic!("the keeper's stand-in panic"),
                 Some(Msg::Clear(done)) => {
                     self.waiting.clear();
                     if let Some((dir, _lock)) = self.folder.take() {
@@ -511,6 +516,56 @@ pub struct Recovery {
     pub looks: usize,
 }
 
+/// The keeper's thread's name — a panic on it asks it nothing (`crash.rs`).
+pub const THREAD: &str = "tarae-recovery";
+
+/// The process's own editor keeps its copies through a keeper a panic may ask (`for_crashes`); its sender, once it
+/// starts.
+static FOR_CRASHES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CRASH_TX: std::sync::OnceLock<Sender<Msg>> = std::sync::OnceLock::new();
+
+/// At the start, the process's own editor (never tests' many): its keeper, once it starts, is the one a panic asks
+/// for what waits (`crash_flush`).
+pub fn for_crashes() {
+    FOR_CRASHES.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What a panic's ask of the keeper came to (`crash_flush`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flushed {
+    /// No keeper (no buffer was ever unsaved, recovery off) or it had ended (a quit's), or nothing is kept.
+    Nothing,
+    /// This many buffers' copies on disk, written up to the last event.
+    Kept(usize),
+    /// It didn't answer within the wait (a slow disk) — its copies as of their last pause.
+    Unanswered,
+    /// The keeper is the thread that panicked: nothing asked — its copies as of their last pause.
+    KeeperItself,
+}
+
+/// The process's own editor has a keeper a panic can ask (`crash_flush`): something was unsaved since the start.
+pub fn keeping() -> bool {
+    CRASH_TX.get().is_some()
+}
+
+/// A panic's ask (`crash.rs`, on its helper thread): every copy that waits written now, waited for up to `within`
+/// — the channel's wait, never a lock. `keeper_itself`: the panic is the keeper's own, so nothing is asked.
+pub fn crash_flush(within: Duration, keeper_itself: bool) -> Flushed {
+    let Some(tx) = CRASH_TX.get() else { return Flushed::Nothing };
+    if keeper_itself {
+        return Flushed::KeeperItself;
+    }
+    let (done, answered) = channel();
+    if tx.send(Msg::Flush(done)).is_err() {
+        return Flushed::Nothing;
+    }
+    match answered.recv_timeout(within) {
+        Ok(0) => Flushed::Nothing,
+        Ok(n) => Flushed::Kept(n),
+        Err(_) => Flushed::Unanswered,
+    }
+}
+
 /// What `recovery_sync` looks at moved: a session's chat is in another conversation or none, a session came or went, or
 /// its name did (the home session's is its branch).
 /// (`Editor.recovery` alone: said where a chat is in hand.)
@@ -576,8 +631,12 @@ impl Recovery {
                 #[cfg(test)]
                 slow: self.slow,
             };
-            let thread = std::thread::Builder::new().name("tarae-recovery".into()).spawn(|| keeper.run(rx));
+            let thread = std::thread::Builder::new().name(THREAD.into()).spawn(|| keeper.run(rx));
             self.thread = thread.ok();
+            // (the process's own editor: a panic asks this keeper for what waits — `crash_flush`)
+            if FOR_CRASHES.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = CRASH_TX.set(tx.clone());
+            }
             self.tx = Some(tx);
         }
         if let Some(tx) = &self.tx {
@@ -586,10 +645,19 @@ impl Recovery {
     }
 
     /// Asks the keeper `msg` and waits for its answer, up to `within` — whether it answered.
-    fn ask(&mut self, msg: impl FnOnce(Sender<()>) -> Msg, within: Duration) -> bool {
+    fn ask<T>(&mut self, msg: impl FnOnce(Sender<T>) -> Msg, within: Duration) -> bool {
         let Some(tx) = &self.tx else { return true };
         let (done, answered) = channel();
         tx.send(msg(done)).is_err() || answered.recv_timeout(within).is_ok()
+    }
+
+    /// Tests: the keeper panics (`Msg::Panic`), and its thread is waited for.
+    #[cfg(test)]
+    pub fn keeper_panics(&mut self) {
+        self.send(Msg::Panic);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 
     /// Tests: the process dies — the keeper stops where it is and its lock goes, its copies stay. Gone once

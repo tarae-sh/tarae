@@ -311,6 +311,9 @@ fn main() -> Result<()> {
     let mut diff_against: Option<PathBuf> = None;
     // A host (`--host`, the remote plan's step 3): no terminal of its own — an interface attaches to it
     let mut host = false;
+    // `tarae --crash-test` (not in the usage: a dev's): a panic on purpose once the start is done, as a crash ends tarae —
+    // its lines, its report and its frames as this build makes them (CONTRIBUTING, "A crash on purpose")
+    let mut crash_test = false;
     // `:restart`: the state the last tarae left (restart.rs)
     let (mut restarted, mut old_children) = (None, Vec::new());
     let mut args = std::env::args().skip(1);
@@ -331,6 +334,8 @@ fn main() -> Result<()> {
                 }
             },
             "--host" => host = true,
+            // (a flag: a file named `crash-test` is a file)
+            "--crash-test" => crash_test = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -452,13 +457,21 @@ fn main() -> Result<()> {
     editor.restore = restore::State::load();
     // The last run here crashed: said, the pane it was drawing held (`crash.rs`) — read before the first frame, as the
     // restore file is; a panic from now on leaves its marker
-    if let Some(state) = config::state_dir() {
-        let marker = crash::file(&state, &editor.workspace.root);
-        if let Some(c) = crash::take(&marker) {
-            crash::start(&mut editor, c);
-        }
-        crash::begin(marker);
+    let state = config::state_dir();
+    let mut said_report = None;
+    if let Some(state) = &state
+        && let Some(c) = crash::take(&crash::file(state, &editor.workspace.root))
+    {
+        said_report = c.report.clone();
+        crash::start(&mut editor, c);
     }
+    crash::begin(state.as_deref(), editor.workspace.root.clone());
+    // (its keeper, once it starts, is the one a panic asks for what waits — `recovery::crash_flush`)
+    recovery::for_crashes();
+    // A crash's report another start hasn't said — any folder's — symbolized and said; then this build's symbols kept by
+    // its UUID, the old ones pruned, so a crash's frames can be symbolized after the next build (a worker's, in that
+    // order: `crash/report.rs`)
+    crash::report::start_job(&mut editor, state.as_deref().map(crash::reports), said_report);
     for f in &files {
         if let Err(e) = editor.open_now(f) {
             editor.open_failed(e);
@@ -561,10 +574,15 @@ fn main() -> Result<()> {
         }
         None => {}
     }
+    if crash_test {
+        crash::on_purpose(&mut editor);
+    }
     let (result, left) = match term::run(&mut editor, interface) {
         Ok(left) => (Ok(()), left),
         Err(e) => (Err(e), None),
     };
+    // (a panic ending tarae: its hook's end is the process's — never the quit's way out, which removes the copies)
+    crash::hold_if_ending();
     // What Claude's runs left running ends with tarae — a `:restart` too (their supervisors don't survive the
     // exec: a daemon kept would have every connect refused)
     sandbox::end_leftovers(None);

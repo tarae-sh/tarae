@@ -10,6 +10,22 @@ use super::*;
 
 const DAY: Duration = Duration::from_secs(24 * 3600);
 
+/// Each checkout's kept symbols listed with their count and size, the sum after; a checkout with none says nothing.
+#[test]
+fn the_kept_symbols_of_each_checkout_are_listed() {
+    let dir = Scratch::new("buildprune-dsyms");
+    let (a, b) = (dir.join("user/a"), dir.join("user/b"));
+    write(&a.join("target/dsyms/AAAA.dSYM/Contents/Resources/DWARF/tarae"), 3 << 20);
+    write(&a.join("target/dsyms/BBBB.dSYM/Contents/Info.plist"), 1 << 20);
+    std::fs::create_dir_all(b.join("target")).unwrap();
+    let text = dsyms_said(&[a, b], Some(&dir.join("user")));
+    assert_eq!(
+        text,
+        "~/a/target/dsyms: 2 kept dSYMs, 4 MB\nKept symbols: 2 dSYMs, 4 MB — tarae keeps each checkout's newest 3 itself\n"
+    );
+    assert_eq!(dsyms_said(&[dir.join("user/b")], None), "");
+}
+
 /// A cargo home of the test's own with `build/` in it — the place, by its real path.
 struct Home {
     dir: Scratch,

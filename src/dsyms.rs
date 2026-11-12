@@ -10,42 +10,52 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// How many dSYMs `target/dsyms` keeps — the newest by mtime.
-pub const KEEP: usize = 5;
+/// How many dSYMs `target/dsyms` keeps — the newest by mtime (at every start and `:restart`): the running build's, the
+/// one before it, and a spare for a second tarae started from the same checkout — 147 MB each (2026-11-13's release).
+pub const KEEP: usize = 3;
 
 /// The `LC_UUID` of the thin 64-bit Mach-O at `path` (a binary, or the DWARF file in a dSYM), as dwarfdump
 /// and sample print it: `108B07D2-A5BD-3AF1-970B-8A9284AFE5CD`.
 pub fn uuid(path: &Path) -> Result<String, String> {
     use std::io::Read as _;
-    const MH_MAGIC_64: u32 = 0xfeed_facf;
-    const LC_UUID: u32 = 0x1b;
-    // (load commands are a few KB; more is something else)
-    const CMDS_MAX: usize = 1 << 20;
     let name = path.display();
     let not = || format!("{name}: not a 64-bit Mach-O");
     let mut f = std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?;
-    // (both architectures tarae builds for are little-endian)
-    let word = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
     let mut head = [0u8; 32];
     f.read_exact(&mut head).map_err(|_| not())?;
-    if word(&head, 0) != MH_MAGIC_64 {
-        return Err(not());
-    }
-    let (count, size) = (word(&head, 16), word(&head, 20) as usize);
-    if size > CMDS_MAX {
-        return Err(not());
-    }
+    let size = cmds_size(&head).ok_or_else(not)?;
     let mut cmds = vec![0u8; size];
     f.read_exact(&mut cmds).map_err(|_| format!("{name}: its load commands are cut short"))?;
+    uuid_in(&head, &cmds).ok_or_else(|| format!("{name}: no LC_UUID"))
+}
+
+/// (both architectures tarae builds for are little-endian)
+fn word(b: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+
+/// The size of the load commands after a 64-bit Mach-O's 32-byte header `head` — None: not one, or more than load
+/// commands ever are (a few KB).
+fn cmds_size(head: &[u8; 32]) -> Option<usize> {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const CMDS_MAX: usize = 1 << 20;
+    let size = word(head, 20) as usize;
+    (word(head, 0) == MH_MAGIC_64 && size <= CMDS_MAX).then_some(size)
+}
+
+/// The `LC_UUID` among load commands `cmds` of the Mach-O whose header is `head`.
+fn uuid_in(head: &[u8; 32], cmds: &[u8]) -> Option<String> {
+    const LC_UUID: u32 = 0x1b;
+    let (count, size) = (word(head, 16), cmds.len());
     let mut at = 0;
     for _ in 0..count {
         if at + 8 > size {
             break;
         }
-        let (cmd, len) = (word(&cmds, at), word(&cmds, at + 4) as usize);
+        let (cmd, len) = (word(cmds, at), word(cmds, at + 4) as usize);
         if cmd == LC_UUID && len >= 24 && at + 24 <= size {
             let hex: String = cmds[at + 8..at + 24].iter().map(|b| format!("{b:02X}")).collect();
-            return Ok(format!(
+            return Some(format!(
                 "{}-{}-{}-{}-{}",
                 &hex[..8],
                 &hex[8..12],
@@ -59,7 +69,38 @@ pub fn uuid(path: &Path) -> Result<String, String> {
         }
         at += len;
     }
-    Err(format!("{name}: no LC_UUID"))
+    None
+}
+
+/// The running binary's image: where it's loaded (what `atos -l` takes) and, on macOS, its `LC_UUID` — read from
+/// its header in memory, never the file (a build since may have replaced it). None: `dladdr` didn't say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Running {
+    pub load: usize,
+    pub uuid: Option<String>,
+}
+
+pub fn running() -> Option<Running> {
+    // SAFETY: `dladdr` fills `info` for an address of this binary's own code; a zeroed `Dl_info` is a valid one.
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    let here = running as *const () as *const libc::c_void;
+    if unsafe { libc::dladdr(here, &mut info) } == 0 || info.dli_fbase.is_null() {
+        return None;
+    }
+    let load = info.dli_fbase as usize;
+    #[cfg(target_os = "macos")]
+    let uuid = {
+        // SAFETY: on macOS `dli_fbase` is the image's Mach-O header, mapped while the image is: its 32 bytes, then
+        // `sizeofcmds` bytes of load commands (bounded by `cmds_size`).
+        let head: &[u8; 32] = unsafe { &*(info.dli_fbase as *const [u8; 32]) };
+        cmds_size(head).and_then(|size| {
+            let cmds = unsafe { std::slice::from_raw_parts((load + 32) as *const u8, size) };
+            uuid_in(head, cmds)
+        })
+    };
+    #[cfg(not(target_os = "macos"))]
+    let uuid = None;
+    Some(Running { load, uuid })
 }
 
 /// A dSYM kept (`keep`): where — and, when the older ones couldn't all be removed, why (the log says it on a
@@ -491,7 +532,7 @@ mod tests {
         assert!(pruned.as_ref().is_err_and(|e| e.contains("X.dSYM")), "{pruned:?}");
         // (X, the oldest, stays — the next oldest went past it)
         let said = |n: u8| format!("{}.dSYM", hyphen(id(n)));
-        let mut want = vec![said(2), said(3), said(4), said(5), format!("{A_SAID}.dSYM"), "X.dSYM".into()];
+        let mut want = vec![said(4), said(5), format!("{A_SAID}.dSYM"), "X.dSYM".into()];
         want.sort();
         assert_eq!(names(&dsyms), want);
         std::fs::remove_dir_all(&dir).ok();
@@ -500,7 +541,7 @@ mod tests {
     /// Past `KEEP`, the oldest by mtime go — never the one just kept, whatever its own mtime; what isn't a
     /// kept dSYM stays.
     #[test]
-    fn the_newest_five_are_kept_by_mtime() {
+    fn the_newest_three_are_kept_by_mtime() {
         let dir = temp("prune");
         for i in 0..7u64 {
             let d = dir.join(format!("{}.dSYM", ["G", "B", "E", "A", "F", "C", "D"][i as usize]));
@@ -514,13 +555,10 @@ mod tests {
         let now = dir.join("G.dSYM");
         let mut gone = prune(&dir, &now, KEEP).unwrap();
         gone.sort();
-        assert_eq!(gone, [dir.join("B.dSYM"), dir.join("E.dSYM")]);
-        assert_eq!(
-            names(&dir),
-            [".X.dSYM.part", "A.dSYM", "C.dSYM", "D.dSYM", "F.dSYM", "G.dSYM", "notes.txt"]
-        );
+        assert_eq!(gone, [dir.join("A.dSYM"), dir.join("B.dSYM"), dir.join("E.dSYM"), dir.join("F.dSYM")]);
+        assert_eq!(names(&dir), [".X.dSYM.part", "C.dSYM", "D.dSYM", "G.dSYM", "notes.txt"]);
 
-        // Through `keep`: six builds, the first kept again last — five, the first among them
+        // Through `keep`: six builds, the first kept again last — three, the first among them
         let tree = temp("prune-keep");
         let bin = tree.join("target/release/tarae");
         for n in [1, 2, 3, 4, 5, 6, 1] {
@@ -535,7 +573,7 @@ mod tests {
             }
         }
         let said = |n: u8| format!("{}.dSYM", hyphen(id(n)));
-        let mut want = vec![said(1), said(3), said(4), said(5), said(6)];
+        let mut want = vec![said(1), said(5), said(6)];
         want.sort();
         assert_eq!(names(&tree.join("target/dsyms")), want);
         std::fs::remove_dir_all(&dir).ok();

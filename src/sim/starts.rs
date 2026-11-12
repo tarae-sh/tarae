@@ -52,6 +52,11 @@ fn a_message_during_a_crashs_restore_is_never_under_the_old_rows() {
 }
 
 #[test]
+fn a_crashs_report_is_said_once_among_the_starts_reads() {
+    super::seeds("a_crashs_report_is_said_once_among_the_starts_reads", SEEDS, report);
+}
+
+#[test]
 fn a_poll_that_respawns_ages_as_one_job() {
     super::seeds("a_poll_that_respawns_ages_as_one_job", SEEDS, respawns);
 }
@@ -213,6 +218,63 @@ fn brought_back(choices: Choices) -> Vec<String> {
     sim.at_end(|| match (home_chat, kid_chat) {
         (Some((None, false, Some(offered))), Some(_)) if offered == "c-home" => Ok(()),
         (home, _) => Err(format!("the start's chat: {home:?} — nothing continued, c-home offered")),
+    });
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    drop(ed);
+    trace
+}
+
+/// The start after a crash in another folder (#541): its report, unseen, looked at on a job of the start's — said once,
+/// the crash first; the report this folder's marker named is passed over (the marker said it).
+fn report(choices: Choices) -> Vec<String> {
+    use crate::crash::report;
+    let name = "a_crashs_report_is_said_once_among_the_starts_reads";
+    let dir = crate::scratch::Scratch::new("sim-report");
+    let mut sim = Sim::new(name, choices, LIMIT);
+    let mut ed = Editor::new(crate::config::Config::default());
+    let reports = dir.join("reports");
+    let left = |pid: u32| {
+        let crashed = crate::crash::Crashed {
+            at: "src/editdiff.rs:458".into(),
+            message: String::new(),
+            thread: "main".into(),
+            build: "0.1.0 87c40303".into(),
+            drawing: None,
+            held: false,
+            report: None,
+        };
+        let r = report::Report {
+            crashed,
+            when: crate::clock::system(),
+            pid,
+            running: None,
+            symbols: None,
+            root: dir.join("elsewhere"),
+            unsaved: crate::recovery::Flushed::Kept(2),
+            frames: report::Frames::Addresses(Vec::new()),
+        };
+        report::write_new(&reports, &r, None).unwrap()
+    };
+    left(1);
+    let marked = left(2);
+    report::start_job(&mut ed, Some(reports.clone()), Some(marked));
+    ed.events.started();
+    let said = |ed: &Editor| ed.messages.iter().filter(|m| m.2.contains("tarae crashed")).count();
+    let check = |ed: &Editor| match said(ed) {
+        0 | 1 => none_late(ed),
+        n => Err(format!("said {n} times")),
+    };
+    sim.walk(&mut ed, 0, |_, _| unreachable!("no inputs"), check, print);
+    let words: Vec<String> =
+        ed.messages.iter().map(|m| m.2.clone()).filter(|m| m.contains("crashed")).collect();
+    sim.at_end(|| match words.as_slice() {
+        [w] if w.starts_with("tarae crashed just now in ")
+            && w.contains("— 2 unsaved files wait there · ") =>
+        {
+            Ok(())
+        }
+        _ => Err(format!("said {words:?} — once, the crash first, the marker's passed over")),
     });
     let trace = sim.trace().to_vec();
     drop(sim);

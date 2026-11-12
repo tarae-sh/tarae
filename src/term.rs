@@ -103,11 +103,8 @@ impl Terminal {
             EnableFocusChange,
             EnableBracketedPaste
         )?;
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let _ = restore();
-            prev(info);
-        }));
+        // (a panic gives it back first of all — the one hook's order, `crash.rs`)
+        crate::crash::terminal(restore);
         Ok(())
     }
 }
@@ -251,7 +248,8 @@ fn event_loop(editor: &mut Editor, iface: &mut Option<Interface>) -> Result<()> 
             detached_batch(editor);
             continue;
         };
-        if draw {
+        // (a panic ending tarae has given the terminal back: nothing more is drawn on it — `crash.rs`)
+        if draw && !crate::crash::ending() {
             present(editor, iface, &mut frame)?;
         }
         // (what's for the interface's machine — a question, a sound — behind the frame drawn: `attach::flush`)
@@ -368,6 +366,11 @@ pub(crate) fn batch_done(editor: &mut Editor, unchanged: bool) -> bool {
 /// frame's reasons (`Editor.drawn_by`): its kind, a job's result as its sender says it (`Editor.event_from`).
 pub(crate) fn handle_noting(editor: &mut Editor, ev: crate::event::Event) -> bool {
     use crate::editor::DrawnFor;
+    // (a panic is ending tarae, the terminal given back: what's typed now is typed at what looks like a shell, and no
+    // job's result is applied — the keeper's flush needs neither: `crash.rs`)
+    if crate::crash::ending() {
+        return true;
+    }
     editor.unchanged = false;
     let kind = DrawnFor::of(&ev);
     // (a job's result says its site as it's applied: `event::Tx::send_from`)
@@ -535,6 +538,10 @@ pub(crate) fn read_input(mut send: impl FnMut(Event) -> bool) {
             }
             _ => None,
         };
+        // (a panic ending tarae: no more is read — what's typed stays for the shell)
+        if crate::crash::ending() {
+            break;
+        }
         if let Some(ev) = ev
             && !send(ev)
         {
@@ -33416,6 +33423,8 @@ mod tests {
         ("client.rs", 2),                  // limits as given: the host's `Welcome` waited for, S-F's window
         ("client/stats.rs", 1),            // a measurement under a millisecond: a key over a local link
         ("commands.rs", 1),                // a plural
+        ("crash.rs", 2),                   // limits as given: the keeper's 10 s, the hook's 2 s wait
+        ("crash/report.rs", 1),            // a limit as given: the keeper's 10 s
         ("limits.rs", 1),                  // the plan's next try, a time to come
         ("nav.rs", 4),                     // plurals
         ("plugin/perm.rs", 1),             // a plural

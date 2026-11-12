@@ -442,6 +442,18 @@ configs carry over as they are.
   `*.key`, `id_ed25519` …), files over 8 MB, and what `editor.recovery-skip` lists. The conversations the chats were in
   come back the same way, on the first card or, with nothing unsaved, a card of their own
   ([the chat panel](claude-integration.md#chat-panel))
+- **When tarae crashes** — the terminal is given back first, then three lines say where and which build, whether
+  your unsaved changes are kept (whatever wasn't copied yet is written before tarae ends, within 2 s) and where to
+  start tarae to get them back, and where the report is:
+  ```text
+  tarae crashed · src/editdiff.rs:458 · build 87c40303
+  unsaved changes in 2 files are kept — start tarae in ~/Workspace/tarae and it offers them
+  report: ~/.local/state/tarae/crashed/reports/20261112-041233-41213.txt
+  ```
+  The report (`$XDG_STATE_HOME/tarae/crashed/reports/`, the newest 10) holds fixed fields — when, the build, where,
+  the message's head with anything token-like taken out, the pane being drawn, what was kept — and the code's frames;
+  never your environment or a file's text. The next tarae, in any folder, says a crash it hasn't said yet once; one
+  started in the crashed project holds the pane the crash was drawing until you show it again
 - **Restore** — launched without arguments, tarae reopens the files you had open in this project, at their
   cursor and scroll positions; open a file by name and you land where you last were in it
 - **Persistent undo** — on save, the last 1000 undo steps are written next to your state, so `u`/`U` keep working after

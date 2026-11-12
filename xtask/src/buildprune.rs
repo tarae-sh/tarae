@@ -44,6 +44,10 @@
 //! Nothing else: fingerprints, build scripts' output, libraries (a proc macro's may be loaded), `tmp/`. All of it
 //! is cache: what's gone is built again when it's needed, never built wrong.
 //!
+//! After them, **the symbols each checkout keeps** (`target/dsyms`, `src/dsyms.rs`: a release build's dSYM by its UUID,
+//! the newest three, kept at every start so a crash's frames can be symbolized after the next build) — listed with their
+//! count and size, never removed here: tarae prunes them itself (`dsyms_said`).
+//!
 //! **A test run holds no lock** (#351, checked by hand on cargo 1.99: `.sb/f351/lock.sh`): cargo's lock covers
 //! the freshness check and the build only — while a run's test binaries run, `.cargo-build-lock` (and the target's
 //! `.cargo-lock`) are free, so a binary cargo found fresh could go before its turn came. So a profile folder a
@@ -117,7 +121,64 @@ pub fn run(args: &[String]) -> Result<()> {
     let opts = Opts { age: a.age, whole: a.whole, others: a.others, claimed, remove: a.yes };
     let p = pass(&place, &opts, SystemTime::now());
     print!("{}", report(&p, a.yes, home.as_deref()));
+    print!("{}", dsyms_said(&checkouts(&crate::root()), home.as_deref()));
     Ok(())
+}
+
+/// The checkouts of the repository at `root` (`git worktree list`) — none when git doesn't say.
+fn checkouts(root: &Path) -> Vec<PathBuf> {
+    let list = Command::new("git").args(["worktree", "list", "--porcelain"]).current_dir(root).output();
+    let Ok(list) = list.map(|o| o.stdout) else { return Vec::new() };
+    String::from_utf8_lossy(&list)
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// The symbols each checkout's tarae keeps (`target/dsyms`, `src/dsyms.rs`: the newest three, at each start and
+/// `:restart`) — listed, never removed here: a line a checkout that has any, then the sum. Their size is what the files
+/// take on their own: an APFS clone shares its blocks with the build's dSYM until the next build replaces that one.
+fn dsyms_said(checkouts: &[PathBuf], home: Option<&Path>) -> String {
+    let size = |dir: &Path| -> u64 {
+        let mut sum = 0;
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                match e.file_type() {
+                    Ok(t) if t.is_dir() => stack.push(e.path()),
+                    Ok(t) if t.is_file() => sum += e.metadata().map_or(0, |m| m.len()),
+                    _ => {}
+                }
+            }
+        }
+        sum
+    };
+    let mut out = String::new();
+    let (mut all, mut count) = (0, 0);
+    for c in checkouts {
+        let dir = c.join("target/dsyms");
+        let kept: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "dSYM"))
+            .collect();
+        if kept.is_empty() {
+            continue;
+        }
+        let bytes: u64 = kept.iter().map(|k| size(k)).sum();
+        out += &format!("{}: {} kept dSYMs, {}\n", tilde(&dir, home), kept.len(), mem(bytes));
+        (all, count) = (all + bytes, count + kept.len());
+    }
+    if count > 0 {
+        out += &format!(
+            "Kept symbols: {count} dSYMs, {} — tarae keeps each checkout's newest 3 itself\n",
+            mem(all)
+        );
+    }
+    out
 }
 
 /// The command line.
