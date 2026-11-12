@@ -2034,6 +2034,7 @@ fn frames_of_the_repository_card() {
             with: both.clone(),
             without: both,
             read_at: 0,
+            carried: Vec::new(),
         };
         s.ed.project_trust_set(Some(project));
         s.frames_both(&format!("i_1_tarae{wide}"));

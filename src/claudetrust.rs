@@ -556,8 +556,11 @@ fn read(ed: &mut Editor) {
     let id = c.settings.id;
     let places = Places::of(ed);
     ed.events.jobs().spawn(move || {
-        let (seen, since) = places.look_since();
-        move |ed: &mut Editor| seen_now(ed, id, seen, since)
+        let (seen, since, carried) = places.look_since();
+        move |ed: &mut Editor| {
+            ed.trust_carried(carried);
+            seen_now(ed, id, seen, since)
+        }
     });
 }
 
@@ -590,11 +593,14 @@ impl Places {
     }
 
     /// `look`, with its place's key and `storewrite::last()` before the read — what a take-back since is told by.
-    fn look_since(&self) -> (Seen, (String, u64)) {
+    fn look_since(&self) -> (Seen, (String, u64), Vec<crate::trust::Carried>) {
+        // (a folder's answer from before it was a repository: moved to the repository's first — #517)
+        let place = crate::trust::place_of(&self.root.join(FILES[0].0));
+        let carried = crate::trust::carry(self.store.as_deref(), std::slice::from_ref(&place));
         let at = crate::storewrite::last();
         let seen = self.look();
         let key = crate::trust::key(&crate::trust::place_of(&seen.file));
-        (seen, (key, at))
+        (seen, (key, at), carried)
     }
 }
 
@@ -690,8 +696,11 @@ fn watch(ed: &mut Editor, id: u64) {
             let now = stamps();
             if now != last {
                 last = now;
-                let (seen, since) = places.look_since();
-                let apply = move |ed: &mut Editor| seen_now(ed, id, seen, since);
+                let (seen, since, carried) = places.look_since();
+                let apply = move |ed: &mut Editor| {
+                    ed.trust_carried(carried);
+                    seen_now(ed, id, seen, since)
+                };
                 if tx.send(crate::event::Event::Job(Box::new(apply))).is_err() {
                     break;
                 }

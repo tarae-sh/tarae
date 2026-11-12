@@ -21,6 +21,8 @@ use crate::trust::{Digest, Kind, Place, State};
 pub const FILE: &str = "(its code)";
 
 pub const TITLE: &str = "Trust this repository's code?";
+/// The same, its answer kept for a folder with no repository (#517: carried to one made there later).
+pub const FOLDER_TITLE: &str = "Trust this folder's code?";
 
 /// What a yes is about: one version — every repository asks once.
 fn hash() -> Digest {
@@ -130,9 +132,21 @@ impl Editor {
         let (path, root) = (self.trust_path.clone(), root.to_path_buf());
         self.events.jobs().spawn(move || {
             let place = place(&root);
+            // (a folder's answer from before it was a repository: moved to the repository's first — #517)
+            let carried = crate::trust::carry(path.as_deref(), std::slice::from_ref(&place));
             let state = crate::trust::Store::read(path.as_deref()).state_at(&place, hash());
-            move |ed: &mut Editor| ed.code_trust_read(&root, state, place)
+            move |ed: &mut Editor| {
+                ed.trust_carried(carried);
+                ed.code_trust_read(&root, state, place)
+            }
         });
+    }
+
+    /// #517: every root whose answer was read at `from` (a folder's place) now keeps it at `to` (its repository's).
+    pub(crate) fn code_trust_moved(&mut self, from: &Place, to: &Place) {
+        for r in self.code_trust.values_mut().filter(|r| r.place.as_ref() == Some(from)) {
+            r.place = Some(to.clone());
+        }
     }
 
     /// A take-back given: every root still being read reads again as its read lands — the store may have said yes
@@ -352,11 +366,13 @@ impl Editor {
             q.push_str(&format!("\n  {s} — {words}"));
         }
         q.push_str("\n\nUntil you trust it they don't start.");
-        if repo {
-            q.push_str(" Every checkout of it shares the answer.");
+        match repo {
+            true => q.push_str(" Every checkout of it shares the answer."),
+            // (#517: carried to it)
+            false => q.push_str(" A repository made here keeps the answer."),
         }
         let o = crate::offer::Offer::new(
-            TITLE.into(),
+            (if repo { TITLE } else { FOLDER_TITLE }).into(),
             &q,
             "",
             "Code trust".into(),

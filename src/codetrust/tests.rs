@@ -63,7 +63,7 @@ fn a_server_that_runs_the_projects_code_waits_for_its_trust() {
     assert!(!has_server(&ed, &rs) && !dir.join("ra.log").exists(), "nothing started");
     assert_eq!(ed.lsp_state(), Some((LspDot::Untrusted, "rust".into())));
     let c = card(&ed).unwrap();
-    assert_eq!(c.title, TITLE);
+    assert_eq!(c.title, FOLDER_TITLE, "a folder's, as #513's card beside it says");
     assert!(
         c.question.contains("rust-analyzer — its build scripts and proc macros")
             && !c.question.contains("checkout"),
@@ -92,6 +92,45 @@ fn a_server_that_runs_the_projects_code_waits_for_its_trust() {
     next.open(&rs).unwrap();
     assert!(until(&mut next, |ed| has_server(ed, &rs)), "the next tarae: started once read");
     assert!(card(&next).is_none(), "no card");
+}
+
+/// #517: a folder's code trusted, then a repository made there (`git init`'s folder, made by hand): the next tarae
+/// starts its servers with no second card, says the carry once, and a later one says nothing; `:code-untrust` then
+/// takes it back at the repository's place, nothing left at the folder's.
+#[test]
+fn a_folders_trust_is_the_repository_made_there() {
+    let s = crate::scratch::Scratch::new("code-trust-carry");
+    let (mut ed, dir) = setup(&s);
+    let rs = dir.join("main.rs");
+    ed.open(&rs).unwrap();
+    assert!(until(&mut ed, |ed| card(ed).is_some()));
+    let id = card(&ed).unwrap().id;
+    ed.code_trust_answer(id, &dir, true);
+    assert!(until(&mut ed, |ed| ed.trust_writing == 0), "kept");
+    std::fs::create_dir(dir.join(".git")).unwrap();
+    let name = dir.file_name().unwrap().to_string_lossy().to_string();
+    let words = format!("trust carried from {name} — answered before it was a repository");
+    let said = |ed: &Editor| ed.messages.iter().filter(|m| m.2 == words).count();
+    let (mut next, _) = setup(&s);
+    next.open(&rs).unwrap();
+    assert!(until(&mut next, |ed| has_server(ed, &rs)), "started once read");
+    assert!(card(&next).is_none(), "no second card");
+    assert_eq!(said(&next), 1, "{:?}", next.messages.iter().map(|m| &m.2).collect::<Vec<_>>());
+    let (mut later, _) = setup(&s);
+    later.open(&rs).unwrap();
+    assert!(until(&mut later, |ed| has_server(ed, &rs)));
+    assert_eq!(said(&later), 0, "said once, never again");
+    later.code_untrust().unwrap();
+    assert!(until(&mut later, |ed| ed.trust_writing == 0));
+    let kept = std::fs::read_to_string(dir.join("trust.json")).unwrap();
+    assert!(!kept.contains(&dir.join(FILE).display().to_string()), "nothing at the folder's place: {kept}");
+    let (mut again, _) = setup(&s);
+    again.open(&rs).unwrap();
+    assert!(until(&mut again, |ed| card(ed).is_some()), "asked again");
+    assert_eq!(card(&again).unwrap().title, TITLE, "a repository's now");
+    for e in [&mut ed, &mut next, &mut later, &mut again] {
+        e.writes_flush();
+    }
 }
 
 /// `:code-untrust` stops the servers that run the project's code (not the others) and its file waits for them

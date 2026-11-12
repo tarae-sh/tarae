@@ -163,6 +163,8 @@ pub struct Project {
     /// before an answer given since, or while its write waits, doesn't put the earlier state back
     /// (`Editor::reload_config`).
     pub read_at: u64,
+    /// What the read carried from the folder to its repository (#517) — said once as it's set.
+    pub carried: Vec<Carried>,
 }
 
 /// While a project layer is applied: each risky thing is noted, and goes in only when trusted.
@@ -328,6 +330,160 @@ impl Place {
         match self {
             Place::Repo { common: c, .. } => Some(c.as_path()) == common,
             Place::File(f) => common.is_none() && f.starts_with(root),
+        }
+    }
+}
+
+// ── A folder's answer carried to its repository (#517) ─────────────────────────────────────
+//
+// (the user, 2026-11-12: a folder's yes already covered the code there, so a repository made in it later keeps the
+// answer — whoever made it — moved, never copied: a take-back then acts in one place. Its bounds: only from the
+// folder holding the common `.git`, never over the repository's own answer)
+
+/// A folder's answer once a repository was made there: moved from `from` (the folder's place) to `to` (the
+/// repository's) — or, the repository having its own answer, dropped (`dropped`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Carried {
+    pub folder: PathBuf,
+    pub from: Place,
+    pub to: Place,
+    pub dropped: bool,
+}
+
+impl Carried {
+    /// The folder's name, as it's said (`Editor::trust_carried`).
+    fn name(&self) -> String {
+        self.folder
+            .file_name()
+            .map_or_else(|| self.folder.display().to_string(), |n| n.to_string_lossy().into())
+    }
+}
+
+/// The folder holding the common git folder `common` — the repository's main work tree's top — when that's what it
+/// is: its `.git` a folder of its own (not a link, not a file naming another repository's), and `common` itself.
+fn top_of(common: &Path) -> Option<&Path> {
+    let top = common.parent().filter(|_| common.file_name() == Some(".git".as_ref()))?;
+    let dot = top.join(".git");
+    let meta = std::fs::symlink_metadata(&dot).ok()?;
+    (meta.is_dir() && std::fs::canonicalize(&dot).ok()? == common).then_some(top)
+}
+
+/// The folder a folder's answer of `kind` for `file` (a `Place::File`'s) is about, and the file from it — its
+/// place in a repository made there: tarae's settings and the code at the folder itself, Claude's settings in its
+/// `.claude`. Git's and the hooks' answers are a repository's from the start: never carried.
+fn carried_rel(kind: Kind, file: &Path) -> Option<(PathBuf, PathBuf)> {
+    let (name, dir) = (file.file_name()?, file.parent()?);
+    match kind {
+        Kind::Tarae | Kind::Code => Some((dir.to_path_buf(), PathBuf::from(name))),
+        Kind::Claude if dir.file_name() == Some(".claude".as_ref()) => {
+            Some((dir.parent()?.to_path_buf(), Path::new(".claude").join(name)))
+        }
+        _ => None,
+    }
+}
+
+/// Before `places` are read in `path`'s store: each repository's place with no answer takes the one its main work
+/// tree's top kept as a folder (`top_of`) — moved there; where it has its own, the folder's is dropped. A parent's
+/// answer, a subfolder's or a linked checkout's folder's is never looked at. Reads (and maybe writes) the store: a
+/// worker's.
+pub fn carry(path: Option<&Path>, places: &[Place]) -> Vec<Carried> {
+    let pairs = places.iter().filter_map(|p| match p {
+        Place::Repo { common, file } => Some((Place::File(top_of(common)?.join(file)), p.clone())),
+        Place::File(_) => None,
+    });
+    carry_pairs(path, pairs.collect())
+}
+
+/// #513's card made a repository at `top`: every answer kept for the folder, carried to it now (`carry`).
+pub fn carry_made(path: Option<&Path>, top: &Path) -> Vec<Carried> {
+    let Some(path) = path else { return Vec::new() };
+    let Ok(top) = std::fs::canonicalize(top) else { return Vec::new() };
+    let common = std::fs::canonicalize(top.join(".git")).ok().filter(|c| top_of(c) == Some(top.as_path()));
+    let Some(common) = common else { return Vec::new() };
+    let store = Store::read_strict(path).unwrap_or_default();
+    let pairs = store.answers.iter().filter_map(|(p, k)| match p {
+        Place::File(f) => {
+            let (dir, file) = carried_rel(k.kind, f)?;
+            (dir == top).then(|| (p.clone(), Place::Repo { common: common.clone(), file }))
+        }
+        Place::Repo { .. } => None,
+    });
+    carry_pairs(Some(path), pairs.collect())
+}
+
+/// Each (folder's place, repository's place) of `pairs` carried, under the store's lock.
+fn carry_pairs(path: Option<&Path>, pairs: Vec<(Place, Place)>) -> Vec<Carried> {
+    let Some(path) = path.filter(|_| !pairs.is_empty()) else { return Vec::new() };
+    // (a folder's answer of a kind it's kept for, at the file the repository's is — none being taken back: one
+    // under way lands at the place it was given for, then what's left carries)
+    let carries = |s: &Store, from: &Place, to: &Place| match (from, to, s.answers.get(from)) {
+        (Place::File(f), Place::Repo { file, .. }, Some(k)) => {
+            carried_rel(k.kind, f).is_some_and(|(_, rel)| rel == *file)
+                && !s.is_taking(from)
+                && !s.is_taking(to)
+        }
+        _ => false,
+    };
+    // (read first without the lock: nothing at a folder's place — nearly always — writes nothing)
+    let Ok(store) = Store::read_strict(path) else { return Vec::new() };
+    if !pairs.iter().any(|(from, to)| carries(&store, from, to)) {
+        return Vec::new();
+    }
+    let (mut out, mut made) = (Vec::new(), Vec::new());
+    let changed = change(path, |s| {
+        for (from, to) in &pairs {
+            if !carries(s, from, to) {
+                continue;
+            }
+            let Some(k) = s.answers.remove(from) else { continue };
+            let dropped = s.answers.contains_key(to);
+            if !dropped {
+                s.answers.insert(to.clone(), Kept { rev: crate::storewrite::Rev::default(), ..k });
+                made.push((to.clone(), s.bump(path, to)));
+            }
+            let Place::File(f) = from else { continue };
+            let folder = carried_rel(k.kind, f).map(|(d, _)| d).unwrap_or_default();
+            out.push(Carried { folder, from: from.clone(), to: to.clone(), dropped });
+        }
+    });
+    if changed.is_err() {
+        return Vec::new();
+    }
+    for (p, r) in made {
+        crate::storewrite::wrote(path, &key(&p), r);
+    }
+    out
+}
+
+impl crate::editor::Editor {
+    /// What a read carried (#517): said once, where you look, and every answer this tarae holds at the folder's place
+    /// now at the repository's — a take-back or a no given later acts there.
+    pub(crate) fn trust_carried(&mut self, carried: Vec<Carried>) {
+        let mut said: Vec<(String, bool)> = Vec::new();
+        for c in carried {
+            if let Some(p) = self.project_trust.as_mut().filter(|p| p.place == c.from) {
+                p.place = c.to.clone();
+            }
+            self.code_trust_moved(&c.from, &c.to);
+            // (tarae's, Claude's and the code's carried at once: one line)
+            if !said.contains(&(c.name(), c.dropped)) {
+                said.push((c.name(), c.dropped));
+            }
+        }
+        for (name, dropped) in said {
+            // (or at reads one after another: one line while it's the last said)
+            let last = self.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+            match dropped {
+                false if !last.starts_with(&format!("trust carried from {name} —")) => {
+                    self.set_status(format!("trust carried from {name} — answered before it was a repository"))
+                }
+                true if !last.starts_with(&format!("{name}'s trust from before it was a repository dropped")) => {
+                    self.set_status(format!(
+                        "{name}'s trust from before it was a repository dropped — the repository's own answer stands"
+                    ))
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -1020,7 +1176,11 @@ pub const TITLE: &str = "Trust this project's settings?";
 
 impl crate::editor::Editor {
     /// The project layer as config read it: its card if it asks, and the config the answer chose.
-    pub fn project_trust_set(&mut self, p: Option<Project>) {
+    pub fn project_trust_set(&mut self, mut p: Option<Project>) {
+        if let Some(p) = &mut p {
+            let carried = std::mem::take(&mut p.carried);
+            self.trust_carried(carried);
+        }
         let asks = p.as_ref().is_some_and(|p| p.state == State::Ask);
         self.offers.retain(|o| !matches!(o.what, crate::offer::What::ProjectTrust { .. }) || asks);
         if !asks {
@@ -1389,6 +1549,181 @@ mod tests {
         // Answered again: the new answer
         record(path.clone(), Kind::Tarae, toml(&wt), v(0xa), false).unwrap();
         assert_eq!(Store::read(Some(&path)).state(&toml(&main), v(0xa)), State::Ignored);
+    }
+
+    /// #517: a folder's answer — tarae's settings', Claude's, the code's; a no as well as a yes — moves to the
+    /// repository made in that folder as it's read there, once (nothing left at the folder's place), and every
+    /// checkout of it shares it. Never from a parent's or a subfolder's answer, never a linked checkout's folder's,
+    /// never over the repository's own answer (that stands, the folder's dropped). A take-back after it leaves
+    /// nothing behind. (Git's files made by hand in the test's temp folder — nothing run.)
+    #[test]
+    fn a_folders_answer_is_carried_to_the_repository_made_there() {
+        let kinds = [
+            (Kind::Tarae, ".tarae.toml"),
+            (Kind::Claude, ".claude/settings.json"),
+            (Kind::Code, "(its code)"),
+        ];
+        for (kind, rel) in kinds {
+            let scratch = crate::scratch::Scratch::new("trust-carry");
+            let base = std::fs::canonicalize(scratch.path()).unwrap();
+            let path = base.join("trust.json");
+            let at = |d: &Path| d.join(rel);
+            let [yes, no, wt, parent, outer, own] =
+                ["yes", "no", "wt", "parent", "outer", "own"].map(|d| base.join(d));
+            for d in [&yes, &no, &wt, &parent.join("child"), &outer.join("inner"), &own] {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            // Answered as folders
+            record(path.clone(), kind, at(&yes), v(1), true).unwrap();
+            record(path.clone(), kind, at(&no), v(1), false).unwrap();
+            record(path.clone(), kind, at(&wt), v(9), true).unwrap();
+            record(path.clone(), kind, at(&parent), v(1), true).unwrap();
+            record(path.clone(), kind, at(&outer.join("inner")), v(1), true).unwrap();
+            record(path.clone(), kind, at(&own), v(1), true).unwrap();
+            // Then each a repository (`git init`'s folder), wt a linked checkout of yes's
+            for d in [&yes, &no, &parent.join("child"), &outer, &own] {
+                std::fs::create_dir_all(d.join(".git")).unwrap();
+            }
+            let link = yes.join(".git/worktrees/wt");
+            std::fs::create_dir_all(&link).unwrap();
+            std::fs::write(link.join("gitdir"), format!("{}\n", wt.join(".git").display())).unwrap();
+            std::fs::write(link.join("commondir"), "../..\n").unwrap();
+            std::fs::write(wt.join(".git"), format!("gitdir: {}\n", link.display())).unwrap();
+            // (the repository's own answer, given in it)
+            record(path.clone(), kind, at(&own), v(1), false).unwrap();
+            let carry_at = |d: &Path| carry(Some(&path), &[place_of(&at(d))]);
+            let folder_kept = |d: &Path| Store::read(Some(&path)).answers.contains_key(&Place::File(at(d)));
+            // A yes, and a no: carried, said once
+            let c = carry_at(&yes);
+            assert_eq!(c.len(), 1, "{kind:?}: {c:?}");
+            assert!(!c[0].dropped && c[0].folder == yes, "{kind:?}: {c:?}");
+            assert_eq!(Store::read(Some(&path)).state(&at(&yes), v(1)), State::Trusted, "{kind:?}");
+            assert!(!folder_kept(&yes), "{kind:?}: moved, not copied");
+            assert!(carry_at(&yes).is_empty(), "{kind:?}: once");
+            assert_eq!(carry_at(&no).len(), 1, "{kind:?}");
+            assert_eq!(
+                Store::read(Some(&path)).state(&at(&no), v(1)),
+                State::Ignored,
+                "{kind:?}: a no carries"
+            );
+            // Every checkout of it shares it; the linked checkout's own folder answer isn't carried
+            assert!(carry_at(&wt).is_empty(), "{kind:?}");
+            assert_eq!(Store::read(Some(&path)).state(&at(&wt), v(1)), State::Trusted, "{kind:?}: shared");
+            assert_eq!(
+                Store::read(Some(&path)).state(&at(&wt), v(9)),
+                State::Ask,
+                "{kind:?}: a linked folder's"
+            );
+            // A parent's answer to a repository below it, a subfolder's to one above: asked
+            let child = parent.join("child");
+            assert!(carry_at(&child).is_empty(), "{kind:?}");
+            assert_eq!(Store::read(Some(&path)).state(&at(&child), v(1)), State::Ask, "{kind:?}: a parent's");
+            let inner = outer.join("inner");
+            assert!(carry_at(&inner).is_empty(), "{kind:?}");
+            assert_eq!(
+                Store::read(Some(&path)).state(&at(&inner), v(1)),
+                State::Ask,
+                "{kind:?}: a subfolder's"
+            );
+            // The repository's own answer stands; the folder's dropped, said
+            let c = carry_at(&own);
+            assert!(c.len() == 1 && c[0].dropped, "{kind:?}: {c:?}");
+            assert_eq!(c[0].folder, own, "{kind:?}");
+            assert_eq!(
+                Store::read(Some(&path)).state(&at(&own), v(1)),
+                State::Ignored,
+                "{kind:?}: its own stands"
+            );
+            assert!(!folder_kept(&own), "{kind:?}");
+            // A take-back after the carry: nothing trusted at either place
+            forget(&path, kind, &place_of(&at(&yes)), given()).unwrap();
+            assert_eq!(Store::read(Some(&path)).state(&at(&yes), v(1)), State::Ask, "{kind:?}");
+            assert!(!folder_kept(&yes), "{kind:?}: nothing behind at the folder's place");
+        }
+    }
+
+    /// #517, the project's settings: answered in a folder, then a repository made there (by hand) — the next load
+    /// is trusted at the repository's place with no card, the carry said once as the editor takes it; the load after
+    /// it says nothing.
+    #[test]
+    fn a_folders_project_trust_is_the_repository_made_there() {
+        use crate::config::tests::{RISKY_PROJECT, project_file};
+        let (dir, file) = project_file("carry", RISKY_PROJECT);
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let from = crate::config::Sources { user: None, trust: Some(root.join("trust.json")) };
+        let (c, _) = crate::config::load(&root, &from);
+        let p = c.project.expect("its risky settings");
+        assert!(p.state == State::Ask && matches!(p.place, Place::File(_)) && p.carried.is_empty());
+        record(root.join("trust.json"), Kind::Tarae, file, p.hash, true).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        let (c, _) = crate::config::load(&root, &from);
+        let p = c.project.as_ref().unwrap();
+        assert!(p.state == State::Trusted && matches!(p.place, Place::Repo { .. }), "{:?}", p.place);
+        let ed = crate::editor::Editor::with_root(c, root.clone());
+        assert!(
+            !ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::ProjectTrust { .. })),
+            "no card"
+        );
+        let name = root.file_name().unwrap().to_string_lossy().to_string();
+        let words = format!("trust carried from {name} — answered before it was a repository");
+        assert_eq!(ed.messages.iter().filter(|m| m.2 == words).count(), 1);
+        let (c, _) = crate::config::load(&root, &from);
+        assert!(c.project.unwrap().carried.is_empty(), "once");
+    }
+
+    /// #517: what a carry says, word for word as the user saw it — once for the kinds carried together or one read
+    /// after another, and the folder's answer dropped under the repository's own said too.
+    #[test]
+    fn a_carry_is_said_once_in_its_words() {
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        let carried = |file: &str, dropped| Carried {
+            folder: PathBuf::from("/w/halil-rust"),
+            from: Place::File(PathBuf::from("/w/halil-rust").join(file)),
+            to: Place::Repo { common: PathBuf::from("/w/halil-rust/.git"), file: PathBuf::from(file) },
+            dropped,
+        };
+        ed.trust_carried(vec![carried(".tarae.toml", false), carried("(its code)", false)]);
+        ed.trust_carried(vec![carried(".claude/settings.json", false)]);
+        ed.trust_carried(vec![carried(".tarae.toml", true)]);
+        let said: Vec<&str> = ed.messages.iter().map(|m| m.2.as_str()).collect();
+        assert_eq!(
+            said,
+            [
+                "trust carried from halil-rust — answered before it was a repository",
+                "halil-rust's trust from before it was a repository dropped — the repository's own answer stands",
+            ]
+        );
+    }
+
+    /// #517 at #513's card: every answer the folder kept as a folder carried as tarae makes the repository; a
+    /// subfolder's stays.
+    #[test]
+    fn the_repository_made_by_the_card_takes_the_folders_answers() {
+        let scratch = crate::scratch::Scratch::new("trust-carry-made");
+        let base = std::fs::canonicalize(scratch.path()).unwrap();
+        let path = base.join("trust.json");
+        let top = base.join("halil-rust");
+        std::fs::create_dir_all(top.join("sub")).unwrap();
+        let kinds = [
+            (Kind::Tarae, ".tarae.toml"),
+            (Kind::Claude, ".claude/settings.json"),
+            (Kind::Code, "(its code)"),
+        ];
+        for (kind, rel) in kinds {
+            record(path.clone(), kind, top.join(rel), v(1), true).unwrap();
+        }
+        record(path.clone(), Kind::Tarae, top.join("sub/.tarae.toml"), v(1), true).unwrap();
+        std::fs::create_dir_all(top.join(".git")).unwrap();
+        let c = carry_made(Some(&path), &top);
+        assert_eq!(c.len(), 3, "{c:?}");
+        assert!(c.iter().all(|c| !c.dropped && c.folder == top), "{c:?}");
+        for (_, rel) in kinds {
+            assert_eq!(Store::read(Some(&path)).state(&top.join(rel), v(1)), State::Trusted, "{rel}");
+        }
+        let s = Store::read(Some(&path));
+        let sub = top.join("sub/.tarae.toml");
+        assert!(s.answers.contains_key(&Place::File(sub.clone())), "a subfolder's stays the folder's");
+        assert!(s.answers.keys().filter(|p| matches!(p, Place::File(_))).count() == 1, "{:?}", s.answers);
     }
 
     /// Every `llm.sandbox*` setting changes what Claude's commands may do unasked — where they write, what they

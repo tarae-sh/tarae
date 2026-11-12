@@ -1016,8 +1016,10 @@ Kept:
   `additionalDirectories`, `cleanupPeriodDays` (when claude deletes your conversations — every project's; `0`
   is all of them: held back, yours applies, else Claude Code's default, 30 days). While the card waits claude runs with all of them held back, as `n` leaves it — the
   chat doesn't wait for the answer; `y` starts it again with them. A change while it runs starts it again at once
-  held back (mid-turn too), the card up again.
+  held back (mid-turn too), the card up again. A folder's answer from before it was a repository moves to the
+  repository made there, as tarae's settings' does (§3, #517).
   test: `claudetrust::tests::a_chat_starts_held_back_while_its_card_waits` ·
+  `claudetrust::tests::a_folders_answer_is_the_repository_made_there` ·
   `claudetrust::tests::a_change_mid_chat_restarts_it_held_back_at_once` ·
   `claudetrust::tests::what_a_repository_runs_is_held_and_hooks_only_shown` ·
   `claudetrust::tests::settings_made_while_claude_runs_restart_it_held_back_and_ask` ·
@@ -1248,8 +1250,15 @@ Not Claude's, but a hostile repository reaches them:
   test: `config::tests::what_starts_a_language_server_waits_for_trust` ·
   `trust::tests::every_setting_that_starts_a_program_waits_for_trust`
 - **`.tarae.toml`'s risky part** (tasks, server commands, `:` bindings, settings that run something or loosen a
-  guard) waits for a trust card, keyed by real path and hash.
-  test: `trust::tests::too_long_to_show_is_never_trusted` · `config::tests::the_users_own_file_is_never_held_back`
+  guard) waits for a trust card, keyed by real path and hash — a repository's by its common git folder, shared by
+  its checkouts. A folder's answer from before it was a repository moves to the repository made there (#513's card
+  or anyone's `git init`) as it's next read, a no as well as a yes, said once — only from the folder that holds the
+  common `.git` (never a parent's, a subfolder's or a linked checkout's folder's, never through a `.git` file naming
+  another), never over the repository's own answer (that stands, the folder's dropped and said). Moved, not copied:
+  `:project-untrust` acts in one place.
+  test: `trust::tests::too_long_to_show_is_never_trusted` · `config::tests::the_users_own_file_is_never_held_back` ·
+  `trust::tests::a_folders_project_trust_is_the_repository_made_there` ·
+  `trust::tests::the_repository_made_by_the_card_takes_the_folders_answers`
 - **Preflight's pack defaults** run the project's tests as you after a card that says so.
 - **Git** — §1.7.
 
@@ -1269,7 +1278,7 @@ Not Claude's, but a hostile repository reaches them:
 | G10 | Linux: a new protected name in a folder without one | Landlock only grants | caught after the run, asked before anything runs it — Claude's next run, your task, your tests, your preflight, `:restart`'s build (§1.2) |
 | G11 | Linux ABI 2: truncation | kernel | every run asks |
 | G12 | The supervisor and proxy parse hostile input inside tarae | threads (D19) | fuzzing; a confined process (D21); P1b: inside a tunnel tarae terminates, a TLS server (rustls) and the plaintext HTTP both ways — the origin-form parser held to its property (what it takes, a strict reader frames alike) in-tree and by its fuzz target `origin`, the stage's machine fed both sides at every split, a truncation on the host's leg reaching the run as one (tests: `sandbox::proxy::parse::tests::the_origin_parser_never_panics`, `sandbox::proxy::stage::tests::a_chunked_upload_and_a_length_download_go_on_byte_for_byte`, `sandbox::proxy::tests::terminate::a_truncation_on_the_hosts_leg_reaches_the_run_as_one`); a review — 2026-11-03: what tarae sends on a run's `sendmsg` held to Linux's `CMSG_*` macros, and the kernel the oracle for whole fuzzed messages (tests: `sandbox::supervisor::wire::tests::what_tarae_sends_is_held_to_linuxs_macros`, `sandbox::supervisor::wire::tests::kernel::the_kernel_takes_what_tarae_sends` (Linux)); every value of the send path read once (Q2); P2: masking's scan of a body as it streams held to its property (each pattern found where the whole payload's reading finds it, every other byte and the framing untouched, a stray before any of it goes) in-tree and by its fuzz target `swap` (test: `sandbox::proxy::swap::tests::the_scan_holds_its_property_at_random`) |
-| G13 | rust-analyzer runs `build.rs`/proc macros untrusted — and even `cargo metadata` runs the toolchain `rust-toolchain.toml` names and `.cargo/config`'s `rustc-wrapper`; jdtls runs the Gradle build, zls `build.zig`, tsserver `tsconfig.json`'s plugins | a language server runs the project's code as you, outside the sandbox | narrowed (2026-10-28, as Claude Code's workspace trust and VS Code's rust-analyzer in restricted mode — srt has neither): a server its pack marks (`runs-project-code`) waits for the repository's trust, asked once on a card and shared by its checkouts (kept in `trust.json`), `:code-untrust` takes it back; a project can't turn servers on or add one untrusted (§3) (tests: `codetrust::tests::a_server_that_runs_the_projects_code_waits_for_its_trust`, `codetrust::tests::code_untrust_stops_them`, `sim::codetrust::servers_wait_for_the_codes_trust`); an agent its pack loads into one (jdtls's Lombok, #228) is that trust's too — looked for only once it's given, taken only where it's yours and no sandboxed run writes (`lspagent::tests::a_jar_a_run_could_have_put_there_is_never_loaded`); left: once trusted, what a run of Claude's plants for it is §1.2's (the paused servers), and the servers aren't sandboxed (srt's way — later, measured first) |
+| G13 | rust-analyzer runs `build.rs`/proc macros untrusted — and even `cargo metadata` runs the toolchain `rust-toolchain.toml` names and `.cargo/config`'s `rustc-wrapper`; jdtls runs the Gradle build, zls `build.zig`, tsserver `tsconfig.json`'s plugins | a language server runs the project's code as you, outside the sandbox | narrowed (2026-10-28, as Claude Code's workspace trust and VS Code's rust-analyzer in restricted mode — srt has neither): a server its pack marks (`runs-project-code`) waits for the repository's trust, asked once on a card and shared by its checkouts (kept in `trust.json`), `:code-untrust` takes it back; a folder's answer given before it was a repository moves to the repository made there, a no as well as a yes, said once (#517: only from the folder that holds the common `.git`, never through a `.git` file naming another, never over the repository's own answer — that stands, the folder's dropped and said; tests: `trust::tests::a_folders_answer_is_carried_to_the_repository_made_there`, `codetrust::tests::a_folders_trust_is_the_repository_made_there`); a project can't turn servers on or add one untrusted (§3) (tests: `codetrust::tests::a_server_that_runs_the_projects_code_waits_for_its_trust`, `codetrust::tests::code_untrust_stops_them`, `sim::codetrust::servers_wait_for_the_codes_trust`); an agent its pack loads into one (jdtls's Lombok, #228) is that trust's too — looked for only once it's given, taken only where it's yours and no sandboxed run writes (`lspagent::tests::a_jar_a_run_could_have_put_there_is_never_loaded`); left: once trusted, what a run of Claude's plants for it is §1.2's (the paused servers), and the servers aren't sandboxed (srt's way — later, measured first) |
 | G14 | The temp folders are shared | D16 | said |
 | G15 | Apple Events/LaunchServices denials are pinned, not shown | no behaviour test | the must-be-refused suite; the keychain's and the clipboard's are tried (`sandbox::tests::what_the_default_refuses_and_the_base_lets_through`) |
 | G16 | Landlock rules are shown on the kernels CI and the test machines have | kernels differ | the suite on several kernels |

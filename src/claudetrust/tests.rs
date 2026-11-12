@@ -383,6 +383,33 @@ fn noted(ed: &Editor, text: &str) -> bool {
     ed.workspace.claude.chat.as_ref().is_some_and(|c| c.msgs.iter().any(|m| m.text.contains(text)))
 }
 
+/// #517: the project's Claude settings answered in a folder, then a repository made there (`git init`'s folder, by
+/// hand): the chat's claude starts as answered with no second card, the carry said once.
+#[test]
+fn a_folders_answer_is_the_repository_made_there() {
+    let (_s, root) = temp("carry");
+    let text = r#"{"env": {"CARRY_ZQ7": "1"}}"#;
+    std::fs::write(root.join(PROJECT), text).unwrap();
+    let hash = scan(&[file(PROJECT, text)]).unwrap().hash;
+    let store = root.join("trust.json");
+    crate::trust::record(store.clone(), crate::trust::Kind::Claude, root.join(PROJECT), hash, true).unwrap();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
+    ed.claude_settings_gate = true;
+    ed.trust_path = Some(store);
+    stand_in(&mut ed);
+    crate::chat::open(&mut ed);
+    let trusted = |ed: &Editor| {
+        let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.as_ref().map(|s| s.state));
+        seen == Some(State::Trusted)
+    };
+    until(&mut ed, "claude started as answered", |ed| running(ed) && trusted(ed));
+    assert!(card(&ed).is_none(), "no second card");
+    let name = std::fs::canonicalize(&root).unwrap().file_name().unwrap().to_string_lossy().to_string();
+    let words = format!("trust carried from {name} — answered before it was a repository");
+    assert_eq!(ed.messages.iter().filter(|m| m.2 == words).count(), 1, "{}", state(&ed));
+}
+
 /// A change while claude runs that needs other overrides but no card — the file now says what was answered
 /// before (kept in the store) — restarts claude with what it now needs, said in the chat, no card.
 #[test]
@@ -583,7 +610,7 @@ fn a_look_read_before_a_take_back_isnt_trusted() {
     });
     // Read (another version, trusted in the store), then the take-back given, then the read applied
     std::fs::write(root.join(PROJECT), v2).unwrap();
-    let (seen, since) = Places::of(&ed).look_since();
+    let (seen, since, _) = Places::of(&ed).look_since();
     let read = seen.state;
     crate::storewrite::hold(&store, Some(0));
     let place = crate::trust::place_of(&root.join(PROJECT));

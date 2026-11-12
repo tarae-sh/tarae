@@ -2389,20 +2389,21 @@ impl Editor {
     /// Claude started (a draft would have it read the whole folder), what `kept_out` leaves out said there — and once
     /// it's in, `:session-new` asked again. Nothing to commit: an empty first commit, then the session asked.
     pub fn repo_make(&mut self, id: u64, r: RepoMake) {
-        let (root, empty) = (r.root.clone(), r.files == Some(0));
+        let (root, empty, store) = (r.root.clone(), r.files == Some(0), self.trust_path.clone());
         let work = move || {
             crate::gitrepo::init(&root)?;
+            // (the folder's trust answers, the repository's now — #517)
+            let carried = crate::trust::carry_made(store.as_deref(), &root);
             if empty {
                 git_no_hooks(&root, &["commit", "-q", "--allow-empty", "-m", FIRST_MESSAGE])?;
             }
-            Ok(())
+            Ok(carried)
         };
         let said = format!("Making a repository in {}…", r.folder);
-        self.step(self.events.shared_jobs(), "session", said, work, move |ed, made: Result<(), String>| {
-            ed.offer_finished(id, made.clone());
-            if made.is_err() {
-                return;
-            }
+        let then = move |ed: &mut Editor, made: Result<Vec<crate::trust::Carried>, String>| {
+            ed.offer_finished(id, made.as_ref().map(|_| ()).map_err(Clone::clone));
+            let Ok(carried) = made else { return };
+            ed.trust_carried(carried);
             ed.git_refresh();
             let then = crate::gitpanel::Then::SessionNew { name: r.name.clone(), base: r.base.clone() };
             match empty {
@@ -2412,7 +2413,8 @@ impl Editor {
                 }
                 false => ed.commit_first(r.root, r.folder, then, Some(FIRST_MESSAGE.into())),
             }
-        });
+        };
+        self.step(self.events.shared_jobs(), "session", said, work, then);
     }
 
     /// The create card for `m` (its billing's weakness said while it's not been).
@@ -5025,6 +5027,7 @@ mod tests {
             with: Box::new((with, ed.keymaps.clone())),
             without: Box::new((ed.config.clone(), ed.keymaps.clone())),
             read_at: 0,
+            carried: Vec::new(),
         };
         ed.project_trust_set(Some(project));
         let trust = |ed: &Editor| {
@@ -9198,9 +9201,21 @@ mod tests {
         assert!(o.yours, "your :session-new asked for it");
         assert!(!folder.join(".git").exists(), "nothing made before y");
         assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        // (#517: the folder's trust answered before — the repository's as y makes it)
+        let store = dir.join("trust.json");
+        let toml = folder.join(".tarae.toml");
+        crate::trust::record(store.clone(), crate::trust::Kind::Tarae, toml.clone(), [7; 32], true).unwrap();
+        ed.trust_path = Some(store.clone());
         feed(&mut ed, "y");
         settle_until(&mut ed, |ed| ed.workspace.committing.is_some() || says(ed, "Couldn't"));
         assert!(folder.join(".git").is_dir(), "{}", said(&ed));
+        assert!(says(&ed, "trust carried from halil — answered before it was a repository"), "{}", said(&ed));
+        let place = crate::trust::place_of(&toml);
+        assert!(matches!(place, crate::trust::Place::Repo { .. }), "{place:?}");
+        assert_eq!(
+            crate::trust::Store::read(Some(&store)).state_at(&place, [7; 32]),
+            crate::trust::State::Trusted
+        );
         assert_eq!(git_in(&folder, &["diff", "--cached", "--name-only"]), ".gitignore\na.txt\nsrc/b.rs");
         let c = ed.workspace.committing.as_ref().unwrap();
         let then = crate::gitpanel::Then::SessionNew { name: "dates".into(), base: None };

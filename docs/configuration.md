@@ -47,7 +47,8 @@ the [keymap reference](reference/keymap.md).
   its git folder …) is held from the git tarae runs until you trust it on its card, kept the same way.
   `:git-trust` shows it again
 - **One card for the repository.** When more than one of these waits at once — tarae's, Claude's and git's, say,
-  as a repository opens — they're one card, "Trust this repository's settings?", each part under its heading with
+  as a repository opens — they're one card, "Trust this repository's settings?" (in a folder with no repository, "Trust this folder's
+settings?" — its answers move to a repository made there later, said once), each part under its heading with
   the lines its own card shows: `y` trusts each, `n` holds each back, `v` shows each whole. Nothing waits for it
   (the chat starts with Claude's part held back). Each answer is kept as its own card's is, so a later change to
   one part asks about that part alone, on its own card. Its command (`:project-trust`, `:claude-settings`,

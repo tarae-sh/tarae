@@ -340,10 +340,17 @@ fn short(p: &Path) -> String {
 /// The project's file (found from `root`, the editor's) goes in through `trust.rs`: what runs commands only
 /// once the project is trusted.
 pub fn load(root: &Path, from: &Sources) -> (Config, Vec<String>) {
-    let store = crate::trust::Store::read(from.trust.as_deref());
     let local = local_path(root).filter(|p| p.is_file()).map(|p| (root.to_path_buf(), p));
     let project = project_layer(root).filter(|p| from.user.as_ref() != Some(p));
-    let (config, mut warnings) = load_layers(from.user.clone(), project, local, &store);
+    // (a folder's answer from before it was a repository: moved to the repository's first — #517)
+    let place =
+        project.as_ref().map(|p| crate::trust::place_of(&fs::canonicalize(p).unwrap_or_else(|_| p.clone())));
+    let carried = crate::trust::carry(from.trust.as_deref(), place.as_slice());
+    let store = crate::trust::Store::read(from.trust.as_deref());
+    let (mut config, mut warnings) = load_layers(from.user.clone(), project, local, &store);
+    if let Some(p) = &mut config.project {
+        p.carried = carried;
+    }
     // (a project file on the way that isn't yours: passed over, said — `project_found`)
     let (_, skipped) = project_found(root, crate::project::Me::now());
     for (p, why) in skipped {
@@ -424,6 +431,7 @@ pub(crate) fn load_layers(
                 with: Box::new((with.editor, with.keymaps)),
                 without: Box::new((without.editor, without.keymaps)),
                 read_at: store.read_at,
+                carried: Vec::new(),
             });
         }
     }

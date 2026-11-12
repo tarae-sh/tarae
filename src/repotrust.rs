@@ -17,6 +17,8 @@ use crate::editor::Editor;
 use crate::offer::{Offer, OfferState, What};
 
 pub const TITLE: &str = "Trust this repository's settings?";
+/// The same, in a folder with no repository: the card says what the place is (#513's card beside it says so too).
+pub const FOLDER_TITLE: &str = "Trust this folder's settings?";
 
 /// A part's name on the card, and the command that asks about it alone.
 fn named(w: &What) -> Option<(&'static str, &'static str)> {
@@ -58,6 +60,11 @@ fn of_checkout(ed: &Editor, root: &Path, w: &What) -> bool {
     }
 }
 
+/// Whether tarae's settings file is kept as a repository's (its place, read with it).
+fn project_in_repo(ed: &Editor) -> bool {
+    ed.project_trust.as_ref().is_some_and(|p| matches!(p.place, crate::trust::Place::Repo { .. }))
+}
+
 /// The heading over a part's lines.
 fn heading(root: &Path, part: &Offer, project: Option<&Path>) -> String {
     let shown = |p: &Path| crate::trust::visible_line(&crate::chat::shown(root, p));
@@ -70,10 +77,18 @@ fn heading(root: &Path, part: &Offer, project: Option<&Path>) -> String {
 }
 
 /// The card for `parts` (each its own card, in order) — one part: that part's own card, as it is.
-fn card(root: &Path, mut parts: Vec<Offer>, joined: Option<&str>, project: Option<&Path>) -> Offer {
+fn card(
+    root: &Path,
+    mut parts: Vec<Offer>,
+    joined: Option<&str>,
+    project: Option<&Path>,
+    repo: bool,
+) -> Offer {
     if parts.len() == 1 {
         return parts.remove(0);
     }
+    // (git's part is a repository's; else tarae's file's place says it)
+    let repo = repo || parts.iter().any(|p| matches!(p.what, What::GitTrust(_)));
     let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into());
     let joined = joined.map(|j| format!(" · {j} joined")).unwrap_or_default();
     let first = format!(
@@ -111,8 +126,9 @@ fn card(root: &Path, mut parts: Vec<Offer>, joined: Option<&str>, project: Optio
     ));
     let asked = parts.iter().find_map(|p| p.asked.clone());
     let what = What::RepoTrust { root: root.to_path_buf(), parts };
+    let title = if repo { TITLE } else { FOLDER_TITLE };
     let mut o =
-        Offer::new(TITLE.into(), &lines.join("\n"), "", "Repository settings".into(), what).deciding(decided);
+        Offer::new(title.into(), &lines.join("\n"), "", "Repository settings".into(), what).deciding(decided);
     o.warnings = warnings;
     o.asked = asked;
     o
@@ -167,7 +183,7 @@ impl Editor {
         }
         crate::sorting::by_key(&mut parts, order);
         let project = self.project_trust.as_ref().map(|p| p.file.clone());
-        let card = card(&root, parts, joined, project.as_deref());
+        let card = card(&root, parts, joined, project.as_deref(), project_in_repo(self));
         let list = if front { &mut self.offers } else { &mut self.workspace.parked };
         replace(&mut list[at], card);
     }
@@ -178,6 +194,7 @@ impl Editor {
 /// session's cards (tarae's and git's parts), else this session's (Claude's).
 pub(crate) fn drop_part(ed: &mut Editor, gone: impl Fn(&What) -> bool, everywhere: bool) {
     let project = ed.project_trust.as_ref().map(|p| p.file.clone());
+    let repo = project_in_repo(ed);
     let front = !ed.background();
     let mut lists: Vec<&mut Vec<Offer>> = vec![&mut ed.workspace.parked];
     if front || everywhere {
@@ -200,7 +217,7 @@ pub(crate) fn drop_part(ed: &mut Editor, gone: impl Fn(&What) -> bool, everywher
                     o.what = What::RepoTrust { root, parts: left };
                     emptied = true;
                 }
-                false => replace(o, card(&root, left, None, project.as_deref())),
+                false => replace(o, card(&root, left, None, project.as_deref(), repo)),
             }
         }
     }

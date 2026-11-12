@@ -369,6 +369,7 @@ fn trust(ed: &mut Editor, step: usize, yes: bool) -> String {
         with: both.clone(),
         without: both,
         read_at: 0,
+        carried: Vec::new(),
     };
     ed.project_trust_set(Some(project));
     ".tarae.toml read: its preflight steps wait on its trust card".into()
