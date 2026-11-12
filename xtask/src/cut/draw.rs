@@ -5,7 +5,9 @@
 //!
 //! - The camera: the whole, but for a zoom — its target found on the screen at its time (`camera::target`, or within
 //!   `FIND_MS` after), widened to the screen's shape (`wide_window`, never nearer than `ZOOM_MAX`), eased in and out
-//!   as the Shorts' camera moves (`camera::Path`), drawn through `video::view` so a zoom never steps.
+//!   as the Shorts' camera moves (`camera::Path`), drawn through `video::view` so a zoom never steps: the screen's
+//!   picture drawn once at the read's glyph for the whole stretch off the whole (`Glyphs`), taken down and up to each
+//!   frame, the whole's own laid over it near the whole (`FADE_ZOOM`) — the text moving with the camera, never shaking.
 //!   Where it ends has its own path, on its own clock, from the opening's `zoom` (`paths`); a `[[zoom]]` is the take's.
 //! - The masks (`mask.rs`): each frame's cells drawn blank in the screen's own picture, before the camera takes it.
 //! - Crossings (`camera::CROSS_MS`, never a cut): where a part begins (the card of what's built, where it ends, a
@@ -186,14 +188,77 @@ pub(crate) fn layout(fonts: &Fonts, size: (u16, u16), s: Scale) -> Result<Layout
 }
 
 impl Layout {
-    /// The camera's `region` of a `size` screen through the screen's place (`video::view`, its cells the renderer's at
-    /// this scale; the view's px 1080p's, drawn at the scale).
-    pub(crate) fn view(&self, region: Region, size: (u16, u16), fonts: &Fonts) -> video::View {
+    /// The camera's `region` of a `size` screen through the screen's place (`video::view_drawn`, its cells and margin
+    /// the renderer's at this scale; the view's px 1080p's, drawn at the scale): its picture drawn at `glyph` where it
+    /// says (`Glyphs`), else at the view's own.
+    pub(crate) fn view(
+        &self,
+        region: Region,
+        size: (u16, u16),
+        fonts: &Fonts,
+        glyph: Option<f32>,
+    ) -> video::View {
         let k = self.scale.k();
-        video::view(region, size, self.pic, self.glyph, |p| {
+        let cell = |p| {
             let (cw, ch) = shot::cell(fonts, p);
             (cw * k, ch * k)
-        })
+        };
+        video::view_drawn(region, size, self.pic, (self.glyph, glyph), (cell, self.pad))
+    }
+
+    /// How far the camera's `region` of a `size` screen is pushed in (`video::zoom`): 1 at the whole.
+    pub(crate) fn zoom(&self, region: Region, size: (u16, u16), fonts: &Fonts) -> f32 {
+        let (cw, ch) = shot::cell(fonts, self.glyph);
+        let k = self.scale.k();
+        video::zoom(region, size, self.pic, (cw * k, ch * k))
+    }
+}
+
+/// The camera's zoom (`video::zoom`) under which the whole's own picture is laid over the zoom's, fading out as it goes
+/// in: the two pictures' glyphs sit a fraction of a px apart in their cells (each glyph size rounds its baseline its own
+/// way — 0.25 px at 1080p, 0.47 px at 2160p in take 3's zooms), so the camera leaving or reaching the whole slides
+/// from one to the other, never steps — over four frames of the quick start going in (at 1.1, three: a 0.32 px step at
+/// 2160p), over the slow end's twenty-odd coming out.
+const FADE_ZOOM: f32 = 1.2;
+
+/// The screen's pictures a take's frame draws from, kept: the zoom's (at `Glyphs`'), and the whole's (at the layout's
+/// glyph — at rest, and over the zoom's near the whole).
+#[derive(Default)]
+pub(crate) struct Pictures {
+    zoom: Option<(Kept, Picture)>,
+    whole: Option<(Kept, Picture)>,
+}
+
+/// The screen as a take's frame lays it: the whole's picture as it is, or a picture through the camera's view — near
+/// the whole, with the whole's own through its view over it, this much of it (of 255).
+pub(crate) enum Shown<'p> {
+    Whole(&'p Picture),
+    Through(&'p Picture, video::View, Option<(&'p Picture, video::View, u8)>),
+}
+
+/// The glyph a take's frame draws the screen's picture at through each stretch a camera's path is off the whole (µs on
+/// the path: from, to, glyph): the deepest of its reads' own (`video::view`'s glyph for it, as the camera rests there)
+/// — one picture for the move in, the read and the move out, taken down or up to each frame's region, never a glyph
+/// size a frame (take 3's zooms: 19 sizes in a 1.2 s move, each rounding its baseline and its glyphs' left edges in
+/// its own way — the text shook up to 0.8 px a frame, back and forth).
+pub(crate) struct Glyphs(Vec<(u64, u64, f32)>);
+
+impl Glyphs {
+    /// The glyphs of `path`'s stretches off the whole, for a `size` screen laid out as `lay`.
+    pub(crate) fn of(path: &camera::Path, lay: &Layout, size: (u16, u16), fonts: &Fonts) -> Glyphs {
+        Glyphs(
+            (path.away().into_iter())
+                .map(|(from, to, reads)| {
+                    let rest = |r: &Region| lay.view(*r, size, fonts, None).px;
+                    (from * 1000, to * 1000, reads.iter().map(rest).fold(lay.glyph, f32::max))
+                })
+                .collect(),
+        )
+    }
+
+    /// The glyph `us` along the path, where it's off the whole.
+    pub(crate) fn at(&self, us: u64) -> Option<f32> {
+        self.0.iter().find(|s| (s.0..=s.1).contains(&us)).map(|s| s.2)
     }
 }
 
@@ -218,19 +283,17 @@ impl<'a> Stage<'a> {
         Stage { lay, look, cut, mascot, marks_right, stamping: Default::default() }
     }
 
-    /// The screen `s` (`which`: whose replay, how many screens in) as a take's frame draws it: at the camera's glyph
-    /// (`view`'s, else the layout's), `blank`'s cells blank in it — so a crop or a zoom resamples them blank —; kept in
-    /// `kept` while the same screen comes at the same glyph with the same cells blank. Whether it was drawn now.
-    pub(crate) fn screen_pic<'k>(
+    /// The screen `s` (`which`: whose replay, how many screens in) drawn at glyph `at`, `blank`'s cells blank in it — so
+    /// a crop or a zoom resamples them blank —; kept in `kept` while the same screen comes at the same glyph with the
+    /// same cells blank. Whether it was drawn now.
+    fn kept_pic<'k>(
         &self,
         kept: &'k mut Option<(Kept, Picture)>,
-        s: &vt100::Screen,
-        which: (bool, u64),
-        view: Option<&video::View>,
+        (s, which): (&vt100::Screen, (bool, u64)),
+        at: f32,
         blank: &[Blank],
         fonts: &Fonts,
     ) -> (&'k Picture, bool) {
-        let at = view.map_or(self.lay.glyph, |v| v.px);
         let want = (which.0, which.1, at as u32, blank.to_vec());
         let fresh = kept.as_ref().is_none_or(|k| k.0 != want);
         if fresh {
@@ -239,25 +302,79 @@ impl<'a> Stage<'a> {
         (&kept.as_ref().expect("drawn").1, fresh)
     }
 
-    /// The take's frame `f`: the screen's picture `pic` (drawn at the layout's glyph, or through `view` at the camera's),
-    /// the band's rule (a line `scale` px thick), the band, the mascot in `pose` and the key pops up (`up`: of `pops`,
-    /// with their age in frames) in its lane.
+    /// The screen `s` (`which`: whose replay, how many screens in) of `size` as a take's frame shows it through the
+    /// camera's `region`: at the whole, its picture at the layout's glyph as it is; else through the camera's view, its
+    /// picture at the stretch's glyph where `glyph` says (`Glyphs`), else the view's own — and under `FADE_ZOOM` the
+    /// whole's picture through the view too, over it as much as the camera is near the whole. Both kept in `kept`
+    /// (`kept_pic`); how many were drawn now.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn shown<'k>(
+        &self,
+        kept: &'k mut Pictures,
+        screen: (&vt100::Screen, (bool, u64)),
+        (region, glyph): (Region, Option<f32>),
+        size: (u16, u16),
+        blank: &[Blank],
+        fonts: &Fonts,
+    ) -> (Shown<'k>, u64) {
+        let lay = &self.lay;
+        let Pictures { zoom, whole } = kept;
+        if region == Region::all(size) {
+            let (pic, fresh) = self.kept_pic(whole, screen, lay.glyph, blank, fonts);
+            return (Shown::Whole(pic), u64::from(fresh));
+        }
+        let view = lay.view(region, size, fonts, glyph);
+        let (pic, fresh) = self.kept_pic(zoom, screen, view.px, blank, fonts);
+        let near = (lay.zoom(region, size, fonts) - 1.0) / (FADE_ZOOM - 1.0);
+        if view.px == lay.glyph || near >= 1.0 {
+            return (Shown::Through(pic, view, None), u64::from(fresh));
+        }
+        let (under, fresh_whole) = self.kept_pic(whole, screen, lay.glyph, blank, fonts);
+        let a = (255.0 * (1.0 - camera::ease_in_out(near))).round() as u8;
+        let over = (under, lay.view(region, size, fonts, Some(lay.glyph)), a);
+        (Shown::Through(pic, view, Some(over)), u64::from(fresh) + u64::from(fresh_whole))
+    }
+
+    /// The screen as `screen` shows it (`shown`) laid in its place on a frame `px` — through a view, its `rows` alone (of
+    /// the picture's place, from its top; the whole picture is laid whole).
+    pub(crate) fn lay_screen(&self, px: &mut [u8], screen: &Shown, rows: std::ops::Range<usize>) {
+        let lay = &self.lay;
+        let w = lay.dims.0;
+        let (x0, y0) = lay.at;
+        match screen {
+            Shown::Whole(pic) => video::blit(px, lay.dims, pic, x0, y0, 255),
+            Shown::Through(pic, view, over) => {
+                let place = ((x0, y0), lay.pic);
+                video::resample_rows(px, w, place, pic, view, rows.clone());
+                if let Some((under, view, a)) = over {
+                    // (the whole's picture through its view, laid over by `a`)
+                    let mut whole = px.to_vec();
+                    video::resample_rows(&mut whole, w, place, under, view, rows.clone());
+                    let bytes = ((y0 + rows.start) * w * 3)..((y0 + rows.end) * w * 3);
+                    let (a, b) = (u32::from(*a), 255 - u32::from(*a));
+                    for (d, o) in px[bytes.clone()].iter_mut().zip(&whole[bytes]) {
+                        *d = ((u32::from(*d) * b + u32::from(*o) * a + 127) / 255) as u8;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The take's frame `f`: the screen as `screen` shows it (`shown`), the band's rule (a line `scale` px thick), the
+    /// band, the mascot in `pose` and the key pops up (`up`: of `pops`, with their age in frames) in its lane.
     pub(crate) fn take_frame(
         &self,
-        pic: &Picture,
-        view: Option<&video::View>,
+        screen: &Shown,
         f: &Frame,
         (pose, pops, up): (Option<Pic>, &Pops, &[(usize, u64)]),
         words: &mut Words,
     ) -> Vec<u8> {
         let lay = &self.lay;
         let (w, h) = lay.dims;
-        let (x0, y0) = lay.at;
+        let x0 = lay.at.0;
         let mut px = self.look.ground.repeat(w * h);
-        match view {
-            None => video::blit(&mut px, lay.dims, pic, x0, y0, 255),
-            Some(view) => video::resample(&mut px, w, (x0, y0), lay.pic, pic, view),
-        }
+        self.lay_screen(&mut px, screen, 0..lay.pic.1);
+
         // (the words over where it ends, on the board as this frame drew it)
         if let (Some(l), Some(title)) = (f.label, &self.cut.opening.label) {
             let ink = self.look.ink;
@@ -605,6 +722,7 @@ pub(crate) fn make(
     let reads = take_reads(cut, &windows);
     let lost = lost_zooms(cut, take, &prog, &reads, &found_at);
     let paths = paths(cut, &windows, ends_zoom, size);
+    let glyphs = (Glyphs::of(&paths.0, &lay, size, &fonts), Glyphs::of(&paths.1, &lay, size, &fonts));
     // (the masks against the take's check.txt, and the check's places, to tell which of them the masks hid)
     let (hits, source) = super::check::read(dir)?;
     let check_txt = std::fs::read_to_string(dir.join("check.txt")).ok();
@@ -652,7 +770,7 @@ pub(crate) fn make(
     let (mut ends, mut replay) = (Replay::new(&take.screen, size), Replay::new(&take.screen, size));
     let mut words = Words::new(&fonts, look.ground, scale);
     let sheet_fonts = Fonts::load(1)?;
-    let mut pic: Option<(Kept, Picture)> = None;
+    let mut pics = Pictures::default();
     let mut last: Option<(Key, Vec<u8>)> = None;
     let mut cross: Option<(Vec<u8>, u64, bool)> = None;
     let (mut differ, mut drawn, mut wrote) = (0u64, 0u64, Ok(()));
@@ -687,7 +805,7 @@ pub(crate) fn make(
             cross = None;
         }
         let share = share.filter(|&a| a < 255);
-        let region = region(&f, cut, &paths, size);
+        let region = region(&f, &paths, size);
         let screen = match f.ends {
             true => (true, ends.shown),
             false => (false, replay.shown),
@@ -732,10 +850,11 @@ pub(crate) fn make(
                 Some(Card::Chapter(i)) => chapter_cards[i].clone(),
                 None => {
                     let s = if f.ends { ends.screen() } else { replay.screen() };
-                    let view = (region != all).then(|| lay.view(region, size, &fonts));
-                    let (p, fresh) = stage.screen_pic(&mut pic, s, screen, view.as_ref(), &key.blank, &fonts);
-                    drawn += u64::from(fresh);
-                    stage.take_frame(p, view.as_ref(), &f, (pose, &pops, &key.pops), &mut words)
+                    let camera = (region, drawn_at(&f, &glyphs));
+                    let (shown, fresh) =
+                        stage.shown(&mut pics, (s, screen), camera, size, &key.blank, &fonts);
+                    drawn += fresh;
+                    stage.take_frame(&shown, &f, (pose, &pops, &key.pops), &mut words)
                 }
             };
             if let (Some(p), Some((from, _, through))) = (share, &cross) {
@@ -787,7 +906,7 @@ pub(crate) fn make(
             ),
         };
         said.push(format!(
-            "the mascot at the keys ({}): {} taps — {} left, {} right, {} both (returns), {} on the space bar; a stamp's paw \
+            "the mascot at the keys ({}): {} taps — {} left, {} right (returns too), {} on the space bar; a stamp's paw \
              held {} ms{}; on {} \
              frames: up {}, left {}, right {}, both {}, watching {}, the face half-turned {}, closed {}, raised over typing {}, \
              wide {}, surprised {}, stretching {}, swinging {}, winding the skein {}; its box {}×{} at ({}, {}), the rule stopping at x {}, the \
@@ -797,7 +916,6 @@ pub(crate) fn make(
             hands.taps(),
             of(mascot::Side::Left),
             of(mascot::Side::Right),
-            of(mascot::Side::Both),
             of(mascot::Side::Space),
             mascot::STAMP_HOLD_MS,
             match stamps_keyless {
@@ -1100,12 +1218,26 @@ pub(crate) fn paths(
     (take, ends)
 }
 
+/// Which of the camera's paths frame `f` is on and how far along it (µs, `Frame::camera`): where it ends, its own
+/// (true); in the take part, the map's (false); None elsewhere (the whole).
+fn on_path(f: &Frame) -> Option<(bool, u64)> {
+    f.camera.map(|us| (f.ends, us))
+}
+
 /// The camera's region for frame `f`: where it ends, its own path's; in the take part, the map's; else the whole.
-pub(crate) fn region(f: &Frame, cut: &Cut, paths: &(camera::Path, camera::Path), size: (u16, u16)) -> Region {
-    match (f.ends, f.screen, f.map) {
-        (true, Some(t), _) => paths.1.at(t.saturating_sub(cut.opening.from)),
-        (false, _, Some(m)) => paths.0.at(m / 1000),
-        _ => Region::all(size),
+pub(crate) fn region(f: &Frame, paths: &(camera::Path, camera::Path), size: (u16, u16)) -> Region {
+    match on_path(f) {
+        Some((true, us)) => paths.1.at_us(us),
+        Some((false, us)) => paths.0.at_us(us),
+        None => Region::all(size),
+    }
+}
+
+/// The glyph frame `f`'s screen picture is drawn at where its camera is off the whole (`Glyphs`, of each path).
+pub(crate) fn drawn_at(f: &Frame, glyphs: &(Glyphs, Glyphs)) -> Option<f32> {
+    match on_path(f)? {
+        (true, us) => glyphs.1.at(us),
+        (false, us) => glyphs.0.at(us),
     }
 }
 

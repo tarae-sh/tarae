@@ -1810,12 +1810,14 @@ struct Take {
     news: Option<usize>,
 }
 
-/// How the camera's region maps the screen onto a Short's window: the screen drawn at `px` (its cells `cell` px), and
-/// for each of the window's px the picture's it samples, by axis `origin + k · scale` (px indices: a pixel's centre).
+/// How the camera's region maps the screen onto a Short's window: the screen drawn at `px` (its cells `cell` px, its
+/// margin `pad` px — `PAD`, times the full video's scale), and for each of the window's px the picture's it samples, by
+/// axis `origin + k · scale` (px indices: a pixel's centre).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     pub(crate) px: f32,
     cell: (usize, usize),
+    pad: f32,
     scale: (f32, f32),
     origin: (f32, f32),
 }
@@ -1825,7 +1827,7 @@ impl View {
     #[cfg(test)]
     fn px(&self, r: Region) -> Px {
         let (wx, wy, _, _) = short_window();
-        let at = |o: f32, s: f32, cell: usize, c: f32| (PAD as f32 + c * cell as f32 - o - 0.5) / s + 0.5;
+        let at = |o: f32, s: f32, cell: usize, c: f32| (self.pad + c * cell as f32 - o - 0.5) / s + 0.5;
         let (x0, x1) = (
             at(self.origin.0, self.scale.0, self.cell.0, r.x),
             at(self.origin.0, self.scale.0, self.cell.0, r.x + r.w),
@@ -1841,7 +1843,7 @@ impl View {
     fn cells(&self, (cols, rows): (u16, u16), window: (usize, usize)) -> (usize, usize, usize, usize) {
         let axis = |o: f32, s: f32, view: usize, cell: usize, n: u16| {
             let n = usize::from(n);
-            let (from, to) = (o + 0.5 - s / 2.0 - PAD as f32, o + 0.5 + (view as f32 - 0.5) * s - PAD as f32);
+            let (from, to) = (o + 0.5 - s / 2.0 - self.pad, o + 0.5 + (view as f32 - 0.5) * s - self.pad);
             let first = ((from / cell as f32).ceil().max(0.0) as usize).min(n);
             (first, ((to / cell as f32).floor().max(0.0) as usize).clamp(first, n))
         };
@@ -1853,7 +1855,7 @@ impl View {
     /// Where a window `wh` px tall starts and ends on the screen's rows (fractions where it cuts one).
     fn rows(&self, wh: usize) -> (f32, f32) {
         let (o, s, ch) = (self.origin.1, self.scale.1, self.cell.1 as f32);
-        ((o + 0.5 - s / 2.0 - PAD as f32) / ch, (o + 0.5 + (wh as f32 - 0.5) * s - PAD as f32) / ch)
+        ((o + 0.5 - s / 2.0 - self.pad) / ch, (o + 0.5 + (wh as f32 - 0.5) * s - self.pad) / ch)
     }
 
     /// Whether a window `wh` px tall starts and ends on whole rows of a screen `rows` tall, or past its edges (the pad),
@@ -1878,27 +1880,50 @@ pub(crate) fn view(
     whole: f32,
     cell: impl Fn(f32) -> (usize, usize),
 ) -> View {
+    view_drawn(region, screen, window, (whole, None), (cell, PAD))
+}
+
+/// How far the camera's `region` of a `screen` is pushed in on a `window` (px): its cells as large on the window as the
+/// region fills it, over the whole's (`cell0`: the whole's cells) — 1 at the whole.
+pub(crate) fn zoom(region: Region, screen: (u16, u16), window: (usize, usize), cell0: (usize, usize)) -> f32 {
+    let (ww, wh) = (window.0 as f32, window.1 as f32);
+    let fill = |r: Region| (ww / (r.w * cell0.0 as f32)).min(wh / (r.h * cell0.1 as f32));
+    fill(region) / fill(Region::all(screen))
+}
+
+/// `view` of a picture whose margin is `pad` px (`PAD` times the full video's scale), drawn at `drawn` where it says
+/// — one glyph size for a whole move, the picture taken down or up to the region from it — else at `view`'s own.
+pub(crate) fn view_drawn(
+    region: Region,
+    screen: (u16, u16),
+    window: (usize, usize),
+    (whole, drawn): (f32, Option<f32>),
+    (cell, pad): (impl Fn(f32) -> (usize, usize), usize),
+) -> View {
     let (ww, wh) = (window.0 as f32, window.1 as f32);
     let (cw0, ch0) = cell(whole);
-    let fill = |r: Region| (ww / (r.w * cw0 as f32)).min(wh / (r.h * ch0 as f32));
-    let m = fill(region) / fill(Region::all(screen));
-    let m = if (m - 1.0).abs() < 1e-3 { 1.0 } else { m };
+    let m = zoom(region, screen, window, (cw0, ch0));
+    // (a picture of its own glyph: within a thousandth of the whole, the whole's — one drawn for a move, as it is)
+    let m = if drawn.is_none() && (m - 1.0).abs() < 1e-3 { 1.0 } else { m };
     let (tw, th) = (cw0 as f32 * m, ch0 as f32 * m);
-    let px = match m == 1.0 {
-        true => whole,
-        false => (8..=SHORT_PX_MAX)
+    let px = match (drawn, m == 1.0) {
+        (Some(p), _) => p,
+        (None, true) => whole,
+        (None, false) => (8..=SHORT_PX_MAX)
             .map(|p| p as f32)
             .find(|&p| cell(p).0 as f32 >= tw && cell(p).1 as f32 >= th)
             .unwrap_or(SHORT_PX_MAX as f32),
     };
     let (cw, ch) = cell(px);
     let scale = (cw as f32 / tw, ch as f32 / th);
+    let pad = pad as f32;
     let origin = |start: f32, len: f32, cell: usize, view: f32, s: f32| {
-        PAD as f32 + (start + len / 2.0) * cell as f32 - (view / 2.0 - 0.5) * s - 0.5
+        pad + (start + len / 2.0) * cell as f32 - (view / 2.0 - 0.5) * s - 0.5
     };
     View {
         px,
         cell: (cw, ch),
+        pad,
         scale,
         origin: (origin(region.x, region.w, cw, ww, scale.0), origin(region.y, region.h, ch, wh, scale.1)),
     }
@@ -1918,9 +1943,9 @@ fn frame_of(
     (shape(cell(30.0)), camera::Frame { drawn: shape((cw0, ch0)), margin })
 }
 
-/// `pic` drawn through `view` into the `size` px at `at` of a frame `w` px wide (RGB): each px the picture's bilinear
-/// sample there, where that's inside the picture (else the frame's own, as it is); at a scale of 1 and a whole origin,
-/// the picture's own px.
+/// `pic` drawn through `view` into the `size` px at `at` of a frame `w` px wide (RGB): each px the picture's sample
+/// there (`taps`: bilinear where the picture is taken up, the mean of every px under it where taken down), where that's
+/// inside the picture (else the frame's own, as it is); at a scale of 1 and a whole origin, the picture's own px.
 pub(crate) fn resample(
     out: &mut [u8],
     w: usize,
@@ -1929,41 +1954,87 @@ pub(crate) fn resample(
     pic: &Picture,
     view: &View,
 ) {
+    resample_rows(out, w, (at, size), pic, view, 0..size.1);
+}
+
+/// `resample`'s `rows` of the `size` px alone (from its top), the rest of `out` as it is.
+pub(crate) fn resample_rows(
+    out: &mut [u8],
+    w: usize,
+    (at, size): ((usize, usize), (usize, usize)),
+    pic: &Picture,
+    view: &View,
+    rows: std::ops::Range<usize>,
+) {
     let (pw, ph, src) = pic;
-    let axis = |o: f32, s: f32, n: usize, len: usize| -> Vec<Option<(usize, usize, u32)>> {
-        (0..n)
-            .map(|k| {
-                let p = o + k as f32 * s;
-                if p < -0.5 || p > len as f32 - 0.5 {
-                    return None;
-                }
-                let f = p.floor();
-                let a = (f.max(0.0) as usize).min(len - 1);
-                let b = ((f + 1.0).max(0.0) as usize).min(len - 1);
-                Some((a, b, if p < 0.0 { 0 } else { ((p - f) * 256.0).round() as u32 }))
-            })
-            .collect()
-    };
     let (xs, ys) =
-        (axis(view.origin.0, view.scale.0, size.0, *pw), axis(view.origin.1, view.scale.1, size.1, *ph));
-    for (y, row) in ys.iter().enumerate() {
-        let Some((y0, y1, wy)) = *row else { continue };
-        let (r0, r1) = (&src[y0 * pw * 3..][..pw * 3], &src[y1 * pw * 3..][..pw * 3]);
-        let line = &mut out[((at.1 + y) * w + at.0) * 3..][..size.0 * 3];
-        for (x, col) in xs.iter().enumerate() {
-            let Some((x0, x1, wx)) = *col else { continue };
-            let d = &mut line[x * 3..x * 3 + 3];
-            if wx == 0 && wy == 0 {
-                d.copy_from_slice(&r0[x0 * 3..x0 * 3 + 3]);
-                continue;
+        (taps(view.origin.0, view.scale.0, size.0, *pw), taps(view.origin.1, view.scale.1, size.1, *ph));
+    // (the picture's columns any px takes, and a row of them weighed down the column: the rows first, then across)
+    let (lo, hi) =
+        (xs.iter().flatten()).fold((usize::MAX, 0), |(lo, hi), (a, ws)| (lo.min(*a), hi.max(a + ws.len())));
+    if lo >= hi {
+        return;
+    }
+    let mut row = vec![0u32; hi.saturating_sub(lo) * 3];
+    for (y, t) in ys.iter().enumerate() {
+        let Some((y0, wy)) = t.as_ref().filter(|_| rows.contains(&y)) else { continue };
+        row.fill(0);
+        for (j, &wj) in wy.iter().enumerate() {
+            let r = &src[((y0 + j) * pw + lo) * 3..][..row.len()];
+            for (acc, &v) in row.iter_mut().zip(r) {
+                *acc += u32::from(v) * wj;
             }
+        }
+        let line = &mut out[((at.1 + y) * w + at.0) * 3..][..size.0 * 3];
+        for (x, t) in xs.iter().enumerate() {
+            let Some((x0, wx)) = t else { continue };
             for c in 0..3 {
-                let top = u32::from(r0[x0 * 3 + c]) * (256 - wx) + u32::from(r0[x1 * 3 + c]) * wx;
-                let bottom = u32::from(r1[x0 * 3 + c]) * (256 - wx) + u32::from(r1[x1 * 3 + c]) * wx;
-                d[c] = ((top * (256 - wy) + bottom * wy + 32_768) >> 16) as u8;
+                let sum: u32 = (wx.iter().enumerate()).map(|(i, &wi)| row[(x0 - lo + i) * 3 + c] * wi).sum();
+                line[x * 3 + c] = ((sum + 32_768) >> 16) as u8;
             }
         }
     }
+}
+
+/// One axis of `resample`: for each of the window's `n` px, sampling the picture's `len` at `o + k · s`, the first of
+/// the picture's px it takes and how much of each (of 256, together 256); None where it falls outside the picture. A
+/// tent as wide as a window's px is on the picture, never narrower than one of the picture's: where the picture is taken
+/// up (`s` ≤ 1), the two px round the sample, as far as it is between them (bilinear); where taken down, every px under
+/// it, the nearer the more — none skipped, so a picture taken down moves as smoothly as one taken up.
+fn taps(o: f32, s: f32, n: usize, len: usize) -> Vec<Option<(usize, Vec<u32>)>> {
+    let last = len - 1;
+    (0..n)
+        .map(|k| {
+            let p = o + k as f32 * s;
+            if p < -0.5 || p > len as f32 - 0.5 {
+                return None;
+            }
+            if s <= 1.0 {
+                let f = p.floor();
+                let a = (f.max(0.0) as usize).min(last);
+                let b = ((f + 1.0).max(0.0) as usize).min(last);
+                let wb = if p < 0.0 { 0 } else { ((p - f) * 256.0).round() as u32 };
+                return Some(match b > a {
+                    true => (a, vec![256 - wb, wb]),
+                    false => (a, vec![256]),
+                });
+            }
+            let (from, to) = ((p - s).floor() as i64 + 1, (p + s).ceil() as i64 - 1);
+            let at = |i: i64| (i.max(0) as usize).min(last);
+            let (a, b) = (at(from), at(to));
+            let mut ws = vec![0.0f32; b - a + 1];
+            for i in from..=to {
+                ws[at(i) - a] += (1.0 - (i as f32 - p).abs() / s).max(0.0);
+            }
+            let total: f32 = ws.iter().sum();
+            let mut ws: Vec<u32> = ws.iter().map(|v| (v / total * 256.0).round() as u32).collect();
+            // (the rounding's few 256ths to the heaviest)
+            let most = (0..ws.len()).max_by_key(|&i| ws[i]).unwrap_or(0);
+            let rest: u32 = ws.iter().enumerate().filter(|e| e.0 != most).map(|e| *e.1).sum();
+            ws[most] = 256u32.saturating_sub(rest);
+            Some((a, ws))
+        })
+        .collect()
 }
 
 /// The end card's room above its `title` said as the caption (`intro_room`): `INTRO_ABOVE` over that box as drawn, its
@@ -3131,7 +3202,7 @@ mod tests {
                 (0, 0),
                 (4, 1),
                 &pic,
-                &View { px: 10.0, cell: (1, 1), scale: (1.0, 1.0), origin },
+                &View { px: 10.0, cell: (1, 1), pad: PAD as f32, scale: (1.0, 1.0), origin },
             );
             out.chunks(3).map(|c| c[0]).collect::<Vec<_>>()
         };

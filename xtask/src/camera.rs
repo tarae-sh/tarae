@@ -267,6 +267,9 @@ pub(crate) fn aims(reads: &[(u64, u64, Region)], screen: (u16, u16)) -> Vec<(u64
 /// every region is inside the screen. Worked out every `STEP_MS` to `until`, read between.
 pub(crate) struct Path {
     at: Vec<Region>,
+    all: Region,
+    /// Each aim off the whole: the step its move starts at, where.
+    reads: Vec<(usize, Region)>,
 }
 
 impl Path {
@@ -276,13 +279,17 @@ impl Path {
         let taps = (DRIFT_MS / STEP_MS) as usize;
         // (each change of aim: the first step it's in force at, how far it moves — by its offsets from the whole — and
         // whether toward a read)
-        let (mut moves, mut was) = (Vec::new(), [0.0f32; 4]);
+        let (mut moves, mut was, mut reads) = (Vec::new(), [0.0f32; 4], Vec::new());
         for &(ms, r) in aims {
             let r = r.inside(screen);
             let now = [r.x - all.x, r.y - all.y, r.w - all.w, r.h - all.h];
             if now != was {
                 let by = [now[0] - was[0], now[1] - was[1], now[2] - was[2], now[3] - was[3]];
-                moves.push((ms.div_ceil(STEP_MS) as usize, by, now != [0.0; 4]));
+                let from = ms.div_ceil(STEP_MS) as usize;
+                moves.push((from, by, now != [0.0; 4]));
+                if now != [0.0; 4] {
+                    reads.push((from + 1, r));
+                }
             }
             was = now;
         }
@@ -300,17 +307,46 @@ impl Path {
                 if d.iter().all(|v| v.abs() < 1e-4) { all } else { r.inside(screen) }
             })
             .collect();
-        Path { at }
+        Path { at, all, reads }
+    }
+
+    /// Each stretch the camera is off the whole, in order: from the last ms it's the whole before it to the first it's
+    /// the whole again (`at` the whole at both), and the reads it aims at on the way.
+    pub(crate) fn away(&self) -> Vec<(u64, u64, Vec<Region>)> {
+        let mut out: Vec<(u64, u64, Vec<Region>)> = Vec::new();
+        // (a read is the stretch's whose steps it starts in, or since the stretch before it ended)
+        let (mut i, mut since) = (0, 0);
+        while i < self.at.len() {
+            if self.at[i] == self.all {
+                i += 1;
+                continue;
+            }
+            let from = i;
+            while i < self.at.len() && self.at[i] != self.all {
+                i += 1;
+            }
+            let reads = (self.reads.iter()).filter(|r| (since..i).contains(&r.0)).map(|r| r.1).collect();
+            since = i;
+            let ms = |step: usize| step as u64 * STEP_MS;
+            out.push((ms(from.saturating_sub(1)), ms(i), reads));
+        }
+        out
     }
 
     /// Where the camera is `ms` into the take: between the two steps round it.
     pub(crate) fn at(&self, ms: u64) -> Region {
-        let i = ((ms / STEP_MS) as usize).min(self.at.len() - 1);
+        self.at_us(ms * 1000)
+    }
+
+    /// Where the camera is `us` (µs) into the take: between the two steps round it.
+    pub(crate) fn at_us(&self, us: u64) -> Region {
+        let step = STEP_MS * 1000;
+        let i = ((us / step) as usize).min(self.at.len() - 1);
         let (a, b) = (self.at[i], self.at[(i + 1).min(self.at.len() - 1)]);
         if a == b {
             return a;
         }
-        let t = (ms % STEP_MS) as f32 / STEP_MS as f32;
+        let t = (us % step) as f32 / step as f32;
         let l = |p: f32, q: f32| p + (q - p) * t;
         Region { x: l(a.x, b.x), y: l(a.y, b.y), w: l(a.w, b.w), h: l(a.h, b.h) }
     }

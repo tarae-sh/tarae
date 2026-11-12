@@ -3,7 +3,7 @@
 
 use serde_json::json;
 
-use super::draw::{QUIET, jump_ink, label, lost_zooms, wide_window};
+use super::draw::{QUIET, Shown, jump_ink, label, lost_zooms, wide_window};
 use super::init::{Facts, rules, stills, ticking, written};
 use super::sound::{
     BED_REF_LUFS, Laid, Made, Mix, NEAR_KEY_DB, Placed, Track, Where, bed_gains, heard_at, laid, lay, layout,
@@ -739,7 +739,7 @@ fn drawn_over(c: &Cut, f: &Frame, screen: &vt100::Screen, s: video::Scale) -> (V
     let pic = crate::shot::render_scaled(screen, &fonts, lay.glyph, s.k());
     let stage = Stage::new(lay, &look, c, None);
     let none = (None, &mascot::pops::Pops::default(), &[][..]);
-    (stage.take_frame(&pic, None, f, none, &mut Words::new(&fonts, look.ground, s)), lay)
+    (stage.take_frame(&Shown::Whole(&pic), f, none, &mut Words::new(&fonts, look.ground, s)), lay)
 }
 
 /// The pixels (indices) where two frames differ above the band's rule.
@@ -1022,7 +1022,7 @@ fn where_it_ends_is_marked_and_zoomed_by_the_opening_alone() {
     let p = Program::new(&c);
     let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap();
     let paths = super::draw::paths(&c, &[all], Some((0, near)), size);
-    let region = |v: u64| super::draw::region(&p.frame(v), &c, &paths, size);
+    let region = |v: u64| super::draw::region(&p.frame(v), &paths, size);
     assert_eq!(region(ends.at), all, "at its start: the whole");
     let held = region(ends.at + (camera::DRIFT_MS + 300) * 1000);
     assert!(close(held), "eased in, held on its target: {held:?}");
@@ -1037,7 +1037,7 @@ fn where_it_ends_is_marked_and_zoomed_by_the_opening_alone() {
     let c = cut(&zoomed).unwrap();
     let p = Program::new(&c);
     let paths = super::draw::paths(&c, &[all, near], None, size);
-    let region = |v: u64| super::draw::region(&p.frame(v), &c, &paths, size);
+    let region = |v: u64| super::draw::region(&p.frame(v), &paths, size);
     let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap();
     let step = 1_000_000 / video::FPS;
     for v in (ends.at..ends.at + ends.len).step_by(step as usize) {
@@ -1981,7 +1981,7 @@ use super::mascot::{self, Art, Hands, Pose, Press, Side};
 
 #[test]
 fn a_keys_side_is_its_half_of_a_qwerty() {
-    let cases: [(&[u8], Side); 17] = [
+    let cases: [(&[u8], Side); 18] = [
         (b"q", Side::Left),
         (b"B", Side::Left),
         (b"5", Side::Left),
@@ -1997,13 +1997,32 @@ fn a_keys_side_is_its_half_of_a_qwerty() {
         (b"\x1b[27u", Side::Left),
         (b"\x1b[106;5u", Side::Right),
         (b" ", Side::Space),
-        (b"\x1b[13u", Side::Both),
+        (b"\x1b[13u", Side::Right),
+        (b"\r", Side::Right),
         (b"sh git worktree add", Side::Left), // the key script's line: its first
     ];
     for (b, s) in cases {
         assert_eq!(mascot::side(b), s, "{:?}", String::from_utf8_lossy(b));
     }
-    assert_eq!(mascot::side(b"\r"), Side::Both);
+}
+
+#[test]
+fn a_return_is_one_paw_on_the_right() {
+    // (every way a take keeps one: the keyboard protocol's, shifted, and the keypad's Enter — application mode's and
+    // the protocol's code)
+    for b in [&b"\r"[..], b"\n", b"\r\n", b"\x1b[13u", b"\x1b[13;2u", b"\x1bOM", b"\x1b[57414u"] {
+        assert_eq!(mascot::side(b), Side::Right, "{:?}", String::from_utf8_lossy(b));
+    }
+    // (alone, and after a left key: the right paw down its hold, the left up)
+    let hold = Press::Key.hold();
+    for mut taps in [vec![], vec![(0, Side::Left, Press::Key)]] {
+        taps.push((1_000_000, mascot::side(b"\r"), Press::Key));
+        let h = Hands::new(&taps);
+        let k = Program::frame_at(1_000_000);
+        let poses: Vec<Pose> = (k..k + hold).map(|f| h.pose(f, false)).collect();
+        assert_eq!(poses, vec![Pose::Right; hold as usize], "{taps:?}");
+        assert_eq!(h.pose(k + hold, false), Pose::Up);
+    }
 }
 
 #[test]
@@ -2014,7 +2033,7 @@ fn the_mascot_taps_where_a_key_is_heard_on_its_side_and_nowhere_else() {
         key(5_000, b"f"),   // the default's 4×: not heard, no tap
         key(14_000, b"a"),  // 1×, left
         key(14_300, b"j"),  // right
-        key(14_600, b"\r"), // a return: both
+        key(14_600, b"\r"), // a return: the right paw, one like every key
         key(14_950, b"y"),  // the key that answers card 1: the stamp, its own paw (right), one press
         key(30_000, b"d"),  // left out
     ];
@@ -2026,7 +2045,7 @@ fn the_mascot_taps_where_a_key_is_heard_on_its_side_and_nowhere_else() {
         [
             (17_500_000, Side::Left, Press::Key),
             (17_800_000, Side::Right, Press::Key),
-            (18_100_000, Side::Both, Press::Key),
+            (18_100_000, Side::Right, Press::Key),
             (18_500_000, Side::Right, Press::Stamp)
         ]
     );
@@ -2038,7 +2057,7 @@ fn the_mascot_taps_where_a_key_is_heard_on_its_side_and_nowhere_else() {
     let at = |us: u64| hands.pose(Program::frame_at(us), false);
     assert_eq!(
         [at(17_500_000), at(17_800_000), at(18_100_000), at(18_500_000), at(7_000_000)],
-        [Pose::Left, Pose::Right, Pose::Both, Pose::Right, Pose::Watch]
+        [Pose::Left, Pose::Right, Pose::Right, Pose::Right, Pose::Watch]
     );
     // (between them the hands up; where the 4× key was, no tap: watching)
     assert_eq!(at(17_700_000), Pose::Up);
@@ -2156,7 +2175,7 @@ fn the_mascot_watches_after_the_quiet_and_on_a_sped_span_and_never_on_a_card() {
         (Some(Pose::Watch), Some(Pose::Up), Some(Pose::Up))
     );
     // (a card: none)
-    let h = Hands::new(&[(4_000_000, Side::Both, Press::Key)]);
+    let h = Hands::new(&[(4_000_000, Side::Right, Press::Key)]);
     let built = Program::frame_at(4_000_000);
     assert_eq!(p.frame(Program::time_of(built)).card, Some(Card::Built));
     assert_eq!(mascot::pose_at(&h, built, &p.frame(Program::time_of(built))), None);
@@ -2313,7 +2332,7 @@ fn a_frame_at_2160p_halved_is_the_1080p_frame() {
         let pic = crate::shot::render_scaled(screen.screen(), &fonts, lay.glyph, s.k());
         let stage = Stage::new(lay, &look, c, None);
         let none = (None, &mascot::pops::Pops::default(), &[][..]);
-        (stage.take_frame(&pic, None, f, none, &mut Words::new(&fonts, look.ground, s)), lay)
+        (stage.take_frame(&Shown::Whole(&pic), f, none, &mut Words::new(&fonts, look.ground, s)), lay)
     };
     for (what, c, f) in &frames {
         assert!(f.clock.is_some(), "{what}: {f:?}");
@@ -3253,7 +3272,7 @@ fn a_pop_stays_in_its_lane_clear_of_the_mascots_ink_the_cells_and_the_marks() {
     };
     let f = at_take(&p, 5_000, 0);
     let mut words = Words::new(&fonts, look.ground, video::Scale::HD);
-    let without = stage.take_frame(&pic, None, &f, (Some(Pic::WATCH), &pops, &[]), &mut words);
+    let without = stage.take_frame(&Shown::Whole(&pic), &f, (Some(Pic::WATCH), &pops, &[]), &mut words);
     // (the marks: none of their ink from the gap before the lane to the box)
     for y in lay.rule + 1..video::H {
         for x in left - mascot::GAP..place.x {
@@ -3262,7 +3281,7 @@ fn a_pop_stays_in_its_lane_clear_of_the_mascots_ink_the_cells_and_the_marks() {
     }
     for age in [0, 6, 12, 17] {
         let up: Vec<(usize, u64)> = (0..pops.list.len()).map(|i| (i, age)).collect();
-        let with = stage.take_frame(&pic, None, &f, (Some(Pic::WATCH), &pops, &up), &mut words);
+        let with = stage.take_frame(&Shown::Whole(&pic), &f, (Some(Pic::WATCH), &pops, &up), &mut words);
         let mut changed = 0;
         for y in 0..video::H {
             for x in 0..video::W {
@@ -3282,7 +3301,8 @@ fn a_pop_stays_in_its_lane_clear_of_the_mascots_ink_the_cells_and_the_marks() {
     // (each alone: a command in the ink, a typed letter in the faint ink; its ink's right edge its step aside of the
     // lane's right, or, too wide for that, its left at the lane's left)
     for (i, q) in pops.list.iter().enumerate() {
-        let with = stage.take_frame(&pic, None, &f, (Some(Pic::WATCH), &pops, &[(i, 0)]), &mut words);
+        let with =
+            stage.take_frame(&Shown::Whole(&pic), &f, (Some(Pic::WATCH), &pops, &[(i, 0)]), &mut words);
         let (mut lo, mut hi, mut most) = (usize::MAX, 0, 0u8);
         for y in lay.rule + 1..video::H {
             for x in left..right {
@@ -3406,32 +3426,285 @@ fn a_zoom_on_a_mask_still_hides_its_cells() {
     let stage = Stage::new(lay, &look, &c, None);
     let region = wide_window(Region { x: 15.0, y: 2.0, w: 2.0, h: 1.0 }, size);
     assert!(region.w < 166.0, "a zoom, not the whole: {region:?}");
-    let view = lay.view(region, size, &fonts);
     let f = at_take(&p, 12_000, 0);
     let pops = mascot::pops::Pops::default();
-    let frame = |s: &vt100::Screen, blank: &[crate::shot::Blank], kept: &mut Option<_>| {
-        let (pic, fresh) = stage.screen_pic(kept, s, (false, 1), Some(&view), blank, &fonts);
+    let frame = |s: &vt100::Screen, blank: &[crate::shot::Blank], kept: &mut super::draw::Pictures| {
+        let (shown, fresh) = stage.shown(kept, (s, (false, 1)), (region, None), size, blank, &fonts);
+        assert!(matches!(shown, Shown::Through(_, _, None)), "through the zoom alone");
         let px = stage.take_frame(
-            pic,
-            Some(&view),
+            &shown,
             &f,
             (None, &pops, &[][..]),
             &mut Words::new(&fonts, look.ground, lay.scale),
         );
-        (px, fresh)
+        (px, fresh == 1)
     };
-    let (screen, mut kept) = (ls_screen(false), None);
+    let (screen, mut kept) = (ls_screen(false), Default::default());
     let blank = [(2, 15, 17)];
     let (bare, _) = frame(screen.screen(), &[], &mut kept);
     let (hid, fresh) = frame(screen.screen(), &blank, &mut kept);
     assert!(fresh, "the same screen, now masked, drawn again");
-    let (erased, _) = frame(ls_screen(true).screen(), &[], &mut None);
+    let (erased, _) = frame(ls_screen(true).screen(), &[], &mut Default::default());
     assert_ne!(bare, erased, "the zoom shows the login unmasked");
     let first = (0..hid.len()).find(|&i| hid[i] != erased[i]).map(|i| (i / 3 % video::W, i / 3 / video::W));
     assert_eq!(
         first, None,
         "the masked zoom against the erased screen's: the first pixel (x, y) that differs"
     );
+}
+
+/// A frame of a zoom as `zoom_track` saw it: its µs on the camera's path, the glyph its screen's picture was drawn at,
+/// how far in (the whole's 1), where the word's ink is (its centroid, px), where the camera's own mapping puts it, and
+/// how far apart those are (px).
+#[derive(Debug)]
+struct Tracked {
+    frame: u64,
+    us: u64,
+    glyph: f32,
+    m: f64,
+    at: (f64, f64),
+    ideal: (f64, f64),
+    off: (f64, f64),
+}
+
+/// The word `zoom_track` follows: `call mom today` alone on row 24 from column 118, inside take 3's zoom window.
+const WORD: (usize, usize, usize) = (118, 24, 132);
+
+/// Take 3's zooms (`final-t3.toml`'s four: 83×16 cells, 2× the whole, of 166×32) as the cut draws one at `scale`, a
+/// frame at a time at `FPS`: the camera's path in from 500 ms, held 600 ms, and back out to the whole, every frame's
+/// screen laid as `make` lays a take's (`Glyphs`, `Stage::shown`, `Stage::lay_screen` — its rows round the word) — the
+/// first and those `want` says; in each,
+/// the word's ink weighed in a box a cell wider than it all round on the camera's own mapping of the cells — its
+/// centroid, against where that mapping takes the centroid the first (the whole) drew: what a still picture zoomed would
+/// show. The camera read at each frame's own µs, as `make` reads it (`Frame::camera`). At 30 fps the camera leaves the
+/// whole after frame 15 and is back at frame 105.
+fn zoom_track(scale: video::Scale, want: impl Fn(u64) -> bool) -> Vec<Tracked> {
+    use super::draw::{Stage, layout};
+    let size = (166u16, 32u16);
+    let fonts = crate::shot::Fonts::load(scale.k()).unwrap();
+    let lay = layout(&fonts, size, scale).unwrap();
+    let c = cut(CUT).unwrap();
+    let look = video::look(Bg::Dark);
+    let stage = Stage::new(lay, &look, &c, None);
+    let mut screen = vt100::Parser::new(size.1, size.0, 0);
+    screen.process(b"\x1b[?25l\x1b[48;2;11;14;20m\x1b[2J\x1b[38;2;191;189;182m\x1b[25;119Hcall mom today");
+    let all = Region::all(size);
+    let window = Region { x: 83.0, y: 16.0, w: 83.0, h: 16.0 };
+    let (from, held) = (500, 600);
+    let to = from + camera::DRIFT_MS + held;
+    let until = to + camera::DRIFT_MS + 300;
+    let path = camera::Path::of(&camera::aims(&[(from, to, window)], size), size, until);
+    let glyphs = super::draw::Glyphs::of(&path, &lay, size, &fonts);
+    // (the camera's own mapping: the cells as large as the region fills the picture, its middle at the picture's)
+    let k = scale.k() as f64;
+    let (cw1, ch1) = crate::shot::cell(&fonts, lay.glyph);
+    let (cw0, ch0) = (cw1 as f64 * k, ch1 as f64 * k);
+    let (ww, wh) = (lay.pic.0 as f64, lay.pic.1 as f64);
+    let (x0, y0) = (lay.at.0 as f64, lay.at.1 as f64);
+    let fill = |r: Region| (ww / (r.w as f64 * cw0)).min(wh / (r.h as f64 * ch0));
+    let lum = |p: &[u8]| 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64;
+    let ground = lum(&[11, 14, 20]);
+    let mut kept = super::draw::Pictures::default();
+    let mut first: Option<(f64, f64)> = None;
+    let frames = until * video::FPS / 1000;
+    (0..frames)
+        .filter(|&i| i == 0 || want(i))
+        .map(|i| {
+            let us = Program::time_of(i);
+            let region = path.at_us(us);
+            let at = (screen.screen(), (false, 1));
+            let (shown, _) = stage.shown(&mut kept, at, (region, glyphs.at(us)), size, &[], &fonts);
+            let glyph = match &shown {
+                Shown::Whole(_) => lay.glyph,
+                Shown::Through(_, v, _) => v.px,
+            };
+            let m = fill(region) / fill(all);
+            let (tw, th) = (cw0 * m, ch0 * m);
+            let x = |c: f64| x0 + ww / 2.0 + (c - (region.x as f64 + region.w as f64 / 2.0)) * tw;
+            let y = |r: f64| y0 + wh / 2.0 + (r - (region.y as f64 + region.h as f64 / 2.0)) * th;
+            let (c0, r0, c1) = (WORD.0 as f64, WORD.1 as f64, WORD.2 as f64);
+            let (bx, by) = ((x(c0 - 1.0), x(c1 + 1.0)), (y(r0 - 0.5), y(r0 + 1.5)));
+            // (the frame's rows round the box alone, laid as `take_frame` lays them)
+            let mut px = look.ground.repeat(lay.dims.0 * lay.dims.1);
+            let rows =
+                (by.0.floor() as usize - lay.at.1)..(by.1.ceil() as usize - lay.at.1 + 1).min(lay.pic.1);
+            stage.lay_screen(&mut px, &shown, rows);
+            let (mut sum, mut sx, mut sy) = (0.0, 0.0, 0.0);
+            for py in by.0.floor() as usize..by.1.ceil() as usize {
+                for qx in bx.0.floor() as usize..bx.1.ceil() as usize {
+                    let w = (lum(&px[(py * video::W * scale.k() + qx) * 3..][..3]) - ground).max(0.0);
+                    (sum, sx, sy) = (sum + w, sx + w * (qx as f64 + 0.5), sy + w * (py as f64 + 0.5));
+                }
+            }
+            let at = (sx / sum, sy / sum);
+            // (the centroid in cells from the word's first cell's corner: the whole's, carried by the mapping)
+            let q = *first.get_or_insert(((at.0 - x(c0)) / tw, (at.1 - y(r0)) / th));
+            let ideal = (x(c0) + q.0 * tw, y(r0) + q.1 * th);
+            let off = (at.0 - ideal.0, at.1 - ideal.1);
+            Tracked { frame: i, us, glyph, m, at, ideal, off }
+        })
+        .collect()
+}
+
+/// A zoom moves the screen's text along the camera's path, its pictures taken down and up smoothly:
+/// - the camera's clock is each frame's own µs, a frame's length apart at 1×, in the take and where it ends — never
+///   whole ms (33, 33, 34: every third frame's move 2 % longer, a 10 Hz ripple);
+/// - frame to frame the word never steps more than 0.3 px off where the path puts it — the whole way in and out at
+///   1080p, and at 2160p where the camera leaves and reaches the whole, through the fade (`FADE_ZOOM`);
+/// - it never goes back: each frame it moves the way the path does wherever the path moves a tenth of a px or more, and
+///   it turns only where the path itself turns — none going out, one going in: the spring's 2 % past the read and back
+///   (`camera::way`, the user's (c)).
+///
+/// (Take 3's final before: at 1080p the word went back and forth up to 0.8 px a frame, each frame drawn at a glyph size
+/// of its own, 19 in a 1.2 s move; at 2160p it jumped 14 px as the camera left the whole and back as it came, the view
+/// taking the picture's margin for 1080p's.)
+#[test]
+fn a_zoom_moves_the_text_along_its_path_with_no_shake_and_no_step() {
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let ends = p.parts.iter().find(|x| matches!(x.what, What::Ends { .. })).unwrap();
+    for (part, first) in
+        [("the take at 1×", p.video_of(c.map.video(12_000)).unwrap()), ("where it ends", ends.at)]
+    {
+        let k = Program::frame_at(first);
+        let clocks: Vec<u64> = (k..k + 30).map(|k| p.frame(Program::time_of(k)).camera.unwrap()).collect();
+        for w in clocks.windows(2) {
+            assert!([33_333, 33_334].contains(&(w[1] - w[0])), "{part}: the camera's clock {w:?}");
+        }
+    }
+    let check = |scale: video::Scale, want: fn(u64) -> bool| {
+        let t = zoom_track(scale, want);
+        let whole = |f: u64| t.iter().find(|x| x.frame == f).map(|x| x.m == 1.0);
+        assert_eq!(
+            (whole(15), whole(16), whole(104), whole(105)),
+            (Some(true), Some(false), Some(false), Some(true))
+        );
+        for w in t.windows(2).filter(|w| w[1].frame == w[0].frame + 1) {
+            let (a, b) = (&w[0], &w[1]);
+            for (axis, moved, path) in
+                [("x", b.at.0 - a.at.0, b.ideal.0 - a.ideal.0), ("y", b.at.1 - a.at.1, b.ideal.1 - a.ideal.1)]
+            {
+                assert!(
+                    path.abs() < 0.1 || moved * path > 0.0,
+                    "{}: frame {} the word goes back in {axis}: {moved:+.2} px where the path moves {path:+.2}",
+                    scale.name(),
+                    b.frame
+                );
+            }
+            let step = (b.off.0 - a.off.0).abs().max((b.off.1 - a.off.1).abs());
+            assert!(
+                step <= 0.3,
+                "{}: frame {} the word steps {step:.2} px off the camera's path ({a:?} → {b:?})",
+                scale.name(),
+                b.frame
+            );
+        }
+        t
+    };
+    // (where the word turns: frames whose move goes against the last one over a twentieth of a px)
+    let turns = |t: &[Tracked], f: fn(&Tracked) -> f64, from: u64, to: u64| -> Vec<u64> {
+        let (mut last, mut out) = (0.0, Vec::new());
+        for w in t.windows(2).filter(|w| w[1].frame == w[0].frame + 1 && (from..=to).contains(&w[1].frame)) {
+            let d = f(&w[1]) - f(&w[0]);
+            if d.abs() > 0.05 {
+                if d * last < 0.0 {
+                    out.push(w[1].frame);
+                }
+                last = d;
+            }
+        }
+        out
+    };
+    let hd = check(video::Scale::HD, |i| (15..=40).contains(&i) || (68..=105).contains(&i));
+    // (and it went somewhere: the zoom took the word half a screen's width)
+    let gone = hd.iter().map(|x| (x.at.0 - hd[0].at.0).abs()).fold(0.0, f64::max);
+    assert!(gone > 400.0, "the word moved {gone:.0} px");
+    for (f, axis) in [((|x: &Tracked| x.at.0) as fn(&Tracked) -> f64, "x"), (|x: &Tracked| x.at.1, "y")] {
+        let ideal: fn(&Tracked) -> f64 = if axis == "x" { |x| x.ideal.0 } else { |x| x.ideal.1 };
+        let (going_in, path_in) = (turns(&hd, f, 15, 40), turns(&hd, ideal, 15, 40));
+        assert_eq!(going_in, path_in, "{axis}: going in, the word turns where the path does");
+        assert_eq!(path_in.len(), 1, "{axis}: going in, the spring's one turn past the read: {path_in:?}");
+        assert_eq!(turns(&hd, f, 68, 105), Vec::<u64>::new(), "{axis}: going out, no turn");
+    }
+    // (2160p, where its pictures differ most: the camera leaving and reaching the whole, through the fade both ways)
+    check(video::Scale::UHD, |i| (15..=20).contains(&i) || (80..=105).contains(&i));
+}
+
+/// By hand: the camera's box through take 3's zoom, a frame a line — its left column and width (cells) and how far each
+/// moved since the frame before, at the whole ms the frame's clock reads (`m / 1000`) and at its own µs; and how uneven
+/// the whole ms make each frame's move (its share of the exact one's, less 1).
+#[test]
+#[ignore = "by hand: prints a zoom's box (cargo test -p xtask zoom_box_printed -- --ignored --nocapture)"]
+fn zoom_box_printed() {
+    let size = (166u16, 32u16);
+    let window = Region { x: 83.0, y: 16.0, w: 83.0, h: 16.0 };
+    let path = camera::Path::of(&camera::aims(&[(500, 2300, window)], size), size, 4000);
+    println!("frame, ms, x, w (whole ms), fract x, dx, dw (whole ms), dx (exact), uneven");
+    let (mut was, mut was_exact) = (path.at(0), path.at_us(0));
+    let mut worst: f64 = 0.0;
+    for i in 1..(3800 * video::FPS / 1000) {
+        let us = i * 1_000_000 / video::FPS;
+        let (r, e) = (path.at(us / 1000), path.at_us(us));
+        let (dx, ex) = ((r.x - was.x) as f64, (e.x - was_exact.x) as f64);
+        let uneven = if ex.abs() > 1e-3 { dx / ex - 1.0 } else { 0.0 };
+        if ex.abs() > 0.05 {
+            worst = worst.max(uneven.abs());
+        }
+        if r != was || e != was_exact {
+            println!(
+                "{i:3} {:5} {:8.4} {:8.4} {:.4} {:+8.4} {:+8.4} {:+8.4} {:+6.3}",
+                us / 1000,
+                r.x,
+                r.w,
+                r.x.fract(),
+                dx,
+                r.w - was.w,
+                ex,
+                uneven
+            );
+        }
+        (was, was_exact) = (r, e);
+    }
+    println!(
+        "the whole ms make a frame's move uneven by up to {:.1} % (where it moves over 0.05 cells)",
+        worst * 100.0
+    );
+}
+
+/// By hand: take 3's zoom tracked at 1080p and 2160p, a frame a line, and the largest step of the word off its path.
+#[test]
+#[ignore = "by hand: prints a zoom's track (cargo test -p xtask zoom_track_printed -- --ignored --nocapture)"]
+fn zoom_track_printed() {
+    for scale in [video::Scale::HD, video::Scale::UHD] {
+        let t = zoom_track(scale, |_| true);
+        println!("== {}: frame, ms, glyph, zoom, centroid x y, off x y (px)", scale.name());
+        for (i, f) in t.iter().enumerate() {
+            println!(
+                "{i:3} {:5} {:5.1} {:.4} {:9.2} {:8.2} {:+7.2} {:+7.2}",
+                f.us / 1000,
+                f.glyph,
+                f.m,
+                f.at.0,
+                f.at.1,
+                f.off.0,
+                f.off.1
+            );
+        }
+        let step = |a: &Tracked, b: &Tracked| ((b.off.0 - a.off.0).abs()).max((b.off.1 - a.off.1).abs());
+        let worst = t
+            .windows(2)
+            .enumerate()
+            .map(|(i, w)| (step(&w[0], &w[1]), i + 1))
+            .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a });
+        let back =
+            t.windows(3).filter(|w| ((w[1].off.0 - w[0].off.0) * (w[2].off.0 - w[1].off.0)) < -0.01).count();
+        println!(
+            "{}: largest frame-to-frame step off the path {:.2} px (at frame {}); {back} turns back and forth in x",
+            scale.name(),
+            worst.0,
+            worst.1
+        );
+    }
 }
 
 /// A mask that matches no frame is said loudly in `cut.txt`: one past the take's end (take seconds, not refused), one
@@ -3822,8 +4095,9 @@ fn the_big_v_is_drawn_in_the_lane_at_the_swings_frames_and_nowhere_else() {
     let pic = crate::shot::render_scaled(screen.screen(), &fonts, lay.glyph, 1);
     let f = at_take(&p, 5_000, 0);
     let mut words = Words::new(&fonts, look.ground, video::Scale::HD);
-    let mut frame =
-        |pose: Pic| stage.take_frame(&pic, None, &f, (Some(pose), &Pops::default(), &[]), &mut words);
+    let mut frame = |pose: Pic| {
+        stage.take_frame(&Shown::Whole(&pic), &f, (Some(pose), &Pops::default(), &[]), &mut words)
+    };
     let without = frame(Pic::WATCH);
     let mut reds = Vec::new();
     for pose in Pic::all() {

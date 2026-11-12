@@ -5,11 +5,12 @@
 //!   intro's swing is: `TARAE_MASCOT_KEYS`, else by the repository's common git folder), shrunk once to `BOX`. Not
 //!   found, or hanji's ground (they're meok's only): the cut is made without it, and says so.
 //! - **A tap** where a key is heard (`sound::sounds`' own list — picture and sound agree), on the key's side of a
-//!   QWERTY (`side`): both hands on a return. A hand stays down `HOLD_MS`; the same hand asked again before it's up
-//!   comes up for one frame first (`Hands`), so fast typing reads as taps. **A stamp** (a card answered) is one press
-//!   of the answering key's own paw, held `STAMP_HOLD_MS` — a seal pressed, not a letter typed —, the other paw up over
-//!   the keys (the user, 2026-11-12: one hand on a lone `y`). A card that goes only once its work is done (the
-//!   grammar's) is pressed where its answering key is heard (`sound::ANSWER_WAIT_MS`); a stamp with no key taps nothing.
+//!   QWERTY (`side`): every key one paw, a return the right's (the user, 2026-11-13: "엔터는 왜 양손으로 쳐?").
+//!   A hand stays down `HOLD_MS`; the same hand asked again before it's up comes up for one frame first (`Hands`), so
+//!   fast typing reads as taps. **A stamp** (a card answered) is one press of the answering key's own paw, held
+//!   `STAMP_HOLD_MS` — a seal pressed, not a letter typed —, the other paw up over the keys (the user, 2026-11-12: one
+//!   hand on a lone `y`). A card that goes only once its work is done (the grammar's) is pressed where its answering key
+//!   is heard (`sound::ANSWER_WAIT_MS`); a stamp with no key taps nothing.
 //! - **Watching** where no key has been heard for `QUIET_MS`, and on every span too fast for its keys to be heard: the
 //!   eyes raised to the screen. Every change of pose snaps; nothing else moves. (With `[mascot] fast`, a fast span long
 //!   enough is pressing fast-forward instead: `motions::fast_holds` — winding the skein where its pictures are found,
@@ -278,22 +279,23 @@ impl Switches {
     }
 }
 
-/// The hand a key asks for: the side of a QWERTY it's on, both, or (the space bar) the hand that didn't tap last.
+/// The paw a key asks for — every key one paw: the side of a QWERTY it's on, or (the space bar) the paw that didn't tap
+/// last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Side {
     Left,
     Right,
-    Both,
     Space,
 }
 
 /// A key's side, from its bytes as the take keeps them: letters and digits by a QWERTY's halves (shifted ones too);
-/// escape and tab left; a return both; the space bar its own; backspace, arrows and the rest right. The keyboard
-/// protocol's `ESC [ code … u` by its code, a control key by its letter, an alt key by its character, a line the key
-/// script types at once by its first.
+/// escape and tab left; the space bar its own; a return (the keypad's Enter too), backspace, arrows and the rest right.
+/// The keyboard protocol's `ESC [ code … u` by its code, a control key by its letter, an alt key by its character, a
+/// line the key script types at once by its first.
 pub(crate) fn side(b: &[u8]) -> Side {
+    // (said, not left to `\r` reading as C-m: right by a QWERTY's halves too, but by chance)
     if super::init::is_return(b) {
-        return Side::Both;
+        return Side::Right;
     }
     if let Some(body) = b.strip_prefix(b"\x1b[").and_then(|r| r.strip_suffix(b"u")) {
         let code: String = body.iter().take_while(|c| c.is_ascii_digit()).map(|&c| c as char).collect();
@@ -362,27 +364,18 @@ impl Hands {
         // (each hand's taps: frame and hold; every tap's)
         let mut at: [Vec<(u64, u64)>; 2] = [Vec::new(), Vec::new()];
         let mut all: Vec<(u64, u64)> = Vec::new();
-        let mut last = None;
+        // (the hand that tapped last: 0 the left, 1 the right)
+        let mut last: Option<usize> = None;
         for (v, s, press) in sorted {
             let hold = press.hold();
-            let s = match (s, last) {
-                (Side::Space, Some(Side::Left)) => Side::Right,
-                (Side::Space, Some(Side::Right)) => Side::Left,
-                (Side::Space, _) => Side::Right,
-                (s, _) => s,
+            let h = match s {
+                Side::Left => 0,
+                Side::Right => 1,
+                Side::Space => last.map_or(1, |l| 1 - l),
             };
-            last = Some(s);
-            let hands: &[usize] = match s {
-                Side::Left => &[0],
-                Side::Right => &[1],
-                _ => &[0, 1],
-            };
-            let f = (hands.iter())
-                .filter_map(|&h| at[h].last().map(|p| p.0 + 2))
-                .fold(Program::frame_at(v), u64::max);
-            for &h in hands {
-                at[h].push((f, hold));
-            }
+            last = Some(h);
+            let f = at[h].last().map_or(0, |p| p.0 + 2).max(Program::frame_at(v));
+            at[h].push((f, hold));
             all.push((f, hold));
         }
         all.sort_unstable();

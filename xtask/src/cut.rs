@@ -1317,8 +1317,10 @@ pub(crate) enum Card {
 
 /// What one frame shows: the take's screen at its ms, or a card; and what the band says — the take's time, a sped
 /// span's factor, the jump's mark (how much was left out, and how drawn, of 255), whether it's where it ends, a caption
-/// or a chapter with no card (which, how drawn) —; where in the map it is (the camera's clock), the take part's
-/// frames only; and the words over where it ends (`label.rs`), its frames only, where the opening has them.
+/// or a chapter with no card (which, how drawn) —; the camera's clock (µs, never whole ms: at 30 fps those make every
+/// third frame's move 2 % longer than the others', a ripple through every zoom) — in the take part where in the map it
+/// is, where it ends how far into it, on its own clock; and the words over where it ends (`label.rs`), its frames only,
+/// where the opening has them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
     pub(crate) screen: Option<u64>,
@@ -1329,7 +1331,7 @@ pub(crate) struct Frame {
     pub(crate) ends: bool,
     pub(crate) caption: Option<(usize, u8)>,
     pub(crate) chapter: Option<(usize, u8)>,
-    pub(crate) map: Option<u64>,
+    pub(crate) camera: Option<u64>,
     pub(crate) label: Option<label::Label>,
 }
 
@@ -1344,7 +1346,7 @@ impl Frame {
             ends: false,
             caption: None,
             chapter: None,
-            map: None,
+            camera: None,
             label: None,
         }
     }
@@ -1487,11 +1489,14 @@ impl<'c> Program<'c> {
             What::Ends { from } => {
                 let t = (from + off / 1000).min(self.cut.end);
                 let label = self.cut.opening.label.as_ref().map(|_| label::at(off, p.len));
+                let camera = ((from * 1000 + off).min(self.cut.end * 1000))
+                    .saturating_sub(self.cut.opening.from * 1000);
                 Frame {
                     screen: Some(t),
                     card: None,
                     clock: Some(t),
                     ends: true,
+                    camera: Some(camera),
                     label,
                     ..Frame::card(Card::Built)
                 }
@@ -1534,7 +1539,7 @@ impl<'c> Program<'c> {
             ends: false,
             caption,
             chapter,
-            map: Some(m),
+            camera: Some(m),
             label: None,
         }
     }
