@@ -450,20 +450,26 @@ const CUTS_MAX: usize = 8;
 /// with the new lines that answer it — `space i`'s selections on touching lines each a change of its own (#135). The
 /// new lines split where the two sides' characters differ least (`split`) — on a tie the latest such place: lines
 /// added between two kept whole are the first's, as is what's left when one goes; a part that changes nothing goes.
+/// A cut at a change's edge leaves it whole, and so does every cut of a pure insertion (`from == to`, its old text
+/// empty): there's nothing of the old text to split, its new lines one change wherever they land. A cut given twice
+/// is one.
 pub fn cut_at(
     changes: Vec<(usize, usize, String, String)>,
     cuts: &[usize],
 ) -> Vec<(usize, usize, String, String)> {
+    let mut cuts = cuts.to_vec();
+    cuts.dedup();
+    // (the cuts strictly inside `from..to` — none when it's empty, a cut at an insertion's place included)
     let within = |from: usize, to: usize| {
-        &cuts[cuts.partition_point(|&c| c <= from)..cuts.partition_point(|&c| c < to)]
+        let start = cuts.partition_point(|&c| c <= from);
+        &cuts[start..cuts.partition_point(|&c| c < to).max(start)]
     };
     if changes.iter().map(|(from, to, ..)| within(*from, *to).len()).sum::<usize>() > CUTS_MAX {
         return changes;
     }
     let mut out = Vec::with_capacity(changes.len());
     for (from, to, old, new) in changes {
-        let mut inside: Vec<usize> = within(from, to).iter().map(|&c| c - from).collect();
-        inside.dedup();
+        let inside: Vec<usize> = within(from, to).iter().map(|&c| c - from).collect();
         let mut starts = vec![0];
         starts.extend(new.match_indices('\n').map(|(i, _)| i + 1));
         if *starts.last().unwrap() != new.len() {
@@ -587,6 +593,49 @@ mod tests {
         assert_eq!(c(&old, &new, &cuts).len(), 2, "counted over every change");
         let a_few: Vec<usize> = cuts.iter().copied().filter(|&c| c != 3 && c != old.len() - 3).collect();
         assert_eq!(c(&old, &new, &a_few).len(), 2 * (CUTS_MAX / 2 + 2) - 2, "at the cap");
+    }
+
+    /// The full video's take 2 (2026-11-12): `space i` on a function's closing `}`, its answer a test module added
+    /// after it — a pure insertion at the selection's line end, a cut, and `cut_at` panicked slicing its cuts. A pure
+    /// insertion has nothing of the old text to split: one change wherever it lands — at a cut, the file's start or
+    /// end, beside a change that is cut; a cut at a change's edge leaves it whole; a cut given twice is one.
+    #[test]
+    fn an_insertion_at_a_cut_stays_one_change() {
+        let ch = |f: usize, t: usize, o: &str, n: &str| (f, t, o.to_string(), n.to_string());
+        // (at a cut between two lines)
+        assert_eq!(cut_at(vec![ch(2, 2, "", "X\n")], &[0, 2, 4]), [ch(2, 2, "", "X\n")]);
+        // (at the file's end, the last selection's line end a cut — the take's own shape)
+        let end = line_changes("fn f() {\n}\n", "fn f() {\n}\n\nmod tests {\n    use super::*;\n}\n");
+        // (the diff may keep either `}`: an insertion at 9 or at 11, both cuts)
+        assert!(end.len() == 1 && end[0].0 == end[0].1 && [9, 11].contains(&end[0].0), "{end:?}");
+        assert_eq!(cut_at(end.clone(), &[9, 11]), end);
+        assert_eq!(cut_at(end.clone(), &[end[0].0]), end);
+        // (at the file's start)
+        let start = line_changes("a\n", "X\na\n");
+        assert_eq!(cut_at(start.clone(), &[0, 2]), start);
+        // (beside a change that is cut: that one cut, the insertion whole)
+        let v = cut_at(vec![ch(0, 4, "a\nb\n", "A\nB\n"), ch(6, 6, "", "X\n")], &[0, 2, 4, 6]);
+        assert_eq!(v, [ch(0, 2, "a\n", "A\n"), ch(2, 4, "b\n", "B\n"), ch(6, 6, "", "X\n")]);
+    }
+
+    /// A cut at a change's start and end leaves it whole: never an empty old part, its new lines an insertion of
+    /// their own beside the old line taken out.
+    #[test]
+    fn a_cut_at_a_changes_edge_leaves_it_whole() {
+        let one = vec![(0, 2, "a\n".to_string(), "A\nX\n".to_string())];
+        assert_eq!(cut_at(one.clone(), &[0, 2]), one);
+        assert_eq!(cut_at(one.clone(), &[0]), one);
+        assert_eq!(cut_at(one.clone(), &[2]), one);
+    }
+
+    /// A cut given twice is one: one part each side, and counted once against `CUTS_MAX` (the same place
+    /// `CUTS_MAX + 1` times is still one cut).
+    #[test]
+    fn a_cut_given_twice_is_one() {
+        let ch = |f: usize, t: usize, o: &str, n: &str| (f, t, o.to_string(), n.to_string());
+        let both = [ch(0, 2, "a\n", "A\n"), ch(2, 4, "b\n", "B\n")];
+        assert_eq!(cut_at(vec![ch(0, 4, "a\nb\n", "A\nB\n")], &[2, 2]), both);
+        assert_eq!(cut_at(vec![ch(0, 4, "a\nb\n", "A\nB\n")], &[2; CUTS_MAX + 1]), both);
     }
 
     /// The most `cut_at` does (#135): `CUTS_MAX` cuts in one change of `CUT_BYTES`, its new lines `CUT_LINES` — the

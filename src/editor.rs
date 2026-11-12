@@ -21075,6 +21075,29 @@ mod tests {
         assert_eq!(parts, [(0, 9), (9, 12)]);
     }
 
+    /// The full video's take 2 (2026-11-12): `space i` with the cursor on a function's closing `}`, its answer lines
+    /// added right where the selection's lines begin or end — a cut each (#135), there the file's end — and tarae
+    /// panicked cutting the insertion (`editdiff::cut_at`). Now it's offered as one change, and `y` applies it.
+    #[test]
+    fn an_asks_insertion_at_its_selections_line_start_or_end_is_one_change() {
+        let text0 = "fn f() {\n    1\n}\n";
+        for (old, new) in [("}", "}\n\n#[cfg(test)]\nmod tests {}"), ("    1\n}", "    1\n// end\n}")] {
+            let (_dir, path, mut ed) = ask_file("ask-insert-at-cut", text0);
+            let edit = serde_json::json!([{"file_path": path, "old_string": old, "new_string": new}]);
+            fake_ask(&mut ed, edit, done(), None);
+            feed(&mut ed, "jj<space>iadd a test<ret>");
+            settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+            crate::llm::review_focus(&mut ed);
+            let r = ed.workspace.claude.review.as_ref().unwrap();
+            let parts: Vec<(usize, usize)> = r.hunks.iter().map(|h| (h.from, h.to)).collect();
+            // (the `}` line's end — the file's — or its start)
+            let at = if old == "}" { text0.len() } else { text0.len() - "}\n".len() };
+            assert_eq!(parts, [(at, at)], "one insertion, at the cut ({old:?})");
+            feed(&mut ed, "y");
+            assert_eq!(text(&ed), text0.replacen(old, new, 1));
+        }
+    }
+
     #[test]
     fn ask_survives_edits_while_waiting() {
         let (_dir, path, mut ed) = ask_file("ask-edits", "foo bar");

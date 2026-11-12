@@ -6571,7 +6571,8 @@ const STORIES: &[Story] = &[
 /// nothing (`@beat:`, `@note:`), else refused, as is a `step` not after its `@rec`.
 fn opened_at(keys: &[&'static str], step: &str) -> Result<Vec<&'static str>> {
     let rec = keys.iter().position(|k| *k == "@rec").ok_or("no @rec")?;
-    let at = (keys.iter().skip(rec).position(|k| *k == step).map(|i| rec + i))
+    // (after it: `@rec` itself as the step is none, never a slice from past it to it)
+    let at = (keys.iter().skip(rec + 1).position(|k| *k == step).map(|i| rec + 1 + i))
         .ok_or_else(|| format!("no `{step}` after its @rec"))?;
     if let Some(k) = keys[rec + 1..at].iter().find(|k| !k.starts_with("@beat:") && !k.starts_with("@note:")) {
         return Err(format!("`{k}` before `{step}`: only marks are left out of a take"));
@@ -10284,13 +10285,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             ev(json!({"type": "content_block_delta", "index": 1,
                 "delta": {"type": "input_json_delta", "partial_json": s}}))
         };
-        // (from the new line's first letter: what comes before it shows nothing)
-        let key = "\"new_string\": \"";
-        let from = input.find(key).map_or(0, |k| {
-            let at = k + key.len();
-            at + input[at..].len() - input[at..].trim_start().len()
-        });
-        let mid = hold.and_then(|h| input.find(h)).unwrap_or(input.len());
+        let (from, mid) = v1_typed(input, hold);
         self.line(delta(&input[..from]))?;
         for c in input[from..mid].chars() {
             self.line(delta(&c.to_string()))?;
@@ -10564,6 +10559,19 @@ fn wait_files(paths: &[&Path], timeout: Duration) -> io::Result<usize> {
         }
         std::thread::sleep(Duration::from_millis(80));
     }
+}
+
+/// Where a V1 edit's `input` starts being written a character at a time, and where that stops (`hold`, found in what it
+/// writes — never in what it replaces before it — or its end): from the new line's first letter, what comes before it
+/// showing nothing.
+fn v1_typed(input: &str, hold: Option<&str>) -> (usize, usize) {
+    let key = "\"new_string\": \"";
+    let from = input.find(key).map_or(0, |k| {
+        let at = k + key.len();
+        at + input[at..].len() - input[at..].trim_start().len()
+    });
+    let mid = hold.and_then(|h| input[from..].find(h)).map_or(input.len(), |m| from + m);
+    (from, mid)
 }
 
 /// V1's fix: `wind`'s key, trimmed.
@@ -10908,7 +10916,19 @@ mod tests {
         assert!(opened_at(&keys, "x").unwrap_err().contains("`@2` before"), "a wait");
         assert!(opened_at(&keys, "@beat:b").unwrap_err().contains("before"), "a key");
         assert!(opened_at(&keys, "@1").is_err(), "before its @rec");
+        assert!(opened_at(&keys, "@rec").is_err(), "its @rec itself");
         assert!(opened_at(&keys[2..], "x").is_err(), "no @rec");
+    }
+
+    /// V1's writing held at `hold` in what it writes: a `hold` that the replaced text holds too, before its
+    /// `new_string`, is searched for only after it (two searches of one text, the second from the first's place).
+    #[test]
+    fn v1s_hold_is_searched_for_in_what_it_writes() {
+        let input = r#"{"old_string": "a // a", "new_string": "b // a"}"#;
+        let (from, mid) = v1_typed(input, Some("// a"));
+        assert_eq!(&input[from..mid], "b ");
+        assert_eq!(v1_typed(input, None).1, input.len());
+        assert_eq!(v1_typed(input, Some("nowhere")).1, input.len());
     }
 
     /// Short 2, "Watch Claude work, take it back" (CLAUDE.md's Shorts bullet: V5 follow and replay + V4 the edit in your

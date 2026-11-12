@@ -108,7 +108,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
             let busy = ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy);
             let sends = ed.workspace.claude.chat.as_ref().map_or(0, |c| c.sends.len());
             ed.workspace.viewer.keys_to_code();
-            keys(ed, &format!("gg<space>i{ASKED}<ret>"));
+            // (the first line's start, or the whole file: its selections' line starts and ends are `ask::cut`'s cuts)
+            let select = *c.pick(&["gg", "%"]);
+            keys(ed, &format!("{select}<space>i{ASKED}<ret>"));
             let mut w = world.borrow_mut();
             w.called = false;
             if ed.workspace.claude.ask.is_none() {
@@ -117,7 +119,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
             if ed.workspace.claude.chat.as_ref().map_or(0, |c| c.sends.len()) != sends {
                 w.wrong = Some("space i queued something in the chat".into());
             }
-            format!("space i (the chat busy: {busy})")
+            format!("space i on {select} (the chat busy: {busy})")
         }
         1 => {
             let words = c.pick(&["b is", " empty because", " nothing"]).to_string();
@@ -131,15 +133,31 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
             let id = 1000 + world.borrow().calls.len() as u64;
             let n = id - 999;
             let path = root.join("a.rs");
-            let edit = serde_json::json!({"edits": [{"file_path": path, "whole": true,
-                "new_string": format!("fn a() {{}} // {n}\nfn b() {{}}\n")}]});
+            // (a rewrite of the first line, or a line added before it, after it or at the file's end — each an
+            // insertion at a cut of `gg`'s or `%`'s: one change all the same, the full video's take 2's panic)
+            let now = ed
+                .docs
+                .iter()
+                .find(|d| d.path.as_deref() == Some(path.as_path()))
+                .map(|d| d.text.to_string());
+            let now = now.unwrap_or_default();
+            let (first, rest) = now.split_at(now.find('\n').map_or(now.len(), |i| i + 1));
+            let shape = *c.pick(&["rewrite", "before", "after", "end"]);
+            let new_string = match shape {
+                "rewrite" => format!("fn a() {{}} // {n}\n{rest}"),
+                "before" => format!("// {n}\n{now}"),
+                "after" => format!("{first}// {n}\n{rest}"),
+                _ => format!("{now}// {n}\n"),
+            };
+            let edit =
+                serde_json::json!({"edits": [{"file_path": path, "whole": true, "new_string": new_string}]});
             let request = serde_json::json!({"subtype": "mcp_message", "server_name": "tarae", "message": {
                 "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "edit", "arguments": edit}}});
             crate::ask::on_event(ed, g, StreamEv::Control { request_id: format!("ask-{id}"), request });
             let mut w = world.borrow_mut();
             w.calls.push(id);
             w.called = true;
-            format!("the ask's edit (call {id})")
+            format!("the ask's edit (call {id}, {shape})")
         }
         3 => match ed.workspace.claude.review.as_ref().filter(|r| r.ready) {
             Some(_) => {
@@ -210,6 +228,12 @@ fn held(ed: &Editor, chat: &Receiver<String>, ask: &Receiver<String>, w: &mut Wo
         && r.instruction != ASKED
     {
         return Err(format!("a review waits that isn't the ask's: {}", r.instruction));
+    }
+    // (the ask's one-line change, at a cut or not, is one change in its review)
+    if let Some(r) = ed.workspace.claude.review.as_ref().filter(|r| r.ready && r.instruction == ASKED)
+        && r.hunks.len() != 1
+    {
+        return Err(format!("the ask's one-line change is {} changes in its review", r.hunks.len()));
     }
     Ok(())
 }
