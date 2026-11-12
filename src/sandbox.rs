@@ -38,6 +38,8 @@ pub mod cabundle;
 pub mod channel;
 #[cfg(test)]
 pub(crate) mod golden;
+#[cfg(test)]
+mod movedhome;
 // (9a: what a run's sandbox keeps apart and shares — pure, built everywhere: its golden says every tier on any machine;
 // Landlock's said on Linux)
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -552,6 +554,8 @@ impl Guard {
         let (mut homes, mut ports, mut keys) = (Vec::new(), Vec::new(), Vec::new());
         let (mut beyond, mut temp_keys, mut locked) = (Vec::new(), Vec::new(), Vec::new());
         let mut cloned = Vec::new();
+        // (reads refused under a moved home's default place, by home — #521)
+        let mut moved: Vec<Vec<String>> = vec![Vec::new(); p.moved_homes.len()];
         let refused_port = &crate::sandboxpack::get().refused_port;
         let (mut entries, mut signals, mut looks, mut attaches) = (false, false, false, false);
         let (mut sealed, mut mounts, mut userns) = (false, false, false);
@@ -654,6 +658,13 @@ impl Guard {
                 {
                     let of = p.run_homes.iter().position(|h| path.starts_with(&h.user));
                     homes.extend(of.filter(|i| !homes.contains(i)));
+                }
+                // (a read where a toolchain's home would be but for its variable: the wrong guess said, #521)
+                _ if !d.op.starts_with("file-write")
+                    && p.moved_homes.iter().any(|m| path.starts_with(&m.default)) =>
+                {
+                    let i = p.moved_homes.iter().position(|m| path.starts_with(&m.default)).unwrap_or(0);
+                    moved[i].push(crate::allow::tilde(path));
                 }
                 _ => all = false,
             }
@@ -775,6 +786,20 @@ impl Guard {
         for i in homes {
             let h = &p.run_homes[i];
             s.push_str(&format!("{}\n", h.said.replace("{home}", &crate::allow::tilde(&h.user))));
+        }
+        for (m, mut paths) in p.moved_homes.iter().zip(moved) {
+            if paths.is_empty() {
+                continue;
+            }
+            crate::sorting::sort(&mut paths);
+            paths.dedup();
+            let more = paths.len().saturating_sub(MOVED_SHOWN);
+            paths.truncate(MOVED_SHOWN);
+            let mut shown = paths.join(", ");
+            if more > 0 {
+                shown.push_str(&format!(" and {more} more"));
+            }
+            s.push_str(&format!("{}\n", moved_said(m, &shown)));
         }
         for i in ports {
             s.push_str(&format!("{}\n", refused_port[i].said));
@@ -1419,19 +1444,25 @@ impl Here {
 /// Claude's own, in home: its settings, conversations and token cache — kept from its runs like keys.
 const CLAUDES: &[&str] = &[".claude", ".claude.json", ".claude.json.backup"];
 
-/// Where a run reads in `home` (real; `vars` its places): `HOME_READS`, the packs' `reads` (a home alone only
-/// where it's there — its variable may name a folder never made), tarae's grammars (its own tests and shots
-/// load them), the folders on PATH (what's there runs), and `also` (the repository's other checkouts, what the
-/// user let Claude read) — none that's home itself or in a kept place. On WSL each Windows profile is closed as
-/// home is (`vars.profiles`, Q11): of it a run reads only those that are there — a pack's home a variable moved
-/// there, a PATH folder of Windows', a grant — never `Documents` or `Downloads` unasked.
-pub fn reads_for(home: &Path, also: &[PathBuf], vars: &crate::sandboxpack::Vars) -> Reads {
+/// The packs' `reads` where `vars` puts them — a home alone only where it's there (its variable may name a
+/// folder never made).
+fn pack_reads(vars: &crate::sandboxpack::Vars) -> impl Iterator<Item = PathBuf> + '_ {
     let packs = crate::sandboxpack::get().reads.iter();
-    let packs = packs.filter_map(|r| vars.place(r).filter(|p| !vars.is_home(r) || p.exists()));
-    let mut allow: Vec<PathBuf> = HOME_READS.iter().map(|r| home.join(r)).chain(packs).collect();
+    packs.filter_map(|r| vars.place(r).filter(|p| !vars.is_home(r) || p.exists()))
+}
+
+/// Where a run reads in `home` (real; `vars` its places): `HOME_READS`, the packs' `reads` (`pack_reads`),
+/// tarae's grammars (its own tests and shots load them), the folders on `PATH` (`path`: what's there runs —
+/// `path_dirs_in` the policy's `Here`, the `PATH` the run gets: rustup's proxies in `~/.cargo/bin` with
+/// `CARGO_HOME` moved, #521), and `also` (the repository's other checkouts, what the user let Claude read) —
+/// none that's home itself or in a kept place. On WSL each Windows profile is closed as home is
+/// (`vars.profiles`, Q11): of it a run reads only those that are there — a pack's home a variable moved there,
+/// a PATH folder of Windows', a grant — never `Documents` or `Downloads` unasked.
+pub fn reads_for(home: &Path, also: &[PathBuf], vars: &crate::sandboxpack::Vars, path: &[PathBuf]) -> Reads {
+    let mut allow: Vec<PathBuf> = HOME_READS.iter().map(|r| home.join(r)).chain(pack_reads(vars)).collect();
     allow = allow.iter().map(|p| profile_path(p)).collect();
     allow.extend(crate::grammar::grammars_dir().map(|d| profile_path(&d)));
-    allow.extend(crate::blocked::path_dirs());
+    allow.extend(path.iter().cloned());
     allow.extend(also.iter().cloned());
     let kept = kept_reads(home, vars);
     // (a profile in home is home's already; one holding home — none such — would open it)
@@ -1447,14 +1478,83 @@ pub fn reads_for(home: &Path, also: &[PathBuf], vars: &crate::sandboxpack::Vars)
 }
 
 /// What a toolchain reads above the project (`root`, real) in `home`: the packs' `reads-above` files in every
-/// folder between them — those files, not the folder (cargo's `credentials.toml` sits beside its config).
-pub fn reads_above(root: &Path, home: &Path) -> Vec<PathBuf> {
+/// folder from the project's parent up to home, home's own included — those files, not the folder (cargo's
+/// `credentials.toml` sits beside its config) — but those a pack reads whole already (`pack_reads`: home's
+/// `.cargo/config.toml` is in `{cargo}` at its default). Only on the walk up from the project: cargo reads a
+/// config as an ancestor's, so home's is read with `CARGO_HOME` moved for a project under home (else every cargo
+/// command fails, "could not load Cargo configuration"), never for one outside it (`/Users/Shared/…`, another
+/// disk) — there cargo never asks for it, and it stays closed (#521).
+pub fn reads_above(root: &Path, home: &Path, vars: &crate::sandboxpack::Vars) -> Vec<PathBuf> {
     let files = &crate::sandboxpack::get().reads_above;
+    let whole: Vec<PathBuf> = pack_reads(vars).collect();
     root.ancestors()
         .skip(1)
-        .take_while(|a| a.starts_with(home) && *a != home)
-        .flat_map(|a| files.iter().map(|f| a.join(f)))
+        .take_while(|a| a.starts_with(home))
+        .flat_map(|a| files.iter().map(move |f| a.join(f)))
+        .filter(|f| !whole.iter().any(|w| f.starts_with(w)))
         .collect()
+}
+
+/// The paths a run's report names under one moved home's default place; the rest counted.
+const MOVED_SHOWN: usize = 3;
+
+/// A toolchain's home its variable moved off its default place in home (`CARGO_HOME` elsewhere): there runs
+/// don't read, and a read refused there is a wrong guess at the home — said with where it is (#521). Pack data:
+/// a home's name and variable, no tool's name here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MovedHome {
+    /// The home's name in the packs (`cargo`).
+    pub name: String,
+    /// Its variable (`CARGO_HOME`).
+    pub var: String,
+    /// Where the variable puts it.
+    pub at: PathBuf,
+    /// Its default place, in home (real).
+    pub default: PathBuf,
+}
+
+/// The homes `vars` says a variable moved off a default place in home that runs don't read otherwise (a pack
+/// reading the default too — Java's `~/Library/Java/JavaVirtualMachines` — has no wrong guess to say).
+pub fn moved_homes(vars: &crate::sandboxpack::Vars) -> Vec<MovedHome> {
+    let t = crate::sandboxpack::get();
+    let read: Vec<PathBuf> = pack_reads(vars).collect();
+    let moved = vars.homes.iter().filter(|(_, at, default)| {
+        at != default
+            && default.starts_with(&vars.home)
+            && *default != vars.home
+            && !at.starts_with(default)
+            && !read.iter().any(|r| default.starts_with(r))
+    });
+    let mut v: Vec<MovedHome> = moved
+        .filter_map(|(name, at, default)| {
+            let var = t.homes.iter().find(|h| &h.name == name)?.env.clone();
+            Some(MovedHome { name: name.clone(), var, at: at.clone(), default: default.clone() })
+        })
+        .collect();
+    v.dedup_by(|a, b| a.default == b.default);
+    v
+}
+
+/// The moved home `real` is under the default place of, if any.
+pub fn moved_home_of<'a>(moved: &'a [MovedHome], real: &Path) -> Option<&'a MovedHome> {
+    moved.iter().find(|m| real.starts_with(&m.default))
+}
+
+/// The words for `shown` (paths under `m`'s default place) — the same on the read card, in a refusal, in the
+/// answer after a `y` and in a run's report: `~/.cargo/registry/src/…: not cargo's home — CARGO_HOME puts it at
+/// <place>; read there.`
+pub fn moved_said(m: &MovedHome, shown: &str) -> String {
+    format!(
+        "{shown}: not {}'s home — {} puts it at {}; read there.",
+        m.name,
+        m.var,
+        crate::allow::tilde(&m.at)
+    )
+}
+
+/// `moved_said` for `real`, when it's under a moved home's default place.
+pub fn moved_said_of(moved: &[MovedHome], real: &Path) -> Option<String> {
+    moved_home_of(moved, real).map(|m| moved_said(m, &crate::allow::tilde(real)))
 }
 
 /// What a run never reads, whatever is granted: the places that hold keys (`allow::SECRETS`, its `.config/…` rows
@@ -4852,6 +4952,8 @@ pub struct Env {
     pub reads: Reads,
     /// The users' own homes of the tools that get one of the run's (`run_homes_said`).
     pub run_homes: Vec<RunHomeSaid>,
+    /// The toolchains' homes a variable moved off their default place (`moved_homes`).
+    pub moved_homes: Vec<MovedHome>,
     /// What a run gets of tarae's environment (`run_env_of`; the default: nothing).
     pub run_env: runenv::RunEnv,
     /// The resolvers `resolv.conf` names (`route::resolvers`).
@@ -5020,7 +5122,9 @@ pub(crate) fn env_with(
     // toolchains' folders nor PATH's: a crate's test keys, a CA bundle, are a build's to read)
     let key_places = also.clone();
     let key_spared = vars.as_ref().map(installs_in).unwrap_or_default();
-    let above: Vec<PathBuf> = real_home.iter().flat_map(|h| reads_above(&profile_path(root), h)).collect();
+    let above: Vec<PathBuf> = (real_home.iter().zip(vars.iter()))
+        .flat_map(|(h, v)| reads_above(&profile_path(root), h, v))
+        .collect();
     also.extend(above.iter().cloned());
     // (a tool's store on the project's filesystem: read where it is, never written — compat B12)
     let disk_stores = real_home
@@ -5029,11 +5133,13 @@ pub(crate) fn env_with(
         .map(|(h, v)| disk_stores_in(root, h, v, here))
         .unwrap_or_default();
     also.extend(disk_stores.told.iter().map(|(s, _)| s.clone()));
-    let reads = real_home.as_deref().zip(vars.as_ref()).map(|(h, v)| reads_for(h, &also, v));
+    // (`PATH` as the run gets it: what it finds there is read and run, never written)
+    let path = path_dirs_in(here);
+    let reads = real_home.as_deref().zip(vars.as_ref()).map(|(h, v)| reads_for(h, &also, v, &path));
     let runs_later = real_home.as_deref().zip(vars.as_ref()).map(|(h, v)| RunsLater {
         stores: disk_stores.told.iter().map(|(s, _)| s.clone()).collect(),
         runs: runs_judged(Some(h), here),
-        ..RunsLater::new(h, v, &path_dirs_in(here))
+        ..RunsLater::new(h, v, &path)
     });
     let mut env = Env {
         asked_caches: Vec::new(),
@@ -5043,6 +5149,7 @@ pub(crate) fn env_with(
         daemon_homes: kept_homes(root, real_home.as_deref(), here, true),
         runs: runs_root(real_home.as_deref(), here),
         run_homes: vars.as_ref().map(run_homes_said).unwrap_or_default(),
+        moved_homes: vars.as_ref().map(moved_homes).unwrap_or_default(),
         reads: reads.unwrap_or_default(),
         root: profile_path(root),
         home,
@@ -11184,7 +11291,7 @@ mod tests {
     fn reads_for_a_home() {
         let scratch = crate::scratch::Scratch::new("sb-home");
         let home = profile_path(&scratch);
-        for d in [".cargo", ".ssh", "Library/Fonts", "src/other", ".claude/x"] {
+        for d in [".cargo", ".rustup", ".ssh", "Library/Fonts", "src/other", ".claude/x"] {
             std::fs::create_dir_all(home.join(d)).unwrap();
         }
         let also = [
@@ -11197,7 +11304,7 @@ mod tests {
         // (nothing from this process's environment: the same inside a sandboxed run, which has a Gradle home of
         // its own, as outside)
         let vars = vars_in(&home, &Here::default());
-        let r = reads_for(&home, &also, &vars);
+        let r = reads_for(&home, &also, &vars, &[]);
         assert_eq!(r.home.as_deref(), Some(home.as_path()));
         for p in [
             ".cargo",
@@ -11230,7 +11337,7 @@ mod tests {
         let moved = home.join("gradle-elsewhere");
         std::fs::create_dir_all(&moved).unwrap();
         let env = HashMap::from([("GRADLE_USER_HOME".to_string(), moved.clone().into())]);
-        let r2 = reads_for(&home, &also, &vars_in(&home, &Here { env, ..Here::default() }));
+        let r2 = reads_for(&home, &also, &vars_in(&home, &Here { env, ..Here::default() }), &[]);
         assert!(r2.allow.contains(&moved.join("caches/modules-2")), "{:?}", r2.allow);
         assert!(!r2.allow.contains(&home.join(".gradle/caches/modules-2")));
         assert!(r2.kept.contains(&home.join(".gradle/daemon")) && r2.kept.contains(&moved.join("daemon")));
@@ -11265,8 +11372,9 @@ mod tests {
             assert!(r.kept.contains(&home.join(p)), "{p}: {:?}", r.kept);
         }
         assert!(r.kept.iter().any(|k| crate::config::state_dir().is_some_and(|s| *k == profile_path(&s))));
-        // Cargo's configs above a project, up to home: those files only
-        let above = reads_above(&home.join("src/other/p"), &home);
+        // Cargo's configs above a project, up to home: those files only — home's own not again where a pack reads
+        // them whole (`{cargo}` at its default)
+        let above = reads_above(&home.join("src/other/p"), &home, &vars);
         let want = [
             "src/other/.cargo/config.toml",
             "src/other/.cargo/config",
@@ -11274,7 +11382,14 @@ mod tests {
             "src/.cargo/config",
         ];
         assert_eq!(above, want.map(|w| home.join(w)));
-        assert!(reads_above(Path::new("/opt/p"), &home).is_empty());
+        assert!(reads_above(Path::new("/opt/p"), &home, &vars).is_empty());
+        // `CARGO_HOME` elsewhere: home's two files too, on the walk up from a project under home (#521)
+        let env = HashMap::from([("CARGO_HOME".to_string(), home.join("elsewhere/cargo").into())]);
+        let moved = vars_in(&home, &Here { env, ..Here::default() });
+        let above = reads_above(&home.join("src/other/p"), &home, &moved);
+        let want = want.iter().copied().chain([".cargo/config.toml", ".cargo/config"]);
+        assert_eq!(above, want.map(|w| home.join(w)).collect::<Vec<_>>());
+        assert!(reads_above(Path::new("/opt/p"), &home, &moved).is_empty());
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -11446,7 +11561,7 @@ mod tests {
         let with = |java_home: &Path| {
             let env = HashMap::from([("JAVA_HOME".to_string(), java_home.into())]);
             let vars = vars_in(&home, &Here { env, ..Here::default() });
-            (reads_for(&home, &[], &vars), RunsLater::new(&home, &vars, &[]))
+            (reads_for(&home, &[], &vars, &[]), RunsLater::new(&home, &vars, &[]))
         };
         let (r, later) = with(&current);
         assert!(r.allow.contains(&jdk), "its real path: {:?}", r.allow);
@@ -14291,6 +14406,7 @@ mod tests {
             disk_stores: DiskStores::default(),
             run_env: Default::default(),
             run_homes: Vec::new(),
+            moved_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
             folders: Vec::new(),
@@ -16966,6 +17082,7 @@ mod tests {
                 disk_stores: DiskStores::default(),
                 run_env: Default::default(),
                 run_homes: Vec::new(),
+                moved_homes: Vec::new(),
                 kept: Vec::new(),
                 opened: Vec::new(),
                 folders: Vec::new(),
@@ -17061,6 +17178,7 @@ mod tests {
             disk_stores: DiskStores::default(),
             run_env: Default::default(),
             run_homes: Vec::new(),
+            moved_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
             folders: Vec::new(),
@@ -17143,6 +17261,7 @@ mod tests {
             disk_stores: DiskStores::default(),
             run_env: Default::default(),
             run_homes: Vec::new(),
+            moved_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
             folders: Vec::new(),
@@ -17233,7 +17352,7 @@ mod tests {
             root: root.clone(),
             write: w.llm.sandbox_write.clone(),
             ports: w.llm.sandbox_ports,
-            reads: reads_for(&home, &w.reads, &vars_in(&home, &Here::now())),
+            reads: reads_for(&home, &w.reads, &vars_in(&home, &Here::now()), &path_dirs_in(&Here::now())),
             ..Env::default()
         };
         let p = Policy { sockets: w.sockets, ..Policy::for_project(&env) };
@@ -17869,7 +17988,7 @@ mod tests {
         }
         let env = Env {
             root: root.clone(),
-            reads: reads_for(&home, &[], &vars_in(&home, &Here::now())),
+            reads: reads_for(&home, &[], &vars_in(&home, &Here::now()), &path_dirs_in(&Here::now())),
             ..Env::default()
         };
         let p = Policy::for_project(&env);
@@ -17932,7 +18051,15 @@ mod tests {
             std::fs::write(home.join(file), text).unwrap();
         }
         let run = RunDir::new().unwrap();
-        let mut reads = reads_for(&home, &[], &vars_in(&home, &Here::now()));
+        // (cargo's and rustup's homes unset, as in a tarae started from a shell: the stand-in's `~/.cargo` is
+        // cargo's home — `cargo test` under rustup has `CARGO_HOME` at the real one, outside the stand-in, and
+        // with it the stand-in's home counts as moved, #521. Its reads as a real policy's: `reads_above` too)
+        let mut here = Here::now();
+        for v in ["CARGO_HOME", "RUSTUP_HOME"] {
+            here.env.remove(v);
+        }
+        let vars = vars_in(&home, &here);
+        let mut reads = reads_for(&home, &reads_above(&root, &home, &vars), &vars, &path_dirs_in(&here));
         let sources = crate::tokens::sources(&home, &|_| None);
         reads.copies = crate::tokens::copies(&sources, Some(run.path()), &home, &[], &reads.kept);
         let tmp = std::fs::canonicalize(std::env::temp_dir()).ok();
@@ -18030,9 +18157,13 @@ mod tests {
             std::fs::write(f, "marker\n").unwrap();
         }
         std::fs::create_dir_all(&root).unwrap();
+        // (`JAVA_HOME` unset: the JDKs are the stand-in's `~/Library/Java/JavaVirtualMachines`, not where this
+        // process's variable puts them)
+        let mut here = Here::now();
+        here.env.remove("JAVA_HOME");
         let env = Env {
             root: root.clone(),
-            reads: reads_for(&home, &[], &vars_in(&home, &Here::now())),
+            reads: reads_for(&home, &[], &vars_in(&home, &here), &path_dirs_in(&here)),
             run_homes: vec![gradle_at(&g)],
             files: locks_in(&g),
             ..Env::default()
@@ -18126,7 +18257,7 @@ mod tests {
             tmp: std::fs::canonicalize(std::env::temp_dir()).ok(),
             caches,
             files,
-            reads: reads_for(&home, &reads_above(&root, &home), &vars),
+            reads: reads_for(&home, &reads_above(&root, &home, &vars), &vars, &path_dirs_in(&Here::now())),
             run_env: run_env_here(),
             ..Env::default()
         };
@@ -18719,6 +18850,7 @@ mod tests {
             disk_stores: DiskStores::default(),
             run_env: Default::default(),
             run_homes: Vec::new(),
+            moved_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
             folders: Vec::new(),

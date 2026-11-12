@@ -93,6 +93,9 @@ pub struct Pending {
     /// It reads tarae's log (`sandbox::is_taraes_log`): every session's activity — `y` once or `a` this chat, never
     /// longer, never a folder around it (#292).
     pub log: bool,
+    /// It reads under a moved home's default place (`Caps::moved_said`): the line its card, a refusal and the
+    /// answer after a `y` carry — the user sees why `n` is likely right (#521).
+    pub moved: Option<String>,
 }
 
 /// A call of tarae's in-process tools that reads where Read would ask (`Gate::judge`): it waits on the same
@@ -128,6 +131,8 @@ pub struct Ask {
     not_whole: Option<(PathBuf, String)>,
     /// `Pending.log`.
     log: bool,
+    /// `Pending.moved`.
+    moved: Option<String>,
 }
 
 impl Ask {
@@ -243,8 +248,14 @@ impl Gate {
     /// `file`: a file read whole (Read's rule), else a place searched (Grep's: the keys in it count). A
     /// worker's.
     pub fn judge(&self, at: &Path, file: bool) -> Result<(), Box<Ask>> {
+        self.judge_said(at, file).map(|_| ())
+    }
+
+    /// `judge`, and what a read it lets through is told: under a moved home's default place, whose home it
+    /// isn't (`Caps::moved_said`, #521 — after the card's `y` too). A worker's.
+    pub fn judge_said(&self, at: &Path, file: bool) -> Result<Option<String>, Box<Ask>> {
         if self.granted.iter().any(|g| at.starts_with(g)) {
-            return Ok(());
+            return Ok(self.basis.build().moved_said(at));
         }
         let log = self.is_log(at);
         // (a path that's no text — `json!` panics on one, a project can hold one, a link lead to one — has no words for
@@ -258,8 +269,9 @@ impl Gate {
         let caps = self.basis.build();
         // (a folder's own files named like keys don't count: tarae's tools leave them out by name — `Keys::shut`)
         let (look, covered, class) = decide_with(tool, &input, &caps, &self.made, file, no_text);
+        let moved = caps.moved_said(at);
         if covered || by_default(class, &caps) {
-            return Ok(());
+            return Ok(moved);
         }
         let found = look.at.as_deref().map(crate::tokens::found_in).unwrap_or_default();
         // (the log: no repository offered around it)
@@ -267,7 +279,7 @@ impl Gate {
             true => (None, None),
             false => split(look.at.as_deref().and_then(|at| repository_or_why(at, &caps))),
         };
-        Err(Box::new(Ask { look, class, found, repository, not_whole, log }))
+        Err(Box::new(Ask { look, class, found, repository, not_whole, log, moved }))
     }
 }
 
@@ -281,7 +293,7 @@ pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
         return crate::tools::answer(ed, then.call, Err("the chat it came from is gone".into()));
     };
-    let Ask { mut look, class, found, repository, not_whole, log } = ask;
+    let Ask { mut look, class, found, repository, not_whole, log, moved } = ask;
     // (tarae's search: its card says what it searches for — frictions29 33: `Gate::judge` knows only the place)
     if then.tool == "search" {
         let s = |k: &str| then.args[k].as_str().unwrap_or_default().to_string();
@@ -303,6 +315,7 @@ pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
         own: None,
         then: Some(then),
         log,
+        moved,
     });
     refold(ed);
     next(ed);
@@ -325,9 +338,19 @@ fn said_no_in(read_no: &[(PathBuf, bool)], look: &Look) -> Option<String> {
     ))
 }
 
+/// What a read the user said no to is told: `no`, and under a moved home's default place whose home it isn't
+/// (`Pending.moved`, #521).
+pub fn refusal(p: &Pending, no: &str) -> String {
+    match &p.moved {
+        Some(m) => format!("{no}\n{m}"),
+        None => no.to_string(),
+    }
+}
+
 /// The card's answer to whoever asked: a permission ask allowed or denied (`no` its message), a tool's call
 /// run again with the place let through, or answered no.
 fn reply(ed: &mut Editor, p: Pending, allowed: bool, no: &str) {
+    let no = &refusal(&p, no);
     match p.then {
         Some(mut t) if allowed => {
             t.granted.extend(p.look.at);
@@ -970,6 +993,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
         own: Some(own),
         then: None,
         log: false,
+        moved: None,
     };
     let keep = p
         .look
@@ -1080,6 +1104,7 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
         let caps = caps_for(&tool, &input, basis.build(), &llm, here);
         let (look, covered, class) = decide(&tool, &input, &caps, &made);
         let ok = covered || by_default(class, &caps);
+        let moved = look.at.as_deref().and_then(|at| caps.moved_said(at));
         // (asked: its card says first what looks like a token there — a folder in the project too: its yes
         // reads more than the keys it names)
         let (found, (repository, not_whole)) = match (ok, &look.at) {
@@ -1112,6 +1137,7 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
                 then: None,
                 // (no Read in the chat: tarae's `read` and `search` judge the log — `Gate::is_log`)
                 log: false,
+                moved,
             });
             refold(ed);
             next(ed);
@@ -1458,6 +1484,10 @@ pub fn card_text(
     if let Some(why) = not_whole.filter(|_| keep) {
         q.push_str(&format!("\n\n{why}"));
     }
+    // (a moved home's default place: why `n` is likely right — #521)
+    if let Some(m) = &p.moved {
+        q.push_str(&format!("\n\n{m}"));
+    }
     let said =
         [p.look.at.as_deref().and_then(|at| p.found.said(at)), folder.and_then(|(f, found)| found.said(f))];
     let mut lines = Vec::new();
@@ -1801,7 +1831,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = s.to_path_buf();
         let ask = Gate::of(&ed, Vec::new()).judge(&no_text(b"/opt/caf\xe9.txt"), true);
-        let Ask { look, class, found, repository, not_whole, log } = *ask.expect_err("it asks");
+        let Ask { look, class, found, repository, not_whole, log, moved } = *ask.expect_err("it asks");
         let mut chat = crate::chat::Chat::new();
         chat.reads.push_back(Pending {
             request_id: String::new(),
@@ -1816,6 +1846,7 @@ mod tests {
             own: None,
             then: None,
             log,
+            moved,
         });
         ed.workspace.claude.chat = Some(chat);
         next(&mut ed);
@@ -1849,6 +1880,7 @@ mod tests {
             own: None,
             then: None,
             log: true,
+            moved: None,
         });
         ed.workspace.claude.chat = Some(chat);
         next(&mut ed);

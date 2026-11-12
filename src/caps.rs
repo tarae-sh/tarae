@@ -132,6 +132,9 @@ pub struct Caps {
     pub outside: bool,
     /// What runs never read, wherever it is (`sandbox::kept_places`): never a default, never a read's choice.
     pub kept: Vec<PathBuf>,
+    /// The toolchains' homes a variable moved off their default place (`allow::Defaults.moved`): a read there
+    /// is said with where the home is (`moved_said`, #521).
+    pub moved: Vec<crate::sandbox::MovedHome>,
     /// Where a write would run something later (`sandbox::RunsLater`): never a write's choice.
     pub later: crate::sandbox::RunsLater,
     /// Where its kept answers are (`allow::Where::of` the root — the store's own): the repository's git common
@@ -242,6 +245,13 @@ impl Caps {
         self.read.extend(entries(&d.temp, Source::Default(Why::Temp)));
         self.read.extend(entries(&d.code, Source::Default(Why::Toolchain)));
         self.kept = d.kept;
+        self.moved = d.moved;
+    }
+
+    /// What a read at `real` is told when it's under a moved home's default place (`sandbox::moved_said`): on its
+    /// card, in a refusal and in the answer after a `y` (#521).
+    pub fn moved_said(&self, real: &Path) -> Option<String> {
+        crate::sandbox::moved_said_of(&self.moved, real)
     }
 
     /// (Tests: the defaults `d` for home `home`, outside home read too.)

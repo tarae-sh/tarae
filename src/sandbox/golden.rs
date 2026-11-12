@@ -467,6 +467,20 @@ fn the_report_is_pinned() {
         Guard::In(Box::new(Policy { watch: Some(theirs), ports: vec![5173], supervised: true, ..p.clone() }));
     out.push_str("\n══ another session's port\n");
     out.push_str(&apart.report(&[]));
+    // (#521: cargo's home moved — a read at its default place says where it is; a write there, the place's)
+    let moved = Fixture::new("report-moved", Os::Mac, &[("CARGO_HOME", "$BASE/cargo-moved")]);
+    let mp = moved.policy(&crate::llm::LlmConfig::default());
+    let guess = Watch::quiet("golden-moved.");
+    for (op, rel) in [
+        ("file-read-data", ".cargo/registry/src/index/x-1.0/lib.rs"),
+        ("file-read-data", ".cargo/git/checkouts/y/z"),
+        ("file-write-create", ".cargo/registry/src/index/x-1.0/new.rs"),
+    ] {
+        guess.record(Denial { process: "x".into(), op: op.into(), target: shown(&moved.home.join(rel)) });
+    }
+    let guessed = Guard::In(Box::new(Policy { watch: Some(guess), ..mp.clone() }));
+    out.push_str("\n══ cargo's home moved: read at its default place\n");
+    out.push_str(&moved.named(&guessed.report(&[]), mp.run.as_deref()));
     out.push_str("\n══ denied nothing\n");
     let calm = Guard::In(Box::new(Policy { watch: Some(Watch::quiet("golden-calm.")), ..p }));
     out.push_str(&calm.report(&[]));

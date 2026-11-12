@@ -529,6 +529,9 @@ pub struct Policy {
     pub run_env: runenv::RunEnv,
     /// The users' own homes of the tools that get one of the run's (kept as they are), as Claude is told.
     pub run_homes: Vec<RunHomeSaid>,
+    /// The toolchains' homes a variable moved off their default place in home (`super::moved_homes`): a read
+    /// refused there is said with where the home is (#521).
+    pub moved_homes: Vec<super::MovedHome>,
     /// The kept run homes its runs get (`with_kept`; held — `policy_in`).
     pub kept: Vec<Kept>,
     /// Linux: the resolvers `resolv.conf` names, reached on port 53 with the network open (D-c, `route`).
@@ -1821,6 +1824,7 @@ impl Policy {
             disk_stores: env.disk_stores.clone(),
             run_env: env.run_env.clone(),
             run_homes: env.run_homes.clone(),
+            moved_homes: env.moved_homes.clone(),
             kept: Vec::new(),
             #[cfg(target_os = "linux")]
             resolvers: env.resolvers.clone(),

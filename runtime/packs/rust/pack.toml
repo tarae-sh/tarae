@@ -230,13 +230,16 @@ risky = [
 quiet = ["tests/", "benches/"]
 
 # Claude's sandbox (`sandboxpack.rs`). What cargo and rustup read in home to work, measured
-# (`.sb/p2-measured.md`: tarae's preflight, every read in home reported): their homes. And cargo's config
-# in every folder between the project and home — those files, not the folder (`credentials.toml` sits there):
-# a project below a folder with one doesn't build without it ("could not load Cargo configuration")
+# (`.sb/p2-measured.md`: tarae's preflight, every read in home reported): their homes, where the variables put
+# them (unset: `~/.cargo`, `~/.rustup`) — with `CARGO_HOME` moved, `~/.cargo` is no home of cargo's and isn't
+# read (#521). And cargo's config in every folder from the project up to home, home's own included — those
+# files, not the folder (`credentials.toml` sits there): a project below a folder with one doesn't build
+# without it ("could not load Cargo configuration"), and with the home moved cargo still reads home's
+# `.cargo/config.toml` as an ancestor's — for a project under home only (`sandbox::reads_above`)
 [sandbox]
 # Its files that are code: a token-like line there is code, not a token (`tokens::not_settings`)
 not-settings = ["rs"]
-reads = ["~/.cargo", "~/.rustup", "{cargo}", "{rustup}"]
+reads = ["{cargo}", "{rustup}"]
 reads-above = [".cargo/config.toml", ".cargo/config"]
 # Cargo's tokens: never read, wherever its home is
 kept = ["{cargo}/credentials", "{cargo}/credentials.toml"]

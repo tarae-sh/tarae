@@ -1949,6 +1949,7 @@ fn frames_of_frictions30() {
             own: None,
             then: None,
             log: false,
+            moved: None,
         };
         s.ed.workspace.claude.chat.as_mut().unwrap().reads.push_back(p);
         crate::reads::next(&mut s.ed);
@@ -2001,6 +2002,7 @@ fn frames_of_the_read_card_with_its_repository() {
             own: None,
             then: None,
             log: false,
+            moved: None,
         };
         let (q, warning) = crate::reads::card_text(&p, true, Some((&repo, &Default::default())), None);
         let what = crate::offer::What::Read { pending: Box::new(p), keep: true, folder: Some(repo.clone()) };

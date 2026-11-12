@@ -297,6 +297,8 @@ fn read_between(
     // project the place is judged before anything is said of it — whether it's there, a file or a folder, is
     // read too (Read asks first as well); inside, a file named like a key.
     let mut found: Vec<Found> = Vec::new();
+    // (a read let through under a moved home's default place: the answer says whose it isn't — #521)
+    let mut said: Vec<String> = Vec::new();
     for it in items {
         let abs = root.join(&it.path);
         let mut size = None;
@@ -324,10 +326,13 @@ fn read_between(
             if let Some(why) = gate.refused(&at) {
                 return Err(why);
             }
-            if let Err(mut ask) = gate.judge(&at, file) {
-                // (what of it, on the card: a few lines and a whole log look the same by the path alone — #298)
-                ask.reading(it.want.said(size));
-                return Ok(Err(ask));
+            match gate.judge_said(&at, file) {
+                Ok(s) => said.extend(s),
+                Err(mut ask) => {
+                    // (what of it, on the card: a few lines and a whole log look the same by the path alone — #298)
+                    ask.reading(it.want.said(size));
+                    return Ok(Err(ask));
+                }
             }
         }
         found.push(f);
@@ -373,6 +378,9 @@ fn read_between(
             "(unsaved edits in {} aren't here — what's here is from disk)\n",
             dirty.join(", ")
         ));
+    }
+    for s in said {
+        out.push_str(&format!("{s}\n"));
     }
     let out = out.trim_end();
     if !out.is_empty() || parts.is_empty() {

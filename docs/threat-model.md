@@ -247,10 +247,15 @@ Not kept:
 
 Kept:
 - In home a run reads only the project, the folders it may write, the repository's other checkouts, places you
-  granted, and what the toolchains read to work (`~/.cargo` minus credentials, `~/.rustup`, `~/.gitconfig`, …). The
+  granted, and what the toolchains read to work (cargo's and rustup's homes where they are — `~/.cargo` minus
+  credentials and `~/.rustup` unless `CARGO_HOME`/`RUSTUP_HOME` move them, then not those — `~/.gitconfig`, …). The
   list was measured; it's pack data.
   test: `sandbox::golden::the_policy_is_pinned` · `sandbox::golden::landlocks_rules_are_pinned` (rule) ·
-  `sandbox::linux::tests::a_run_keeps_to_its_policy` (shown, Linux)
+  `sandbox::linux::tests::a_run_keeps_to_its_policy` (shown, Linux) ·
+  `sandbox::movedhome::a_moved_cargo_homes_default_token_file_stays_closed` (shown, both systems)
+- What `PATH` finds is read and run, never written — `PATH` as the run gets it: rustup's proxies in `~/.cargo/bin` run
+  with `CARGO_HOME` moved, and nothing else of that home opens with them.
+  test: `sandbox::movedhome::rustups_proxies_on_path_run_with_the_cargo_home_moved` (shown, both systems)
 - tarae's own state folder (chats, trust answers, grants) is never read.
   test: `sandbox::golden::the_policy_is_pinned` (rule: `$STATE` in the denied list)
 
@@ -411,9 +416,19 @@ Not kept:
   user can; letting a run remove a key it made itself there may come later. Claude's own reads ask there as on macOS.
 - **A token inside a file that isn't named like a key** and isn't a known tool's settings: `config/prod.yml`
   with a password in it is an ordinary project file.
-- **cargo's `credentials.toml`** isn't read, but cargo takes no copy without it: the report says so in cargo's
-  pack's words.
-  test: `tokens::tests::cargos_tokens_are_told_once`
+- **cargo's `config.toml` above the project, home's included, is read with its token** — cargo reads it as an
+  ancestor's config and takes no copy without it: the user is told once, in cargo's pack's words (cargo's tokens
+  belong in `credentials.toml`, which runs never read). Home's is read only for a project under home, `CARGO_HOME`
+  moved or not; for a project outside home cargo never reads it, and it stays closed, nothing told.
+  test: `tokens::tests::cargos_tokens_are_told_once` ·
+  `sandbox::movedhome::a_moved_cargo_homes_default_token_file_stays_closed` ·
+  `sandbox::movedhome::cargo_reads_homes_config_as_an_ancestors_with_the_home_moved` ·
+  `sandbox::movedhome::homes_cargo_config_stays_closed_for_a_project_outside_home`
+  Before 2026-11-12 (#521, found from the policy, not run against real files): with `CARGO_HOME` moved, the rust
+  pack still read `~/.cargo` and `~/.rustup` whole. The token files stayed closed (`~/.cargo/credentials*`: the
+  kept floor and the pack's `kept` at both places), but `~/.cargo/config.toml` was readable, and a token in it went
+  untold — the telling looked only at the moved home and the folders below home. Whether this machine's held one
+  wasn't checked; the file was never read.
 - **Your wiki's token can write the wiki, and what it reads reaches Claude.** `web.signed-in` (your own config only)
   names a variable of tarae's environment whose token tarae's own GET sends under the wiki's base (https, its host,
   port and path): a personal access token has no scopes, so it can do whatever your account can. tarae never gives

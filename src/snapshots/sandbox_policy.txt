@@ -350,7 +350,8 @@ params:
   R:
     $HOME/.CFUserTextEncoding
     $HOME/.cache/pnpm
-    $HOME/.cargo
+    $HOME/.cargo/config
+    $HOME/.cargo/config.toml
     $HOME/.config/git
     $HOME/.config/pip/pip.conf
     $HOME/.gitconfig
@@ -359,7 +360,6 @@ params:
     $HOME/.m2/wrapper
     $HOME/.npm
     $HOME/.pip/pip.conf
-    $HOME/.rustup
     $HOME/Library/Application Support/go
     $HOME/Library/Application Support/pip/pip.conf
     $HOME/Library/Caches/pnpm
@@ -449,7 +449,8 @@ reads.home:
 reads.allow:
     $HOME/.CFUserTextEncoding
     $HOME/.cache/pnpm
-    $HOME/.cargo
+    $HOME/.cargo/config
+    $HOME/.cargo/config.toml
     $HOME/.config/git
     $HOME/.config/pip/pip.conf
     $HOME/.gitconfig
@@ -458,7 +459,6 @@ reads.allow:
     $HOME/.m2/wrapper
     $HOME/.npm
     $HOME/.pip/pip.conf
-    $HOME/.rustup
     $HOME/Library/Application Support/go
     $HOME/Library/Application Support/pip/pip.conf
     $HOME/Library/Caches/pnpm
@@ -518,6 +518,7 @@ copies.left_out:
     $HOME/.npmrc ($NPM_CONFIG_USERCONFIG)
     $HOME/Library/Application Support/go/env ($GOENV)
 copies.told:
+    $HOME/.cargo/config.toml
 run env:
     CARGO_NET_RETRY=0
     COREPACK_DEFAULT_TO_LATEST=0
@@ -1441,7 +1442,8 @@ params:
   R:
     $HOME/.CFUserTextEncoding
     $HOME/.cache/pnpm
-    $HOME/.cargo
+    $HOME/.cargo/config
+    $HOME/.cargo/config.toml
     $HOME/.config/git
     $HOME/.config/go
     $HOME/.config/pip/pip.conf
@@ -1451,7 +1453,6 @@ params:
     $HOME/.m2/wrapper
     $HOME/.npm
     $HOME/.pip/pip.conf
-    $HOME/.rustup
     $HOME/Library/Application Support/pip/pip.conf
     $HOME/Library/Fonts
     $HOME/Library/Java/JavaVirtualMachines
@@ -1539,7 +1540,8 @@ reads.home:
 reads.allow:
     $HOME/.CFUserTextEncoding
     $HOME/.cache/pnpm
-    $HOME/.cargo
+    $HOME/.cargo/config
+    $HOME/.cargo/config.toml
     $HOME/.config/git
     $HOME/.config/go
     $HOME/.config/pip/pip.conf
@@ -1549,7 +1551,6 @@ reads.allow:
     $HOME/.m2/wrapper
     $HOME/.npm
     $HOME/.pip/pip.conf
-    $HOME/.rustup
     $HOME/Library/Application Support/pip/pip.conf
     $HOME/Library/Fonts
     $HOME/Library/Java/JavaVirtualMachines
@@ -1607,6 +1608,7 @@ copies.left_out:
     $HOME/.gitconfig ($GIT_CONFIG_GLOBAL)
     $HOME/.npmrc ($NPM_CONFIG_USERCONFIG)
 copies.told:
+    $HOME/.cargo/config.toml
 run env:
     CARGO_NET_RETRY=0
     COREPACK_DEFAULT_TO_LATEST=0

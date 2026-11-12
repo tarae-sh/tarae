@@ -9,7 +9,9 @@
 //! runs it again now too. That run is the user's: how it ended goes to Claude with the next message
 //! (`tools::For::User`).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use crate::allow::{Grant, Scope};
 use crate::editor::Editor;
@@ -271,13 +273,6 @@ pub fn env_choices(names: &[String]) -> Vec<Choice> {
             why: format!("Its output names {n}, left out of your commands' environment"),
         })
         .collect()
-}
-
-/// The folders on `PATH` (real paths) — never opened for writing: a program put there runs as the user.
-pub fn path_dirs() -> Vec<PathBuf> {
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).filter_map(|d| std::fs::canonicalize(d).ok()).collect())
-        .unwrap_or_default()
 }
 
 impl Editor {

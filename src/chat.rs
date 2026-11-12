@@ -7472,6 +7472,7 @@ mod tests {
             own: None,
             then: None,
             log: false,
+            moved: None,
         };
         let card = |ed: &Editor| match ed.offers.first().map(|o| (&o.what, o.question.clone(), o.id)) {
             Some((crate::offer::What::Read { pending, folder, .. }, q, id)) => {
@@ -7569,6 +7570,7 @@ mod tests {
                 own: None,
                 then: None,
                 log: false,
+                moved: None,
             };
         let read =
             |r: &Path| pending("Read", serde_json::json!({"file_path": r.join("docs/README")}), Some(r));

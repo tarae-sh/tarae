@@ -1425,6 +1425,9 @@ pub struct Defaults {
     /// What runs never read (`sandbox::kept_places`: keys, tokens, Claude's and tarae's state, the toolchains'
     /// credentials) wherever the variables put it — outside home too: never a default, whatever its class.
     pub kept: Vec<PathBuf>,
+    /// The toolchains' homes a variable moved off their default place in home (`sandbox::moved_homes`): a read
+    /// there is a wrong guess at the home, said on its card and in the answer (#521).
+    pub moved: Vec<crate::sandbox::MovedHome>,
 }
 
 /// (Tests: `defaults_in` for home and the variables as the process has them.)
@@ -1437,14 +1440,16 @@ pub fn defaults(root: &Path, temp: bool) -> Defaults {
 /// the session's), for home `h` and what `here` says of the variables and the temp folder; the temp folders
 /// only with `temp` (`Editor.read_temp` — tests' projects are in the temp folder, and theirs off). On a worker.
 pub fn defaults_in(root: &Path, temp: bool, h: Option<&Path>, here: &crate::sandbox::Here) -> Defaults {
-    let mut code = h.map(|h| code_trees(&crate::sandbox::vars_in(h, here))).unwrap_or_default();
+    let vars = h.map(|h| crate::sandbox::vars_in(h, here));
+    let mut code = vars.as_ref().map(code_trees).unwrap_or_default();
+    let moved = vars.as_ref().map(crate::sandbox::moved_homes).unwrap_or_default();
     // (a cargo config can point them anywhere — and a checkout can be anywhere: never home or above it,
     // nor where keys are)
     code.extend(crate::sandbox::build_dirs(root, here).into_iter().filter(|d| keepable(d, h)));
     let checkouts = checkouts(root).into_iter().filter(|d| keepable(d, h)).collect();
     let temp = if temp { temp_folders_in(here) } else { Vec::new() };
     let kept = h.map(|h| crate::sandbox::kept_places(h, here)).unwrap_or_default();
-    Defaults { checkouts, temp, code, kept }
+    Defaults { checkouts, temp, code, kept, moved }
 }
 
 /// `/tmp` (macOS's `/private/tmp`) and the user's temp folder as `here` says it (`$TMPDIR` itself — not its

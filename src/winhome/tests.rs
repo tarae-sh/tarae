@@ -183,7 +183,7 @@ fn a_windows_profile_is_closed_to_runs_as_home_is() {
     let here = crate::sandbox::Here { windows, ..crate::sandbox::Here::default() };
     let vars = crate::sandbox::vars_in(&home, &here);
     let also = [granted.clone(), wq.clone(), wq.join(".ssh/x"), c.clone()];
-    let reads = crate::sandbox::reads_for(&home, &also, &vars);
+    let reads = crate::sandbox::reads_for(&home, &also, &vars, &[]);
     assert_eq!(reads.profiles, [wq.clone(), other.clone()]);
     assert!(reads.allow.contains(&granted), "{:?}", reads.allow);
     for no in [&wq, &wq.join(".ssh/x"), &c] {
@@ -200,7 +200,8 @@ fn a_windows_profile_is_closed_to_runs_as_home_is() {
     {
         assert!(!p.reads_allow(&at), "{}", at.display());
     }
-    let none = crate::sandbox::reads_for(&home, &also, &crate::sandbox::vars_in(&home, &Default::default()));
+    let none =
+        crate::sandbox::reads_for(&home, &also, &crate::sandbox::vars_in(&home, &Default::default()), &[]);
     assert!(
         none.profiles.is_empty() && !none.allow.contains(&granted),
         "no drives: no profile, home's alone"

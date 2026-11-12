@@ -1303,11 +1303,14 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   `/opt`, `/Applications`…). Inside home it reads the project, the folders it may write in, the repository's
   other checkouts, the places you let Claude read, and what the toolchains read to work. That list was
   measured by running tarae's own checks, a Go and a Node project, a screenshot and the end-to-end tests with
-  every read in home reported: `~/.cargo` (not its `credentials`), `~/.rustup`, `~/.gitconfig`,
+  every read in home reported: cargo's and rustup's homes where they are (unmoved, `~/.cargo` — not its
+  `credentials` — and `~/.rustup`; with `CARGO_HOME` elsewhere `~/.cargo` isn't read, and a read refused there
+  says where cargo's home is), `~/.gitconfig`,
   `~/.config/git`, `~/.CFUserTextEncoding`, Go's `~/go`, its module cache wherever it is, and its settings
   folder (`~/Library/Application Support/go` on macOS, `~/.config/go` on Linux) — not your Go build cache —,
   `~/.npm`, `~/Library/Fonts`, pip's settings files, tarae's downloaded
-  grammars, the folders on your `PATH`, and the `.cargo/config.toml` files in the folders above the project.
+  grammars, the folders on your `PATH` (as the run's `PATH` says), and the `.cargo/config.toml` files in the
+  folders above the project, up to home's own for a project under home.
   For Java, measured with Gradle and Maven: the JDKs in `~/Library/Java/JavaVirtualMachines`, Maven's
   `~/.m2/repository` and `~/.m2/wrapper` (not `settings.xml`), Gradle's downloaded dependencies
   (`caches/modules-2`) and wrapper distributions in your Gradle home (`$GRADLE_USER_HOME`, else `~/.gradle`).
