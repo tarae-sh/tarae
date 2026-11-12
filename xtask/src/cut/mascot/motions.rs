@@ -33,6 +33,11 @@
 //!   Each key shown in it taps the left paw a frame, a frame up after — keys closer share one. Fast stretches with only
 //!   a cut between are one hold; one under `FAST_MIN_MS` of video none. A surprise or swing shows over it; no stretch
 //!   begins in one, its quiet counted from the lift (the user's pick, 2026-11-12).
+//! - **Winding the skein** (`Plan::wind`, the user's pick, 2026-11-12: "실타래 감기로 가보자"), where its pictures are found:
+//!   each hold is the left paw winding the stamp's coil instead — `WIND_IN_FRAMES` of the in-between (the coil at half
+//!   strength, the paw reaching), then the loop, a step every `WIND_EVERY` frames (`WIND_EVERY_FAST` past
+//!   ×`WIND_FAST_PAST`), a key shown in it stepping it at once (keys closer than `WIND_KEY_GAP` share a step); back to
+//!   the keys where the hold ends. Not found: held as above.
 //! - Every switch off: V4's mascot, picture for picture (no turn either).
 
 use super::{Arms, Face, Hands, Pic, Pose, QUIET_MS, Switches};
@@ -81,6 +86,14 @@ const GLANCES: u64 = 2;
 /// (`STAMP_HOLD_MS`, 300 ms) to read as held, not pressed and lifted; and take 3's rough cut has 36 sped bits at about
 /// 0.3 s (a turn's ×4 between half-seconds of a still screen) that a 300 ms line would split a frame either way.
 pub(crate) const FAST_MIN_MS: u64 = 400;
+/// Winding the skein (`Plan::wind`): the in-between it cuts in with (frames) — straight from the keys to the coil read
+/// as a pop of ink on the strip's flip row; a step of the loop every this many frames, every `WIND_EVERY_FAST` past
+/// ×`WIND_FAST_PAST` (the design session's spec); keys closer than `WIND_KEY_GAP` frames share a step.
+pub(crate) const WIND_IN_FRAMES: u64 = 2;
+pub(crate) const WIND_EVERY: u64 = 4;
+pub(crate) const WIND_EVERY_FAST: u64 = 2;
+pub(crate) const WIND_FAST_PAST: f64 = 8.0;
+pub(crate) const WIND_KEY_GAP: u64 = 2;
 
 /// The fast-forward holds (frames, from–to, in order): each run of frames shown past `KEYS_MAX_SPEED` — runs with only
 /// a cut between are one, the frames are next to each other — of `FAST_MIN_MS` or more; and how many runs were shorter.
@@ -291,6 +304,9 @@ pub(crate) struct Plan {
     pub(crate) fast_taps: usize,
     pub(crate) fast_keys: usize,
     pub(crate) fast_short: usize,
+    /// Whether the holds wind the skein (`wind`), and how many of its steps a key made.
+    pub(crate) wound: bool,
+    pub(crate) wind_key_steps: usize,
 }
 
 /// What a whole-body motion's frames must be clear of.
@@ -766,7 +782,55 @@ impl Plan {
             fast: fast_held,
             fast_keys,
             fast_short,
+            wound: false,
+            wind_key_steps: 0,
         }
+    }
+
+    /// Each fast-forward hold wound on the skein instead of held (its pictures found, `Art::winds`): the hold's own
+    /// frames — the held paw, its face's turns; a surprise or swing over it stays — become `WIND_IN_FRAMES` of the
+    /// in-between, then the loop, a step every `WIND_EVERY` frames (`WIND_EVERY_FAST` on a frame past
+    /// ×`WIND_FAST_PAST`), a key shown in the hold (`hands`' sped keys) stepping it at once — those closer than
+    /// `WIND_KEY_GAP` share one. The frame after the hold is the plan's own: the hands over the keys.
+    pub(crate) fn wind(&mut self, prog: &Program, hands: &Hands) {
+        let own =
+            |p: Option<Pic>| matches!(p, Some(Pic::At(Arms::Right | Arms::Both, Face::Raised | Face::Half)));
+        let keys = hands.sped_frames();
+        let mut key_steps = 0;
+        for &(a, b) in &self.fast {
+            let (mut seen, mut since, mut step) = (0, 0, 0u8);
+            let mut ki = keys.partition_point(|&f| f < a);
+            for k in a..b {
+                // (a key on this frame: one closer than `WIND_KEY_GAP` to the last step shares it)
+                let mut keyed = false;
+                while ki < keys.len() && keys[ki] <= k {
+                    keyed = true;
+                    ki += 1;
+                }
+                if !own(self.pic(k)) {
+                    continue;
+                }
+                seen += 1;
+                let pic = match seen {
+                    s if s <= WIND_IN_FRAMES => Pic::WindIn,
+                    s if s == WIND_IN_FRAMES + 1 => Pic::Wind(0),
+                    _ => {
+                        since += 1;
+                        let fast = prog.frame(Program::time_of(k)).speed.is_some_and(|s| s > WIND_FAST_PAST);
+                        let every = if fast { WIND_EVERY_FAST } else { WIND_EVERY };
+                        let by_key = keyed && since >= WIND_KEY_GAP && since < every;
+                        if by_key || since >= every {
+                            key_steps += usize::from(by_key);
+                            (step, since) = ((step + 1) % Pic::WIND_STEPS, 0);
+                        }
+                        Pic::Wind(step)
+                    }
+                };
+                self.pics[k as usize] = Some(pic);
+            }
+        }
+        self.wound = true;
+        self.wind_key_steps = key_steps;
     }
 
     /// Frame `k`'s picture: None on a card.
@@ -807,16 +871,33 @@ impl Plan {
             let at: Vec<String> = (self.fast.iter())
                 .map(|&(a, b)| format!("{} ({:.1} s)", secs(a), (b - a) as f64 / FPS as f64))
                 .collect();
-            out.push(format!(
+            out.push(match self.wound {
+                true => format!(
+                    "  fast-forward wound on the skein (a ▸▸ pop): {}{}; {} frames of the in-between, then a step every {} \
+                     frames, every {} past ×{}; {} steps made at once by the {} keys shown in them; {} fast stretches \
+                     under {} ms of video: none",
+                    self.fast.len(),
+                    if at.is_empty() { String::new() } else { format!(", at {}", at.join(", ")) },
+                    WIND_IN_FRAMES,
+                    WIND_EVERY,
+                    WIND_EVERY_FAST,
+                    WIND_FAST_PAST,
+                    self.wind_key_steps,
+                    self.fast_keys,
+                    self.fast_short,
+                    FAST_MIN_MS
+                ),
+                false => format!(
                 "  fast-forward held (the right paw, a ▸▸ pop): {}{}; the left paw tapped {} times for the {} keys shown \
                  in them; {} fast stretches under {} ms of video: none",
                 self.fast.len(),
                 if at.is_empty() { String::new() } else { format!(", at {}", at.join(", ")) },
-                self.fast_taps,
-                self.fast_keys,
-                self.fast_short,
-                FAST_MIN_MS
-            ));
+                    self.fast_taps,
+                    self.fast_keys,
+                    self.fast_short,
+                    FAST_MIN_MS
+                ),
+            });
         }
         if !self.unstretched.is_empty() {
             out.push(format!(

@@ -12,7 +12,8 @@
 //!   grammar's) is pressed where its answering key is heard (`sound::ANSWER_WAIT_MS`); a stamp with no key taps nothing.
 //! - **Watching** where no key has been heard for `QUIET_MS`, and on every span too fast for its keys to be heard: the
 //!   eyes raised to the screen. Every change of pose snaps; nothing else moves. (With `[mascot] fast`, a fast span long
-//!   enough is pressing fast-forward instead: `motions::fast_holds`.)
+//!   enough is pressing fast-forward instead: `motions::fast_holds` — winding the skein where its pictures are found,
+//!   `Plan::wind`, else the right paw held.)
 //! - **Where**: on the take's frames and where it ends, never on a card; its box's right edge at the band's rule's end,
 //!   its foot `FOOT` above the frame's, its head over the rule — the rule stopping short of its ink (`RULE_GAP`) — and
 //!   never over a cell (`place`). The band's marks keep `GAP` from its box — from the key pops' lane where they're on.
@@ -20,7 +21,7 @@
 //!   and **the key pops** beside it (`pops.rs`), each switched in the edit list's `[mascot]` (`Switches`). Every picture
 //!   it can show is a `Pic`: hands and a face, or a frame of a whole-body motion; only those its switches use are loaded.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{Cut, Program};
 use crate::Result;
@@ -86,13 +87,16 @@ pub(crate) enum Face {
 }
 
 /// Every picture the mascot can show: arms and a face (resting arms only raised, half or closed; open and wide over
-/// typing ones), or the `n`th frame of the surprise (2), the stretch (5) or the swing (5).
+/// typing ones), or the `n`th frame of the surprise (2), the stretch (5) or the swing (5); or, pressing fast-forward,
+/// winding the skein: the loop's `n`th (3) and the in-between it starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Pic {
     At(Arms, Face),
     Surprise(u8),
     Stretch(u8),
     Swing(u8),
+    Wind(u8),
+    WindIn,
 }
 
 const ARMS: [Arms; 5] = [Arms::Up, Arms::Left, Arms::Right, Arms::Both, Arms::Rest];
@@ -100,7 +104,9 @@ const TYPING: [Arms; 4] = [Arms::Up, Arms::Left, Arms::Right, Arms::Both];
 
 impl Pic {
     /// How many there are (`index`'s range).
-    pub(crate) const COUNT: usize = 5 + 5 + 5 + 4 + 4 + 2 + 5 + 5;
+    pub(crate) const COUNT: usize = 5 + 5 + 5 + 4 + 4 + 2 + 5 + 5 + 4;
+    /// The skein's loop: how many pictures round it.
+    pub(crate) const WIND_STEPS: u8 = 3;
     pub(crate) const WATCH: Pic = Pic::At(Arms::Rest, Face::Raised);
 
     /// V4's five poses as pictures.
@@ -116,7 +122,7 @@ impl Pic {
     }
 
     /// Its place in `Art`'s list: the five first (in `Pose`'s order), then the closed, half, raised and wide faces, the
-    /// surprise, the stretch, the swing.
+    /// surprise, the stretch, the swing, the skein's loop and its in-between.
     pub(crate) fn index(self) -> usize {
         let arm = |a: Arms| ARMS.iter().position(|&x| x == a).unwrap_or(0);
         match self {
@@ -129,6 +135,8 @@ impl Pic {
             Pic::Surprise(n) => 23 + usize::from(n.min(1)),
             Pic::Stretch(n) => 25 + usize::from(n.min(4)),
             Pic::Swing(n) => 30 + usize::from(n.min(4)),
+            Pic::Wind(n) => 35 + usize::from(n.min(Pic::WIND_STEPS - 1)),
+            Pic::WindIn => 38,
         }
     }
 
@@ -154,6 +162,8 @@ impl Pic {
             Pic::Swing(n) => {
                 ["swing-1", "swing-2", "swing-3-r3", "swing-4", "swing-5"][usize::from(n.min(4))].into()
             }
+            Pic::Wind(n) => format!("wind-{}", n.min(Pic::WIND_STEPS - 1) + 1),
+            Pic::WindIn => "wind-in".into(),
         }
     }
 
@@ -168,11 +178,22 @@ impl Pic {
         v.extend((0..2).map(Pic::Surprise));
         v.extend((0..5).map(Pic::Stretch));
         v.extend((0..5).map(Pic::Swing));
+        v.extend((0..Pic::WIND_STEPS).map(Pic::Wind));
+        v.push(Pic::WindIn);
         v
     }
 
+    /// The skein's pictures a cut with `sw` would wind with, where they're found (`Art::load`'s `optional`): with them
+    /// all, pressing fast-forward winds the skein (`Plan::wind`); without, it's held as before.
+    pub(crate) fn winding(sw: &Switches) -> Vec<Pic> {
+        match sw.fast {
+            true => (Pic::all().into_iter()).filter(|p| matches!(p, Pic::Wind(_) | Pic::WindIn)).collect(),
+            false => Vec::new(),
+        }
+    }
+
     /// The pictures a cut with `sw` can show: the five always; the half faces where anything moves (the turn); each
-    /// motion's own.
+    /// motion's own (but the skein's, `winding`: those only where found).
     pub(crate) fn needed(sw: &Switches) -> Vec<Pic> {
         (Pic::all().into_iter())
             .filter(|p| match p {
@@ -184,6 +205,7 @@ impl Pic {
                 Pic::At(_, Face::Wide) | Pic::Surprise(_) => sw.surprise,
                 Pic::Stretch(_) => sw.stretch,
                 Pic::Swing(_) => sw.swing,
+                Pic::Wind(_) | Pic::WindIn => false,
             })
             .collect()
     }
@@ -429,12 +451,19 @@ pub(crate) fn box_at(s: Scale) -> (usize, usize) {
 }
 
 /// The pictures at the box's size at `scale`, by `Pic::index` (those the cut's switches use; None the rest), and where
-/// they were found.
+/// they were found; and the swing's big V over the key pops' lane (`marks`, the lane's size: swing-3, -4, -5's), where
+/// the lane is on and all three were found.
 pub(crate) struct Art {
     pub(crate) pics: Vec<Option<Rgba>>,
     pub(crate) dir: PathBuf,
     pub(crate) scale: Scale,
+    pub(crate) marks: Vec<Option<Rgba>>,
 }
+
+/// The swing's frames that draw the big V in the lane (`Pic::Swing(n)`, n from this): the down-stroke, the whole V, it
+/// drying (`swing-mark-3`, `-4`, `-5`). Without them all, or with the lane off, the box's own swing frames carry the
+/// small V (`swing-3-v` … `-5-v`, where found; else the swing's usual frames).
+pub(crate) const MARKED: std::ops::RangeInclusive<u8> = 2..=4;
 
 /// Where the frames are: `TARAE_MASCOT_KEYS`, else main's `.sb/youtube/mascot-keys/out` — the main checkout's, by the
 /// repository's common git folder (outside git, where `cargo clean` can't take it).
@@ -446,34 +475,82 @@ pub(crate) fn dir() -> Option<PathBuf> {
 }
 
 impl Art {
-    /// The frames `want` for `bg` in `dir`, at `scale`'s box: meok's only.
-    pub(crate) fn load(bg: Bg, dir: Option<PathBuf>, scale: Scale, want: &[Pic]) -> Result<Art> {
+    /// The frames `want` for `bg` in `dir`, at `scale`'s box: meok's only; and those of `optional` that are there (one
+    /// not there is left out, never an error: `winds` says whether the skein's all came). Where `want` swings and the
+    /// key pops' `lane` is on, the big V's three pictures over the lane, where all are there (`big_v`); else the swing's
+    /// marked frames are the box's small-V ones where those are there (`MARKED`).
+    pub(crate) fn load(
+        bg: Bg,
+        dir: Option<PathBuf>,
+        scale: Scale,
+        (want, optional): (&[Pic], &[Pic]),
+        lane: bool,
+    ) -> Result<Art> {
         if bg == Bg::Light {
             return Err(
                 "its frames are meok's only (pale ink on the dark ground), and this cut is hanji's".into()
             );
         }
         let dir = dir.ok_or("no main checkout found")?;
+        let at = |name: &str| dir.join(format!("frame-{name}.png"));
+        let read = |p: &Path, (w, h): (usize, usize)| -> Result<Rgba> {
+            let f = video::rgba(p)?;
+            if (f.0, f.1) != (w * MADE, h * MADE) {
+                return Err(format!("{}: {}×{}, not {}×{}", p.display(), f.0, f.1, w * MADE, h * MADE));
+            }
+            Ok(video::shrunk(&f, scale.k() as f32 / MADE as f32))
+        };
+        // (the big V: all three or none)
+        let swings = want.iter().any(|p| matches!(p, Pic::Swing(_)));
+        let marks: Vec<PathBuf> = MARKED.map(|n| at(&format!("swing-mark-{}", n + 1))).collect();
+        let marks = match lane && swings && marks.iter().all(|p| p.is_file()) {
+            true => marks.iter().map(|p| read(p, (LANE, BOX.1)).map(Some)).collect::<Result<Vec<_>>>()?,
+            false => vec![None; MARKED.count()],
+        };
+        let small = marks.iter().any(Option::is_none);
+        let file = |pic: Pic| match (pic, small) {
+            (Pic::Swing(n), true) if MARKED.contains(&n) && at(&format!("swing-{}-v", n + 1)).is_file() => {
+                at(&format!("swing-{}-v", n + 1))
+            }
+            _ => at(&pic.name()),
+        };
         let mut pics = vec![None; Pic::COUNT];
-        for &pic in want {
-            pics[pic.index()] = Some({
-                let n = pic.name();
-                let p = dir.join(format!("frame-{n}.png"));
-                let f = video::rgba(&p)?;
-                if (f.0, f.1) != (BOX.0 * MADE, BOX.1 * MADE) {
-                    return Err(format!(
-                        "{}: {}×{}, not {}×{}",
-                        p.display(),
-                        f.0,
-                        f.1,
-                        BOX.0 * MADE,
-                        BOX.1 * MADE
-                    ));
-                }
-                video::shrunk(&f, scale.k() as f32 / MADE as f32)
-            });
+        let there = optional.iter().copied().filter(|&p| file(p).is_file());
+        for pic in want.iter().copied().chain(there) {
+            pics[pic.index()] = Some(read(&file(pic), BOX)?);
         }
-        Ok(Art { pics, dir, scale })
+        Ok(Art { pics, dir, scale, marks })
+    }
+
+    /// Whether the swing draws the big V over the lane (its three pictures loaded).
+    pub(crate) fn big_v(&self) -> bool {
+        self.marks.iter().all(Option::is_some)
+    }
+
+    /// The big V's picture over the lane for frame `p`, where it has one (the swing's marked frames, `big_v`).
+    pub(crate) fn mark(&self, p: Pic) -> Option<&Rgba> {
+        match p {
+            Pic::Swing(n) if MARKED.contains(&n) => self.marks.get(usize::from(n - MARKED.start()))?.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Where the swing's V is, for `cut.txt`.
+    pub(crate) fn v_said(&self, lane: bool) -> String {
+        match (self.big_v(), lane) {
+            (true, _) => "the swing's V: big, over the key pops' lane (swing-mark-3…5)".into(),
+            (false, false) => "the swing's V: small, in the box — the lane is off (keys = false)".into(),
+            (false, true) => {
+                "the swing's V: small, in the box — its big pictures (swing-mark-3…5) not all found".into()
+            }
+        }
+    }
+
+    /// Whether the skein's pictures all loaded: pressing fast-forward winds it, else it's held as before.
+    pub(crate) fn winds(&self) -> bool {
+        (Pic::all().into_iter())
+            .filter(|p| matches!(p, Pic::Wind(_) | Pic::WindIn))
+            .all(|p| self.pics[p.index()].is_some())
     }
 
     /// A loaded picture (the plan shows only those its switches loaded).
@@ -508,14 +585,18 @@ impl Art {
 
     /// The leftmost ink of any loaded picture within `rows` of the box's row `row` (alpha over a tenth), from its left.
     fn ink_from(&self, row: usize, rows: usize) -> Option<usize> {
-        (self.pics.iter().flatten())
-            .filter_map(|(w, h, px)| {
-                (row.saturating_sub(rows)..(row + rows + 1).min(*h))
-                    .filter_map(|y| (0..*w).find(|x| px[(y * w + x) * 4 + 3] > 25))
-                    .min()
-            })
-            .min()
+        ink_in(self.pics.iter().flatten(), row, rows)
     }
+}
+
+/// The leftmost ink of any of `pics` within `rows` of row `row` (alpha over a tenth), from their left.
+fn ink_in<'a>(pics: impl Iterator<Item = &'a Rgba>, row: usize, rows: usize) -> Option<usize> {
+    pics.filter_map(|(w, h, px)| {
+        (row.saturating_sub(rows)..(row + rows + 1).min(*h))
+            .filter_map(|y| (0..*w).find(|x| px[(y * w + x) * 4 + 3] > 25))
+            .min()
+    })
+    .min()
 }
 
 /// The mascot for `cut` (its frames in `dir`) at `s`, placed under a screen drawn at `x0`, `pw` wide, its cells ending
@@ -531,7 +612,7 @@ pub(crate) fn found(
         return Err("the mascot: none (mascot = false)".into());
     }
     let lane = cut.mascot.keys != Keys::Off;
-    let got = (Art::load(cut.bg, dir, s, &Pic::needed(&cut.mascot)))
+    let got = (Art::load(cut.bg, dir, s, (&Pic::needed(&cut.mascot), &Pic::winding(&cut.mascot)), lane))
         .and_then(|a| Ok((place(&a, screen, cells_bottom, lane)?, a)));
     got.map(|(p, a)| (a, p)).map_err(|e| format!("the mascot: none — {e}; the cut is made without it"))
 }
@@ -570,11 +651,18 @@ pub(crate) fn place(art: &Art, (x0, pw): (usize, usize), cells_bottom: usize, la
         ));
     }
     let rule = h - s.px(BAND);
-    let rule_end = match (rule >= y).then(|| art.ink_from(rule - y, s.px(3))).flatten() {
-        Some(ink) => (x + ink).saturating_sub(s.px(RULE_GAP)),
+    let lane = lane.then(|| (x - s.px(LANE), x));
+    // (the rule stops short of the art's ink on its row: the box's, and the big V's over the lane — the whole video
+    // the same, so nothing moves when the V comes)
+    let ink = (rule >= y).then(|| {
+        let boxed = art.ink_from(rule - y, s.px(3)).map(|i| x + i);
+        let v = lane.and_then(|(l, _)| Some(l + ink_in(art.marks.iter().flatten(), rule - y, s.px(3))?));
+        boxed.into_iter().chain(v).min()
+    });
+    let rule_end = match ink.flatten() {
+        Some(ink) => ink.saturating_sub(s.px(RULE_GAP)),
         None => x0 + pw - pad,
     };
-    let lane = lane.then(|| (x - s.px(LANE), x));
     let left = lane.map_or(x, |l| l.0);
     Ok(Place { x, y, rule_end, marks_right: left - s.px(GAP) + pad, lane })
 }

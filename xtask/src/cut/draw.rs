@@ -264,6 +264,10 @@ impl<'a> Stage<'a> {
         if let (Some((art, place)), Some(p)) = (&self.mascot, pose) {
             let t = Instant::now();
             video::stamp(&mut px, lay.dims, art.picture(p), (place.x, place.y));
+            // (the swing's big V over the lane, against the box, where the swing draws it: no pop is up then)
+            if let (Some((left, _)), Some(v)) = (place.lane, art.mark(p)) {
+                video::stamp(&mut px, lay.dims, v, (left, place.y));
+            }
             if let Some((left, right)) = place.lane {
                 let s = lay.scale;
                 for &(i, age) in up {
@@ -442,6 +446,16 @@ pub(crate) fn make(
     let cw = |px: f32| shot::cell(&fonts, px).0;
     let (cmd_w, typed_w) = (cw(pops::COMMAND_PX), cw(pops::TYPED_PX));
     let width = |t: &str, command: bool| t.chars().count() * if command { cmd_w } else { typed_w };
+    let winds = mascot.as_ref().is_some_and(|(art, _)| art.winds());
+    if cut.mascot.fast
+        && let Some((art, _)) = mascot
+        && !winds
+    {
+        said.push(format!(
+            "the skein: its pictures (frame-wind-1…3.png, frame-wind-in.png) not all in {} — fast-forward held as before",
+            art.dir.display()
+        ));
+    }
     let laid = |prog: &Program<'_>| {
         let heard = super::sound::sounds(prog, &keys, marks);
         let hands = Hands::new(&heard.taps).sped(&heard.sped);
@@ -454,7 +468,11 @@ pub(crate) fn make(
         let pops = pops::pops(&heard.struck, regions, cut.mascot.keys, cut.seed, &width)
             .presses(&fast, cut.mascot.keys);
         let causes = motions::causes(prog, marks);
-        let plan = Plan::new(prog, &hands, &causes, &pops.busy(), &cut.mascot, cut.seed);
+        let mut plan = Plan::new(prog, &hands, &causes, &pops.busy(), &cut.mascot, cut.seed);
+        // (pressing fast-forward winds the skein where its pictures were found, else it's held as before)
+        if cut.mascot.fast && winds {
+            plan.wind(prog, &hands);
+        }
         ((heard.taps, keyless, hands, pops), Some(plan))
     };
     let (prog, (taps, stamps_keyless, hands, pops), plan, held) = held_ends(cut, laid, |w| moving(take, w));
@@ -748,7 +766,7 @@ pub(crate) fn make(
             "the mascot at the keys ({}): {} taps — {} left, {} right, {} both (returns), {} on the space bar; a stamp's paw \
              held {} ms{}; on {} \
              frames: up {}, left {}, right {}, both {}, watching {}, the face half-turned {}, closed {}, raised over typing {}, \
-             wide {}, surprised {}, stretching {}, swinging {}; its box {}×{} at ({}, {}), the rule stopping at x {}, the \
+             wide {}, surprised {}, stretching {}, swinging {}, winding the skein {}; its box {}×{} at ({}, {}), the rule stopping at x {}, the \
              marks ending at x {}{}; {} of {} pictures loaded, {cut_ink}; it cost {:.0} ms to load and shrink, {:.0} ms to lay \
              out its motions and pops, {:.0} ms to stamp",
             art.dir.display(),
@@ -775,6 +793,7 @@ pub(crate) fn make(
             body(|p| matches!(p, Pic::Surprise(_))),
             body(|p| matches!(p, Pic::Stretch(_))),
             body(|p| matches!(p, Pic::Swing(_))),
+            body(|p| matches!(p, Pic::Wind(_) | Pic::WindIn)),
             bw,
             bh,
             place.x,
@@ -788,6 +807,9 @@ pub(crate) fn make(
             ms(planned),
             ms(stage.stamping.get()),
         ));
+        if cut.mascot.swing {
+            said.push(art.v_said(place.lane.is_some()));
+        }
         said.extend(plan.said(&cut.mascot));
         said.push(match cut.mascot.keys {
             mascot::Keys::Off => "the key pops: none (keys = false)".to_string(),

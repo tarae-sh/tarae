@@ -1942,7 +1942,12 @@ fn art_at(ink: usize, s: video::Scale) -> Art {
             px[(y * w + x) * 4..][..4].copy_from_slice(&[200, 200, 200, 255]);
         }
     }
-    Art { pics: vec![Some((w, h, px)); mascot::Pic::COUNT], dir: "made-up".into(), scale: s }
+    Art {
+        pics: vec![Some((w, h, px)); mascot::Pic::COUNT],
+        dir: "made-up".into(),
+        scale: s,
+        marks: vec![None; 3],
+    }
 }
 
 /// The layout's figures at 2160p are 1080p's doubled, by the same constants (`Scale`, never a second set): the picture,
@@ -3424,4 +3429,242 @@ fn at_two_times_nothing_changes() {
     };
     assert_eq!(all("speed = 2"), (0, 2, true));
     assert_eq!(all("speed = 8"), (2, 0, false), "past 2× it does");
+}
+
+// ── Winding the skein ──
+
+/// A frame file `frame-NAME.png` in `s` at the made size (4× `size`), 8-bit RGBA as the frames are: clear, but where
+/// `ink` says (a pixel at 4×: x, y, alpha).
+fn made(
+    s: &tarae_testkit::scratch::Scratch,
+    name: &str,
+    size: (usize, usize),
+    ink: Option<(usize, usize, u8)>,
+) {
+    let (w, h) = (size.0 * 4, size.1 * 4);
+    let mut px = vec![0u8; w * h * 4];
+    if let Some((x, y, a)) = ink {
+        px[(y * w + x) * 4..][..4].copy_from_slice(&[200, 200, 200, a]);
+    }
+    let file = std::fs::File::create(s.join(format!("frame-{name}.png"))).unwrap();
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().unwrap().write_image_data(&px).unwrap();
+}
+
+/// The plan over `c`'s take with the keys `keys`, its holds wound on the skein; and the first hold.
+fn wound(c: &Cut, keys: &[Rec]) -> (Plan, (u64, u64)) {
+    let p = Program::new(c);
+    let s = sounds(&p, keys, &marks());
+    let hands = Hands::new(&s.taps).sped(&s.sped);
+    let mut plan = Plan::new(&p, &hands, &Causes::default(), &[], &FAST, 7);
+    plan.wind(&p, &hands);
+    let hold = plan.fast[0];
+    (plan, hold)
+}
+
+/// The loop's pictures from frame `a` on, `n` of them, by name: `in` the in-between, `0`–`2` the loop's steps.
+fn winding(plan: &Plan, a: u64, n: u64) -> String {
+    (a..a + n)
+        .map(|k| match plan.pic(k) {
+            Some(Pic::WindIn) => "in".to_string(),
+            Some(Pic::Wind(s)) => s.to_string(),
+            p => format!("{p:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A hold up to ×8 winds the skein instead: the in-between two frames, then the loop a step every 4 frames, round and
+/// round, back to the keys where it ends; `cut.txt` says it was wound.
+#[test]
+fn a_fast_stretch_winds_the_skein_a_step_every_four_frames() {
+    let (plan, (a, b)) = wound(&spanned(&[(10, 20, "speed = 8")]), &[]);
+    assert_eq!(plan.pic(a - 1), Some(Pic::WATCH), "from the screen's watch");
+    assert_eq!(winding(&plan, a, 15), "in in 0 0 0 0 1 1 1 1 2 2 2 2 0");
+    assert!(matches!(plan.pic(b - 1), Some(Pic::Wind(_))), "wound to its last frame: {:?}", plan.pic(b - 1));
+    assert_eq!(plan.pic(b), Some(Pic::At(Arms::Up, Face::Open)), "then the keys");
+    let said = plan.said(&FAST).join("\n");
+    assert!(said.contains("fast-forward wound on the skein (a ▸▸ pop): 1, at "), "{said}");
+    assert!(!said.contains("the right paw"), "{said}");
+}
+
+/// A key shown in the hold steps the coil at once, not waiting its 4 frames; a key in the frame after a step shares it.
+#[test]
+fn a_key_inside_a_winding_steps_the_coil_at_once() {
+    let c = spanned(&[(10, 20, "speed = 8")]);
+    let p = Program::new(&c);
+    let (_, (a, _)) = wound(&c, &[]);
+    let take = |f: u64| (10_000..20_000).find(|&t| Program::frame_at(take_at(&p, t)) == f).unwrap();
+    // (the loop's first step from frame a + 2: a key at a + 4, two frames in, steps it there; one at a + 9, a frame
+    // after the step it made at a + 8, shares that one)
+    let keys = [key(take(a + 4), b"j"), key(take(a + 9), b"k")];
+    let (plan, _) = wound(&c, &keys);
+    assert_eq!(winding(&plan, a, 14), "in in 0 0 1 1 1 1 2 2 2 2 0 0");
+    assert_eq!((plan.wind_key_steps, plan.fast_keys), (1, 2));
+}
+
+/// Past ×8 the coil steps every 2 frames.
+#[test]
+fn past_eight_times_the_skein_winds_every_two_frames() {
+    let (plan, (a, _)) = wound(&spanned(&[(10, 40, "speed = 16")]), &[]);
+    assert_eq!(winding(&plan, a, 9), "in in 0 0 1 1 2 2 0");
+}
+
+/// Without the skein's pictures — all four, or the cut doesn't wind — the hold is as before: `Art` loads what's there
+/// of them and never fails for one missing, and says whether they all came.
+#[test]
+fn without_the_skeins_pictures_the_hold_is_as_before() {
+    let s = tarae_testkit::scratch::Scratch::new("xtask-cut-skein");
+    let hd = video::Scale::HD;
+    let wind = Pic::winding(&FAST);
+    assert_eq!(wind.len(), 4);
+    assert!(Pic::winding(&STILL).is_empty(), "fast-forward off: none looked for");
+    let load = || Art::load(Bg::Dark, Some(s.path().to_path_buf()), hd, (&[], &wind), true).unwrap();
+    assert!(!load().winds(), "none there: held");
+    let blank = |name: &str| made(&s, name, mascot::BOX, None);
+    for p in &wind[..3] {
+        blank(&p.name());
+    }
+    assert!(!load().winds(), "three of four: held");
+    blank("wind-in");
+    assert!(load().winds(), "all four: wound");
+    // (held: today's hold, the right paw down — no plan.wind)
+    let c = spanned(&[(10, 20, "speed = 8")]);
+    let p = Program::new(&c);
+    let plan = Plan::new(&p, &Hands::new(&[]), &Causes::default(), &[], &FAST, 7);
+    let (a, b) = plan.fast[0];
+    assert!((a..b - motions::TURN).all(|k| plan.pic(k) == Some(Pic::At(Arms::Right, Face::Raised))));
+    assert!(!plan.wound && plan.said(&FAST).join("\n").contains("fast-forward held (the right paw"));
+}
+
+// ── The swing's big V over the lane ──
+
+/// `art(60)` with the big V's three pictures over the lane: each the lane's size at 1080p, inked from column 80 to
+/// 147 in rows 5 to 144 (across the rule's row), each a different grey so one can be told from another.
+fn art_with_v() -> Art {
+    let mut a = art(60);
+    let (w, h) = (mascot::LANE, mascot::BOX.1);
+    a.marks = (0..3u8)
+        .map(|i| {
+            let mut px = vec![0u8; w * h * 4];
+            for y in 5..145 {
+                for x in 80..148 {
+                    px[(y * w + x) * 4..][..4].copy_from_slice(&[150 + 30 * i, 100, 80, 255]);
+                }
+            }
+            Some((w, h, px))
+        })
+        .collect();
+    a
+}
+
+/// The big V is drawn over the lane at the swing's marked frames — its down-stroke at swing-3, whole at swing-4, drying
+/// at swing-5 — and at no other picture; and nowhere but the lane beside the box.
+#[test]
+fn the_big_v_is_drawn_in_the_lane_at_the_swings_frames_and_nowhere_else() {
+    use super::draw::{Stage, Words, layout};
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let look = video::look(Bg::Dark);
+    let lay = layout(&fonts, (166, 32), video::Scale::HD).unwrap();
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let art = art_with_v();
+    assert!(art.big_v());
+    let place = mascot::place(&art, (lay.at.0, lay.pic.0), lay.at.1 + lay.pic.1 - lay.pad, true).unwrap();
+    let (left, right) = place.lane.unwrap();
+    let stage = Stage::new(lay, &look, &c, Some((art, place)));
+    let screen = vt100::Parser::new(32, 166, 0);
+    let pic = crate::shot::render_scaled(screen.screen(), &fonts, lay.glyph, 1);
+    let f = at_take(&p, 5_000, 0);
+    let mut words = Words::new(&fonts, look.ground, video::Scale::HD);
+    let mut frame =
+        |pose: Pic| stage.take_frame(&pic, None, &f, (Some(pose), &Pops::default(), &[]), &mut words);
+    let without = frame(Pic::WATCH);
+    let mut reds = Vec::new();
+    for pose in Pic::all() {
+        let with = frame(pose);
+        let (mut changed, mut red) = (0, 0u8);
+        let (mut lo, mut hi) = ((usize::MAX, usize::MAX), (0, 0));
+        for y in 0..video::H {
+            for x in 0..video::W {
+                let at = (y * video::W + x) * 3;
+                if with[at..at + 3] != without[at..at + 3] {
+                    changed += 1;
+                    red = red.max(with[at]);
+                    (lo, hi) = ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y)));
+                    assert!(
+                        (left..right).contains(&x) && (place.y..place.y + mascot::BOX.1).contains(&y),
+                        "{pose:?}: ink at ({x}, {y}), the lane {left}..{right} from {}",
+                        place.y
+                    );
+                }
+            }
+        }
+        let marked = matches!(pose, Pic::Swing(n) if mascot::MARKED.contains(&n));
+        assert_eq!(changed > 0, marked, "{pose:?}: {changed} pixels changed");
+        if marked {
+            reds.push(red);
+            // (against the box, as its picture lays it: the lane's columns 80 to 147, rows 5 to 144 from the box's top)
+            assert_eq!((lo, hi), ((left + 80, place.y + 5), (left + 147, place.y + 144)), "{pose:?}");
+        }
+    }
+    assert_eq!(reds, [150, 180, 210], "swing-3, -4, -5 each its own picture");
+}
+
+/// The lane off, or the big pictures not all there: the swing's marked frames are the box's small-V ones — where those
+/// are there, else its usual frames; never an error.
+#[test]
+fn the_v_falls_back_to_the_small_one_in_the_box_with_the_lane_off() {
+    let s = tarae_testkit::scratch::Scratch::new("xtask-cut-big-v");
+    let hd = video::Scale::HD;
+    let want = [Pic::Swing(1), Pic::Swing(2)];
+    let load =
+        |lane: bool| Art::load(Bg::Dark, Some(s.path().to_path_buf()), hd, (&want, &[]), lane).unwrap();
+    // (the usual frames clear; the small V's swing-3 inked at its first pixel, so it can be told apart)
+    made(&s, "swing-2", mascot::BOX, None);
+    made(&s, "swing-3-r3", mascot::BOX, None);
+    let small = |a: &Art| a.picture(Pic::Swing(2)).2.chunks(4).any(|p| p[3] > 0);
+    let a = load(true);
+    assert!(!a.big_v() && !small(&a), "nothing else there: the usual frames");
+    made(&s, "swing-3-v", mascot::BOX, Some((0, 0, 255)));
+    for n in 3..=5 {
+        made(&s, &format!("swing-mark-{n}"), (mascot::LANE, mascot::BOX.1), None);
+    }
+    let a = load(true);
+    assert!(
+        a.big_v() && !small(&a),
+        "the lane on, the big V's three there: big, the box's frame without a V"
+    );
+    assert!(a.mark(Pic::Swing(3)).is_some() && a.mark(Pic::Swing(1)).is_none());
+    let a = load(false);
+    assert!(
+        !a.big_v() && small(&a) && a.mark(Pic::Swing(3)).is_none(),
+        "the lane off: the small V in the box"
+    );
+    assert!(a.v_said(false).contains("the lane is off"), "{}", a.v_said(false));
+    std::fs::remove_file(s.join("frame-swing-mark-5.png")).unwrap();
+    let a = load(true);
+    assert!(!a.big_v() && small(&a), "one big picture missing: the small V");
+    assert!(a.v_said(true).contains("not all found"), "{}", a.v_said(true));
+}
+
+/// The big V's place: over the lane, the box's height — so never over a cell (the box never is) —, the band's marks
+/// ending `GAP` before it; the rule stopping `RULE_GAP` short of its ink on the rule's row, the whole video the same.
+#[test]
+fn the_big_v_stays_clear_of_the_marks_the_cells_and_the_rule() {
+    use crate::shot::PAD;
+    let (x0, pw) = (33, video::W - 66);
+    let cells = 870;
+    let without = mascot::place(&art(60), (x0, pw), cells, true).unwrap();
+    let place = mascot::place(&art_with_v(), (x0, pw), cells, true).unwrap();
+    let (left, right) = place.lane.unwrap();
+    assert_eq!((right, right - left), (place.x, mascot::LANE));
+    assert!(place.y >= cells, "the V's top (the box's) under the cells' last row");
+    assert_eq!(place.marks_right - PAD + mascot::GAP, left, "the marks end GAP before the lane");
+    assert_eq!(place.marks_right, without.marks_right, "the marks don't move for it");
+    // (the made-up V's ink starts at the lane's column 80 on the rule's row)
+    assert_eq!(place.rule_end, left + 80 - 26, "the rule stops short of the V's ink");
+    assert_eq!(without.rule_end, without.x + 60 - 26, "without it, short of the box's");
 }
