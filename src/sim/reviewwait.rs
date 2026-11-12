@@ -2,14 +2,18 @@
 //! input a key a step — it holds `a`, `y`, `n`, `q`, `j`, `tab` and a space —, Claude's edit of a protected file
 //! landing mid-sentence (`refactor::land`: `show`'s path, as #528's `Cargo.toml`), frames at two sizes (the chat beside
 //! the code, and a screen too narrow for both, the chat taking it whole), time passing, `C-q`, `esc`, a press on the
-//! review, `y` / `a` / `n` / `j` once it's focused, and now and then `enter`, the sentence sent.
+//! review, `y` / `a` / `n` / `j` once it's focused, and now and then `enter`, the sentence sent. And the reviewed file's
+//! grammar (#534/#538): its language loaded with the grammar missing (a stand-in language whose grammar is never here),
+//! and an install of it landing (`Editor::grammars_here`).
 //!
 //! The scenario keeps its own model from its own steps: whether it focused the review, and whether a frame has drawn
 //! the review in the code area since (`C-q` on the narrow screen gives the code the screen, a frame later). After every
 //! step: no change is decided unless the model focused the review and a frame drew it before the answer; while the
 //! model hasn't focused it, every key typed lands in the chat's input, after what was there, in order — and none does
 //! while it has; a sentence sent arrives whole as the chat's message; the review has the keys exactly when the model
-//! says.
+//! says. The grammar's: while the review is drawn in the code area its file holds no offer back, a load that failed for
+//! the missing grammar there was offered (offers are a status line under `cfg(test)`: the decision, not the card), and
+//! an install landing leaves no file holding that grammar's offer.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -74,6 +78,7 @@ impl Model {
 fn run(choices: Choices) -> Vec<String> {
     let dir = crate::scratch::Scratch::new("sim-reviewwait");
     std::fs::write(dir.join("Cargo.toml"), "[package]\n").unwrap();
+    std::fs::write(dir.join("aside.txt"), "x\n").unwrap();
     let root = std::fs::canonicalize(dir.path()).unwrap();
     let mut sim = Sim::new(NAME, choices, LIMIT);
     sim.frames = Some(WIDE);
@@ -96,6 +101,16 @@ fn run(choices: Choices) -> Vec<String> {
     drop(sim);
     drop(ed);
     trace
+}
+
+/// A language whose grammar is never here — the reviewed file loaded in it fails as a missing grammar does.
+fn missing() -> &'static crate::syntax::LangSpec {
+    static SPEC: std::sync::OnceLock<crate::syntax::LangSpec> = std::sync::OnceLock::new();
+    SPEC.get_or_init(|| {
+        let mut lang = crate::syntax::spec("lua").expect("lua's pack").clone();
+        (lang.name, lang.grammar) = ("tarae-sim-lang".into(), "tarae-sim-no-such-grammar".into());
+        lang
+    })
 }
 
 /// The review up: (its generation, its changes still undecided).
@@ -203,8 +218,38 @@ fn step(
     let focused = model.borrow().focused;
     // (by arm: a key of the sentence (or, focused, of the review) 8, Claude's edit landing 2, `C-q` 2, `esc` 1, a
     // press on the review 1, the screen's size 1, a frame 1, time passing 1, `enter` 1, `C-q` and an answer in one
-    // batch 1)
-    match c.weighted(&[8, 2, 2, 1, 1, 1, 1, 1, 1, 1]) {
+    // batch 1, the reviewed file's language loaded with its grammar missing 1, an install of that grammar landing 1)
+    match c.weighted(&[8, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]) {
+        // (in the reviewed file, or in one Claude's turn opened aside — follow's, never in front: held, #208)
+        10 if c.below(2) == 0 => {
+            let Some(doc) = ed.workspace.claude.review.as_ref().map(|r| r.doc_id) else {
+                return "(no review: no file to load)".into();
+            };
+            ed.load_language(doc, missing());
+            "the reviewed file's language loads, its grammar missing".into()
+        }
+        10 => {
+            let front = ed.current;
+            ed.open_as(&root.join("aside.txt"), crate::editor::Opener::Claude).unwrap();
+            let doc = ed.doc().id;
+            ed.current = front;
+            // (its load's result as the loader's job brings it, in this step: held now, for an install to land on)
+            let no = format!("no grammar '{}' — :grammar-install", missing().grammar);
+            ed.language_loaded(doc, missing(), Err(no));
+            "a file Claude's turn opened aside loads, its grammar missing".into()
+        }
+        11 => {
+            ed.grammars_here(std::slice::from_ref(&missing().grammar));
+            if let Some(d) =
+                ed.docs.iter().find(|d| d.grammar_held.is_some_and(|s| s.grammar == missing().grammar))
+            {
+                wrong.set(Some(format!(
+                    "an install landed, {} still holds its offer",
+                    d.display_name_short()
+                )));
+            }
+            "an install of the missing grammar lands".into()
+        }
         9 if focused => "(focused: no C-q)".into(),
         9 => {
             // (typed fast: no frame between — on the narrow screen the code, and the review, only come with the next)
@@ -312,10 +357,29 @@ fn held(ed: &Editor, m: &Model, wrong: &Cell<Option<String>>) -> Result<(), Stri
     if focused != m.focused {
         return Err(format!("the review focused: {focused}, the model says {}", m.focused));
     }
+    // (#534: a file whose code you saw holds nothing back; its code in sight — a load that failed for the grammar offered)
+    if let Some(d) = ed.docs.iter().find(|d| d.grammar_held.is_some() && d.grammar_seen) {
+        return Err(format!("{} holds its grammar's offer back, its code seen", d.display_name_short()));
+    }
+    let shown = ed.workspace.claude.review.as_ref().filter(|r| r.covers()).map(|r| r.doc_id);
+    if let Some(d) = shown.and_then(|id| ed.docs.iter().find(|d| d.id == id)) {
+        if d.grammar_held.is_some() {
+            return Err("the review drawn in the code area, its file holds its grammar's offer back".into());
+        }
+        if d.language_failed && !ed.grammar_hinted.contains(&missing().grammar) {
+            return Err("the review drawn in the code area, its grammar missing, nothing offered".into());
+        }
+    }
     Ok(())
 }
 
 fn print(ed: &Editor) -> String {
     let r = ed.workspace.claude.review.as_ref().map(|r| (r.ready, r.focused, r.folded, r.seen));
-    format!("review {r:?} · input {:?} · keys {:?}", input_of(ed), ed.keys_to().region)
+    let held = ed.docs.iter().filter(|d| d.grammar_held.is_some()).count();
+    let offered = ed.grammar_hinted.contains(&missing().grammar);
+    format!(
+        "review {r:?} · input {:?} · keys {:?} · grammar held {held}, offered {offered}",
+        input_of(ed),
+        ed.keys_to().region
+    )
 }

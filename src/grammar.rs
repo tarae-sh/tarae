@@ -390,6 +390,29 @@ impl crate::editor::Editor {
             crate::offer::What::Grammars { lang, names: for_language(&spec.name), then: None },
         ));
     }
+
+    /// Document `id`'s code is in front of you — a review shows it: its grammar is asked for as for a file of yours,
+    /// the first time a person sees a language's code anywhere (#534, the full video's take 2). Its offer held now is made;
+    /// one its load brings later is made then (`Document::grammar_seen`). Its language server stays held until you take
+    /// it up (#208, frictions25 R7), and so does what follow shows of Claude's turn: that's Claude's tour, not yours.
+    pub fn grammar_seen(&mut self, id: crate::document::DocId) {
+        let Some(d) = self.docs.iter_mut().find(|d| d.id == id) else { return };
+        d.grammar_seen = true;
+        if let Some(spec) = d.grammar_held.take() {
+            self.offer_grammar(spec);
+        }
+    }
+}
+
+/// Every event: Claude's edit review drawn in the code area (`Review::covers` — the keys' sync has folded it to its peek
+/// or not) shows its file's code — `grammar_seen`.
+pub fn seen_sync(ed: &mut crate::editor::Editor) {
+    let Some(id) = ed.workspace.claude.review.as_ref().filter(|r| r.covers()).map(|r| r.doc_id) else {
+        return;
+    };
+    if ed.docs.iter().any(|d| d.id == id && !d.grammar_seen) {
+        ed.grammar_seen(id);
+    }
 }
 
 // ── CLI: `tarae grammar install|list` ───────────────────────────────────
@@ -465,6 +488,18 @@ pub fn cli(args: &[String]) -> anyhow::Result<()> {
         }
         Some(other) => anyhow::bail!("unknown grammar command '{other}' — install [name…] · list"),
     }
+}
+
+/// Tests: a language a file's extension picks whose grammar isn't here — neither built in nor downloaded (its load says
+/// "no grammar") — with that extension; None where every one is here (the test that needs one skips).
+#[cfg(test)]
+pub(crate) fn a_language_not_here() -> Option<(&'static crate::syntax::LangSpec, String)> {
+    crate::syntax::names().filter_map(crate::syntax::spec).find_map(|s| {
+        let ext = s.extensions.first()?;
+        let picked = crate::syntax::detect(Path::new(&format!("a.{ext}")))?;
+        let missing = crate::syntax::Loader::global().load(s).is_err_and(|e| e.starts_with("no grammar"));
+        (std::ptr::eq(picked, s) && missing).then(|| (s, ext.clone()))
+    })
 }
 
 #[cfg(test)]

@@ -944,8 +944,8 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
     let warnings = if f.protected { crate::edits::warned(ed) } else { Vec::new() };
     // (what the keys' pane shows: it stays there while the review waits folded — the code you're on stays in sight)
     let shown = ed.doc().id;
-    // (Claude's: a file not open yet is `claudes_only` — no grammar or server offered mid-turn, #208; read here, its
-    // text compared right away)
+    // (Claude's: a file not open yet is `claudes_only` — no server offered mid-turn, #208; its grammar once the review
+    // is drawn in the code area, `grammar::seen_sync` — #534; read here, its text compared right away)
     if let Err(e) = ed.open_as(&f.path, crate::editor::Opener::Claude) {
         return done_one(ed, whose, &f, Outcome::Failed(format!("{e:#}")));
     }

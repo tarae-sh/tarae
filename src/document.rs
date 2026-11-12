@@ -456,11 +456,13 @@ pub struct Document {
     pub aside: bool,
     /// Opened by Claude's turn — follow or replay showing what it read or wrote — and not taken up by the user
     /// since (`edits::taken_up`): nobody asked to work in it, so no grammar or server is offered for it until
-    /// then (#208: an install card for a `.sh` Claude wrote came up mid-turn, in front of the turn's own).
+    /// then (#208: an install card for a `.sh` Claude wrote came up mid-turn, in front of the turn's own) — but its
+    /// grammar once a review shows you its code (`grammar_seen`, #534).
     pub claudes_only: bool,
     /// Opened by a code review (`codereview::show`) and not taken up since: as `claudes_only`, no grammar or
     /// server offered for it until then — while the review is up only an edit takes it up (frictions25 R7: an
-    /// install card for a `.sh` the review opened came up mid-review).
+    /// install card for a `.sh` the review opened came up mid-review). Its grammar is the exception: the review shows
+    /// you its code, so that's offered as it lands (`grammar_seen`, #534).
     pub review_only: bool,
     /// The session's preview (`Editor::open_preview`, as VS Code's): a file the git tab or the review rail passed
     /// over, shown in one slot the next one replaces — drawn in italic (path bar, buffer tabs, `space b`), never
@@ -472,8 +474,13 @@ pub struct Document {
     /// the view back to the cursor (`term::render_frame`).
     pub wheel_held: Option<(crate::selection::Range, u64)>,
     /// Its grammar's offer held back while `claudes_only` or `review_only` (`load_language`): the language —
-    /// offered when the user takes it up (`edits::taken_up`).
+    /// offered when the user takes it up (`edits::taken_up`) or a review shows its code (`grammar_seen`); let go
+    /// once its language loads (an install landed — #538: a held one was offered 54 minutes after it).
     pub grammar_held: Option<&'static crate::syntax::LangSpec>,
+    /// Its code was in front of you in a review — Claude's edit review drawn in the code area, a code review's or the
+    /// git tab's file (`Editor::grammar_seen`): its grammar missing is offered as for a file of yours, never held, even
+    /// while it's still `claudes_only` or `review_only` (#534: a turn's first `.rs`, read in both reviews, got none).
+    pub grammar_seen: bool,
     /// Its own language's load landed failed (`Editor::language_loaded`): no tree will come until a grammar is
     /// downloaded and it's attached again — said by its own load's result, never by the loader's memory of another's
     /// (#439: a review's grades read that memory, filled whenever any thread had tried, and ran two ways).
@@ -619,6 +626,7 @@ impl Document {
             preview: false,
             wheel_held: None,
             grammar_held: None,
+            grammar_seen: false,
             language_failed: false,
             language: None,
             shown: None,

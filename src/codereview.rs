@@ -4354,8 +4354,9 @@ fn show_at(ed: &mut Editor, i: usize, at: Land) -> Option<DocId> {
         shown(ed, id, at, from, f);
         return Some(id);
     }
-    // (one not open yet: read on a worker, the next file shown taking its place; no grammar or server offered for it
-    // while the review reads it — R7; in the session's preview slot — `enter` on its row keeps it)
+    // (one not open yet: read on a worker, the next file shown taking its place; no server offered for it while the
+    // review reads it — R7 —, but its grammar, its code being in front of you — #534; in the session's preview slot —
+    // `enter` on its row keeps it)
     let got = std::sync::Arc::new(std::sync::Mutex::new(None));
     let put = got.clone();
     let path = f.path.clone();
@@ -6367,6 +6368,65 @@ mod tests {
         assert!(ed.workspace.is_at(Here::Rail), "the rail has the keys");
         let pending = ed.features.pending();
         assert!(pending.iter().any(|(k, c)| k == "panel:files" && c.n == 1), "{pending:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #534: a turn's first file of a language shown by its review (`]F`) — read by the review, `review_only` — gets the
+    /// grammar's card: its code is in front of you (#534, the full video's take 2: the first time a person sees it anywhere). Its
+    /// server stays held until you take it up (R7). A stand-in language loaded as the file lands; and where a real one's
+    /// grammar isn't here (CI's: none downloaded), a file of it too, its load failing in the review's own read.
+    #[test]
+    fn a_turns_review_offers_the_grammar_of_the_file_it_shows() {
+        let real = crate::grammar::a_language_not_here();
+        let code = real.as_ref().map(|(_, ext)| format!("c.{ext}"));
+        let mut files = vec![("a.txt", "a\n", "a2\n"), ("b.txt", "b\n", "b2\n")];
+        files.extend(code.as_deref().map(|c| (c, "c\n", "c2\n")));
+        let (_s, mut ed, dir) = reviewing("turn-grammar", &files);
+        ed.offer_popups = true;
+        let turn = files
+            .iter()
+            .map(|(rel, before, after)| crate::checkpoint::Touched {
+                path: dir.join(rel),
+                before: Some(ropey::Rope::from_str(before)),
+                after: ropey::Rope::from_str(after),
+                ..Default::default()
+            })
+            .collect();
+        ed.workspace.claude.checkpoints.list.push(crate::checkpoint::Checkpoint::new("fix".into(), turn));
+        ed.workspace.root = dir.clone();
+        start_turn(&mut ed, 0);
+        let turned = |ed: &Editor| {
+            ed.workspace.code_review.as_ref().is_some_and(|r| matches!(r.base, Base::Turn { .. }))
+        };
+        settle_until(&mut ed, |ed| turned(ed) && landed(ed));
+        let card = |ed: &Editor, name: &str| {
+            let lang = crate::grammar::pretty(name);
+            ed.offers
+                .iter()
+                .any(|o| matches!(&o.what, crate::offer::What::Grammars { lang: l, .. } if *l == lang))
+        };
+        let on =
+            |ed: &Editor, rel: &str| landed(ed) && ed.doc().path.as_ref().is_some_and(|p| p.ends_with(rel));
+        assert!(on(&ed, "a.txt"), "on its first file");
+        // A language whose grammar is never here, loaded as `attach_syntax` loads a file's, once `]F` shows b
+        let mut lang = crate::syntax::spec("lua").expect("lua's pack").clone();
+        (lang.name, lang.grammar) = ("tarae-test-lang".into(), "tarae-test-no-such-grammar".into());
+        let spec: &'static crate::syntax::LangSpec = Box::leak(Box::new(lang));
+        feed(&mut ed, "]F");
+        settle_until(&mut ed, |ed| on(ed, "b.txt"));
+        assert!(ed.doc().review_only, "read by the review: still its own");
+        ed.load_language(ed.doc().id, spec);
+        settle_until(&mut ed, |ed| ed.doc().language_failed);
+        assert!(card(&ed, &spec.name), "its code in front of you: its grammar asked for");
+        assert!(ed.doc().grammar_held.is_none(), "offered, nothing held");
+        if let (Some((real, _)), Some(code)) = (real, code) {
+            assert!(!card(&ed, &real.name), "no file of {} seen yet", real.name);
+            feed(&mut ed, "]F");
+            settle_until(&mut ed, |ed| on(ed, &code) && ed.doc().language_failed);
+            assert!(ed.doc().review_only, "read by the review: still its own");
+            assert!(card(&ed, &real.name), "{}'s grammar asked for as its review read it", real.name);
+            assert!(ed.doc().grammar_held.is_none(), "offered, nothing held");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

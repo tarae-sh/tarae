@@ -748,28 +748,50 @@ fn a_reviews_keys_go_only_on_the_call_its_for() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// #375 step 3 (`.sb/openaside-plan.md` §1.C): Claude's edit review in a file not open opens it as Claude's
-/// (`claudes_only`, `refactor::show`) — its grammar missing is held, never offered mid-turn (#208, as follow's).
+/// #534 (the full video's take 2; CLAUDE.md's rule: the first time a person sees a language's code anywhere, its
+/// grammar's card comes, once):
+/// Claude's edit review in a file not open opens it as Claude's (`claudes_only`, `refactor::show`, #375 step 3) — and
+/// drawn in the code area it shows that file's code, so its grammar missing is offered, mid-turn too. One that waits
+/// folded to its peek (the keys on the code, #528) shows none of it: held, until `C-q` brings it up — then offered.
+/// (A turn's first `.rs`, shown in the edit review and the turn's review, got no card: both held it.)
 #[test]
-fn an_edit_review_in_a_file_not_open_offers_no_grammar_mid_turn() {
-    let edit = json!({"edits": [{"file_path": "a.txt", "old_string": "one", "new_string": "uno"}]});
-    let (_s, dir) = project("review-grammar", &[("a.txt", "one\n")]);
-    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
-    let asked50 = asked(&mut ed, 50, "mcp__tarae__edit", &edit);
-    call(&mut ed, asked50, &edit).unwrap();
-    pump(&mut ed, "its review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
-    let doc = ed.workspace.claude.review.as_ref().unwrap().doc_id;
-    assert!(ed.docs.iter().any(|d| d.id == doc && d.claudes_only), "opened as Claude's, not yours");
+fn an_edit_review_in_sight_offers_its_files_grammar() {
     // A language whose grammar is never here, loaded as `attach_syntax` loads a file's
     let mut lang = crate::syntax::spec("lua").expect("lua's pack").clone();
     (lang.name, lang.grammar) = ("tarae-test-lang".into(), "tarae-test-no-such-grammar".into());
     let spec: &'static crate::syntax::LangSpec = Box::leak(Box::new(lang));
-    ed.load_language(doc, spec);
-    let settled = |ed: &Editor| ed.grammar_hinted.contains(&spec.grammar);
-    let held = |ed: &Editor| ed.docs.iter().any(|d| d.id == doc && d.grammar_held.is_some());
-    pump(&mut ed, "its load back", |ed| held(ed) || settled(ed));
-    assert!(!settled(&ed), "no grammar offered mid-turn");
-    answer_reviews(&mut ed, 'n', |_| answered(50).is_some());
+    let card = |ed: &Editor| {
+        ed.offers.iter().any(
+            |o| matches!(&o.what, crate::offer::What::Grammars { lang, .. } if lang.contains("test-lang")),
+        )
+    };
+    for (n, keys_on_code) in [(50, false), (51, true)] {
+        let edit = json!({"edits": [{"file_path": "a.txt", "old_string": "one", "new_string": "uno"}]});
+        let (_s, dir) = project(&format!("review-grammar-{n}"), &[("a.txt", "one\n")]);
+        let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+        ed.offer_popups = true;
+        if keys_on_code {
+            ed.workspace.leave(crate::workspace::Here::Chat);
+        }
+        let asked_n = asked(&mut ed, n, "mcp__tarae__edit", &edit);
+        call(&mut ed, asked_n, &edit).unwrap();
+        pump(&mut ed, "its review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        let review = ed.workspace.claude.review.as_ref().unwrap();
+        let doc = review.doc_id;
+        assert_eq!(review.covers(), !keys_on_code, "drawn in the code area unless the keys are on the code");
+        assert!(ed.docs.iter().any(|d| d.id == doc && d.claudes_only), "opened as Claude's, not yours");
+        ed.load_language(doc, spec);
+        let held = |ed: &Editor| ed.docs.iter().any(|d| d.id == doc && d.grammar_held.is_some());
+        pump(&mut ed, "its load back", |ed| held(ed) || card(ed));
+        if keys_on_code {
+            assert!(held(&ed) && !card(&ed), "waiting folded, its code out of sight: held");
+            ed.handle_event(crate::event::Event::Key("C-q".parse().unwrap()));
+            assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.covers()), "C-q: up");
+        }
+        assert!(card(&ed), "its code in sight: the grammar's card (keys on the code first: {keys_on_code})");
+        assert!(!held(&ed), "offered, nothing held");
+        answer_reviews(&mut ed, 'n', |_| answered(n).is_some());
+    }
 }
 
 /// tarae's `edit` sent as claude sends it (`tools/call` through `tools::mcp`): its call's row is claimed as the

@@ -2070,8 +2070,9 @@ impl Editor {
         got.lock().unwrap().take().unwrap_or(Ok(()))
     }
 
-    /// `open` for the git tab's or the review rail's look at a file — one not open yet `review_only`: no grammar or
-    /// server offered for it until the user takes it up (frictions25 R7) — in the session's one preview slot:
+    /// `open` for the git tab's or the review rail's look at a file — one not open yet `review_only`: no server offered
+    /// for it until the user takes it up (frictions25 R7), its grammar as it comes in front (`grammar_seen`, #534) — in
+    /// the session's one preview slot:
     /// one open already is only shown (a buffer of its own stays one), else it's read on a worker (`open_shown`: the
     /// next pass takes its place, so a file passed over quickly is never read) and, as it lands, takes the place of
     /// the preview shown before, so passing over files doesn't grow the buffer list (`Document::preview`). A preview
@@ -2107,6 +2108,8 @@ impl Editor {
         self.open_shown(path, Opener::Review, false, move |ed, r| match r {
             Ok((id, made)) => {
                 ed.preview_landed(id, made, travel);
+                // (its code in front of you: its grammar asked for, as for a file of yours — #534)
+                ed.grammar_seen(id);
                 then(ed, Ok(id))
             }
             Err(e) => then(ed, Err(e)),
@@ -3537,6 +3540,7 @@ impl Editor {
         crate::edits::lost_review(self);
         crate::refactor::next(self);
         crate::codereview::land(self);
+        crate::grammar::seen_sync(self);
         self.offer_view_sync();
         self.offer_group_sync();
         crate::notes::stale_sync(self);
@@ -5788,9 +5792,25 @@ impl Editor {
         }
         doc.language_failed = result.is_err();
         match result {
-            Ok(lang) => doc.syntax = Some(syntax::Syntax::new(lang)),
-            // (only Claude's turn or a review opened it: offered once the user takes it up — #208)
-            Err(e) if e.starts_with("no grammar") && (doc.claudes_only || doc.review_only) => {
+            // (an offer held for it is let go: its grammar is here now — #538)
+            Ok(lang) => {
+                doc.grammar_held = None;
+                doc.syntax = Some(syntax::Syntax::new(lang))
+            }
+            // (a load that failed before an install landed, back after it: loaded again — a grammar that's here never
+            // gets the card, nor is held; the cache's look only, no disk)
+            Err(e)
+                if e.starts_with("no grammar") && syntax::Loader::global().loaded(&spec.name).is_some() =>
+            {
+                self.load_language(id, spec)
+            }
+            // (only Claude's turn or a review opened it, its code not in front of you yet: offered once the user takes it
+            // up or a review shows it — #208, #534)
+            Err(e)
+                if e.starts_with("no grammar")
+                    && (doc.claudes_only || doc.review_only)
+                    && !doc.grammar_seen =>
+            {
                 doc.grammar_held = Some(spec)
             }
             // Grammar not downloaded yet — offer to download it (once per language until quit)
@@ -5884,17 +5904,54 @@ impl Editor {
                         failed.join("; ")
                     ));
                 }
-                syntax::Loader::global().forget_missing();
-                let ids: Vec<DocId> = ed.docs.iter().filter(|d| d.syntax.is_none()).map(|d| d.id).collect();
-                for id in ids {
-                    ed.attach_syntax(id);
-                }
+                let here: Vec<String> = results
+                    .iter()
+                    .filter_map(|p| match p {
+                        Progress::Done { name, .. } | Progress::Skipped { name } => Some(name.clone()),
+                        Progress::Failed { .. } => None,
+                    })
+                    .collect();
+                ed.grammars_here(&here);
                 // Work that stopped for lack of a grammar (tests, debugging) — continue it now
                 if let Some(r) = resume {
                     ed.resume(r);
                 }
             }
         });
+    }
+
+    /// Grammars `names` are here — an install built them or found them up to date (`install_grammars`, on the main
+    /// loop): the loads that failed are forgotten and every file without a tree loads its language again; no file
+    /// holds an offer of one of them, and no card asks for them (#538: one held came up 54 minutes after the install,
+    /// its `n` saying "no colors" over the colours) — but the card the install itself runs for, which says how it went.
+    pub fn grammars_here(&mut self, names: &[String]) {
+        syntax::Loader::global().forget_missing();
+        for d in self.docs.iter_mut() {
+            d.grammar_held = d.grammar_held.filter(|s| !names.contains(&s.grammar));
+        }
+        let asks_for_these = |o: &crate::offer::Offer| {
+            !o.installing()
+                && matches!(&o.what, crate::offer::What::Grammars { names: n, .. } if n.iter().all(|g| names.contains(g)))
+        };
+        let all = std::iter::once(&self.workspace).chain(&self.workspaces);
+        let gone: Vec<u64> = self
+            .offers
+            .iter()
+            .chain(all.flat_map(|w| &w.parked))
+            .filter(|o| asks_for_these(o))
+            .map(|o| o.id)
+            .collect();
+        self.offers.retain(|o| !asks_for_these(o));
+        for w in std::iter::once(&mut self.workspace).chain(&mut self.workspaces) {
+            w.parked.retain(|o| !asks_for_these(o));
+        }
+        for id in gone {
+            self.card_how(id, "dropped — its grammar is here");
+        }
+        let ids: Vec<DocId> = self.docs.iter().filter(|d| d.syntax.is_none()).map(|d| d.id).collect();
+        for id in ids {
+            self.attach_syntax(id);
+        }
     }
 
     /// Which documents keep their parse trees (#36 — a big file's are ~15 MB, and a day's work keeps a dozen
@@ -14823,6 +14880,70 @@ mod tests {
         assert!(!ed.doc().claudes_only, "moved in it: yours");
         assert!(ed.grammar_hinted.contains(&spec.grammar), "and its grammar offered");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #538: a grammar installed (`:grammar-install`, or its card's `y`) while a file held its offer — opened by Claude's
+    /// turn or a review, its code not in front of you then — lets that offer go: taken up later, the file asks nothing
+    /// (the take's card came 54 minutes after the install, its `n` saying "no colors" over the colours). A card up for
+    /// that grammar goes as the install lands; and a grammar that's here never gets the card.
+    #[test]
+    fn an_installed_grammar_is_never_offered_again() {
+        let s = crate::scratch::Scratch::new("grammar-installed");
+        let file = s.join("a.txt");
+        std::fs::write(&file, "x = 1\n").unwrap();
+        let mut ed = Editor::new(Config::default());
+        ed.offer_popups = true;
+        ed.open_for_claude_now(&file).unwrap();
+        // A language whose grammar is never here, loaded as `attach_syntax` loads a file's: held
+        let mut lang = syntax::spec("lua").expect("lua's pack").clone();
+        (lang.name, lang.grammar) = ("tarae-test-lang".into(), "tarae-test-no-such-grammar".into());
+        let spec: &'static syntax::LangSpec = Box::leak(Box::new(lang));
+        ed.load_language(ed.doc().id, spec);
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while ed.doc().grammar_held.is_none() {
+            let ev = ed.events.recv_timeout(end.saturating_duration_since(std::time::Instant::now()));
+            ed.handle_event(ev.expect("its load back, the offer held"));
+        }
+        // (a card up for it meanwhile — another file's, from before)
+        let what = crate::offer::What::Grammars {
+            lang: "Test".into(),
+            names: vec![spec.grammar.clone()],
+            then: None,
+        };
+        ed.push_offer(crate::offer::Offer::new(
+            "Test syntax colors".into(),
+            "Download?",
+            "",
+            String::new(),
+            what,
+        ));
+        let grammars = |ed: &Editor| {
+            ed.offers.iter().filter(|o| matches!(o.what, crate::offer::What::Grammars { .. })).count()
+        };
+        assert_eq!(grammars(&ed), 1);
+        // The install lands: what it built, as `install_grammars` takes it on the main loop (a stand-in for the build)
+        ed.grammars_here(std::slice::from_ref(&spec.grammar));
+        assert_eq!(grammars(&ed), 0, "the card for what's here now went");
+        assert!(ed.doc().grammar_held.is_none(), "the file's held offer let go");
+        // Taken up later (moved in): nothing asked
+        ed.handle_event(Event::Key("l".parse().unwrap()));
+        assert!(!ed.doc().claudes_only, "moved in it: yours");
+        assert_eq!(grammars(&ed), 0, "no card for a grammar that's here");
+        // A load that failed before the install, back after it: a grammar that's here (loaded) gets no card — loaded
+        // again (the file's language held to it, as the git tab's message is, so its load is the stand-in's to say)
+        let rust = syntax::spec("rust").expect("rust's pack");
+        if syntax::Loader::global().load(rust).is_ok() {
+            let id = ed.doc().id;
+            ed.doc_mut().language = Some("rust");
+            ed.language_loaded(id, rust, Err("no grammar 'rust' — :grammar-install".into()));
+            assert_eq!(grammars(&ed), 0, "Rust is here: no card");
+            assert!(!ed.grammar_hinted.contains(&rust.grammar), "nor marked offered");
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while ed.doc().syntax.is_none() {
+                let ev = ed.events.recv_timeout(end.saturating_duration_since(std::time::Instant::now()));
+                ed.handle_event(ev.expect("its load again, landed"));
+            }
+        }
     }
 
     /// #37: a file outside the project that Claude's turn opened (follow shows what it reads there) closes when

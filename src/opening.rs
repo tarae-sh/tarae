@@ -223,7 +223,8 @@ impl Editor {
 
     /// Opens `path` shown for Claude's turn or a review (`by`): a buffer open at that path already comes in front now;
     /// else it's read on a worker, the shown one under way before it let go, and comes in front as it lands, made
-    /// `claudes_only` or `review_only` (no grammar or server offered until you take it up — #208, R7) — only where the
+    /// `claudes_only` or `review_only` (no server offered until you take it up — #208, R7; a review's grammar as it
+    /// comes in front, #534) — only where the
     /// pane it was asked in still shows what it showed then, and with `led` (follow's own move) no key of yours came
     /// since; else nothing. `then` once it's in front, with whether it was made now (Ok), or with why it couldn't open.
     /// Claude's asked while an open of yours is under way is nothing: yours is what you asked for.
