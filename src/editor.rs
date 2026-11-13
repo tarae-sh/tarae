@@ -21478,6 +21478,100 @@ mod tests {
         assert_eq!(parts, [(0, 9), (9, 12)]);
     }
 
+    /// `space i` opens its card: a frame named `claude thinking`, what you asked beside the name, `esc stop` its bottom
+    /// line — the faint wash all along, the keys the code's; `i` takes its `esc` (the key gone from its line), `esc`
+    /// gives it back, and `esc` again stops the answer — the card gone.
+    #[test]
+    fn space_i_opens_its_card_in_a_frame_named_for_what_it_does() {
+        let (_dir, _path, mut ed) = ask_file("ask-frame", "fn f() {\n    1\n}\n");
+        // (a claude that hears the question and says nothing yet)
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "for n in 1 2; do read -r line; done; sleep 30".into()];
+        feed(&mut ed, "j<space>iname it<ret>");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready));
+        let card = |ed: &mut Editor| {
+            let mut out = Vec::new();
+            crate::term::render(ed, &mut out, 120, 40).unwrap();
+            let mut vt = vt100::Parser::new(40, 120, 0);
+            vt.process(&out);
+            let rows: Vec<String> = vt.screen().rows(0, 120).collect();
+            let (x, y, w, h) = ed.screen.ask_card.get().expect("its card");
+            let cut = |r: usize| rows[r].chars().skip(x).take(w).collect::<String>();
+            let lit = ed.screen.frames.borrow().iter().find(|f| f.rect == (x, y, w, h)).map(|f| f.lit);
+            (cut(y), cut(y + h - 1), lit)
+        };
+        let (top, bottom, lit) = card(&mut ed);
+        assert!(top.starts_with("╭─ claude thinking ") && top.contains("“name it”"), "{top}");
+        assert!(bottom.starts_with("╰─ esc stop "), "{bottom}");
+        assert_eq!(lit, Some(crate::mouse::Lit::Wash), "it takes no keys: the wash");
+        feed(&mut ed, "i");
+        let (_, bottom, lit) = card(&mut ed);
+        assert!(!bottom.contains("esc"), "insert mode: esc is the mode's — {bottom}");
+        assert_eq!(lit, Some(crate::mouse::Lit::Wash));
+        feed(&mut ed, "<esc>");
+        assert!(card(&mut ed).1.starts_with("╰─ esc stop "), "its esc back");
+        feed(&mut ed, "<esc>");
+        assert!(ed.workspace.claude.review.is_none() && ed.llm_pid.is_none(), "stopped");
+        let mut out = Vec::new();
+        crate::term::render(&mut ed, &mut out, 120, 40).unwrap();
+        assert_eq!(ed.screen.ask_card.get(), None, "the card gone");
+    }
+
+    /// `space i`'s card stands by its lines (the user, 2026-11-13): under the selection's last line where its whole height
+    /// (six lines and its frame's two) has room, else above its first, else — neither — at the code's bottom right.
+    #[test]
+    fn space_is_card_stands_under_its_lines_else_above_else_in_the_corner() {
+        let text: String = (1..=60).map(|i| format!("    line {i}\n")).collect();
+        let (_dir, _path, mut ed) = ask_file("ask-place", &text);
+        // (a claude that hears the question and says nothing yet)
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "for n in 1 2; do read -r line; done; sleep 30".into()];
+        // (the screen's rows at `h` rows, and the row showing document line `n`)
+        let rows = |ed: &mut Editor, h: u16| {
+            let mut out = Vec::new();
+            crate::term::render(ed, &mut out, 120, h).unwrap();
+            let mut vt = vt100::Parser::new(h, 120, 0);
+            vt.process(&out);
+            vt.screen().rows(0, 120).collect::<Vec<String>>()
+        };
+        // (a row's words `line n` — blame may follow them on the cursor's)
+        let has = |r: &String, n: usize| {
+            let n = n.to_string();
+            r.split_whitespace().collect::<Vec<_>>().windows(2).any(|w| w == ["line", n.as_str()])
+        };
+        let row = |rows: &[String], n: usize| {
+            rows.iter().position(|r| has(r, n)).unwrap_or_else(|| panic!("line {n}:\n{}", rows.join("\n")))
+        };
+        let ask = |ed: &mut Editor, line: usize| {
+            feed(ed, &format!("gg{line}Gxx<space>iname it<ret>"));
+            settle_until(ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready));
+        };
+        // Under lines 9–10, its text over their column
+        rows(&mut ed, 40);
+        ask(&mut ed, 9);
+        let shown = rows(&mut ed, 40);
+        let (x, y, ..) = ed.screen.ask_card.get().expect("its card");
+        assert_eq!(y, row(&shown, 10) + 1, "under the selection's last line");
+        assert!(x < 20, "by its lines: at {x}");
+        feed(&mut ed, "<esc>");
+        // Two lines from the screen's foot: above them, its whole height (8 rows) over their first
+        let last = (1..=60).filter(|&n| shown.iter().any(|r| has(r, n))).max();
+        let first = last.expect("lines on screen") - 2;
+        ask(&mut ed, first);
+        let shown = rows(&mut ed, 40);
+        let (x, y, ..) = ed.screen.ask_card.get().expect("its card");
+        assert_eq!(y + 8, row(&shown, first), "above the selection's first line");
+        assert!(x < 20, "by its lines: at {x}");
+        feed(&mut ed, "<esc>");
+        // A screen too short for it either side of lines 4–5: the corner
+        rows(&mut ed, 14);
+        ask(&mut ed, 4);
+        rows(&mut ed, 14);
+        let (x, ..) = ed.screen.ask_card.get().expect("its card");
+        assert!(x > 30, "the code's bottom right: at {x}");
+        feed(&mut ed, "<esc>");
+    }
+
     /// The full video's take 2 (2026-11-12): `space i` with the cursor on a function's closing `}`, its answer lines
     /// added right where the selection's lines begin or end — a cut each (#135), there the file's end — and tarae
     /// panicked cutting the insertion (`editdiff::cut_at`). Now it's offered as one change, and `y` applies it.

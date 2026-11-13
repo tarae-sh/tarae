@@ -215,9 +215,6 @@ pub enum On {
     Overlay,
     /// A card: its title, a peek's, its rows.
     Card,
-    /// The waiting card of `space i`'s ask (`term::draw_ask_stream`): its instruction, on its own surface (`Surface::Ask`,
-    /// #192), floating over the panes (U2's fourth review: as `Card` it was never under the mouse).
-    Ask,
     /// Claude's edit review in the buffer: its head.
     Review,
     WhichKey,
@@ -287,7 +284,6 @@ impl On {
                 | (On::Toast, S::Toast)
                 | (On::Overlay, S::Overlay)
                 | (On::Card, S::Card)
-                | (On::Ask, S::Ask)
                 | (On::Review, S::EditReview)
                 | (On::WhichKey, S::WhichKey)
                 | (On::Follow, S::FollowCard)
@@ -313,7 +309,6 @@ impl On {
             On::Toast => "message",
             On::Overlay => "overlay",
             On::Card => "card",
-            On::Ask => "ask",
             On::WhichKey => "keys",
             On::Follow => "follow",
             On::Welcome => "start",

@@ -766,6 +766,52 @@ const B1_KEYS: [&[&str]; 7] = [
     &["@1", " ", "l", "@1", "keep the first strand on a repeat", "\r", "\x1b", "\x1b", "@10?writing", "@2"],
 ];
 
+/// The ask stream's scenes (`askframe`'s turns, by what each asks): `space i` on lines 9–10 — thinking, a few lines
+/// written, more than the card shows —, the same with the follow card and Claude's ask up (the chat minimized by the
+/// turn, the keys back in the code), and `C` in the git tab after `S`.
+const ASK_FRAME_KEYS: [&[&str]; 5] = [
+    &["@1", "9", "G", "x", "x", " ", "i", "@1", "think first, then keep it", "\r", "@?claude thinking", "@1"],
+    &["@1", "9", "G", "x", "x", " ", "i", "@1", "keep the first strand", "\r", "@?claude writing", "@1"],
+    &[
+        "@1",
+        "9",
+        "G",
+        "x",
+        "x",
+        " ",
+        "i",
+        "@1",
+        "keep the first of each name",
+        "\r",
+        "@?claude writing",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "run the tests",
+        "\r",
+        "\x1b",
+        "\x1b",
+        "@10?Its reason",
+        "@1",
+        "9",
+        "G",
+        "x",
+        "x",
+        " ",
+        "i",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?claude writing",
+        "@1",
+    ],
+    &["@1", " ", "g", "@?knot.rs", "S", "@1", "C", "@?claude writing", "@1"],
+];
+
 /// #267's keys: following, the turn running its tests, the chat minimized with the keys — then `$more` (the follow card's
 /// left line pressed and dragged; `C-w =`).
 macro_rules! f267_keys {
@@ -4702,6 +4748,13 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: &["@1", "9", "G", "x", " ", "i", "@1", "keep the first strand", "\r", "@?claude writing", "@1"],
     },
+    // (the ask stream's card in each state: `space i` thinking before its first words, writing a few lines, writing
+    // more lines than it shows; beside the follow card and Claude's ask, the chat minimized; a commit message's draft)
+    Scene { name: "askthink", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[0] },
+    Scene { name: "askfew", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[1] },
+    Scene { name: "askmany", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[2] },
+    Scene { name: "askbeside", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[3] },
+    Scene { name: "askdraft", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[4] },
     // (`space i` on two touching lines, one selection each, one edit of both: a change each in its review)
     Scene {
         name: "asktouching",
@@ -8093,6 +8146,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "sixfollow",
     "sixend",
     "strip",
+    "askframe",
     "now",
     "nowcard",
     "nowread",
@@ -8288,6 +8342,14 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "mid" => turn.explain(false, false)?,
             "midlist" => turn.explain_listed()?,
             "ask" => turn.rewrite()?,
+            // (the ask stream's scenes: one script for `space i`, the chat's turn and the commit draft, by what's asked)
+            "askframe" if line.contains("think first") => turn.ask_thinking()?,
+            "askframe" if line.contains("keep the first strand") => {
+                turn.rewrite_lines(Some("Thread { name: \\\"실"))?
+            }
+            "askframe" if line.contains("of each name") => turn.rewrite_lines(Some("or_insert("))?,
+            "askframe" if line.contains("run the tests") => turn.now(Held::Card)?,
+            "askframe" => turn.draft_held()?,
             "asktouching" => turn.rewrite_touching()?,
             "card" => turn.ask_outside()?,
             // (#244: prose enough to reach the ask's rows in the chat, then the same card)
@@ -9090,6 +9152,41 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// tarae goes (the card's preview of it).
     fn rewrite(&mut self) -> io::Result<()> {
         self.input(1, "edit", &ask_edit().to_string(), Some("or_insert("))
+    }
+
+    /// `space i`'s claude thinking, nothing written yet — held there until tarae goes.
+    fn ask_thinking(&mut self) -> io::Result<()> {
+        let ev = |e: Value| json!({"type": "stream_event", "event": e});
+        let block = json!({"type": "thinking", "thinking": "", "signature": ""});
+        self.line(ev(json!({"type": "content_block_start", "index": 0, "content_block": block})))?;
+        let delta = json!({"type": "thinking_delta", "thinking": "Which strand should stay"});
+        self.line(ev(json!({"type": "content_block_delta", "index": 0, "delta": delta})))?;
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
+    }
+
+    /// `space i`'s claude rewriting lines 9–10 of the demo's `main.rs` as seven lines, held at `hold`.
+    fn rewrite_lines(&mut self, hold: Option<&str>) -> io::Result<()> {
+        let old = "    let first = Thread { name: \"타래\".into(), knots: vec![1, 2, 3] };\n    threads.insert(first.name.clone(), first);";
+        let new = "    let strands = [\n        Thread { name: \"타래\".into(), knots: vec![1, 2, 3] },\n        Thread { name: \"실\".into(), knots: vec![4, 5] },\n        Thread { name: \"타래\".into(), knots: vec![6] },\n    ];\n    for t in strands {\n        threads.entry(t.name.clone()).or_insert(t);\n    }";
+        let edits = json!({"edits": [{"file_path": "src/main.rs", "old_string": old, "new_string": new}]});
+        self.input(1, "edit", &edits.to_string(), hold)
+    }
+
+    /// A commit message's draft, written a word at a time, held mid-sentence: its stdin is closed once asked
+    /// (`llm::start`), so it stays by writing nothing tarae acts on until tarae is gone.
+    fn draft_held(&mut self) -> io::Result<()> {
+        self.lines.by_ref().try_for_each(|l| l.map(drop))?;
+        self.words("Keep the first strand of each name")?;
+        self.text("\n\n")?;
+        self.words("The map took the last strand of a name: insert replaced the one")?;
+        self.text("\n")?;
+        self.words("before it. entry().or_insert() keeps the first, so a repeat")?;
+        self.text("\n")?;
+        self.words("in the skein no longer")?;
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            self.line(json!({"type": "system", "subtype": "status", "status": "requesting"}))?;
+        }
     }
 
     /// `space i`'s claude on lines 9 and 10 of the demo's `main.rs`, a selection each: one `edit` item over both.

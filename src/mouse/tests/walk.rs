@@ -1424,7 +1424,14 @@ fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut
         // (what's on top at its cells, as the frame shows them — never the code's own `Whole::seen`)
         let cells: Vec<(&[char], (usize, usize))> =
             of.iter().filter_map(|s| Some((rows.get(s.0)?.as_slice(), (s.1, s.2)))).collect();
-        let shows = shows_its_own_over(&cells, &w.text);
+        // (a folded mark — `whole::folded`, a `…` standing for its whole, none of it drawn: its cells the mark alone)
+        let mark_alone = || {
+            w.key == Some("folded")
+                && cells.iter().all(|(row, (a, b))| {
+                    row.get(*a..(*b).min(row.len())).is_some_and(|c| c.iter().collect::<String>() == "…")
+                })
+        };
+        let shows = shows_its_own_over(&cells, &w.text) || mark_alone();
         let before = snap(&mut ed);
         // (#391: its card only once the pointer has rested there — none as it crosses)
         ed.card_rest = true;

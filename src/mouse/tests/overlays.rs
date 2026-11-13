@@ -1109,28 +1109,27 @@ fn a_press_on_the_asks_card_says_the_mode_only_when_its_the_reason() {
     assert!(!said(&ed).contains("stops the answer"), "said: {}", said(&ed));
 }
 
-/// #192: the ask's card has no frame (as a toast) — none recorded over it, nothing lit under the pointer; were one
-/// drawn there, it would light as every card's frame does (`lights_at`'s arm, so the two can't drift apart).
+/// The ask's card is a floating frame that takes no keys, the follow card's kind: recorded over it, the faint wash with
+/// the code's keys (its `esc stop` among them) or the chat's — and under the pointer half lit, as every card's (#189).
 #[test]
-fn the_asks_card_lights_only_a_frame_drawn_there() {
+fn the_asks_card_is_a_frame_that_takes_no_keys() {
+    use crate::mouse::{Lights, Lit};
     let mut ed = editor();
     asking(&mut ed);
-    let card = ed.screen.ask_card.get().expect("the ask's card drawn");
-    let (x, y) = ask_cell(&ed);
-    let meets = |r: (usize, usize, usize, usize)| {
-        r.0 < card.0 + card.2 && card.0 < r.0 + r.2 && r.1 < card.1 + card.3 && card.1 < r.1 + r.3
+    let lit = |ed: &Editor| {
+        let card = ed.screen.ask_card.get().expect("the ask's card drawn");
+        ed.screen.frames.borrow().iter().find(|f| f.rect == card).map(|f| (f.of, f.lit))
     };
-    assert!(!ed.screen.frames.borrow().iter().any(|f| meets(f.rect)), "no frame recorded over it");
+    assert!(crate::llm::esc_stops(&ed));
+    assert_eq!(lit(&ed), Some((Some(Lights::Card), Lit::Wash)), "the wash: the keys are the code's");
+    let (x, y) = ask_cell(&ed);
     let u = ed.mouse_at(x, y);
     assert_eq!(u.surface, crate::mouse::Surface::Ask);
-    assert_eq!(ed.lights_at(u, x, y), None, "nothing lit");
-    let framed = crate::mouse::Framed {
-        rect: card,
-        of: Some(crate::mouse::Lights::Card),
-        lit: crate::mouse::Lit::Wash,
-    };
-    ed.screen.frames.borrow_mut().push(framed);
-    assert_eq!(ed.lights_at(u, x, y), Some(crate::mouse::Lights::Card), "a frame drawn there lights");
+    assert_eq!(ed.lights_at(u, x, y), Some(Lights::Card), "it lights under the pointer");
+    ed.workspace.set_at(crate::workspace::Here::Chat);
+    frame(&mut ed);
+    assert!(!crate::llm::esc_stops(&ed));
+    assert_eq!(lit(&ed), Some((Some(Lights::Card), Lit::Wash)), "the chat's keys: the wash");
 }
 
 #[test]

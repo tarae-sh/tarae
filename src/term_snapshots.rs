@@ -7043,17 +7043,17 @@ fn the_draft_card_stays_in_the_codes_room() {
             row.find("claude thinking").map(|b| unicode_width::UnicodeWidthStr::width(&row[..b])).unwrap();
         let sc = &s.ed.screen;
         let all = rows.join("\n");
-        // (the card's left edge: two cells of margin and the working sign's cell and a space before the words)
+        // (the card's left edge: its frame's `╭─ ` before its name)
         let (left, edge) =
-            (sc.drawn_w(crate::pane::Shows::Rail).max(sc.drawn_w(crate::pane::Shows::Side)), x - 4);
+            (sc.drawn_w(crate::pane::Shows::Rail).max(sc.drawn_w(crate::pane::Shows::Side)), x - 3);
         assert!(left > 0 && sc.slot().h > 0, "{w}×{h}: the panel and the slot are up\n{all}");
-        assert!(edge > left, "{w}×{h}: right of the panel ({left}) — at {edge}\n{all}");
+        assert!(edge >= left, "{w}×{h}: right of the panel ({left}) — at {edge}\n{all}");
         assert!(y + 2 <= (h as usize) - 1 - sc.slot().h, "{w}×{h}: above the slot — at row {y}\n{all}");
         // (the task's toast keeps off it: its instruction and its time are whole)
         // (the code's side of the row: the chat's past its line)
         let code: String = row.chars().take(sc.chat_x().unwrap_or(w as usize)).collect();
         assert!(
-            code.contains("“a commit message”") && code.trim_end().ends_with('s'),
+            code.contains("“a commit message”") && code.trim_end().ends_with("s ─╮"),
             "{w}×{h}: {row}\n{all}"
         );
         assert!(!all.lines().nth(y).unwrap().contains("check — all good"), "{w}×{h}\n{all}");

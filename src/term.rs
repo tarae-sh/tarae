@@ -2914,6 +2914,8 @@ struct TopLine<'a> {
     right: &'a [(Fit, Style)],
     /// The details fold before the right end (a turn's time); else it gives way to them first (the model's name).
     keep_right: bool,
+    /// The ` ── ` before the details goes to ` ─ ` before a detail is cut (the ask card's instruction).
+    tight: bool,
     /// Columns where a line from above ends on this one (a code pane's divider over the slot's line): `┴` in its run of
     /// `─` (`┼` where one goes down there too).
     ups: &'a [usize],
@@ -3162,15 +3164,22 @@ fn top_line(
                       line: Style,
                       details: &[(Fit, Style)],
                       col: &mut usize,
-                      most,
-                      bare| {
-        let lead = if bare { 2 } else { 4 };
-        let details = match room(*col) >= 4 + DETAILS_MIN && most >= DETAILS_MIN {
-            true => fold_details(details, (room(*col) - 4).min(most)),
+                      most: usize,
+                      bare: bool| {
+        // (tight: a cell of the rule given to the details where they'd be cut with it)
+        let need: usize = details.iter().map(|(s, _)| s.width()).sum();
+        let tight = head.tight && !bare && need > room(*col).saturating_sub(4).min(most);
+        let (lead, room_of, most) = match (bare, tight) {
+            (true, _) => (2, 4, most),
+            (false, true) => (3, 3, most.saturating_add(1)),
+            (false, false) => (4, 4, most),
+        };
+        let details = match room(*col) >= room_of + DETAILS_MIN && most >= DETAILS_MIN {
+            true => fold_details(details, (room(*col) - room_of).min(most)),
             false => Vec::new(),
         };
         if !details.is_empty() {
-            put(buf, line, if lead == 2 { "─ " } else { " ── " })?;
+            put(buf, line, ["─ ", " ─ ", " ── "][lead - 2])?;
             *col += lead;
             for (s, st, i) in &details {
                 apply_put(buf, *st, s.shown())?;
@@ -6233,11 +6242,6 @@ fn draw(
     let chat_cursor = if lay.chat_frame.is_some() { chat_cursor } else { under_float(chat_cursor) };
     let text_cursor = under_float(text_cursor);
     let terminal_cursor = under_float(terminal_cursor);
-    let ask_rect = match editor.workspace.claude.review.as_ref().filter(|r| !r.ready) {
-        Some(rev) => draw_ask_stream(rev, editor, ui, lay, out)?,
-        None => None,
-    };
-    drew(editor, Kind::Ask, ask_rect);
     // Cards over the code share the screen without overlapping: the note at the cursor and an offer (a
     // command Claude wants to run) are placed first, the follow card takes a free corner (skipped if none is)
     // (the open note's card is the code's rows now — focus A1b — drawn with its pane, `draw_panes`)
@@ -6247,6 +6251,14 @@ fn draw(
     // (a waiting edit review folded to its peek: placed now, the follow card and the toasts keep off it)
     let peek = review_peek_at(editor, lay, offer_rect);
     let peek_rect = peek.as_ref().map(|p| (p.0, p.1, p.2, 1));
+    // (the answer being written: by its lines first, the follow card keeping off it — else in the corner, on the asks'
+    // stack and the follow card, which it never pushes)
+    let asking = editor.workspace.claude.review.as_ref().filter(|r| !r.ready);
+    let mut stack: Vec<Rect4> = [offer_rect, peek_rect].into_iter().flatten().map(kept_apart).collect();
+    let mut ask_rect = None;
+    if let Some(rev) = asking {
+        ask_rect = draw_ask_stream(rev, editor, ui, lay, (&stack, false), out)?;
+    }
     // Follow mode: one card — what Claude does and says, and while the panel is minimized the question and
     // its keys too (U4). The turn's, while it runs or its walk-through plays, and a replay's — never a stop held past
     // them: what the answer says there is its note's card, opened at the turn's end (#273)
@@ -6265,8 +6277,12 @@ fn draw(
     {
         // (it came on its own too: never over a floating pane you opened — landing 1's rule, #299)
         let opened = opened_floats(editor, lay);
-        let avoid: Vec<Rect4> =
-            [note_rect, offer_rect, peek_rect].into_iter().flatten().chain(opened).map(kept_apart).collect();
+        let avoid: Vec<Rect4> = [note_rect, offer_rect, peek_rect, ask_rect]
+            .into_iter()
+            .flatten()
+            .chain(opened)
+            .map(kept_apart)
+            .collect();
         let drawn = {
             let _drawing = crate::crash::drawing(editor, crate::crash::Pane::Chat);
             draw_follow_card(c, editor, ui, lay, &avoid, out)?
@@ -6274,6 +6290,14 @@ fn draw(
         (follow_rect, follow_says) = (drawn.map(|d| d.0), drawn.is_some_and(|d| d.1));
         drew(editor, Kind::Follow, follow_rect);
     }
+    // (no room by its lines: the corner, on the follow card as on the asks' stack — never pushing it)
+    if ask_rect.is_none()
+        && let Some(rev) = asking
+    {
+        stack.extend(follow_rect.map(kept_apart));
+        ask_rect = draw_ask_stream(rev, editor, ui, lay, (&stack, true), out)?;
+    }
+    drew(editor, Kind::Ask, ask_rect);
     match &editor.popup {
         // (a name in the chat's: in the chat, by its cursor's name — #389)
         Some(lines) if editor.popup_chat => {
@@ -16592,28 +16616,77 @@ fn num_digits(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// While an ask answer streams: last few lines being written, in a card at the editing area's bottom right
-/// (in that language's colors). Editing isn't blocked — the card covers only the corner.
-/// The card while Claude writes an answer (`space i`, a commit draft): the bottom right of the code's room —
-/// right of the side panel or the review's rail, above the bottom slot (#139: placed by the screen's left
-/// edge, it ran under the rail, its start cut). Its place, for the toast to keep off; None: no room.
+/// The card while Claude writes an answer (`space i`, a commit draft): its last lines being written, in that language's
+/// colours, `space i`'s with the selection's least indent taken off, in a floating frame that takes no keys — the
+/// follow card's kind: its one key, the code's `esc`, in its bottom line while it stops the answer. Editing isn't
+/// blocked: it covers only its rect. Its place, for the toast to keep off; None: no room.
+///
+/// ```text
+///     ╭─ claude writing ─ “keep the first strand” ──────── ▂▅▇ 1.9s ─╮  ← who, its state, what it's for, its time
+///     │ let strands = [                                         │
+///     │     Thread { name: "타래".into(), knots: vec![1, 2, 3] },  │
+///     │     ▍                                                   │  ← where it writes; thinking: the one row, faint
+///     ╰─ esc stop ──────────────────────────────────────────────╯  ← while `esc` stops it
+/// ```
+///
+/// Where: by the lines its text lands on (the user, 2026-11-13 — ux.md: what's about lines stays by its lines) — under
+/// the selection's last line, a draft's under the message's first, its text over the column its lines land on, else
+/// above the first (`ask_by_lines`); only where neither has room (`corner`, the caller's second try, the follow card
+/// placed by then) the bottom right of the code's room, right of the side panel or the review's rail, above the bottom
+/// slot (#139), on the asks' stack and the follow card standing there (`avoid`) — it never pushes the follow card. Its
+/// top row is where its whole height would stand (`ROWS` lines), and it grows down to there as lines come: nothing
+/// moves while it's up (#561's rule).
 fn draw_ask_stream(
     rev: &crate::llm::Review,
     editor: &Editor,
     ui: &Ui,
     lay: &Layout,
+    (avoid, corner): (&[Rect4], bool),
     out: &mut impl Write,
 ) -> io::Result<Option<Rect4>> {
     const ROWS: usize = 6;
-    let card = card_style(ui, editor, "ui.popup");
-    let pad = CARD_PAD;
-    let lang = editor
-        .docs
-        .iter()
-        .find(|d| d.id == rev.doc_id)
-        .and_then(|d| d.syntax.as_ref())
-        .map(|s| s.lang.name.clone());
-    let preview = crate::llm::preview(&rev.streamed, ROWS);
+    // (framed on the ground, as every floating pane — D3)
+    let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
+    let doc = editor.docs.iter().find(|d| d.id == rev.doc_id);
+    let lang = doc.and_then(|d| d.syntax.as_ref()).map(|s| s.lang.name.clone());
+    // (`space i`'s, not a draft: its lines the selection's, its text taken off by their least indent — known before the
+    // stream starts, it never changes as the lines shown scroll; a draft's is under the message's first line, as written)
+    let asked = editor.workspace.claude.ask.is_some();
+    let lines = doc.and_then(|d| ask_lines(d, rev, asked));
+    let indent = match (asked, doc) {
+        (true, Some(d)) => least_indent(d, rev),
+        _ => 0,
+    };
+    // (the code's room: from the rail's edge — a cell of it kept — to the code's right edge)
+    let room = code_area(lay).2.saturating_sub(1);
+    let (fx, fr) = lay.float_area();
+    let inner = ((fr - fx) / 2).clamp(30, 72).min(room.saturating_sub(5));
+    if inner < 24 {
+        return Ok(None);
+    }
+    let placed = match corner {
+        false => {
+            lines.and_then(|l| ask_by_lines(editor, lay, rev.doc_id, l, (ROWS + 2, inner, indent), avoid))
+        }
+        // The corner: on the cards standing at the code's foot in its columns (the asks' stack and the follow card, kept
+        // apart), else on the row of air every card at the foot stands on
+        true => {
+            let (x0, width) = (fr.saturating_sub(inner + 5), inner + 4);
+            let mut under: Vec<(usize, usize)> = avoid
+                .iter()
+                .filter(|r| r.0 < x0 + width && x0 < r.0 + r.2)
+                .map(|r| (r.1, r.1 + r.3))
+                .collect();
+            crate::sorting::by(&mut under, |a, b| b.cmp(a));
+            let floor = under.iter().fold(card_floor(lay), |f, b| if b.0 < f && b.1 >= f { b.0 } else { f });
+            let rows = ROWS.min(floor.saturating_sub(lay.text_top as usize + 2));
+            (rows > 0).then(|| (x0, inner, floor - (rows + 2), rows))
+        }
+    };
+    let Some((x0, inner, y0, rows)) = placed else { return Ok(None) };
+    let width = inner + 4;
+    let preview: Vec<&str> =
+        crate::llm::preview(&rev.streamed, rows).into_iter().map(|l| dedent(l, indent)).collect();
     let code = crate::markdown::code_lines(&preview.join("\n"), lang.as_deref(), &editor.theme);
     let mut code: Vec<Vec<crate::markdown::Span>> = code
         .into_iter()
@@ -16622,10 +16695,6 @@ fn draw_ask_stream(
             _ => Vec::new(),
         })
         .collect();
-    // (the code's room: from the rail's edge — a cell of it kept — to the code's right edge)
-    let room = code_area(lay).2.saturating_sub(1);
-    let (fx, fr) = lay.float_area();
-    let inner = ((fr - fx) / 2).clamp(30, 72).min(room.saturating_sub(5));
     // (each line cut to the card first: a line wider than it shows its start, and its bleeding head is the end of
     // what shows)
     for row in &mut code {
@@ -16640,78 +16709,209 @@ fn draw_ask_stream(
         let drawn = vec![crate::markdown::Drawn { code: true, ..Default::default() }; code.len()];
         bleed_head("ask", &mut code, &drawn, ui, card);
     }
-    // (how to stop it, when Esc does — `llm::esc_stops`: a row of its own under the text)
+    let dim = Style { fg: ui.virt.fg, ..card };
     let faint = Style { fg: ui.linenr.fg, ..card };
-    let stop = match crate::llm::esc_stops(editor) {
-        true => hint_spans(ui, &[("esc", "stop")], Style { fg: ui.virt.fg, ..card }, faint),
-        false => Vec::new(),
-    };
-    let body = if rev.streamed.is_empty() { 0 } else { code.len().min(ROWS) };
-    let hint = usize::from(!stop.is_empty());
-    let h = 1 + body + hint + 2 * pad;
-    if lay.text_rows < h + 2 || inner < 24 {
-        return Ok(None);
-    }
-    let (x0, y0) = (fr.saturating_sub(inner + 5), card_floor(lay) - h);
-    let width = inner + 4;
-    card_edge(out, card, x0, y0, width)?;
-    // Title: working sign · status · instruction ……… elapsed
-    let y = y0 + pad;
-    let secs = timer(rev.started.elapsed(), !editor.moving());
-    let phase = if rev.thinking || rev.streamed.is_empty() { "thinking" } else { "writing" };
-    queue!(out, MoveTo(x0 as u16, y as u16))?;
-    apply(out, card)?;
-    queue!(out, Print("  "))?;
-    apply(out, Style { fg: ui.accent.fg, ..card })?;
-    // (`space i`'s own claude: one place with the status line's `claude` — the card first, drawn first)
-    queue!(out, Print(wave_here(editor, false, ("ask", 0)).unwrap_or_else(|| crate::shimmer::mark(""))))?;
-    apply(out, Style { bold: true, ..card })?;
-    queue!(out, Print(format!(" claude {phase}")))?;
-    // One row = margin 2 + sign + " claude status" + instruction + gap + elapsed + margin 2 = inner + 4
-    let lead = 2 + crate::shimmer::WIDTH + 8 + phase.len();
-    let instr = crate::whole::fit(
-        &format!("  “{}”", rev.instruction),
-        (inner + 4).saturating_sub(lead + 1 + secs.len() + 2),
-    );
-    apply(out, Style { fg: ui.virt.fg, ..card })?;
-    queue!(out, Print(instr.shown()))?;
-    let at = (x0 + lead, y);
-    crate::whole::at(crate::whole::On::Ask, &instr, at, Style { fg: ui.virt.fg, ..card }, (x0, x0 + width));
-    let used = lead + instr.width();
-    queue!(out, Spaces((inner + 4).saturating_sub(used + secs.len() + 2)))?;
-    apply(out, faint)?;
-    queue!(out, Print(&secs), Print("  "))?;
-    for (i, line) in code.iter().take(body).enumerate() {
-        queue!(out, MoveTo(x0 as u16, (y + 1 + i) as u16))?;
+    let accent = Style { fg: ui.accent.fg, ..card };
+    // (nothing written yet: one row, its caret faint where the first line will land — never an empty frame)
+    let written = !rev.streamed.is_empty();
+    let body = if written { code.len().clamp(1, rows) } else { 1 };
+    let h = body + 2;
+    for i in 0..body {
+        queue!(out, MoveTo(x0 as u16, (y0 + 1 + i) as u16))?;
         apply(out, card)?;
         queue!(out, Print("  "))?;
         let mut used = 0;
-        for sp in line {
+        for sp in code.get(i).filter(|_| written).into_iter().flatten() {
             let t = fit(&sp.text, inner - used);
             apply(out, card.patch(sp.style))?;
             queue!(out, Print(&t))?;
             used += t.width();
         }
-        // End of last line = where it's writing
+        // (the end of the last line: where it's writing)
         if i + 1 == body && used < inner {
-            apply(out, Style { fg: ui.accent.fg, ..card })?;
+            apply(out, if written { accent } else { faint })?;
             queue!(out, Print("▍"))?;
             used += 1;
         }
         apply(out, card)?;
         queue!(out, Spaces(inner - used + 2))?;
     }
-    if hint > 0 {
-        queue!(out, MoveTo(x0 as u16, (y + 1 + body) as u16))?;
-        apply(out, card)?;
-        queue!(out, Print("  "))?;
-        let used = hinted_spans(out, &stop, card, inner, (x0 + 2, y + 1 + body))?;
-        apply(out, card)?;
-        queue!(out, Spaces(inner + 2 - used))?;
+    // Its frame: the faint wash — it takes no keys, the cursor and every key but its one stay in the code —, half under
+    // the pointer as every card's (#189); its one key in its bottom line while it does its act (`llm::esc_stops`: the
+    // code's keys in normal mode), none while it wouldn't
+    let stops = crate::llm::esc_stops(editor);
+    let (key, stop) = (Style { bold: true, ..dim }, ("esc", "stop"));
+    let keys = match stops {
+        true => bottom_keys(&[stop], width.saturating_sub(6), key, faint, frame_line(ui, card)),
+        false => Vec::new(),
+    };
+    let on = crate::mouse::Surface::Ask;
+    let rect = (x0, y0, width, h);
+    let lights = (Some(crate::mouse::Lights::Card), false);
+    let line = draw_frame(out, ui, editor, on, card, rect, &[], &keys, &[], lights)?;
+    // (its key said where it stands, for the hints' count — a press there gives the code the keys, never stops it: #192)
+    if stops {
+        crate::kinds::hint(stop.0, stop.1, (x0 + 3, y0 + h - 1));
     }
-    card_edge(out, card, x0, y + 1 + body + hint, width)?;
-    editor.screen.ask_card.set(Some((x0, y0, width, h)));
-    Ok(Some((x0, y0, width, h)))
+    // Its top line: `claude` the name (bold), `thinking` / `writing` its state, what it was asked — cut first, its rules
+    // a `─` each before that (`tight`); where under `ASK_SAID_MIN` cells would say it, a `…` in its place between the
+    // rules, it whole under the pointer there —, the working sign and its time at the right: as the follow card's head
+    // says its turn
+    let state = if rev.thinking || !written { " thinking" } else { " writing" };
+    let strong =
+        card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
+    let strong = Style { bold: true, ..strong };
+    let said = format!("“{}”", rev.instruction);
+    // (`space i`'s own claude: one place with the status line's `claude` — the card first, drawn first; the wave
+    // elsewhere, the line runs on through its cells)
+    let sign = rule_through(wave_here(editor, false, ("ask", 0)).unwrap_or_else(|| crate::shimmer::mark("")));
+    let secs = timer(rev.started.elapsed(), !editor.moving());
+    let styles = AskHeadStyles { strong, card, dim, accent, faint, line };
+    let (names, details, right) = ask_head(width, (state, &said), (sign, secs), styles);
+    let head = TopLine {
+        names: &names,
+        details: &details,
+        tight: true,
+        key: card,
+        faint,
+        plain: true,
+        frame: Some((on, rect)),
+        right: &right,
+        keep_right: true,
+        ..TopLine::default()
+    };
+    top_line(out, line, card, (x0, y0, width), ("╭", "╮", "┬"), &[], true, &head)?;
+    editor.screen.ask_card.set(Some(rect));
+    Ok(Some(rect))
+}
+
+/// The looks of an ask card's head (`ask_head`): the name, the state, the instruction, the wave, the time, the rules.
+#[derive(Clone, Copy)]
+struct AskHeadStyles {
+    strong: Style,
+    card: Style,
+    dim: Style,
+    accent: Style,
+    faint: Style,
+    line: Style,
+}
+
+/// An ask card's top line in a frame `width` cells wide, as `top_line` lays it (names, details, right end): `claude` and
+/// its `state`, the instruction `said` — cut first, its rule a `─` before that (`TopLine.tight`) —, the wave's cells and
+/// the time at the right. Where under `ASK_SAID_MIN` cells would say it, a `whole::folded` `…` stands in its slot
+/// between the rules (`claude writing ── … ── 1.9s` — never after the state, where it reads as `writing…`); narrower,
+/// the wave's cells go, then the rules (the time beside the `…`), then the state: the `…` and the time always stay.
+#[allow(clippy::type_complexity)]
+fn ask_head(
+    width: usize,
+    (state, said): (&str, &str),
+    (sign, secs): (String, String),
+    st: AskHeadStyles,
+) -> (Vec<(Fit, Style)>, Vec<(Fit, Style)>, Vec<(Fit, Style)>) {
+    let wide = |spans: &[(Fit, Style)]| spans.iter().map(|(s, _)| s.width()).sum::<usize>();
+    let claude = (Fit::from("claude"), st.strong);
+    let state = (Fit::from(state), st.card);
+    let right =
+        vec![(Fit::from(sign), st.accent), (Fit::from(" "), st.dim), (Fit::from(secs.as_str()), st.faint)];
+    // (the instruction's room, tight: `╭─ `, the names, ` ─ `, a blank, a `─` and a blank, the right end, ` ─╮`)
+    let fits_in = width.saturating_sub(wide(&[claude.clone(), state.clone()]) + 12 + wide(&right));
+    if said.width() <= fits_in || fits_in >= ASK_SAID_MIN {
+        return (vec![claude, state], vec![(Fit::from(said), st.dim)], right);
+    }
+    let folded = crate::whole::folded(said.to_string(), "", (st.dim, st.dim));
+    let mark = (Fit::from_parts(folded.text, folded.cut.map(|c| *c)), st.dim);
+    // (its right end drawn whole where `top_line` has room for it: the names, `╭─ `, a blank, a `─`, a blank before it
+    // and ` ─╮` after it)
+    let ruled = vec![claude.clone(), state.clone(), (Fit::from(" ── "), st.line), mark.clone()];
+    for right in [right, vec![(Fit::from(secs.as_str()), st.faint)]] {
+        if wide(&ruled) + wide(&right) + 9 <= width {
+            return (ruled, Vec::new(), right);
+        }
+    }
+    // (no rules: the time a name after the `…`, then the state gone — the names fold last, so they stay whole)
+    let timed = |state: Option<(Fit, Style)>| {
+        let time = (Fit::from(format!(" {secs}")), st.faint);
+        [Some(claude.clone()), state, Some((Fit::from(" "), st.card)), Some(mark.clone()), Some(time)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+    };
+    let names = Some(timed(Some(state))).filter(|n| wide(n) + 6 <= width).unwrap_or_else(|| timed(None));
+    (names, Vec::new(), Vec::new())
+}
+
+/// Under this many cells an ask card's instruction says nothing (`“keep t…`): a `…` stands in its slot, it whole there.
+const ASK_SAID_MIN: usize = 12;
+
+/// The document lines an answer's text lands on (first, last): `space i`'s selections' (`asked`), a draft's first line.
+fn ask_lines(
+    doc: &crate::document::Document,
+    rev: &crate::llm::Review,
+    asked: bool,
+) -> Option<(usize, usize)> {
+    let (a, b) = (rev.hunks.first()?, rev.hunks.last()?);
+    let line = |at: usize| doc.text.byte_to_line(at.min(doc.text.len_bytes()));
+    let first = line(a.from);
+    Some((first, if asked { line(b.to.saturating_sub(1).max(b.from)).max(first) } else { first }))
+}
+
+/// The least indent of the lines `space i`'s selections take (blank lines aside), in characters.
+fn least_indent(doc: &crate::document::Document, rev: &crate::llm::Review) -> usize {
+    let Some((first, last)) = ask_lines(doc, rev, true) else { return 0 };
+    (first..=last.min(doc.text.len_lines().saturating_sub(1)))
+        .filter_map(|l| {
+            let line = doc.text.line(l).to_string();
+            let body = line.trim_start_matches([' ', '\t']);
+            (!body.trim().is_empty()).then(|| line.len() - body.len())
+        })
+        .min()
+        .unwrap_or(0)
+}
+
+/// `line` less up to `indent` leading blanks.
+fn dedent(line: &str, indent: usize) -> &str {
+    let n = line.bytes().take(indent).take_while(|b| matches!(b, b' ' | b'\t')).count();
+    line.get(n..).unwrap_or(line)
+}
+
+/// The ask card's place by its lines: (x0, inner, y0, rows) — `full` rows tall under the screen rows
+/// of document lines `first..=last` in the pane showing it (the focused one first), else above them, its text at the
+/// column they start at (`indent`: what's taken off it) — its left line in the gutter, the gutter covered whole, as the
+/// other cards about lines (`float_geom_around`) — narrowed to keep apart from the asks' stack in its rows (`avoid`).
+/// None: those lines out of sight, or no room either side.
+fn ask_by_lines(
+    editor: &Editor,
+    lay: &Layout,
+    doc: crate::document::DocId,
+    (first, last): (usize, usize),
+    (full, inner, indent): (usize, usize, usize),
+    avoid: &[Rect4],
+) -> Option<(usize, usize, usize, usize)> {
+    let sc = &editor.screen;
+    let showing = |i: &usize| sc.pane_docs.get(*i) == Some(&doc);
+    let focused =
+        (0..sc.panes.len()).filter(showing).find(|&i| sc.panes[i].0 == editor.workspace.viewer.focus);
+    let i = focused.or_else(|| (0..sc.panes.len()).find(showing))?;
+    let (_, rect, gutter, origins) = &sc.panes[i];
+    let t = crate::chrome::pane_text(*rect, lay.text_top as usize);
+    let top = origins.iter().position(|o| o.0 >= first).filter(|&k| origins[k].0 <= last)?;
+    let end = origins.iter().rposition(|o| o.0 <= last)?;
+    let left = t.x;
+    let text = t.x + gutter + indent.saturating_sub(origins[top].1);
+    let at = if text >= t.x + gutter + 2 { text - 2 } else { left };
+    // (at rows `y0..`: its right end short of what stands there, the asks' stack)
+    let place = |y0: usize| {
+        let rows = y0..y0 + full;
+        let right = (avoid.iter())
+            .filter(|r| r.1 < rows.end && rows.start < r.1 + r.3 && r.0 + r.2 > at)
+            .fold(t.x + t.w, |right, r| right.min(r.0));
+        let x0 = at.min(right.saturating_sub(inner + 4)).max(left);
+        let inner = inner.min(right.saturating_sub(x0 + 4));
+        (inner >= 24).then_some((x0, inner, y0, full - 2))
+    };
+    // (under its lines, the pane's rows past the file's end too — else above them)
+    let below = (end + 1 + full <= t.h).then(|| place(t.y + end + 1)).flatten();
+    below.or_else(|| (full <= top).then(|| place(t.y + top - full)).flatten())
 }
 
 /// Follow mode's one card (U4), in one place — the bottom right of the code, on the asks standing there (the top right
@@ -32223,6 +32423,102 @@ mod tests {
         assert_eq!(bleed_in_frame(&mut ed, "follow"), [""; 0], "not being written: dry");
         ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         assert_eq!(bleed_in_frame(&mut ed, "follow"), [""; 0], "the turn ended: dry");
+    }
+
+    /// The ask stream's card (`space i`, a commit draft) is a floating frame named for what it does — `claude thinking`,
+    /// then `claude writing` —, what it was asked beside the name, `esc stop` in its bottom line; and it grows down from a
+    /// top row that stays: thinking (one row, its caret faint), its first line, more lines than it shows (#561: a card up
+    /// and in sight keeps its top row).
+    #[test]
+    fn the_ask_streams_frame_keeps_its_top_row_as_it_grows() {
+        // (in the corner — no lines it lands on — and by lines 5–6 of thirty)
+        for by_lines in [false, true] {
+            let mut ed = Editor::new(Config::default());
+            let mut hunks = Vec::new();
+            if by_lines {
+                ed.docs[0].text =
+                    Rope::from_str(&(1..=30).map(|i| format!("    line {i}\n")).collect::<String>());
+                let rope = &ed.docs[0].text;
+                let (from, to) = (rope.line_to_byte(4), rope.line_to_byte(6));
+                let old = rope.byte_slice(from..to).to_string();
+                let (decision, conflict) = (crate::llm::Decision::Undecided, false);
+                hunks.push(crate::llm::Hunk { from, to, old, new: String::new(), decision, conflict });
+            }
+            ed.workspace.claude.review = Some(crate::llm::Review::new(1, ed.docs[0].id, "name it", hunks));
+            ask_stream_grows(&mut ed);
+        }
+    }
+
+    /// An ask card's head keeps its time at every width, the narrowest frame too (28 cells: `space i`'s card narrowed
+    /// off an ask by its lines — landed askbeside at 80 lost it): where the instruction can't be said, its `…` stays
+    /// with the time; the wave's cells, the rules and the state go first, in that order.
+    #[test]
+    fn the_ask_cards_narrowest_head_keeps_its_mark_and_its_time() {
+        let said = "“keep the first of each name”";
+        let s = Style::default();
+        let styles = AskHeadStyles { strong: s, card: s, dim: s, accent: s, faint: s, line: s };
+        let head = |w: usize, state: &str, sign: &str, secs: &str| {
+            let (names, details, right) = ask_head(w, (state, said), (sign.into(), secs.into()), styles);
+            let line = TopLine {
+                names: &names,
+                details: &details,
+                tight: true,
+                plain: true,
+                right: &right,
+                keep_right: true,
+                ..TopLine::default()
+            };
+            let mut out = Vec::new();
+            top_line(&mut out, s, s, (0, 0, w), ("╭", "╮", "┬"), &[], true, &line).unwrap();
+            let mut vt = vt100::Parser::new(1, w as u16, 0);
+            vt.process(&out);
+            vt.screen().rows(0, w as u16).next().unwrap_or_default()
+        };
+        for w in 28..=70 {
+            for (state, sign, secs) in
+                [(" writing", "───", "1.9s"), (" thinking", "▂▅▇", "1m 02s"), (" writing", "▂▅▇", "12.4s")]
+            {
+                let row = head(w, state, sign, secs);
+                assert!(row.contains(secs), "{w}: its time — {row}");
+                assert!(
+                    row.contains('…') || row.contains("of each"),
+                    "{w}: the instruction or its mark — {row}"
+                );
+                assert!(row.starts_with("╭─ claude") && row.ends_with('╮'), "{w}: {row}");
+            }
+        }
+        // (the narrowest: the rules gone, the time beside the `…`; a long time, the state gone too)
+        assert_eq!(head(28, " writing", "───", "1.9s").trim_end(), "╭─ claude writing … 1.9s ──╮");
+        assert_eq!(head(28, " thinking", "───", "1m 02s").trim_end(), "╭─ claude … 1m 02s ────────╮");
+    }
+
+    /// `the_ask_streams_frame_keeps_its_top_row_as_it_grows`'s: thinking, then one, three and twelve lines written.
+    fn ask_stream_grows(ed: &mut Editor) {
+        let lines = |n: usize| (1..=n).map(|i| format!("let x{i} = {i};\n")).collect::<String>();
+        let mut seen = Vec::new();
+        for (thinking, streamed) in
+            [(true, String::new()), (false, lines(1)), (false, lines(3)), (false, lines(12))]
+        {
+            let r = ed.workspace.claude.review.as_mut().unwrap();
+            (r.thinking, r.streamed) = (thinking, streamed.clone());
+            let mut vt = vt100::Parser::new(45, 160, 0);
+            vt.process(&chat_frame(ed, 160));
+            let rows: Vec<String> = vt.screen().rows(0, 160).collect();
+            let (x, y, w, h) = ed.screen.ask_card.get().expect("the card drawn");
+            let cut = |row: usize| rows[row].chars().skip(x).take(w).collect::<String>();
+            let (top, bottom) = (cut(y), cut(y + h - 1));
+            let name = if streamed.is_empty() { "claude thinking" } else { "claude writing" };
+            assert!(top.starts_with(&format!("╭─ {name} ─")), "named: {top}");
+            assert!(top.contains("“name it”") && top.ends_with('╮'), "{top}");
+            assert!(bottom.starts_with("╰─ esc stop ") && bottom.ends_with('╯'), "{bottom}");
+            if streamed.is_empty() {
+                assert_eq!(cut(y + 1).trim_matches(['│', ' ']), "▍", "thinking: its caret alone");
+            }
+            seen.push((y, h));
+        }
+        assert!(seen.windows(2).all(|s| s[0].0 == s[1].0), "its top row moved: {seen:?}");
+        let heights: Vec<usize> = seen.iter().map(|s| s.1).collect();
+        assert_eq!(heights, [3, 3, 5, 8], "a row thinking, then a row a line — six at most");
     }
 
     /// `space i`'s card while it writes: the head of the code bleeding; while it thinks, nothing.
