@@ -2686,9 +2686,14 @@ once and press it once; it names the lines still to bring on screen for the rest
 
 A high-risk change taller than the pane comes in pieces, cut at the definitions in it (the functions, tests and
 types `space o` lists), going into a definition that's taller than the pane, and joined back while they fit the
-pane together. A 1123-line new file is about 25 pieces in a 50-row pane. Each piece is looked at by itself:
-`]h` selects it, its first line ends with `▲ high · piece 4/25 · refuse · …`, and `space v h` takes it once
-every line of it has been on screen. The cursor on it isn't enough, since a piece at the pane's foot is mostly below
+pane together. A 1123-line new file is about 25 pieces in a 50-row pane. A piece is high for what's in it: when
+only its lines make the change high (a pack's pattern), the pieces high are the ones holding a matched line's
+definition (the innermost one, the function or test it's in), and a matched line taken out makes the first piece
+high, where its removed rows are drawn; the rest are graded as they'd be without it. Two teardown lines in a new
+file's tests make one piece high, not all 30. When the file itself is high (its path in `review.risky`, or a
+protected name) every piece is. A bring's card holds the same parts, so what the review's look took lets the bring
+through. Each high piece is looked at by itself: `]h` selects it, its first line ends with `▲ high · piece 4/25
+· refuse · …`, and `space v h` takes it once every line of it has been on screen. The cursor on it isn't enough, since a piece at the pane's foot is mostly below
 it. A definition taller than the pane with nothing in it to cut at is a piece of its own, scrolled through. A
 line two definitions share (`} fn b() {`) is the later one's. Lines in no definition, or a file with no grammar
 (no language, or its grammar not built in nor downloaded), are cut every pane's height. A change wholly inside
@@ -2701,7 +2706,10 @@ changes.
 A change looked at and then changed asks only for its lines since: a fix of five lines in a change of a
 thousand asks for those five. `]h` lands on the first of them, its line ends with `▲ high · 2 lines since your
 look · …`, and `space v h` takes it once each of those lines has been on screen, wherever the cursor is in the
-change. An added line you looked at that's missing from its change since is a high-risk change of its own, at
+change. A look stands wherever its lines move, an edit above them or a pane cutting the pieces elsewhere. A line the
+file's changes have more than once (a `}`, a blank line, a repeated call) counts as looked at only in a change you
+looked at, so the next piece of a new file, sharing its `}` and blank lines with the one you looked at, is still a
+piece no one has looked at, not one changed since. An added line you looked at that's missing from its change since is a high-risk change of its own, at
 the change: ``▲ high · taken out since your look: `check_permission();` ``. Taking out a check beside an
 `unsafe` is a change too, also when another copy of it stays elsewhere in the file. It's counted in the change's
 own place, between the lines that were just above and below it, so an edit elsewhere asks nothing. A line that

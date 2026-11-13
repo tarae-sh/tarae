@@ -3,13 +3,13 @@
 00 ─ review ── uncommitted ─────┬─ tarae › src › demo.rs ──────────────────────────────────────────────────────────
 01   1 file                     │  1 let line_1 = 1;                                                              ▎
 02   0 of 1 viewed · 1 unviewed │  2 let line_2 = 2;                                                              ▎
-03   ▲ 2 high to look at        │  3 let line_3 = 3;                                                              ▎
+03   ▲ 1 high to look at        │  3 let line_3 = 3;                                                              ▎
 04   space v C  a board         │  4 let line_4 = 4;                                                              ▎
 05   reviewer  1 finding ▲1     │  5 let line_5 = 5;                                                              ▎
 06   “One risk: the unsafe cal… │  6▎let added_1 = 1;   ▲ high · piece 1/2 · unsafe (rust pack) · space v h       ▎
 07                              │  7▎let added_2 = 2;                                                             ▎
 08     src/                     │  8▎let added_3 = 3;                                                             ▎
-09 ▎ │ ◦ demo.rs      ▲2 +30 ¶1 │  9▎let added_4 = 4;                                                             ▎
+09 ▎ │ ◦ demo.rs      ▲1 +30 ¶1 │  9▎let added_4 = 4;                                                             ▎
 10                              │ 10▎let added_5 = 5;                                                             ▎
 11                              │ 11▎let added_6 = 6;                                                             ▎
 12                              │ 12▎let pid = unsafe { getpid() };   ¶ reviewer · unsafe without a SAFETY comme… ▎

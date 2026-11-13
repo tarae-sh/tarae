@@ -7375,7 +7375,7 @@ fn draw_text(
             // (partly looked at — cardburden 1: on the first of its lines since, saying how many)
             let left = g.left(looked);
             let (at, why) = match left.first() {
-                Some(&first) if g.keys.iter().any(|k| looked.contains(k)) => {
+                Some(&first) if g.seen_any(looked) => {
                     (first, format!("{} · {}", crate::nav::count(left.len(), "line since your look"), g.why))
                 }
                 _ => (g.at, g.why.clone()),

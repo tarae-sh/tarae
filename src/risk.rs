@@ -58,7 +58,18 @@ struct Pack {
     name: String,
     langs: Vec<String>,
     risky: Vec<regex::Regex>,
+    /// `risky` as one set: whether a line matches any, in one pass (`line_hits` asks it of every line of a
+    /// high-risk change — a pattern at a time took a whole look's grading from 89 to 324 ms).
+    any: regex::RegexSet,
     quiet: Vec<String>,
+}
+
+impl Pack {
+    fn new(name: String, langs: Vec<String>, risky: Vec<regex::Regex>, quiet: Vec<String>) -> Pack {
+        let any = regex::RegexSet::new(risky.iter().map(|re| re.as_str()))
+            .unwrap_or_else(|_| regex::RegexSet::empty());
+        Pack { name, langs, risky, any, quiet }
+    }
 }
 
 /// A pack's rules as tests write them: (pack, languages, patterns, quiet paths).
@@ -92,7 +103,7 @@ fn packs() -> Arc<Vec<Pack>> {
                     ),
                 }
             }
-            out.push(Pack { name: r.pack, langs: r.langs, risky, quiet: r.quiet });
+            out.push(Pack::new(r.pack, r.langs, risky, r.quiet));
         }
         Arc::new(out)
     })
@@ -112,11 +123,9 @@ impl Rules {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let packs = packs
             .iter()
-            .map(|(name, langs, risky, quiet)| Pack {
-                name: name.to_string(),
-                langs: s(langs),
-                risky: risky.iter().map(|p| regex::Regex::new(p).unwrap()).collect(),
-                quiet: s(quiet),
+            .map(|(name, langs, risky, quiet)| {
+                let risky = risky.iter().map(|p| regex::Regex::new(p).unwrap()).collect();
+                Pack::new(name.to_string(), s(langs), risky, s(quiet))
             })
             .collect();
         Rules { packs: Arc::new(packs), risky: s(risky), quiet: s(quiet) }
@@ -157,12 +166,48 @@ pub struct Graded {
     /// One piece of a change taller than its pane, which of how many (`codereview::pieces`) — looked at once
     /// every line of it was on screen, the cursor's line no shortcut.
     pub piece: Option<(usize, usize)>,
+    /// Which of `keys` the file's other changes (or this one) have too — a line whose text it has more than once
+    /// among its changed lines, `}` and blank lines above all (`mark_shared`; empty: none). Such a key tells no
+    /// line's place: `seen_each` counts it only where a line of the change's own was seen (#562).
+    pub shared: Vec<bool>,
+    /// High by its lines alone (a pack's pattern — not the file's own reason: its mode, a `.tarae.toml` path, a
+    /// protected name): which lines, and what it is otherwise — so a piece of it is high for what's in it (#563).
+    pub by_lines: Option<Box<ByLines>>,
+}
+
+/// What makes a change high when only its lines do (`Graded.by_lines`): each line a pack's pattern matches, by its
+/// place in `keys` (removed lines first), with why (the match quoted, its pack named); and the grade it has with
+/// those put aside (a quiet path's, a test's, behaviour) — a piece with none of them in it has that (#563: a new
+/// file is one change, and two teardown lines in its tests made all 30 of its pieces high).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ByLines {
+    pub hits: Vec<(usize, String)>,
+    pub rest: (Grade, String),
 }
 
 impl Graded {
     /// Whether a person looked at every line of it (`looked`: the session's keys — `space v h`).
     pub fn looked_at(&self, looked: &HashSet<Key>) -> bool {
-        self.keys.iter().all(|k| looked.contains(k))
+        self.seen_each(|k| looked.contains(k)).into_iter().all(|s| s)
+    }
+
+    /// Whether a person looked at any line of it — partly looked at, unless `looked_at`.
+    pub fn seen_any(&self, looked: &HashSet<Key>) -> bool {
+        self.seen_each(|k| looked.contains(k)).into_iter().any(|s| s)
+    }
+
+    /// Each of `keys` seen (`seen`: the looked at, or a viewed mark's)? A key is a line's text, not its place: one
+    /// the file's changes have once (as most lines say something of their own) stands for its line wherever it
+    /// moved — an edit above, a change regrouped or cut in other pieces takes no look back. A shared one (`}`, a
+    /// blank line, a repeated call) counts only in a change where a key of its own was seen too: the change was
+    /// looked at, so its `}` was — #562: a new file's first piece looked at, every other piece's `}` and blank
+    /// lines read as looked at, and each piece as "looked at, but N lines changed since". A change with no key of
+    /// its own has nothing to tell its place by: its keys alone.
+    pub fn seen_each(&self, seen: impl Fn(&Key) -> bool) -> Vec<bool> {
+        let each: Vec<bool> = self.keys.iter().map(seen).collect();
+        let own = |i: usize| !self.shared.get(i).copied().unwrap_or(false);
+        let placed = (0..each.len()).any(|i| own(i) && each[i]) || !(0..each.len()).any(own);
+        each.iter().enumerate().map(|(i, &s)| s && (placed || own(i))).collect()
     }
 
     /// The lines (0-based, now) of it no one has looked at, in order, each once: an added line where it is; a
@@ -171,13 +216,13 @@ impl Graded {
         self.left_by(|k| looked.contains(k))
     }
 
-    /// `left`, by whatever counts as seen (`seen`: a viewed mark's keys, or the looked at ones).
+    /// `left`, by whatever counts as seen (`seen`: a viewed mark's keys, or the looked at ones — `seen_each`).
     pub fn left_by(&self, seen: impl Fn(&Key) -> bool) -> Vec<usize> {
         let mut out: Vec<usize> = self
-            .keys
-            .iter()
+            .seen_each(seen)
+            .into_iter()
             .enumerate()
-            .filter(|(_, k)| !seen(k))
+            .filter(|(_, s)| !s)
             .map(|(i, _)| match i.checked_sub(self.removed) {
                 Some(a) if a < self.added => self.at + a,
                 _ => self.at,
@@ -186,6 +231,24 @@ impl Graded {
         crate::sorting::sort(&mut out);
         out.dedup();
         out
+    }
+}
+
+/// A file's changes (`graded`: all of them, cut in pieces or not) told which of their lines' keys more than one of
+/// their lines has (`Graded.shared`) — counted over the removed and added lines, never a change of mode's or the
+/// keys of what moved or was taken out since a look (each its own).
+pub fn mark_shared(graded: &mut [Graded]) {
+    let lines = |g: &Graded| g.removed + g.added;
+    let mut n: std::collections::HashMap<Key, u32> = std::collections::HashMap::new();
+    for g in graded.iter() {
+        for k in &g.keys[..lines(g).min(g.keys.len())] {
+            *n.entry(*k).or_default() += 1;
+        }
+    }
+    for g in graded.iter_mut() {
+        let end = lines(g).min(g.keys.len());
+        let shared: Vec<bool> = (0..g.keys.len()).map(|i| i < end && n[&g.keys[i]] > 1).collect();
+        g.shared = if shared.contains(&true) { shared } else { Vec::new() };
     }
 }
 
@@ -200,6 +263,11 @@ pub fn grade(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules, in_test: bo
     if let Some((why, _)) = high(rel, lang, h, rules) {
         return (Grade::High, why);
     }
+    grade_rest(rel, lang, h, rules, in_test)
+}
+
+/// `grade` with what makes a change high put aside: quiet, else behaviour.
+fn grade_rest(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules, in_test: bool) -> (Grade, String) {
     if let Some(e) = rules.quiet.iter().find(|e| path_matches(rel, e)) {
         return (Grade::Quiet, format!("{} (.tarae.toml)", e.trim()));
     }
@@ -222,19 +290,8 @@ pub fn grade(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules, in_test: bo
 /// What makes hunk `h` of `rel` high, if anything: (why, as the review shows it — a pack's match quotes the
 /// line; the rule, by its name alone — `rule`).
 fn high(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules) -> Option<(String, String)> {
-    // (a permission: `mode_change` gives only the modes that matter)
-    if let Some((_, new)) = &h.mode {
-        let what = if new == "120000" { "now a symlink" } else { "now executable" };
-        return Some((what.into(), what.into()));
-    }
-    if let Some(e) = rules.risky.iter().find(|e| path_matches(rel, e)) {
-        let why = format!("{} (.tarae.toml)", e.trim());
-        return Some((why.clone(), why));
-    }
-    let parts: Vec<&std::ffi::OsStr> = Path::new(rel).iter().collect();
-    if let Some(&i) = crate::sandbox::protected_at(&parts).first() {
-        let why = format!("{} (protected)", parts[i].to_string_lossy());
-        return Some((why.clone(), why));
+    if let Some(own) = file_high(rel, h, rules) {
+        return Some(own);
     }
     for p in rules.packs_of(lang) {
         for line in h.removed.iter().chain(&h.added) {
@@ -249,6 +306,41 @@ fn high(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules) -> Option<(Strin
     None
 }
 
+/// What makes hunk `h` of `rel` high whatever its lines say — the file's own reason, every piece of it high: a
+/// change of mode, a `.tarae.toml` risky path, a protected name. (why, rule), as `high`.
+fn file_high(rel: &str, h: &Hunk, rules: &Rules) -> Option<(String, String)> {
+    // (a permission: `mode_change` gives only the modes that matter)
+    if let Some((_, new)) = &h.mode {
+        let what = if new == "120000" { "now a symlink" } else { "now executable" };
+        return Some((what.into(), what.into()));
+    }
+    if let Some(e) = rules.risky.iter().find(|e| path_matches(rel, e)) {
+        let why = format!("{} (.tarae.toml)", e.trim());
+        return Some((why.clone(), why));
+    }
+    let parts: Vec<&std::ffi::OsStr> = Path::new(rel).iter().collect();
+    if let Some(&i) = crate::sandbox::protected_at(&parts).first() {
+        let why = format!("{} (protected)", parts[i].to_string_lossy());
+        return Some((why.clone(), why));
+    }
+    None
+}
+
+/// Each of `h`'s lines a pack's pattern matches — by its place among the removed lines then the added ones (its
+/// place in `keys`) — with why, as `high` says it: the first pack's first pattern that matches it.
+fn line_hits(lang: Option<&str>, h: &Hunk, rules: &Rules) -> Vec<(usize, String)> {
+    let hit = |line: &str| {
+        rules.packs_of(lang).find_map(|p| {
+            if !p.any.is_match(line) {
+                return None;
+            }
+            let m = p.risky.iter().find_map(|re| re.find(line))?;
+            Some(format!("{} ({} pack)", m.as_str().trim(), p.name))
+        })
+    };
+    (h.removed.iter().chain(&h.added)).enumerate().filter_map(|(i, l)| Some((i, hit(l)?))).collect()
+}
+
 /// The rule that makes hunk `h` of `rel` high, by its name alone — never the text it matched (the review
 /// record keeps it): `now executable`, a `.tarae.toml` entry, a protected name, a pack's pattern by its place
 /// in the pack's list (`bash pack #1`). None: nothing makes it high.
@@ -259,6 +351,10 @@ pub fn rule(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules) -> Option<St
 /// `h` of `rel` graded, with its keys.
 pub fn graded(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules, in_test: bool) -> Graded {
     let (grade, why) = grade(rel, lang, h, rules, in_test);
+    // (high by its lines alone: which, and what it is otherwise — #563)
+    let by_lines = (grade == Grade::High && file_high(rel, h, rules).is_none()).then(|| {
+        Box::new(ByLines { hits: line_hits(lang, h, rules), rest: grade_rest(rel, lang, h, rules, in_test) })
+    });
     Graded {
         grade,
         why,
@@ -269,6 +365,8 @@ pub fn graded(rel: &str, lang: Option<&str>, h: &Hunk, rules: &Rules, in_test: b
         added: h.added.len(),
         mode: h.mode.is_some(),
         piece: None,
+        shared: Vec::new(),
+        by_lines,
     }
 }
 
@@ -292,6 +390,8 @@ pub fn taken_out(rel: &str, at: usize, gone: &[(&str, u32)]) -> Graded {
         added: 0,
         mode: false,
         piece: None,
+        shared: Vec::new(),
+        by_lines: None,
     }
 }
 
@@ -339,6 +439,8 @@ pub fn moved(
         added: 0,
         mode: false,
         piece: None,
+        shared: Vec::new(),
+        by_lines: None,
     }
 }
 
@@ -867,6 +969,8 @@ mod tests {
             added: hunk.added.len(),
             mode: false,
             piece: None,
+            shared: Vec::new(),
+            by_lines: None,
         };
         assert!(g(&h(&[], &["unsafe { a() }"])).looked_at(&looked), "a part of it, regrouped");
         assert!(!g(&h(&["old"], &["unsafe { a2() }", "b()"])).looked_at(&looked), "a line changed since");

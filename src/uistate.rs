@@ -2642,7 +2642,7 @@ impl Editor {
                     continue;
                 }
                 let left = g.left(&l.looked);
-                let since = (g.keys.iter().any(|k| l.looked.contains(k))).then_some(left.len());
+                let since = g.seen_any(&l.looked).then_some(left.len());
                 let lines = g.at + 1..g.at + g.lines.max(1) + 1;
                 let text = doc.map(|d| {
                     (g.at..g.at + g.lines)

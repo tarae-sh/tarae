@@ -2610,8 +2610,9 @@ fn snapshot_review_risk_and_the_reviewer() {
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
     let has = |rows: &[String], t: &str| rows.iter().any(|r| r.contains(t));
-    assert!(has(&rows, "▲ 2 high to look at"), "{rows:#?}");
-    assert!(has(&rows, "demo.rs  ▲2 +30") || has(&rows, "▲2 +30"), "the file's mark: {rows:#?}");
+    // (#563: of its two pieces, the one holding the `unsafe` is high — the other has nothing high in it)
+    assert!(has(&rows, "▲ 1 high to look at"), "{rows:#?}");
+    assert!(has(&rows, "demo.rs  ▲1 +30") || has(&rows, "▲1 +30"), "the file's mark: {rows:#?}");
     assert!(has(&rows, "reviewer  1 finding ▲1"), "{rows:#?}");
     assert!(has(&rows, "“One risk: the unsafe"), "{rows:#?}");
     assert!(has(&rows, "▲ high · piece 1/2 · unsafe (rust pack) · space v h"), "the line end: {rows:#?}");
@@ -2627,7 +2628,7 @@ fn snapshot_review_risk_and_the_reviewer() {
     s.frame();
     crate::codereview::hunk_seen(&mut s.ed);
     let left = |s: &Shot| s.ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(&s.ed).len());
-    assert_eq!(left(&s), 1, "the first piece, all of it drawn: looked at");
+    assert_eq!(left(&s), 0, "the first piece — the high one — all of it drawn: looked at");
     s.ed.goto_line(34);
     crate::codereview::hunk_seen(&mut s.ed);
     // (back at the first piece's mark; the looks' toasts let go — news stands at the code's top right, over the line ends
@@ -6120,6 +6121,8 @@ fn the_rail_says_what_moved() {
         added: 0,
         mode: false,
         piece: None,
+        shared: Vec::new(),
+        by_lines: None,
     };
     r.grades.insert(path, std::sync::Arc::from(vec![behaviour]));
     r.rail_need.take();
@@ -6154,8 +6157,8 @@ fn the_rail_measures_the_grade_it_draws() {
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-    // (its 31-line change taller than the pane: two pieces to look at — cardburden 2)
-    assert!(rows.iter().any(|r| r.contains("◦ demo.rs ▲2 +31 · 30000 moved")), "the name whole: {rows:#?}");
+    // (its 31-line change taller than the pane: two pieces — cardburden 2 — the one holding the `unsafe` high, #563)
+    assert!(rows.iter().any(|r| r.contains("◦ demo.rs ▲1 +31 · 30000 moved")), "the name whole: {rows:#?}");
 }
 
 /// Frictions 13, #3: where a click on the rail's first file row opened nothing — a 188×57 screen, five
@@ -6198,6 +6201,8 @@ fn a_click_on_the_rails_file_names_opens_them_in_a_full_layout() {
             added: 1,
             mode: false,
             piece: None,
+            shared: Vec::new(),
+            by_lines: None,
         };
         r.grades.insert(dir.join(rel), std::sync::Arc::from(vec![high]));
     }
