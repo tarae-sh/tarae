@@ -522,7 +522,7 @@ fn ask(ed: &mut Editor, readings: bool) {
     if !l.ask || l.pending == Some(c.generation()) || asked || (readings && l.fresh(now)) {
         return;
     }
-    if c.agent().is_some_and(crate::agent::Agent::ask_limits) {
+    if c.agent().filter(|a| a.caps().limits).is_some_and(crate::agent::Agent::ask_limits) {
         (l.asked_ms, l.pending) = (Some(now), Some(c.generation()));
     }
 }

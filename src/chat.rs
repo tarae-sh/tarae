@@ -2563,13 +2563,14 @@ fn ensure_proc(ed: &mut Editor) {
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
     let (web_search, code) = (ed.config.llm.web_search, ed.config.llm.code);
+    let (held, caps) = (llm::held(ed).is_some(), crate::agent::caps(&cfg));
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
     }
     // (none while the config doesn't read — `llm::held`: the chat says why where it would start, and it starts once it
     // reads, `config_read`)
-    c.held = !ed.config_unread.is_empty();
+    c.held = held;
     if c.held {
         return;
     }
@@ -2600,7 +2601,8 @@ fn ensure_proc(ed: &mut Editor) {
     if !args.iter().any(|a| a == "--strict-mcp-config") {
         args.push("--strict-mcp-config".into());
     }
-    if let Some(id) = &c.resume {
+    // (where its agent can: else it begins a conversation — a fork's too, never the source's own)
+    if let Some(id) = c.resume.as_ref().filter(|_| caps.resume && (!c.fork || caps.fork)) {
         args.extend(["--resume".to_string(), id.clone()]);
         // (a fork's first claude: the source's conversation copied under a new id, the source's untouched)
         if c.fork {
@@ -2618,7 +2620,7 @@ fn ensure_proc(ed: &mut Editor) {
     // (your wikis' one line, only while `web.signed-in` names one — fixed for this process: the cache holds)
     let system = system() + &crate::web::signed::prompt(&cfg.signed_in);
     let mut extra = vec!["--append-system-prompt", system.as_str(), "--permission-prompt-tool", "stdio"];
-    if !c.no_thought_flag {
+    if !c.no_thought_flag && caps.thinking_text {
         extra.extend(["--thinking-display", "summarized"]);
     }
     // Who pays (`billing.rs`): an API session's key helper goes into the `--settings` above, merged
@@ -2648,6 +2650,8 @@ fn ensure_proc(ed: &mut Editor) {
     (ed.workspace.claude.usage.key_source, ed.workspace.claude.usage.plan_event) = (None, false);
     // (nor its account: on a key or a cloud provider it says none, and the last one's would stand — #3)
     ed.workspace.claude.usage.account = None;
+    // (what it reports is read with what it can do — `usage::report`)
+    ed.workspace.claude.usage.caps = agent.caps();
     // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
     c.generation = crate::tools::generation();
     let generation = c.generation;
@@ -2788,8 +2792,15 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 log.line("claude", "warn", &said);
                 c.note(&said);
                 c.stopping = true;
-                if let Some(a) = c.agent() {
-                    a.stop_turn();
+                // (one whose turn can't be stopped ends with it)
+                match c.agent().map(|a| a.caps().interrupt) {
+                    Some(true) => {
+                        if let Some(a) = c.agent() {
+                            a.stop_turn();
+                        }
+                    }
+                    Some(false) => c.kill(),
+                    None => {}
                 }
             }
             // (the credential it reported, each turn — `limits.rs`)
@@ -3201,7 +3212,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 return send_queued(ed);
             }
             // An older claude without the flag: quietly again without it
-            if err.contains("thinking-display") && !c.no_thought_flag {
+            if crate::agent::claude::refused_thinking(&err) && !c.no_thought_flag {
                 c.no_thought_flag = true;
                 if c.state != State::Idle {
                     c.state = State::Idle;
@@ -4236,18 +4247,21 @@ pub fn stop(ed: &mut Editor) {
     if !c.busy() {
         return;
     }
-    let asked = match &mut c.proc {
-        Some(p) => {
+    // (Some: it runs — whether its turn can be stopped)
+    let stops = match &c.proc {
+        Some(p) if p.agent.caps().interrupt => {
             c.stopping = true;
             p.agent.stop_turn();
-            true
+            Some(true)
         }
-        None => false,
+        Some(_) => Some(false),
+        None => None,
     };
     // (said at once: the turn ends as claude answers the interrupt, a moment later — never a key gone in silence)
-    ed.set_status(match asked {
-        true => "stopping the turn",
-        false => "nothing to stop: its claude isn't running",
+    ed.set_status(match stops {
+        Some(true) => "stopping the turn",
+        Some(false) => "its agent can't stop a turn — it ends as it answers",
+        None => "nothing to stop: its claude isn't running",
     });
 }
 

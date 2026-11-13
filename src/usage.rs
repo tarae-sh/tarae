@@ -451,6 +451,8 @@ pub fn account_seen(ed: &mut Editor, a: Account) {
 /// A session's Claude usage.
 #[derive(Debug, Default)]
 pub struct Usage {
+    /// What its chat's agent can report (`chat::ensure_proc`; the one wire's until one starts).
+    pub caps: &'static crate::agent::Caps,
     /// The account its chat's claude runs on (`Account`) — None: not said yet.
     pub account: Option<Account>,
     /// Its turns, oldest first — every conversation it had since tarae started (and a continued one's
@@ -959,8 +961,17 @@ pub fn report(
         Some((n, None)) => format!("context {} (window not reported yet)", tokens(n)),
         None => "context not reported".into(),
     };
-    out += &format!("As of {} · {cache} · {context}\n\n", clock(now_ms));
-    out += &format!("{}\n\n", price_note(u.cli.as_deref()));
+    // (an agent that reports usage each turn only: no cache or context to wait for)
+    match u.caps.tokens_per_request {
+        true => out += &format!("As of {} · {cache} · {context}\n\n", clock(now_ms)),
+        false => {
+            out += &format!("As of {} · cache and context not reported by this agent\n\n", clock(now_ms))
+        }
+    }
+    match u.caps.cost {
+        true => out += &format!("{}\n\n", price_note(u.cli.as_deref())),
+        false => out += "This agent doesn't report what its turns cost.\n\n",
+    }
     out += &limits_section(u, limits, now_ms, zone);
     out += "\n## Turns\n\n";
     if u.turns.is_empty() {

@@ -263,8 +263,15 @@ pub const HELD_WAY: &str = "fix it, then :config-reload";
 /// the chat (a new session's, a continue), `space i`'s, a commit draft, the reviewer, `:claude-update` — until it reads
 /// (`:config-reload`, or the watch's next load); one already running goes on. The file's own words, with its line.
 pub fn held(ed: &Editor) -> Option<String> {
-    (!ed.config_unread.is_empty())
-        .then(|| format!("no claude until your config reads — {}: {HELD_WAY}", ed.config_unread.join("; ")))
+    if !ed.config_unread.is_empty() {
+        return Some(format!(
+            "no claude until your config reads — {}: {HELD_WAY}",
+            ed.config_unread.join("; ")
+        ));
+    }
+    // (nor one that keeps tools of its own: its reads, edits and runs would go around tarae's — never Claude's)
+    (!crate::agent::caps(&ed.config.llm).own_tools_off)
+        .then(|| format!("no agent that keeps its own tools starts — choose another: {HELD_WAY}"))
 }
 
 /// A load's warnings as its error toast says them: and, while a file doesn't read, that no claude starts (`held`) — first,

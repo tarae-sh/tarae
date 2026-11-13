@@ -68,7 +68,9 @@ pub fn config(ed: &Editor) -> crate::llm::LlmConfig {
 fn offered(ed: &Editor) -> Vec<ModelInfo> {
     match ed.workspace.claude.chat.as_ref().map(|c| &c.models).filter(|m| !m.is_empty()) {
         Some(m) => m.clone(),
-        None => fallback(),
+        // (Claude's own list until its claude says — none for an agent that lists none)
+        None if crate::agent::caps(&ed.config.llm).models => fallback(),
+        None => Vec::new(),
     }
 }
 
@@ -233,7 +235,7 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     // (what the conversation ran on — the line over the input says what the next message costs)
     ed.switching();
     let mut unsaved = choose(ed, "llm.model", if value == "default" { "" } else { &value })?;
-    if let Some(a) = crate::chat::agent(ed) {
+    if let Some(a) = crate::chat::agent(ed).filter(|a| a.caps().models) {
         a.set_model(&value);
     }
     // (what answers is known again from the next answer — until then the title says what was asked for; what it
@@ -262,7 +264,7 @@ pub fn set_effort(ed: &mut Editor, level: &str) -> Result<(), String> {
     let level = if level == "default" { "" } else { level };
     ed.switching();
     let unsaved = choose(ed, "llm.effort", level)?;
-    if let Some(a) = crate::chat::agent(ed) {
+    if let Some(a) = crate::chat::agent(ed).filter(|a| a.caps().effort) {
         a.set_effort(Some(level).filter(|l| !l.is_empty()));
     }
     if let Some(c) = ed.workspace.claude.chat.as_mut() {

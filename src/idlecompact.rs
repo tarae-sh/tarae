@@ -209,7 +209,11 @@ pub fn facts(
     let pressing = limits.known(now_ms).into_iter().find(|r| crate::limits::pressing(r));
     Facts {
         now_ms,
-        chat: s.claude.chat.as_ref().is_some_and(|c| c.running()),
+        chat: s
+            .claude
+            .chat
+            .as_ref()
+            .is_some_and(|c| c.running() && c.agent().is_some_and(|a| a.caps().compaction)),
         touched_ms: conv.and_then(|c| c.touched_ms),
         ttl: conv.and_then(|c| c.ttl),
         tokens: u.context().map(|c| c.0),

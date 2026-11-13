@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use crate::agent::{ModelInfo, Permission, Prompt, StreamEv};
+use crate::agent::{Caps, ModelInfo, Permission, Prompt, StreamEv};
 use crate::billing::Credential;
 use crate::event::{Apply, Event};
 use crate::llm::{ClaudeEnv, Env, LlmConfig, judged, process_names, spawn_failed};
@@ -176,6 +176,26 @@ pub fn control_response(request_id: &str, response: serde_json::Value) -> String
 pub fn interrupt_message() -> String {
     serde_json::json!({"type": "control_request", "request_id": "tarae-stop", "request": {"subtype": "interrupt"}})
         .to_string()
+}
+
+/// What a claude can do: everything tarae asks of an agent.
+pub const CAPS: Caps = Caps {
+    interrupt: true,
+    resume: true,
+    fork: true,
+    thinking_text: true,
+    tokens_per_request: true,
+    cost: true,
+    limits: true,
+    models: true,
+    effort: true,
+    compaction: true,
+    own_tools_off: true,
+};
+
+/// Whether a claude's last words refuse `--thinking-display` (an older CLI): started again without it.
+pub fn refused_thinking(err: &str) -> bool {
+    err.contains("thinking-display")
 }
 
 /// The request id tarae asks `get_usage` under — its answer comes back with it (`parse_line`).

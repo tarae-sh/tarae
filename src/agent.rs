@@ -61,11 +61,58 @@ impl Agent {
         l.ask_limits()
     }
 
+    /// What it can do.
+    pub fn caps(&self) -> &'static Caps {
+        let Agent::Claude(_) = self;
+        &claude::CAPS
+    }
+
     /// Tests: its stdin as it is, for a line of the test's own.
     #[cfg(test)]
     pub fn lines(&self) -> &claude::Lines {
         let Agent::Claude(l) = self;
         l
+    }
+}
+
+/// What an agent can do — read where tarae relies on it, never told apart by its kind (condition 5): what one
+/// can't do, tarae doesn't ask of it.
+#[derive(Debug)]
+pub struct Caps {
+    /// Its turn can be stopped, the process and its conversation kept (`chat::stop`).
+    pub interrupt: bool,
+    /// A conversation it had can be continued (`--resume`, the chat's continue row).
+    pub resume: bool,
+    /// A conversation can be continued under a new id, the source's left as it was (a fork's chat).
+    pub fork: bool,
+    /// Its thinking comes as text, a summary — not only as a sign that it thinks.
+    pub thinking_text: bool,
+    /// It reports usage each request (the cache, the context), not only each turn.
+    pub tokens_per_request: bool,
+    /// It reports what a turn costs.
+    pub cost: bool,
+    /// The account's limits can be asked (`limits.rs`).
+    pub limits: bool,
+    /// Its models are listed and chosen while it runs (`models.rs`).
+    pub models: bool,
+    /// Its effort is chosen while it runs.
+    pub effort: bool,
+    /// Its conversation can be compacted (idle compaction, `idlecompact.rs`).
+    pub compaction: bool,
+    /// It runs with none of its own tools: every read, edit and run is tarae's. None that keeps its own starts
+    /// (`llm::held`).
+    pub own_tools_off: bool,
+}
+
+/// What the agent `cfg` starts can do — read before one runs. Step 1 has one wire, Claude's.
+pub fn caps(_cfg: &crate::llm::LlmConfig) -> &'static Caps {
+    &claude::CAPS
+}
+
+/// The capabilities a session's usage is read with until its agent starts: the one wire's.
+impl Default for &'static Caps {
+    fn default() -> Self {
+        &claude::CAPS
     }
 }
 
@@ -82,7 +129,8 @@ pub struct PromptPart {
     pub cache_hour: bool,
 }
 
-/// The answer to a permission ask: its tool runs on `input`, or it doesn't, `message` saying why.
+/// The answer to a permission ask: its tool runs on `input`, or it doesn't, `message` saying why. `Allow`'s
+/// `input` is honoured only by a wire whose answer can carry one (Claude's); another may only allow or refuse.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Permission {
     Allow { input: serde_json::Value },
@@ -261,7 +309,8 @@ mod tests {
         assert_eq!(parsers_called(&leaning), ["usage.rs: Counts::of(", "term.rs: limits::of_event("]);
     }
 
-    /// `Agent::` variants named outside the wire, as `file`.
+    /// `Agent::` variants (or the wire's own `CAPS`, an agent told apart by its capabilities) named outside the
+    /// wire, as `file`.
     fn matching(sources: &[(String, String)]) -> Vec<String> {
         let outside = sources.iter().filter(|(key, _)| key != "agent.rs" && !in_the_wire(key));
         let variant = |code: &str| {
@@ -270,7 +319,10 @@ mod tests {
                     && code[at + w.len()..].starts_with(|c: char| c.is_ascii_uppercase())
             })
         };
-        outside.filter(|(_, code)| variant(code)).map(|(key, _)| key.clone()).collect()
+        outside
+            .filter(|(_, code)| variant(code) || code.contains("claude::CAPS"))
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 
     /// Agents beside Claude, condition 5: nothing above the wire matches on which agent it has — what one can do
@@ -283,5 +335,6 @@ mod tests {
         let code = |c: &str| [("chat.rs".to_string(), c.to_string())];
         assert_eq!(matching(&code("let Agent::Claude(l) = a;")), ["chat.rs"]);
         assert!(matching(&code("let a = Agent::from(lines);")).is_empty());
+        assert_eq!(matching(&code("std::ptr::eq(a.caps(), &crate::agent::claude::CAPS)")), ["chat.rs"]);
     }
 }

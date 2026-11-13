@@ -20805,7 +20805,9 @@ fn draw_ask_line(
         y += 1;
     }
     // An empty chat: the project's latest conversation a key away, under the line — as the docked chat's first keys
-    else if let Some(p) = ask_past(c).filter(|_| y < top + rows) {
+    else if let Some(p) =
+        ask_past(c).filter(|_| y < top + rows && crate::agent::caps(&editor.config.llm).resume)
+    {
         chat_row_start(out, x0, y, edge, card)?;
         let row = continue_row(editor, ui, p, w, crate::chats::now(), (key, faint));
         let used = chat_spans_at(out, &row, card, w, (crate::whole::On::Chat, text_x, y, (x0, x0 + cw)))?;
@@ -20992,7 +20994,8 @@ fn draw_chat(
         let tab_end = intro.len();
         // A start begins a new conversation: the latest, a key away among the first keys — its age and size said
         // before a cold one is paid for (`continue_row`)
-        if let Some(p) = c.past.iter().find(|p| Some(&p.id) != c.conversation.as_ref()) {
+        let resumes = crate::agent::caps(&editor.config.llm).resume;
+        if let Some(p) = c.past.iter().find(|p| Some(&p.id) != c.conversation.as_ref()).filter(|_| resumes) {
             intro.push(continue_row(
                 editor,
                 ui,
