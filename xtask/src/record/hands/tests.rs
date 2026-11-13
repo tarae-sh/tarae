@@ -367,6 +367,8 @@ fn a_command_line_is_its_request() {
     assert_eq!(r, json!({ "do": "wait", "what": "turn", "arg": "dates", "for_ms": 1500 }));
     let (r, _) = request("key", &args("--to card y")).unwrap();
     assert_eq!(r, json!({ "do": "key", "to": "card", "keys": ["y"] }));
+    let (r, _) = request("key", &args("--chord space f")).unwrap();
+    assert_eq!(r, json!({ "do": "key", "to": null, "keys": ["space", "f"], "chord": true }));
     assert!(request("wait", &args("keys")).is_err(), "keys wants a where");
     assert!(request("state", &args("now")).is_err());
 }

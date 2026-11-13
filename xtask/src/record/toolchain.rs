@@ -194,6 +194,18 @@ pub(crate) fn reuse(yours: &Yours, to: &Path) -> Result<Cloned> {
     Ok(Cloned { env, toolchain, proxies, took: Duration::ZERO })
 }
 
+/// The variables that give the clone `record rust-clone` made in `to` to a run that isn't a take (`record rehearse`:
+/// rust-analyzer on a scratch copy): as `reuse` gives them, taken or not — nothing in `to` is written or marked here.
+/// Refused where none made it (no `MADE`).
+pub(crate) fn env_for_a_rehearsal(yours: &Yours, to: &Path) -> Result<Vec<(&'static str, OsString)>> {
+    let marker = to.join(MADE);
+    let text = std::fs::read_to_string(&marker)
+        .map_err(|e| format!("{}: {e} — not a clone record rust-clone made", marker.display()))?;
+    let made: toml::Table = text.parse().map_err(|e| format!("{}: {e}", marker.display()))?;
+    let proxies = made.get("proxies").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty());
+    env_of(yours, to, proxies)
+}
+
 /// The clone in `to` taken by a take: never taken again (`reuse`).
 pub(crate) fn mark_taken(to: &Path) -> Result<()> {
     let marker = to.join(MADE);

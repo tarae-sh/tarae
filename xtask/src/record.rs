@@ -18,7 +18,8 @@
 //! - `record take --out DIR --cwd FOLDER …` — the full video's take with its surroundings (a copy of your config with
 //!   `llm.cost = false`, git's stand-in name and mail, a state home of its own); `record dry [OUT]` — V3's dry run of
 //!   its motions on the stand-in Claude (`take.rs`); `record rust-clone DIR` — the take's Rust toolchain cloned outside
-//!   the home (`toolchain.rs`).
+//!   the home (`toolchain.rs`); `record rehearse --cwd FOLDER [--out DIR]` — the take's hands walked on a scratch copy
+//!   of a finished project, the stand-in Claude and no ask sent (`rehearse.rs`).
 //! - `record draw DIR [--bg dark|light] [--title T]` — the take replayed into its screens at their times and made the
 //!   wide video, unedited (`video::make`): `DIR/take.mp4` and `DIR/sheet.png`.
 //! - `record still DIR OUT.png [--at S]` — one screen of the take (at `S` seconds; by default its start, once it has
@@ -64,6 +65,7 @@ pub(crate) mod check;
 mod hands;
 mod keys;
 mod landmarks;
+mod rehearse;
 mod spike;
 mod take;
 #[cfg(test)]
@@ -80,7 +82,7 @@ pub(crate) const SCRIPT: u8 = 2;
 
 const USAGE: &str = "usage: cargo xtask record [--size 120x34] --out DIR [--cwd DIR] [--keys FILE] [--state DIR] \
                      [--headless] -- COMMAND … | record type|key|wait|state|mark|chapter … (the hands) | record take --out DIR --cwd \
-                     FOLDER --tarae BIN [--size 166x32] [--config FILE] | record dry [OUT] | record rust-clone DIR | record draw DIR [--bg dark|light] [--title T] | record still DIR OUT.png [--at S] | \
+                     FOLDER --tarae BIN [--size 166x32] [--config FILE] | record dry [OUT] | record rehearse --cwd FOLDER [--out DIR] | record rust-clone DIR | record draw DIR [--bg dark|light] [--title T] | record still DIR OUT.png [--at S] | \
                      record check DIR | record spike [OUT] | record sizes [OUT]";
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -95,6 +97,7 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         Some("take") => return take::take(&args[1..]),
         Some("dry") => return take::dry(&args[1..]),
+        Some("rehearse") => return rehearse::run(&args[1..]),
         Some("rust-clone") => return toolchain::run(&args[1..]),
         _ => {}
     }

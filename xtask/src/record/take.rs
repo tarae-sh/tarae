@@ -249,7 +249,7 @@ pub(crate) fn left_out(names: &[String]) -> String {
 
 /// `cmd`'s environment made the take's (`takes_env`): `set` and `cmd`'s own explicit ones over the kept names of
 /// this process's, nothing else. What it left out, said (`left_out`).
-fn the_takes_env(cmd: &mut Command, set: Vec<(&'static str, OsString)>) -> String {
+pub(super) fn the_takes_env(cmd: &mut Command, set: Vec<(&'static str, OsString)>) -> String {
     let mut own: Vec<(OsString, OsString)> =
         cmd.get_envs().filter_map(|(k, v)| Some((k.to_os_string(), v?.to_os_string()))).collect();
     own.retain(|(k, _)| !set.iter().any(|(s, _)| k == s));

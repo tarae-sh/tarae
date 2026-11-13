@@ -11,9 +11,10 @@
 //! - `record type --to WHERE [--send] WORDS` — the words typed with the typist's rhythm (`shot::typed`), only where
 //!   tarae has the keys at WHERE; `--send` leaves them standing `ASK_STANDS` (the same constant `cut init` keeps them
 //!   by) and sends the return, WHERE checked again first.
-//! - `record key [--to WHERE] KEY …` — keys in the scenes' words (`space l`, `C-q`, `y`, `<ret>`, `up`, `bs`;
+//! - `record key [--to WHERE] [--chord] KEY …` — keys in the scenes' words (`space l`, `C-q`, `y`, `<ret>`, `up`, `bs`;
 //!   `key_bytes`: a word that's no key's name is refused, never typed as text), a key's pause after each; with `--to`,
-//!   the same guard.
+//!   the same guard. `--chord`: the keys' bytes in one write, no pause between — tarae handles keys queued within a
+//!   frame's batch before it draws, so a chord's which-key menu is never drawn half-way (take 4's hands page, §2b).
 //! - `record wait WHAT [--for SECS] [--session S]` — until it holds by tarae's state and events (`Wait`): `turn` (a
 //!   turn ended since the hands' last ask, one no `wait turn` returned yet — keys pressed since or not; the ask line's
 //!   end too, `space i`'s, which is no turn of the chat's), `card [KIND]` (one in front, or an edit's review up: `edit`),
@@ -388,7 +389,7 @@ fn act(req: &Value, ctx: &Ctx) -> (i32, String) {
             let keys: Vec<String> = (req["keys"].as_array().into_iter().flatten())
                 .filter_map(|k| k.as_str().map(String::from))
                 .collect();
-            keyed(ctx, to, &keys)
+            keyed(ctx, to, &keys, req["chord"] == true)
         }
         "wait" => match Wait::parse(req["what"].as_str().unwrap_or_default(), req["arg"].as_str()) {
             Ok(w) => {
@@ -452,8 +453,9 @@ fn typed(ctx: &Ctx, to: &str, text: &str, send: bool) -> (i32, String) {
     )
 }
 
-/// `keys` sent one by one, a key's pause after each — where `to` says, only with the keys there.
-fn keyed(ctx: &Ctx, to: Option<&str>, keys: &[String]) -> (i32, String) {
+/// `keys` sent one by one, a key's pause after each — or, a `chord`, all in one write — where `to` says, only with the
+/// keys there.
+fn keyed(ctx: &Ctx, to: Option<&str>, keys: &[String], chord: bool) -> (i32, String) {
     let bytes = match keys.iter().map(|k| key_bytes(k)).collect::<Result<Vec<_>>>() {
         Ok(b) if !b.is_empty() => b,
         Ok(_) => return (code::ERROR, "key wants a key or more".into()),
@@ -468,6 +470,11 @@ fn keyed(ctx: &Ctx, to: Option<&str>, keys: &[String]) -> (i32, String) {
         if let Err(e) = guard(to, &state) {
             return (code::REFUSED, format!("{e} — nothing sent"));
         }
+    }
+    if chord {
+        ctx.write(&bytes.concat());
+        ctx.seen.pause(AFTER_KEY);
+        return (code::HELD, format!("sent {} as one chord", keys.join(" ")));
     }
     for (i, b) in bytes.iter().enumerate() {
         if i > 0 && !ctx.seen.pause(AFTER_KEY) {
@@ -780,7 +787,7 @@ pub(crate) fn wait(
 
 // ── The client ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-const USAGE: &str = "usage: cargo xtask record type --to WHERE [--send] WORDS | record key [--to WHERE] KEY … | record \
+const USAGE: &str = "usage: cargo xtask record type --to WHERE [--send] WORDS | record key [--to WHERE] [--chord] KEY … | record \
                      wait turn [SESSION]|card [KIND]|keys WHERE|run|bring [--for SECS] | record state | record mark \
                      WORDS (a note) | record chapter WORDS (where a chapter starts, its title) — each with --via SOCKET|TAKE, else $TARAE_RECORD";
 
@@ -800,6 +807,7 @@ pub(crate) fn client(verb: &str, args: &[String]) -> Result<()> {
 pub(crate) fn request(verb: &str, args: &[String]) -> Result<(Value, Option<PathBuf>)> {
     let (mut to, mut send, mut via, mut patience, mut session, mut words) =
         (None, false, None, None, None, Vec::new());
+    let mut chord = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| format!("{a} wants a value — {USAGE}"));
@@ -814,6 +822,7 @@ pub(crate) fn request(verb: &str, args: &[String]) -> Result<(Value, Option<Path
             }
             "--session" => session = Some(value()?),
             "--send" => send = true,
+            "--chord" => chord = true,
             w => words.push(w.to_string()),
         }
     }
@@ -821,6 +830,7 @@ pub(crate) fn request(verb: &str, args: &[String]) -> Result<(Value, Option<Path
         "type" if !words.is_empty() => {
             json!({ "do": "type", "to": to, "text": words.join(" "), "send": send })
         }
+        "key" if !words.is_empty() && chord => json!({ "do": "key", "to": to, "keys": words, "chord": true }),
         "key" if !words.is_empty() => json!({ "do": "key", "to": to, "keys": words }),
         "wait" if !words.is_empty() => {
             let arg = words.get(1).cloned().or(session).or(to);
