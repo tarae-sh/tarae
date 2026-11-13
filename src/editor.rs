@@ -812,6 +812,9 @@ pub struct Screen {
     /// The prompt's card (x, y, width, height) — a click on it is its own, not the code's under it — and its
     /// completions' rows as drawn: (screen row, candidate) — a press on one picks it.
     pub prompt_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// The prompt's card was laid standing on the status line's row (`term::draw_prompt`'s `:`, `/`): the status line's
+    /// word under it stays the mode it returns to (`Editor::keys_at`) — one drawn elsewhere is named `prompt`.
+    pub prompt_on_status: std::cell::Cell<bool>,
     pub prompt_rows: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The prompt's line as drawn: where a press puts its cursor (`PromptDrawn`).
     pub prompt_input: std::cell::Cell<Option<PromptDrawn>>,

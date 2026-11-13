@@ -133,6 +133,10 @@ pub enum Keys {
     Program,
     /// A card given the keys with `C-q` (#78: the status line still said CHAT).
     Card,
+    /// A prompt drawn away from the status line's row (`space i`'s by its lines, `space n`'s in the note's card): named by
+    /// its layer, as a picker is. One standing on the status line says itself by standing there — the word under it the
+    /// mode it returns to (`Screen.prompt_on_status`, `keys_at`).
+    Prompt,
     /// Labels up for pointing at an element: letters pick one (`uistate/point.rs`).
     Point,
     /// A surface's view mode (`view.rs`).
@@ -165,6 +169,7 @@ impl Keys {
             Keys::Slot(Slot::Procs) => "PROCS",
             Keys::Slot(Slot::Plugin) => "PANEL",
             Keys::Card => "CARD",
+            Keys::Prompt => "PROMPT",
             Keys::Point => "POINT",
             Keys::View(crate::view::Surface::Chat) => "CHAT",
             Keys::View(crate::view::Surface::Terminal) => "VIEW · TERMINAL",
@@ -191,9 +196,10 @@ impl Keys {
         matches!(self, Keys::Chat | Keys::View(crate::view::Surface::Chat))
     }
 
-    /// Whether the code panes are what has them (they're drawn at full strength).
+    /// Whether the code panes are what has them (they're drawn at full strength) — a prompt's line too, wherever it's
+    /// drawn: it's the code's.
     pub fn code(self) -> bool {
-        matches!(self, Keys::Code | Keys::Review | Keys::Change)
+        matches!(self, Keys::Code | Keys::Review | Keys::Change | Keys::Prompt)
     }
 
     /// The key hint the status line puts after the label (key, what it does). A view mode's and a run's output's are
@@ -256,7 +262,8 @@ impl Editor {
 
     /// Where the keys go now — `keys_to`'s region (`uistate.rs`, `handle_key`'s chain as data). A card's
     /// answers taken in normal mode aren't where the keys are (the code's mode is): only one held with
-    /// `C-q`. A prompt is the code's (its line is the status line's neighbour).
+    /// `C-q`. A prompt by where it's drawn (#575, the design session's (b)): standing on the status line's row it says
+    /// itself by standing there, the word under it the code's mode it returns to; drawn anywhere else, its layer's word.
     pub fn keys_at(&self) -> Keys {
         use crate::uistate::Region as R;
         let k = self.keys_to();
@@ -290,6 +297,7 @@ impl Editor {
             R::Point => Keys::Point,
             R::View(s) => Keys::View(s),
             R::Output(r) => Keys::Output(r),
+            R::Prompt if !self.screen.prompt_on_status.get() => Keys::Prompt,
             R::Code | R::Prompt | R::NextCard | R::Popup | R::Weave | R::NoteCard | R::Page => Keys::Code,
         }
     }
@@ -585,5 +593,6 @@ mod tests {
         assert_eq!(Keys::Picker.label(), Some("PICKER"));
         assert_eq!(Keys::Review.label(), Some("REVIEW"));
         assert_eq!(Keys::Change.label(), Some("CHANGE"));
+        assert_eq!(Keys::Prompt.label(), Some("PROMPT"));
     }
 }

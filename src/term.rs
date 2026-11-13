@@ -1002,6 +1002,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         toast_narrow: std::cell::Cell::new(editor.screen.toast_narrow.get()),
         toast_said: Default::default(),
         prompt_card: Default::default(),
+        prompt_on_status: Default::default(),
         prompt_rows: Default::default(),
         prompt_input: Default::default(),
         note_input: Default::default(),
@@ -5725,7 +5726,7 @@ impl Region {
     /// them: what floats says it with its frame.
     fn with_keys(editor: &Editor) -> Option<Region> {
         match editor.keys_at() {
-            Keys::Code | Keys::Change => Some(Region::Code),
+            Keys::Code | Keys::Change | Keys::Prompt => Some(Region::Code),
             Keys::Side(_) | Keys::Review => Some(Region::Side),
             k if k.chat() => Some(Region::Chat),
             // (a floating list: its frame's own lines)
@@ -26354,6 +26355,8 @@ fn draw_prompt(
     let h = rows + usize::from(rows > 0) + 1 + 2 * pad;
     let y0 = (lay.status_y as usize).saturating_sub(h);
     editor.screen.prompt_card.set(Some((x0, y0, width, h)));
+    // (its last row on the status line's: the line's word under it stays the mode — `keys_at`, #575)
+    editor.screen.prompt_on_status.set(y0 + h == lay.status_y as usize);
     let card = on_ground(ui, card_style(ui, editor, "ui.menu"));
     let selected = selected_row(ui, editor, card);
     let matched = Style { fg: ui.accent.fg, bold: true, ..Style::default() };

@@ -1640,6 +1640,50 @@ fn the_status_line_names_where_the_keys_go() {
     assert_eq!(ed.keys_at(), Keys::Code, "the prompt's — not TERMINAL");
 }
 
+/// #575 (the design session's (b)): the status line's word is where the keys go — a prompt standing on the status line's
+/// row says so by standing there, the word under it the mode it returns to (`:` and `/` keep `● normal`); one drawn
+/// anywhere else is named by its layer (`space i`'s by its lines, `space n`'s in the note's card: `● prompt`), as a
+/// picker says `● picker`. Read off the drawn status line, the keys typed.
+#[test]
+fn a_prompt_standing_on_the_status_line_keeps_the_mode_and_one_elsewhere_says_prompt() {
+    if no_pty_here("a_prompt_standing_on_the_status_line_keeps_the_mode_and_one_elsewhere_says_prompt") {
+        return;
+    }
+    let word = |ed: &Editor| {
+        let (frame, w, h) = ed.last_frame.as_ref().expect("a frame");
+        let shown = crate::screen::text(frame, *w, *h).unwrap_or_default();
+        let status = shown.lines().last().unwrap_or_default().to_string();
+        status.split('●').nth(1).and_then(|s| s.split_whitespace().next()).unwrap_or_default().to_string()
+    };
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("`:` on the status line", &[":", "w"], "normal"),
+        ("`/` on the status line", &["/", "x"], "normal"),
+        ("`space i` by its lines", &["x", "<space>", "i", "n"], "prompt"),
+        // (a note waiting: `space n` writes a comment, its line in the note's card)
+        ("`space n` in the note's card", &["x", "<space>", "n", "w"], "prompt"),
+        ("a picker", &["<space>", "?"], "picker"),
+    ];
+    for (name, keys, want) in cases {
+        let mut ed = editor();
+        let path = std::env::temp_dir().join("tarae-keys-575.rs");
+        ed.docs[0].path.set(Some(path.clone()));
+        if name.contains("note's card") {
+            let id = crate::notes::add(
+                &mut ed,
+                &path,
+                0..1,
+                crate::notes::By::Reviewer,
+                "A word about this line.",
+            );
+            crate::notes::open(&mut ed, id);
+        }
+        frame(&mut ed);
+        feed(&mut ed, keys);
+        frame(&mut ed);
+        assert_eq!(word(&ed), *want, "{name} — keys to {:?}", ed.keys_to().region);
+    }
+}
+
 // ── The four slips of 2026-10-04 ─────────────────────────────────────────
 
 /// Slip 1: a `y` typed into the chat input, a card up. The state says the keys are the chat's, as text —

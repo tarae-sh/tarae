@@ -812,6 +812,30 @@ const ASK_FRAME_KEYS: [&[&str]; 5] = [
     &["@1", " ", "g", "@?knot.rs", "S", "@1", "C", "@?claude writing", "@1"],
 ];
 
+/// #575's scenes: `space i`'s line on lines 9–10 with words typed; `space n`'s comment line in the note's card, a review
+/// open (`space v v`, the code given the keys); `:` with a word typed.
+const PROMPT_WORD_KEYS: [&[&str]; 3] = [
+    &["@1", "9", "G", "x", "x", " ", "i", "@1", "keep the first strand", "@1"],
+    &[
+        "@1",
+        " ",
+        "v",
+        "v",
+        "@?knot.rs",
+        "@1",
+        "\x17",
+        "l",
+        "@1",
+        "x",
+        " ",
+        "n",
+        "@1",
+        "why not a Vec here?",
+        "@1",
+    ],
+    &["@1", ":", "wri", "@1"],
+];
+
 /// #267's keys: following, the turn running its tests, the chat minimized with the keys — then `$more` (the follow card's
 /// left line pressed and dragged; `C-w =`).
 macro_rules! f267_keys {
@@ -4755,6 +4779,11 @@ const SCENES: &[Scene] = &[
     Scene { name: "askmany", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[2] },
     Scene { name: "askbeside", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[3] },
     Scene { name: "askdraft", claude: "askframe", files: MAIN, keys: ASK_FRAME_KEYS[4] },
+    // (#575: the status line's word with a prompt open — `space i`'s by its lines and `space n`'s in the note's card say
+    // `prompt`; `:` standing on the status line keeps the mode under it)
+    Scene { name: "prompt-ask", claude: "idle", files: MAIN, keys: PROMPT_WORD_KEYS[0] },
+    Scene { name: "prompt-note", claude: "idle", files: MAIN, keys: PROMPT_WORD_KEYS[1] },
+    Scene { name: "prompt-command", claude: "idle", files: MAIN, keys: PROMPT_WORD_KEYS[2] },
     // (`space i` on two touching lines, one selection each, one edit of both: a change each in its review)
     Scene {
         name: "asktouching",
