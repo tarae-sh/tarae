@@ -127,6 +127,9 @@ pub struct CodeReview {
     pub grades: Grades,
     /// Each file's grades as `graded` last gave them, and what they were worked out from (`LiveStamp`).
     live: std::cell::RefCell<std::collections::HashMap<PathBuf, (LiveStamp, Graded)>>,
+    /// Files whose kept grades (`live`) stand for what they are now past a key's own look (`keep_past_look`): by
+    /// the stamp they stand for, until a worker grades them again.
+    looks_kept: std::cell::RefCell<std::collections::HashMap<PathBuf, LiveStamp>>,
     /// A round of `grading_sync` is under way on a worker.
     grading: bool,
     /// How many times each file has the texts of the lines looked at and viewed in it — counted as the review
@@ -201,6 +204,7 @@ impl CodeReview {
             started: std::time::Instant::now(),
             grades: Default::default(),
             live: Default::default(),
+            looks_kept: Default::default(),
             grading: false,
             counts: Default::default(),
             occurrences: Default::default(),
@@ -258,13 +262,15 @@ impl CodeReview {
         let worker = || self.grades.get(&f.path).cloned().unwrap_or_else(|| Arc::new([]));
         let Some(stamp) = self.live_stamp(ed, f) else { return worker() };
         if let Some((s, g)) = self.live.borrow().get(&f.path)
-            && (*s == stamp || drawing())
+            && (*s == stamp || drawing() || self.looks_kept.borrow().get(&f.path) == Some(&stamp))
         {
             return g.clone();
         }
         if drawing() {
             return worker();
         }
+        #[cfg(test)]
+        GRADED_HERE.with(|n| n.set(n.get() + 1));
         let looked = &ed.workspace.looked;
         let (g, counted) = grade(&self.input(ed, f, stamp.5.1, looked));
         if let Some(c) = counted {
@@ -273,6 +279,32 @@ impl CodeReview {
         let g: Graded = g.into();
         self.live.borrow_mut().insert(f.path.clone(), (stamp, g.clone()));
         g
+    }
+
+    /// The files whose kept grades stand for what they are now — `graded` hands them back as they are.
+    fn grades_current(&self, ed: &Editor) -> Vec<PathBuf> {
+        let current = |f: &&File| {
+            self.live_stamp(ed, f).is_some_and(|st| {
+                self.live.borrow().get(&f.path).is_some_and(|(s, _)| *s == st)
+                    || self.looks_kept.borrow().get(&f.path) == Some(&st)
+            })
+        };
+        self.files.iter().filter(current).map(|f| f.path.clone()).collect()
+    }
+
+    /// After a key's own look (`take`): the grades of `current` (`grades_current`, read before it) stand for what
+    /// their files are now, so the rest of the key — what's left, `]h`'s next, a held card's — grades nothing on the
+    /// loop. A look only takes keys and records the lines and order it took: graded again, a file's changes are
+    /// the same, cut the same (its text, diff and pane didn't move), less the moved and taken-out ones now looked
+    /// at — and every caller holds a change against `looked` before it counts. `grading_sync` grades them again on a
+    /// worker at the next event, exact. (#563's question: a whole look of 20,000 lines graded again on the loop at
+    /// every `space v h`, ~100 ms each.)
+    fn keep_past_look(&self, ed: &Editor, current: &[PathBuf]) {
+        for f in self.files.iter().filter(|f| current.contains(&f.path)) {
+            if let Some(st) = self.live_stamp(ed, f) {
+                self.looks_kept.borrow_mut().insert(f.path.clone(), st);
+            }
+        }
     }
 
     /// `f`'s open document as its grades are worked out from it: its diff against the review's base in, at its
@@ -1452,11 +1484,15 @@ fn joined(pieces: Vec<Piece>, rows: usize) -> Vec<Piece> {
 /// file was one change, read in one go and read again after any edit) — cut at its document's definitions
 /// (`defs`, `cut`), joined up to the pane (`joined`). Each piece is looked at by itself, every line of it on
 /// screen; the first holds the change's removed lines (drawn above it). Its why says which piece: `piece 4/31 ·
-/// refuse · unsafe (rust pack)`. Any other change: as it is.
-fn pieces(g: &crate::risk::Graded, defs: &[Def], rows: usize) -> Vec<crate::risk::Graded> {
+/// refuse · unsafe (rust pack)`. Any other change: as it is. High by its lines alone, a piece is high for what's
+/// in it (#563, `hit_regions`) — where `defs` tells (a tree's, its definitions none or some); no tree (`None`),
+/// every piece, as the change was.
+fn pieces(g: &crate::risk::Graded, defs: Option<&[Def]>, rows: usize) -> Vec<crate::risk::Graded> {
     if g.grade != Grade::High || rows == 0 || g.added <= rows || g.mode || g.piece.is_some() {
         return vec![g.clone()];
     }
+    let tree = defs;
+    let defs = defs.unwrap_or_default();
     let cut = joined(cut(g.at..g.at + g.added, defs, rows, None), rows);
     let n = cut.len();
     if n < 2 {
@@ -1466,7 +1502,7 @@ fn pieces(g: &crate::risk::Graded, defs: &[Def], rows: usize) -> Vec<crate::risk
     // high for the file's own reason, every piece)
     // (each added line's why when a region holds it, the first region's — the regions laid over the change once,
     // each piece then reading its own lines: friction #288's lesson, no region held against every piece)
-    let high_at = g.by_lines.as_ref().map(|b| {
+    let high_at = g.by_lines.as_ref().filter(|_| tree.is_some()).map(|b| {
         let mut at: Vec<Option<&str>> = vec![None; g.added];
         let mut removed = None;
         for (x, why) in hit_regions(g.at, g.removed, g.added, &b.hits, defs) {
@@ -1678,12 +1714,14 @@ fn grade(i: &Input) -> (Vec<crate::risk::Graded>, Option<std::collections::HashM
     let moved = moved_within(i.rel, &g, i.orders, i.looked, i.live.map(|d| d.text), i.plain);
     if i.at != CutAt::Whole && g.iter().any(tall) {
         let tree = i.live.and_then(|d| Some((d.tree?.1, d.text)));
+        // (None: no tree — no grammar, or its definitions not known — cut every pane's height, and nothing tells
+        // a matched line's definition: such a change's pieces all high, as before #563)
         let defs = match (i.at, tree, i.known) {
-            (CutAt::Tree, Some((t, text)), _) => defs_in(t, text),
-            (CutAt::Opened, _, Some(Some(defs))) => defs.clone(),
-            _ => Vec::new(),
+            (CutAt::Tree, Some((t, text)), _) => Some(defs_in(t, text)),
+            (CutAt::Opened, _, Some(Some(defs))) => Some(defs.clone()),
+            _ => None,
         };
-        g = g.iter().flat_map(|g| pieces(g, &defs, i.rows)).collect();
+        g = g.iter().flat_map(|g| pieces(g, defs.as_deref(), i.rows)).collect();
     }
     // (which lines the file has more than once: a look's `}` is its change's only — #562)
     crate::risk::mark_shared(&mut g);
@@ -1876,6 +1914,9 @@ fn added_keys(g: &crate::risk::Graded) -> &[crate::risk::Key] {
 thread_local! {
     /// Tests: what the rail asked on this thread — a file's `since`, its tree built (`rail_rows`).
     static RAIL_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    /// Tests: how many times `CodeReview::graded` graded a file on this thread (the loop's, in a test) rather than
+    /// handing back what was kept.
+    static GRADED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Tests: what the rail asked on this thread so far: (`since`, `rail_rows`).
@@ -2826,6 +2867,8 @@ pub fn grading_sync(ed: &mut Editor) {
                 if let Some(c) = counted.filter(|_| now == Some(stamp)) {
                     r.counts.get_mut().entry(path.clone()).or_default().extend(c);
                 }
+                r.looks_kept.get_mut().remove(&path);
+                let live = r.live.get_mut();
                 live.insert(path, (stamp, g));
             }
         }
@@ -2903,6 +2946,7 @@ fn open_at(
         started: std::time::Instant::now(),
         grades,
         live: Default::default(),
+        looks_kept: Default::default(),
         grading: false,
         counts: std::cell::RefCell::new(counts),
         occurrences: Default::default(),
@@ -2980,15 +3024,15 @@ pub fn highs_between(
         };
         hunks.extend(crate::risk::mode_change(&r.old_mode, &r.new_mode));
         let lang = lang_of(&r.rel);
-        // (its definitions, once, for a change high by its lines alone — as a review cuts at them)
-        let mut defs: Option<Vec<Def>> = None;
+        // (its definitions, once, for a change high by its lines alone — as a review cuts at them; None inside: no
+        // tree, no grammar)
+        let mut defs: Option<Option<Vec<Def>>> = None;
         for h in &hunks {
             let g = graded(&r.rel, lang, h, rules, false);
             if g.grade == Grade::High {
-                // (#563: high by its lines alone, what a review's high pieces hold of it — `hit_regions`)
                 if let (Some(new), Some(_)) = (&new, &g.by_lines) {
-                    let defs = defs.get_or_insert_with(|| defs_on_worker(&r.rel, new).unwrap_or_default());
-                    out.extend(Held::parts(&r.rel, &g, h, defs));
+                    let defs = defs.get_or_insert_with(|| defs_on_worker(&r.rel, new));
+                    out.extend(Held::held_for(&r.rel, g, h, defs.as_deref()));
                     continue;
                 }
                 let mut held = Held::of(&r.rel, g, h);
@@ -3054,6 +3098,17 @@ impl Held {
             mode,
             keys: g.keys,
             size: None,
+        }
+    }
+
+    /// What a bring holds of high-risk change `g` (of hunk `h`): high by its lines alone and its file's definitions
+    /// known (`defs`, a tree's), the parts the review's high pieces hold (`parts`, #563); else — the file's own
+    /// reason, or no tree to tell a matched line's definition by — the whole change, as the review has every piece
+    /// of it high.
+    fn held_for(rel: &str, g: crate::risk::Graded, h: &crate::risk::Hunk, defs: Option<&[Def]>) -> Vec<Held> {
+        match (defs, g.by_lines.is_some()) {
+            (Some(defs), true) => Held::parts(rel, &g, h, defs),
+            _ => vec![Held::of(rel, g, h)],
         }
     }
 
@@ -3849,6 +3904,8 @@ fn take(ed: &mut Editor, whole_file: bool) {
         })
         .map(|l| l.added)
         .collect();
+    // (the grades as they are stand past this look — `keep_past_look`: the rest of this key grades nothing on the loop)
+    let current = r.grades_current(ed);
     ed.workspace.looked.extend(keys);
     let kept = ed.workspace.looked_lines.entry(rel.clone()).or_default();
     kept.retain(|l| !done.contains(&l.added));
@@ -3870,6 +3927,7 @@ fn take(ed: &mut Editor, whole_file: bool) {
     let fresh_from = kept.len();
     kept.extend(orders);
     latest_looks(kept, fresh_from, &recorded);
+    r.keep_past_look(ed, &current);
     let left = r.high_unseen(ed).len();
     held_sync(ed);
     // (one: its marker went, in sight; several — a selection's — counted aloud)
@@ -7948,6 +8006,112 @@ mod tests {
         assert_eq!(held[0].why, "remove_dir_all (rust pack)");
         assert!(held[0].at <= cleanup && cleanup + 1 < held[0].at + held[0].lines, "{:?}", held[0]);
         assert!(unseen(&held, &ed.workspace.looked).is_empty(), "{:?}", unseen(&held, &ed.workspace.looked));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #563 (a), pinned: a risky line in no definition — a top-level `use` — is high in the piece holding it, that
+    /// line alone its region: a new file with it and thirty functions has one high piece, never all of them (as a
+    /// whole-change fallback for lines outside definitions would bring #563 back).
+    #[test]
+    fn a_risky_top_level_line_among_thirty_pieces_is_the_one_high_piece() {
+        let fns = |names: std::ops::Range<usize>| -> String {
+            names
+                .map(|i| format!("fn g{i}() {{\n    let a{i} = 1;\n    if b{i}() {{\n        c{i}(a{i});\n    }}\n}}\n\n"))
+                .collect()
+        };
+        let now = format!("{}use std::fs::remove_dir_all;\n\n{}", fns(0..15), fns(15..30));
+        let line = now.lines().position(|l| l.starts_with("use ")).unwrap();
+        let (_s, ed, dir, rows) = reviewing_parsed("toplevel", &[("a.rs", "", &now)]);
+        let r = ed.workspace.code_review.as_ref().unwrap();
+        let all: Vec<crate::risk::Graded> = r.graded(&ed, &r.files[0]).iter().cloned().collect();
+        assert!(all.len() >= 30 && all.iter().all(|g| g.piece.is_some()), "at {rows} rows: {}", all.len());
+        let h = highs(&ed);
+        assert_eq!(h.len(), 1, "{:#?}", h.iter().map(|g| (g.at, &g.why)).collect::<Vec<_>>());
+        assert!(h[0].at <= line && line < h[0].at + h[0].lines, "the piece holding line {line}: {:?}", h[0]);
+        assert!(h[0].why.ends_with(" · remove_dir_all (rust pack)"), "{}", h[0].why);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #563 (b): no tree — no grammar, or a closed file's definitions not known — nothing tells a matched line's
+    /// definition: the change's pieces (cut every pane's height) are all high, as before #563. Its definitions
+    /// known, the same file has one.
+    #[test]
+    fn with_no_tree_a_changes_pieces_are_all_high() {
+        let (_s, mut ed, dir, _rows) = reviewing_parsed("notree", &[("board.rs", "", &board_like())]);
+        let count = |ed: &Editor| {
+            let r = ed.workspace.code_review.as_ref().unwrap();
+            let g = r.graded(ed, &r.files[0]);
+            (
+                g.iter().filter(|g| g.grade == Grade::High).count(),
+                g.iter().filter(|g| g.piece.is_some()).count(),
+            )
+        };
+        // (closed: cut at the definitions the review's worker found — one high piece)
+        closed(&mut ed, &dir, "board.rs");
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 12).unwrap();
+        let (high, pieces) = count(&ed);
+        assert!(high == 1 && pieces > 3, "its definitions known: {high} of {pieces}");
+        // (none known: every piece)
+        ed.workspace.code_review.as_mut().unwrap().defs.insert(dir.join("board.rs"), None);
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 12).unwrap();
+        let (high, pieces) = count(&ed);
+        assert!(pieces > 3 && high == pieces, "no tree: {high} of {pieces}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #563 (b), the bring's side: a change high by its lines alone holds the parts the review's high pieces hold
+    /// when its file's definitions are known (none: each matched line alone), and the whole change with no tree —
+    /// as the review then has every piece high.
+    #[test]
+    fn with_no_tree_a_bring_holds_the_whole_change() {
+        let rules = crate::risk::Rules::with(&[("rust", &["rust"], &[r"\bunsafe\b"], &[])], &[], &[]);
+        let added = ["let a = 1;", "let p = unsafe { getpid() };", "let b = 2;"].map(String::from).to_vec();
+        let h = crate::risk::Hunk { at: 4, added, ..Default::default() };
+        let g = crate::risk::graded("a.rs", Some("rust"), &h, &rules, false);
+        assert!(g.by_lines.is_some());
+        let shape = |held: Vec<Held>| held.iter().map(|h| (h.at, h.keys.len())).collect::<Vec<_>>();
+        assert_eq!(shape(Held::held_for("a.rs", g.clone(), &h, None)), [(4, 3)], "no tree: the whole change");
+        assert_eq!(
+            shape(Held::held_for("a.rs", g, &h, Some(&[]))),
+            [(5, 1)],
+            "a tree, no definition: the line"
+        );
+    }
+
+    /// #563's question: `space v h` grades nothing on the loop — its own look keeps the grades as they are
+    /// (`keep_past_look`), what's left and `]h`'s next read from them, and a worker grades them again after. (Each
+    /// look graded every file with a look again on the loop: a whole look of 20,000 lines, ~100 ms a key.)
+    #[test]
+    fn a_look_grades_nothing_on_the_loop() {
+        let now = shared_tail_fns(&["g0", "g1", "g2"]);
+        let (_s, mut ed, dir, _rows) = reviewing_parsed("looknoloop", &[("a.rs", "", &now)]);
+        let here = || GRADED_HERE.with(|n| n.get());
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 12).unwrap();
+        assert_eq!(left(&ed), 3);
+        ed.goto_line(0);
+        frame(&mut ed);
+        feed(&mut ed, "]h");
+        for n in [2, 1] {
+            grading_settle(&mut ed);
+            frame(&mut ed);
+            let before = here();
+            feed(&mut ed, "<space>vh");
+            // (its rest brought into sight first, at the pane's foot: the next press, after a frame, takes it — #526)
+            if ed.status.as_ref().is_some_and(|s| s.0 == "the rest shown — space v h takes it") {
+                frame(&mut ed);
+                feed(&mut ed, "<space>vh");
+            }
+            let status = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+            assert_eq!(here() - before, 0, "graded on the loop: {status}");
+            assert_eq!(left(&ed), n, "{status}");
+            let words = format!(" of {n} not looked at");
+            assert!(status.starts_with("looked at · high-risk ") && status.contains(&words), "{status}");
+            // (the worker's round after: the same, exact)
+            grading_settle(&mut ed);
+            let r = ed.workspace.code_review.as_ref().unwrap();
+            assert_eq!(r.grades_agree(&ed), Ok(()));
+            assert_eq!(left(&ed), n);
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

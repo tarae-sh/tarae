@@ -2688,8 +2688,10 @@ A high-risk change taller than the pane comes in pieces, cut at the definitions 
 types `space o` lists), going into a definition that's taller than the pane, and joined back while they fit the
 pane together. A 1123-line new file is about 25 pieces in a 50-row pane. A piece is high for what's in it: when
 only its lines make the change high (a pack's pattern), the pieces high are the ones holding a matched line's
-definition (the innermost one, the function or test it's in), and a matched line taken out makes the first piece
-high, where its removed rows are drawn; the rest are graded as they'd be without it. Two teardown lines in a new
+definition (the innermost one, the function or test it's in) — a matched line in no definition, like a top-level
+`use`, makes the piece holding it high — and a matched line taken out makes the first piece high, where its removed
+rows are drawn; the rest are graded as they'd be without it. A file with no grammar has nothing to tell a line's
+definition by, so every piece of such a change is high, as the whole change was. Two teardown lines in a new
 file's tests make one piece high, not all 30. When the file itself is high (its path in `review.risky`, or a
 protected name) every piece is. A bring's card holds the same parts, so what the review's look took lets the bring
 through. Each high piece is looked at by itself: `]h` selects it, its first line ends with `▲ high · piece 4/25

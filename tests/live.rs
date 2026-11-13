@@ -50,8 +50,10 @@ fn have(tool: &str) -> bool {
 }
 
 /// A small Cargo library: a call into another module (for go-to-definition), one passing test and one
-/// failing test.
+/// failing test — in a git repository (nothing committed), so rust-analyzer's code-trust card is the repository's
+/// (`code_trusted`; #567: with none it's #517's folder card, and the wait never ended).
 fn cargo_project(sb: &Sandbox) {
+    sb.git(&["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(sb.file("src")).unwrap();
     sb.write("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
     sb.write("src/util.rs", "pub fn same(x: i32) -> i32 {\n    x\n}\n");
@@ -4046,7 +4048,6 @@ fn the_reviewer_reviews_the_changes_read_only() {
     }
     let (sb, stream) = teed_chat("review");
     cargo_project(&sb);
-    sb.git(&["init", "-q", "-b", "main"]);
     sb.git(&["add", "-A"]);
     sb.git(&["commit", "-q", "-m", "base"]);
     let lib = sb.file("src/lib.rs");
@@ -4705,7 +4706,6 @@ fn a_board_reads_its_diff_from_the_cache() {
     let sb = Sandbox::live("board-cache");
     sb.write_config(&format!("{LIVE_CONFIG}lsp = false\n[review]\nrisky = [\"src/\"]\n"));
     cargo_project(&sb);
-    sb.git(&["init", "-q", "-b", "main"]);
     sb.git(&["add", "-A"]);
     sb.git(&["commit", "-q", "-m", "base"]);
     let mut table = String::from("//! Ranges' ends, clamped.\n\n");
