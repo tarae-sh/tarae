@@ -1222,8 +1222,8 @@ fn share_lines(log: &Path) -> String {
 
 // ── Language server: code actions, rename, format ────────────────────────────
 
-/// `space a` lists rust-analyzer's fixes with a preview and applies the picked one; `space r` renames across
-/// files; `:w` formats first.
+/// `:w` formats the lines you changed first; `space a` lists rust-analyzer's fixes with a preview and applies
+/// the picked one; `space r` renames across files, and `:wa` saves both.
 #[test]
 #[ignore = "live: run with `cargo live`"]
 fn rust_analyzer_code_action_rename_and_format() {
@@ -1234,11 +1234,24 @@ fn rust_analyzer_code_action_rename_and_format() {
     cargo_project(&sb);
     let lib = sb.file("src/lib.rs");
     let text = std::fs::read_to_string(&lib).unwrap();
-    std::fs::write(&lib, format!("{text}\npub fn pick(x: Option<i32>) -> i32 {{\n    match x {{}}\n}}\n\npub fn ugly( )->i32{{1}}\n"))
+    std::fs::write(&lib, format!("{text}\npub fn pick(x: Option<i32>) -> i32 {{\n    match x {{}}\n}}\n\npub fn ugli( )->i32{{1}}\n"))
         .unwrap();
     let mut t = sb.spawn(&["src/lib.rs"]);
     code_trusted(&mut t);
     t.wait_text("rust-analyzer ready");
+
+    // Saved formatted — a line changed since the file was saved: a save formats only those (frictions16 #11, #569:
+    // `ugly` as written on disk was never touched, so never formatted). Here, just after it's ready and before
+    // anything else is asked of it (its own checks are off), the server answers within the save's wait.
+    t.send("/ugli\r");
+    t.wait_text("/ugli");
+    t.send("cugly");
+    t.normal_mode();
+    t.wait_text("pub fn ugly( )->i32{1}");
+    t.command("w");
+    wait_file_until(&lib, "formatted on save", Duration::from_secs(30), |s| {
+        s.contains("pub fn ugly() -> i32 {\n    1\n}")
+    });
 
     // A code action: fill the empty match
     t.send("/match x\r");
@@ -1261,10 +1274,10 @@ fn rust_analyzer_code_action_rename_and_format() {
     t.command("wa");
     let util = sb.file("src/util.rs");
     wait_file_until(&util, "renamed", Duration::from_secs(10), |s| s.contains("pub fn ident(x: i32)"));
-
-    // Saved formatted
-    wait_file_until(&lib, "formatted on save", Duration::from_secs(30), |s| {
-        s.contains("pub fn ugly() -> i32 {\n    1\n}") && s.contains("None => todo!()")
+    wait_file_until(&lib, "saved with the arms and the rename", Duration::from_secs(10), |s| {
+        s.contains("None => todo!()")
+            && s.contains("util::ident(a)")
+            && s.contains("pub fn ugly() -> i32 {\n    1\n}")
     });
 }
 
