@@ -410,10 +410,12 @@ fn the_parts_cross_and_chapters_txt_says_each_card_s_time() {
     let (txt, said) = p.chapters();
     assert_eq!(txt, "0:00 halil\n0:09 One\n0:23 Two\n");
     assert!(said.iter().any(|s| s.contains("“halil” runs 9.0 s")), "{said:?}");
-    // (each part's start crosses, and the jump at 20 s does — where `fix`'s card stands, one crossing)
+    // (each part's start crosses but the take's last screen held, the picture it leaves; and the jump at 20 s does —
+    // where `fix`'s card stands, one crossing)
     let crossings = p.crossings();
     for x in &p.parts[1..] {
-        assert!(crossings.iter().any(|c| c.0 == x.at), "{x:?} in {crossings:?}");
+        let crossed = crossings.iter().any(|c| c.0 == x.at);
+        assert_eq!(crossed, x.what != What::Last, "{x:?} in {crossings:?}");
     }
 }
 
@@ -426,7 +428,7 @@ fn a_change_of_part_goes_through_the_ground_never_one_part_over_the_other() {
     let c = cut(CUT).unwrap();
     let p = Program::new(&c);
     let crossings = p.crossings();
-    for x in &p.parts[1..] {
+    for x in p.parts[1..].iter().filter(|x| x.what != What::Last) {
         assert!(crossings.contains(&(x.at, true)), "{x:?} through the ground: {crossings:?}");
     }
     let (from, to, ground) = ([200u8, 0, 0].repeat(4), [0u8, 200, 0].repeat(4), [10u8, 10, 10]);
@@ -447,6 +449,63 @@ fn a_change_of_part_goes_through_the_ground_never_one_part_over_the_other() {
     let mut px = to.clone();
     cross_px(&from, &mut px, ground, 128, false);
     assert!(px[0] > 10 && px[1] > 10, "{:?}", &px[..3]);
+}
+
+/// A crossing between two identical pictures draws nothing: across the take's end into its last screen held
+/// (`What::Last`; take 3's final2c at 10:11.7 dipped to the ground and back over 0.2 s, the band with it) every frame is
+/// its own picture, never under it; and so across any crossing whose first frame is the picture it leaves — while one
+/// into another picture (the card of what's built) still goes through the ground. The frames drawn as `make` draws
+/// them (`Crossings`), each a stand-in by what it shows: its screen (or card) and its band, each at its own level.
+#[test]
+fn a_crossing_between_two_identical_pictures_draws_nothing() {
+    use super::draw::Crossings;
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    let ground = [10u8, 10, 10];
+    let picture = |f: &Frame| -> Vec<u8> {
+        let screen = match f.card {
+            None => 40 + (f.screen.unwrap_or(0) / 1000 % 150) as u8,
+            Some(Card::Intro(_)) => 200,
+            Some(Card::Built) => 215,
+            Some(Card::Chapter(_)) => 230,
+            Some(Card::End) => 245,
+        };
+        let band = 40 + (f.clock.unwrap_or(0) / 1000 % 60) as u8 + if f.speed.is_some() { 100 } else { 0 };
+        [[screen; 3].repeat(4), [band; 3].repeat(2)].concat()
+    };
+    // (each frame from `from` to `to` as drawn through `crossings`: its time, its own picture, what was drawn)
+    let drawn = |crossings: Vec<(u64, bool)>, from: u64, to: u64| -> Vec<(u64, Vec<u8>, Vec<u8>)> {
+        let mut x = Crossings::new(crossings, Vec::new());
+        let mut last: Option<Vec<u8>> = None;
+        (Program::frame_at(from)..Program::frame_at(to))
+            .map(|k| {
+                let v = Program::time_of(k);
+                let share = x.at(v, last.as_deref());
+                let own = picture(&p.frame(v));
+                let mut px = own.clone();
+                x.over(&mut px, ground, share);
+                last = Some(px.clone());
+                (v, own, px)
+            })
+            .collect()
+    };
+    let span = camera::CROSS_MS * 1000;
+    let held = p.parts.iter().find(|x| x.what == What::Last).unwrap().at;
+    for (v, own, px) in drawn(p.crossings(), held - 2 * span, held + 2 * span) {
+        assert_eq!(px, own, "{} across the take's end into its last screen held", video_time(v));
+    }
+    // (a crossing laid where the take stands still at 1×, 12.5 s: its first frame the picture it leaves)
+    let still = p.video_of(c.map.video(12_500)).unwrap();
+    let before = p.frame(Program::time_of(Program::frame_at(still) - 1));
+    assert_eq!(picture(&before), picture(&p.frame(still)), "the same picture either side");
+    for (v, own, px) in drawn(vec![(still, true)], still - span, still + 2 * span) {
+        assert_eq!(px, own, "{} across a crossing onto the same picture", video_time(v));
+    }
+    // (one into another picture still crosses, down to the ground on the way)
+    let built = p.parts.iter().find(|x| x.what == What::Built).unwrap().at;
+    let dipped =
+        drawn(p.crossings(), built - span, built + 2 * span).iter().any(|(_, own, px)| px[0] < own[0]);
+    assert!(dipped, "into the card of what's built: through the ground");
 }
 
 /// The sheet's pictures are taken once their part has come up — never inside a crossing, where the label would name a

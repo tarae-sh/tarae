@@ -1561,12 +1561,14 @@ impl<'c> Program<'c> {
     }
 
     /// Where the video crosses from one picture to the next (µs), and whether through the ground (`through`): each
-    /// part's start past the first, through it — never one part's words over the next's —; each jump, the take's two
-    /// screens over each other (where a part starts too: through the ground).
+    /// part's start past the first, through it — never one part's words over the next's —, but a hold's and the take's
+    /// last screen's; each jump, the take's two screens over each other (where a part starts too: through the ground).
     pub(crate) fn crossings(&self) -> Vec<(u64, bool)> {
-        // (a hold is the frame before it, still: no crossing into it)
+        // (a hold is the frame before it, still, and the last screen held is the take's last: nothing to cross — one
+        // through the ground there dipped the picture and the band to it and back between two of the same, take 3's
+        // final2c at 10:11.7)
         let mut out: Vec<(u64, bool)> = (self.parts.iter().skip(1))
-            .filter(|p| !matches!(p.what, What::Hold { .. }))
+            .filter(|p| !matches!(p.what, What::Hold { .. } | What::Last))
             .map(|p| (p.at, true))
             .collect();
         out.extend(self.jumps.iter().filter_map(|j| self.video_of(j.0)).map(|v| (v, false)));

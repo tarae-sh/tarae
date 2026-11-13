@@ -14,7 +14,8 @@
 //!   chapter's card, the take after them, the end card) through the ground — the part going out fades to it, then the
 //!   next comes up (`cross_px`) —; where time is left out, and where most of the cells change at once
 //!   (`camera::CROSS`) between two screens that each stand `camera::STAND_MS` of video (`changes`, else a cut), the two
-//!   screens over each other.
+//!   screens over each other. A crossing between two identical pictures draws nothing (`Crossings::over`); none into a
+//!   chapter's end held or the take's last screen held, the picture they leave.
 //! - The sheet (`sheet_picks`): each picture taken once its part has come up, never inside a crossing.
 //! - The words over where it ends (`label.rs`), where the opening has them, over the board and under the band.
 //! - The band (`band`): the clock, the jump's mark, the speed's mark or `where it ends` (none while the words say it),
@@ -751,8 +752,6 @@ pub(crate) fn make(
         None => None,
     };
     let mut stdin = child.as_mut().and_then(|c| c.stdin.take());
-    let crossings = prog.crossings();
-    let mut next_cross = 0;
     // (the whole-screen changes found first, each crossing only between two screens that stand)
     let looked = Instant::now();
     let (whole, changed) = changes(&prog, take);
@@ -766,13 +765,12 @@ pub(crate) fn make(
         looked.elapsed().as_secs_f64()
     ));
     drop(whole);
-    let mut next_change = 0;
+    let mut crossings = Crossings::new(prog.crossings(), changed);
     let (mut ends, mut replay) = (Replay::new(&take.screen, size), Replay::new(&take.screen, size));
     let mut words = Words::new(&fonts, look.ground, scale);
     let sheet_fonts = Fonts::load(1)?;
     let mut pics = Pictures::default();
     let mut last: Option<(Key, Vec<u8>)> = None;
-    let mut cross: Option<(Vec<u8>, u64, bool)> = None;
     let (mut differ, mut drawn, mut wrote) = (0u64, 0u64, Ok(()));
     let mut sheet: Vec<Picture> = Vec::new();
     let mut pages = 0;
@@ -787,24 +785,7 @@ pub(crate) fn make(
             let r = if f.ends { &mut ends } else { &mut replay };
             r.to(t);
         }
-        while next_change < changed.len() && changed[next_change] <= v {
-            if let Some((_, px)) = &last {
-                cross = Some((px.clone(), changed[next_change], false));
-            }
-            next_change += 1;
-        }
-        while next_cross < crossings.len() && crossings[next_cross].0 <= v {
-            if let Some((_, px)) = &last {
-                let (at, through) = crossings[next_cross];
-                cross = Some((px.clone(), at, through));
-            }
-            next_cross += 1;
-        }
-        let share = cross.as_ref().map(|(_, began, _)| cross_share(v, *began));
-        if share == Some(255) {
-            cross = None;
-        }
-        let share = share.filter(|&a| a < 255);
+        let share = crossings.at(v, last.as_ref().map(|l| l.1.as_slice()));
         let region = region(&f, &paths, size);
         let screen = match f.ends {
             true => (true, ends.shown),
@@ -857,9 +838,7 @@ pub(crate) fn make(
                     stage.take_frame(&shown, &f, (pose, &pops, &key.pops), &mut words)
                 }
             };
-            if let (Some(p), Some((from, _, through))) = (share, &cross) {
-                cross_px(from, &mut px, look.ground, p, *through);
-            }
+            crossings.over(&mut px, look.ground, share);
             differ += u64::from(last.as_ref().is_none_or(|l| l.1 != px));
             last = Some((key, px));
         }
@@ -1284,6 +1263,59 @@ fn crossed(from: &[u8], to: &mut [u8], a: u8) {
     let a = u32::from(a);
     for (d, s) in to.iter_mut().zip(from) {
         *d = ((u32::from(*s) * (255 - a) + u32::from(*d) * a + 127) / 255) as u8;
+    }
+}
+
+/// The crossings as the frames meet them, in order — the program's parts and jumps (`Program::crossings`) and the take's
+/// whole-screen changes (`changes`) —: the one in force, from the picture it leaves.
+pub(crate) struct Crossings {
+    parts: Vec<(u64, bool)>,
+    changes: Vec<u64>,
+    next: (usize, usize),
+    cross: Option<(Vec<u8>, u64, bool)>,
+    /// Whether the one in force began at this frame.
+    fresh: bool,
+}
+
+impl Crossings {
+    pub(crate) fn new(parts: Vec<(u64, bool)>, changes: Vec<u64>) -> Crossings {
+        Crossings { parts, changes, next: (0, 0), cross: None, fresh: false }
+    }
+
+    /// Frame `v` comes: each crossing begun by then, from the frame before as drawn (`last`; none before the first); how
+    /// far through the one in force it is (of 255, `cross_share`), None where none is.
+    pub(crate) fn at(&mut self, v: u64, last: Option<&[u8]>) -> Option<u8> {
+        self.fresh = false;
+        while self.next.1 < self.changes.len() && self.changes[self.next.1] <= v {
+            if let Some(px) = last {
+                (self.cross, self.fresh) = (Some((px.to_vec(), self.changes[self.next.1], false)), true);
+            }
+            self.next.1 += 1;
+        }
+        while self.next.0 < self.parts.len() && self.parts[self.next.0].0 <= v {
+            if let Some(px) = last {
+                let (at, through) = self.parts[self.next.0];
+                (self.cross, self.fresh) = (Some((px.to_vec(), at, through)), true);
+            }
+            self.next.0 += 1;
+        }
+        let share = self.cross.as_ref().map(|(_, began, _)| cross_share(v, *began));
+        if share == Some(255) {
+            self.cross = None;
+        }
+        share.filter(|&a| a < 255)
+    }
+
+    /// Frame `px` as drawn, the crossing in force over it, `share` of the way through (`at`'s) — but none where the
+    /// frame it begins on is the picture it leaves: a crossing between two identical pictures draws nothing (take 3's
+    /// final2c at 10:11.7, the take's last screen into itself held: down to the ground and back, the band with it).
+    pub(crate) fn over(&mut self, px: &mut [u8], ground: Rgb, share: Option<u8>) {
+        let (Some(p), Some((from, _, through))) = (share, &self.cross) else { return };
+        if self.fresh && from.as_slice() == px {
+            self.cross = None;
+            return;
+        }
+        cross_px(from, px, ground, p, *through);
     }
 }
 
