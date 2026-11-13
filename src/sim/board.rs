@@ -191,7 +191,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &mut Seen
             let message = json!({"jsonrpc": "2.0", "id": n, "method": "tools/call",
                 "params": {"name": tool, "arguments": args}});
             let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": message});
-            crate::reviewer::on_event(ed, generation, StreamEv::Control { request_id: id, request });
+            crate::reviewer::on_event(ed, generation, crate::agent::claude::test::control(&id, request));
             format!("{} {tool}s", member(ed, i))
         }
         k @ (3 | 4) => {

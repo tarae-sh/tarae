@@ -2116,7 +2116,7 @@ fn ask_answered(s: &mut Shot) {
         "new_string": "    println!(\"{} distinct words in {:?}\", counts.len(), text);\n"}]});
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": 1,
         "method": "tools/call", "params": {"name": "edit", "arguments": edit}}});
-    crate::ask::on_event(&mut s.ed, g, crate::llm::StreamEv::Control { request_id: "r1".into(), request });
+    crate::ask::on_event(&mut s.ed, g, crate::agent::claude::test::control("r1", request));
     s.until("review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
 }
 

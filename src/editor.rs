@@ -21690,7 +21690,7 @@ mod tests {
     fn ask_calls(ed: &mut Editor, g: u64, id: u64, tool: &str, args: serde_json::Value) {
         let request = serde_json::json!({"subtype": "mcp_message", "server_name": "tarae", "message": {
             "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool, "arguments": args}}});
-        let ev = crate::llm::StreamEv::Control { request_id: format!("ask-{id}"), request };
+        let ev = crate::agent::claude::test::control(&format!("ask-{id}"), request);
         crate::ask::on_event(ed, g, ev);
     }
 
@@ -21743,11 +21743,7 @@ mod tests {
         let (g, rx) = stand_in_ask(&mut ed, "upper");
         let request = serde_json::json!({"subtype": "mcp_message", "server_name": "tarae", "message": {
             "jsonrpc": "2.0", "id": 1, "method": "tools/list"}});
-        crate::ask::on_event(
-            &mut ed,
-            g,
-            crate::llm::StreamEv::Control { request_id: "ask-l".into(), request },
-        );
+        crate::ask::on_event(&mut ed, g, crate::agent::claude::test::control("ask-l", request));
         ask_calls(&mut ed, g, 2, "run", serde_json::json!({"command": "ls"}));
         ask_calls(&mut ed, g, 3, "read", serde_json::json!({"files": [path]}));
         let mut got = Vec::new();

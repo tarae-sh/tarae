@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::claude::REQUEST_ID;
 use crate::llm::StreamEv;
 use std::time::{Duration, Instant};
 
@@ -122,7 +123,7 @@ fn fields_claude_adds_are_ignored() {
 fn the_subscription_says_none_as_its_key_source() {
     let key = |v: &Value| match crate::llm::parse_line(v) {
         Some(StreamEv::Conversation { key_source, .. }) => key_source,
-        Some(StreamEv::Initialized { key_source, .. }) => key_source,
+        Some(StreamEv::Ready { key_source, .. }) => key_source,
         _ => panic!("not read as the conversation's start nor the answer to initialize"),
     };
     assert_eq!(key(&line(0)).as_deref(), Some("none"));

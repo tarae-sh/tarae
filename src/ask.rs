@@ -22,6 +22,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
+use crate::agent::{Agent, Permission, Prompt};
 use crate::document::DocId;
 use crate::editor::Editor;
 use crate::llm::{self, StreamEv};
@@ -51,7 +52,7 @@ pub const READS_ONLY: &str = "space i reads only the project and the buffer it w
 pub struct Ask {
     /// Its tool calls' (`tools::Call`): one count with the chats'.
     pub generation: u64,
-    stdin: llm::Lines,
+    agent: Agent,
     /// Its process (None: a test's stand-in).
     pid: Option<u32>,
     /// What you asked — its review's title and its `space u` step's.
@@ -189,8 +190,9 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     };
     // (tarae's MCP server first, then the one message — written off the main loop: a selection can be 200 KB, and a
     // claude still starting reads nothing yet)
-    let sent =
-        stdin.send(llm::initialize_message(&["tarae"])).and_then(|_| stdin.send(llm::user_message(&message)));
+    let own = stdin.weak();
+    let agent = Agent::from(stdin);
+    let sent = agent.initialize().and_then(|_| agent.prompt(Prompt::Text(message)));
     if let Err(e) = sent {
         if let Some(child) = child {
             reap(child);
@@ -205,7 +207,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     ed.llm_pid = pid;
     ed.workspace.claude.ask = Some(Ask {
         generation,
-        stdin,
+        agent,
         pid,
         instruction: instruction.to_string(),
         doc: doc_id,
@@ -222,7 +224,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
         asked_by: ed.events.asked(),
     });
     if let Some(child) = child {
-        llm::pump(child, true, ed.events.sender(), move |ev| {
+        llm::pump(child, Some(own), true, ed.events.sender(), move |ev| {
             Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
         });
     }
@@ -346,9 +348,15 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 }
             }
         }
-        StreamEv::Control { request_id, request } => {
-            if let Some(response) = control(ed, generation, &request_id, &request) {
-                respond(ed, &request_id, response);
+        StreamEv::Mcp { id, message } => {
+            if let Some(response) = mcp(ed, generation, &id, &message) {
+                answer_mcp(ed, &id, response);
+            }
+        }
+        // (no tool of Claude Code's is its)
+        StreamEv::Permission { id, tool, .. } => {
+            if let Some(a) = ed.workspace.claude.ask.as_ref() {
+                a.agent.answer_permission(&id, Permission::Deny { message: refused(&tool) });
             }
         }
         // (what it cost is the session's: a turn of its own, beside the chat's conversation)
@@ -378,7 +386,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         | StreamEv::Money(_)
         | StreamEv::Usage(_)
         | StreamEv::Answered(_)
-        | StreamEv::Initialized { .. }
+        | StreamEv::Ready { .. }
         | StreamEv::Tool { .. }
         | StreamEv::ThinkingBlock(_)
         | StreamEv::ToolResult { .. }
@@ -464,30 +472,21 @@ pub fn reviewing(ed: &mut Editor) {
     ed.set_status(format!("claude answered in {}", crate::term::run_duration(took)));
 }
 
-/// Our answer to one of its control requests — to its process only.
-pub fn respond(ed: &mut Editor, request_id: &str, response: Value) {
+/// Its MCP server's answer (`response` a JSON-RPC message) to ask `id` — to its process only.
+pub fn answer_mcp(ed: &mut Editor, id: &str, response: Value) {
     if let Some(a) = ed.workspace.claude.ask.as_ref() {
-        let _ = a.stdin.send(llm::control_response(request_id, response));
+        a.agent.answer_mcp(id, response);
     }
 }
 
-/// A control request from its claude → our answer (None: later — a read, an edit). No tool of Claude Code's is its;
-/// `mcp_message` is its server: `read` and `edit`.
-fn control(ed: &mut Editor, generation: u64, request_id: &str, req: &Value) -> Option<Value> {
-    if req["subtype"] == "can_use_tool" {
-        let tool = req["tool_name"].as_str().unwrap_or_default();
-        return Some(json!({ "behavior": "deny", "message": refused(tool) }));
-    }
-    if req["subtype"] != "mcp_message" || req["server_name"] != "tarae" {
-        return Some(json!({}));
-    }
-    let msg = &req["message"];
+/// A message to its MCP server (`read` and `edit`) → our answer (None: later — a read, an edit).
+fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> Option<Value> {
     let Some(id) = msg.get("id").cloned() else {
-        return Some(json!({ "mcp_response": { "jsonrpc": "2.0", "result": {}, "id": 0 } }));
+        return Some(json!({ "jsonrpc": "2.0", "result": {}, "id": 0 }));
     };
     let rev = match crate::mcp::rev(msg) {
         Ok(rev) => rev,
-        Err(e) => return Some(json!({ "mcp_response": { "jsonrpc": "2.0", "id": id, "error": e } })),
+        Err(e) => return Some(json!({ "jsonrpc": "2.0", "id": id, "error": e })),
     };
     let method = msg["method"].as_str().unwrap_or_default();
     let result = match method {
@@ -511,11 +510,10 @@ fn control(ed: &mut Editor, generation: u64, request_id: &str, req: &Value) -> O
         }
         m => crate::mcp::common(m, msg, rev, json!({ "tools": {} })).ok_or_else(|| crate::mcp::not_found(m)),
     };
-    let response = match result {
+    Some(match result {
         Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": crate::mcp::finish(rev, method, r) }),
         Err(e) => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
-    };
-    Some(json!({ "mcp_response": response }))
+    })
 }
 
 fn refused(tool: &str) -> String {

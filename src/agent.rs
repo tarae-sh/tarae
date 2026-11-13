@@ -1,5 +1,94 @@
 pub mod claude;
 
+/// A running agent: what tarae says to it. Its kind's lines are its wire's (`claude.rs`); everything above the
+/// wire asks this handle, and none of it names the kind.
+pub enum Agent {
+    Claude(claude::Lines),
+}
+
+impl From<claude::Lines> for Agent {
+    fn from(lines: claude::Lines) -> Agent {
+        Agent::Claude(lines)
+    }
+}
+
+impl Agent {
+    /// tarae's MCP server offered: the first thing it's told (its messages come back as `StreamEv::Mcp`).
+    pub fn initialize(&self) -> std::io::Result<()> {
+        let Agent::Claude(l) = self;
+        l.initialize()
+    }
+
+    /// A message to it. Err: it doesn't read anymore.
+    pub fn prompt(&self, p: Prompt) -> std::io::Result<()> {
+        let Agent::Claude(l) = self;
+        l.prompt(p)
+    }
+
+    /// Its turn stopped — the process and its conversation stay. Whether it was told.
+    pub fn stop_turn(&self) -> bool {
+        let Agent::Claude(l) = self;
+        l.stop_turn()
+    }
+
+    /// tarae's MCP server's answer (`response` its JSON-RPC message) to ask `id`.
+    pub fn answer_mcp(&self, id: &str, response: serde_json::Value) {
+        let Agent::Claude(l) = self;
+        l.answer_mcp(id, response);
+    }
+
+    /// The answer to its permission ask `id`.
+    pub fn answer_permission(&self, id: &str, p: Permission) {
+        let Agent::Claude(l) = self;
+        l.answer_permission(id, p);
+    }
+
+    /// The conversation goes on on `model` (an alias or id, `default` its own). Whether it was told.
+    pub fn set_model(&self, model: &str) -> bool {
+        let Agent::Claude(l) = self;
+        l.set_model(model)
+    }
+
+    /// The conversation goes on at `effort` (None: the model's own). Whether it was told.
+    pub fn set_effort(&self, effort: Option<&str>) -> bool {
+        let Agent::Claude(l) = self;
+        l.set_effort(effort)
+    }
+
+    /// The account's limits asked (`limits.rs`; the answer comes as `StreamEv::Limits`). Whether it was asked.
+    pub fn ask_limits(&self) -> bool {
+        let Agent::Claude(l) = self;
+        l.ask_limits()
+    }
+
+    /// Tests: its stdin as it is, for a line of the test's own.
+    #[cfg(test)]
+    pub fn lines(&self) -> &claude::Lines {
+        let Agent::Claude(l) = self;
+        l
+    }
+}
+
+/// A message to an agent: its text, or its parts — one kept in the cache an hour (a board's shared prefix,
+/// `reviewer::content`).
+pub enum Prompt {
+    Text(String),
+    Parts(Vec<PromptPart>),
+}
+
+pub struct PromptPart {
+    pub text: String,
+    /// Cached an hour, not the default five minutes.
+    pub cache_hour: bool,
+}
+
+/// The answer to a permission ask: its tool runs on `input`, or it doesn't, `message` saying why.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Permission {
+    Allow { input: serde_json::Value },
+    Deny { message: String },
+}
+
 /// A model claude offers (`initialize` → `models`, measured): its alias or id, what it's called, a line
 /// about it, the model it stands for now, and the effort levels it takes (none: it has no such knob).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,8 +119,12 @@ pub enum StreamEv {
     ToolResult { id: String, text: String, error: bool },
     /// Claude Code's WebSearch returned, whole (`web::search::found`): the web search's helper reads its list here.
     Searched(Box<crate::web::search::Found>),
-    /// claude asks the host something (`mcp_message` for tarae's own tools) — needs a `control_response`.
-    Control { request_id: String, request: serde_json::Value },
+    /// A message to tarae's MCP server (its tools, `tools::mcp`), `id` the ask's — answered by
+    /// `Agent::answer_mcp`, now or once its work is done.
+    Mcp { id: String, message: serde_json::Value },
+    /// The agent asks whether one of its own tools may run (`tool`, on `input`) — answered by
+    /// `Agent::answer_permission`, now or after its card.
+    Permission { id: String, tool: String, input: serde_json::Value },
     /// The process's conversation (claude's `session_id`), the model it runs, Claude Code's version and the
     /// credential it reported it runs on (`apiKeySource` — `limits.rs`) (`system init`, None: not sent) — the
     /// chat resumes it later (`--resume`).
@@ -39,9 +132,10 @@ pub enum StreamEv {
     /// The model that wrote an answer (an assistant message's `message.model`, or a stream's
     /// `message_start`) — sent when it changes.
     Answered(String),
-    /// Its answer to our `initialize`: the models it offers (the chat's model picker), and the credential it runs
-    /// on (`account.apiKeySource` — `limits.rs`; None: not said), known as it starts rather than with a turn.
-    Initialized { models: Vec<ModelInfo>, key_source: Option<String>, account: Option<crate::usage::Account> },
+    /// It's ready — its answer to our `initialize`: the models it offers (the chat's model picker), and the
+    /// credential it runs on (`account.apiKeySource` — `limits.rs`; None: not said), known as it starts rather
+    /// than with a turn. One event, so no frame falls between the models and the billing's check.
+    Ready { models: Vec<ModelInfo>, key_source: Option<String>, account: Option<crate::usage::Account> },
     /// A request goes out (`system` `status: "requesting"`), when it was read (unix ms) — `usage.rs`.
     Requesting(u64),
     /// A request's usage, as a line reported it (`message_start`, `message_delta`, an assistant message).
@@ -60,4 +154,134 @@ pub enum StreamEv {
     Done(Result<String, String>),
     /// The process exited (for the chat panel — last stderr line).
     Exit(String),
+}
+
+#[cfg(test)]
+mod tests {
+    /// A file of the wire's: what alone speaks Claude's protocol.
+    fn in_the_wire(key: &str) -> bool {
+        key.starts_with("agent/claude")
+    }
+
+    /// How often `needle` is in `code` as a name of its own: not the end of a longer one, nor a definition.
+    fn named(code: &str, needle: &str) -> usize {
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut n = 0;
+        for (at, _) in code.match_indices(needle) {
+            let before = &code[..at];
+            if !before.ends_with(ident) && !before.ends_with("fn ") {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Claude's control words outside the wire, as `file: word`.
+    fn speaking(sources: &[(String, String)]) -> Vec<String> {
+        const WORDS: [&str; 6] = [
+            "\"control_request\"",
+            "\"control_response\"",
+            "\"can_use_tool\"",
+            "\"mcp_message\"",
+            "\"mcp_response\"",
+            "\"sdkMcpServers\"",
+        ];
+        let outside = sources.iter().filter(|(key, _)| !in_the_wire(key));
+        outside
+            .flat_map(|(key, code)| {
+                WORDS.iter().filter(|w| code.contains(**w)).map(move |w| format!("{key}: {w}"))
+            })
+            .collect()
+    }
+
+    /// Agents beside Claude, brief point 2: Claude's control protocol — its requests and answers, a permission
+    /// ask, tarae's MCP server's envelope, the server offered at start — is read and written by its wire alone
+    /// (`agent/claude.rs`); everything above it speaks `StreamEv` and the `Agent` handle, so another agent's wire
+    /// drops in beside it. Test code (a stand-in claude speaks it) is left out.
+    #[test]
+    fn only_the_claude_wire_speaks_claudes_control() {
+        let outside = speaking(&crate::sim::lint::sources());
+        assert!(
+            outside.is_empty(),
+            "Claude's control spoken outside its wire (`agent/claude.rs`): {outside:?}"
+        );
+        // (and it sees one: a chat that built a control line of its own)
+        let built = [("chat.rs".to_string(), r#"json!({"type": "control_request"})"#.to_string())];
+        assert_eq!(speaking(&built), [r#"chat.rs: "control_request""#]);
+    }
+
+    /// The readers of Claude's stream lines that stay outside the wire's file on purpose (step 1 moves none):
+    /// each its file, the call its own file would make (None: a method, reached only through a value of its type),
+    /// and what another file writes to reach it. Their one caller is the wire. This list only shrinks: one moved
+    /// into the wire leaves it, none is added.
+    const STREAM_PARSERS: &[(&str, Option<&str>, &str)] = &[
+        ("usage.rs", Some("Counts::of("), "Counts::of("),
+        ("usage.rs", Some("Ttl::of("), "Ttl::of("),
+        ("usage.rs", Some("Account::of("), "Account::of("),
+        ("limits.rs", Some("of_event("), "limits::of_event("),
+        ("limits.rs", Some("of_retry("), "limits::of_retry("),
+        ("limits.rs", Some("of_answer("), "limits::of_answer("),
+        ("compaction.rs", Some("Ev::of("), "compaction::Ev::of("),
+        ("billing.rs", Some("refusal("), "billing::refusal("),
+        ("web/search.rs", Some("found("), "search::found("),
+        ("writing.rs", None, "writing::Reading"),
+    ];
+
+    /// Callers of `STREAM_PARSERS` outside the wire, as `file: call`.
+    fn parsers_called(sources: &[(String, String)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (key, code) in sources.iter().filter(|(key, _)| !in_the_wire(key)) {
+            for (file, own, other) in STREAM_PARSERS {
+                let call = if key == file { *own } else { Some(*other) };
+                if let Some(call) = call.filter(|c| named(code, c) > 0) {
+                    out.push(format!("{key}: {call}"));
+                }
+            }
+        }
+        out
+    }
+
+    /// Agents beside Claude, condition 4: the readers of Claude's stream lines left in their modules are called by
+    /// the wire alone — nothing new leans on Claude's shapes outside it, and the list never grows.
+    #[test]
+    fn the_readers_of_claudes_lines_outside_the_wire_have_it_as_their_one_caller() {
+        assert!(STREAM_PARSERS.len() <= 10, "this list only shrinks");
+        let sources = crate::sim::lint::sources();
+        for (file, ..) in STREAM_PARSERS {
+            assert!(sources.iter().any(|(key, _)| key == file), "{file} is gone: take its entries off");
+        }
+        let called = parsers_called(&sources);
+        assert!(called.is_empty(), "a reader of Claude's lines called outside its wire: {called:?}");
+        // (and it sees one: a panel reading a rate limit event itself, a parser's own file calling it)
+        let leaning = [
+            ("usage.rs".to_string(), "pub fn of(u: &Value) -> Counts { Counts::of(u) }".to_string()),
+            ("term.rs".to_string(), "let r = crate::limits::of_event(&v, 0);".to_string()),
+            ("limits.rs".to_string(), "pub fn of_event(ev: &Value, at_ms: u64) {}".to_string()),
+        ];
+        assert_eq!(parsers_called(&leaning), ["usage.rs: Counts::of(", "term.rs: limits::of_event("]);
+    }
+
+    /// `Agent::` variants named outside the wire, as `file`.
+    fn matching(sources: &[(String, String)]) -> Vec<String> {
+        let outside = sources.iter().filter(|(key, _)| key != "agent.rs" && !in_the_wire(key));
+        let variant = |code: &str| {
+            code.match_indices("Agent::").any(|(at, w)| {
+                !code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                    && code[at + w.len()..].starts_with(|c: char| c.is_ascii_uppercase())
+            })
+        };
+        outside.filter(|(_, code)| variant(code)).map(|(key, _)| key.clone()).collect()
+    }
+
+    /// Agents beside Claude, condition 5: nothing above the wire matches on which agent it has — what one can do
+    /// is read from it (its capabilities, step 1's landing 3), so another wire needs no change up there.
+    #[test]
+    fn no_match_on_the_agent_outside_the_wire() {
+        let named = matching(&crate::sim::lint::sources());
+        assert!(named.is_empty(), "an agent's kind named outside its wire: {named:?}");
+        // (and it sees one; a handle made from a claude's lines is no match)
+        let code = |c: &str| [("chat.rs".to_string(), c.to_string())];
+        assert_eq!(matching(&code("let Agent::Claude(l) = a;")), ["chat.rs"]);
+        assert!(matching(&code("let a = Agent::from(lines);")).is_empty());
+    }
 }

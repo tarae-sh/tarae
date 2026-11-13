@@ -1930,7 +1930,7 @@ mod tests {
             "read" => {
                 let req =
                     json!({ "tool_name": "Read", "input": { "file_path": "/opt/tarae-nowhere/notes.txt" } });
-                assert_eq!(crate::reads::request(&mut ed, "r1", &req), None);
+                assert_eq!(crate::reads::request(&mut ed, "r1", "Read", req["input"].clone()), None);
                 pumped(&mut ed, kind)
             }
             // (a system with no sandbox: what `tools::run` reads of it, a stand-in's)

@@ -26,6 +26,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
+use crate::agent::{Agent, Permission, Prompt, PromptPart};
 use crate::editor::Editor;
 use crate::llm::{self, StreamEv};
 
@@ -96,7 +97,7 @@ pub enum Role {
 pub struct Member {
     pub role: Role,
     /// Its process, while it reads (None once its turn is over).
-    proc: Option<(u32, llm::Lines)>,
+    proc: Option<(u32, Agent)>,
     /// Which process this is — a late event from an earlier one is dropped.
     pub generation: u64,
     pub state: State,
@@ -432,7 +433,7 @@ const SETTINGS_FILE: &str =
 
 /// The TTL of a board's cache: the prefix's block and Claude Code's own breakpoints alike — the API refuses a
 /// longer one after a shorter one (measured: a 400 for an hour's block after Claude Code's 5-minute ones on a key).
-const CACHE_TTL: &str = "1h";
+const CACHE_TTL: &str = crate::agent::claude::CACHE_HOUR;
 
 /// What sets Claude Code's cache TTL over `promptCacheTtl` (its env-vars reference) — a board's members never
 /// get them: theirs must be `CACHE_TTL`.
@@ -957,12 +958,12 @@ fn retry_later(ed: &mut Editor) -> bool {
 /// the same for each — as a block of its own with a cache breakpoint after it, then its own ask. (The prompt
 /// cache matches whole blocks: in one block with the ask the diff was written again by every member.) Its TTL
 /// is Claude Code's own breakpoints' (`CACHE_TTL`, before and after it).
-fn content(r: &Reviewer, m: &Member) -> Value {
+fn content(r: &Reviewer, m: &Member) -> Prompt {
     match m.role {
-        Role::One => json!(m.ask),
-        Role::Angle(_) | Role::Skeptic(_) => json!([
-            { "type": "text", "text": r.prefix, "cache_control": { "type": "ephemeral", "ttl": CACHE_TTL } },
-            { "type": "text", "text": m.ask },
+        Role::One => Prompt::Text(m.ask.clone()),
+        Role::Angle(_) | Role::Skeptic(_) => Prompt::Parts(vec![
+            PromptPart { text: r.prefix.clone(), cache_hour: true },
+            PromptPart { text: m.ask.clone(), cache_hour: false },
         ]),
     }
 }
@@ -1042,9 +1043,9 @@ fn launch(ed: &mut Editor, i: usize) {
     let Some(stdin) = child.stdin.take().map(llm::Lines::new) else {
         return failed(ed, "claude: no input".into());
     };
+    let (own, agent) = (stdin.weak(), Agent::from(stdin));
     // (tarae's MCP server first — its `note`, a skeptic's `judge`)
-    let sent =
-        stdin.send(llm::initialize_message(&["tarae"])).and_then(|_| stdin.send(llm::user_content(content)));
+    let sent = agent.initialize().and_then(|_| agent.prompt(content));
     if let Err(e) = sent {
         // (not `llm::kill`: no `pump` has it — ended and reaped here, off the main loop)
         crate::event::thread("tarae-reap", move || {
@@ -1053,8 +1054,8 @@ fn launch(ed: &mut Editor, i: usize) {
         });
         return failed(ed, format!("claude: {e}"));
     }
-    let Some(generation) = began(ed, i, Some((child.id(), stdin)), billing) else { return };
-    llm::pump(child, true, ed.events.sender(), move |ev| {
+    let Some(generation) = began(ed, i, Some((child.id(), agent)), billing) else { return };
+    llm::pump(child, Some(own), true, ed.events.sender(), move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
 }
@@ -1065,7 +1066,7 @@ fn launch(ed: &mut Editor, i: usize) {
 fn began(
     ed: &mut Editor,
     i: usize,
-    proc: Option<(u32, llm::Lines)>,
+    proc: Option<(u32, Agent)>,
     billing: crate::billing::Billing,
 ) -> Option<u64> {
     let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1104,10 +1105,15 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
     };
     let board_id = r.board.as_ref().map(|b| b.id.clone());
     match ev {
-        StreamEv::Control { request_id, request } => {
-            if let Some(response) = control(ed, generation, &request_id, &request) {
-                respond(ed, generation, &request_id, response);
+        StreamEv::Mcp { id, message } => {
+            if !reading(ed, generation, &id, &message) {
+                let response = mcp(ed, generation, &message);
+                answer_mcp(ed, generation, &id, response);
             }
+        }
+        StreamEv::Permission { id, tool, .. } => {
+            let p = permission(ed, generation, &tool);
+            answer_permission(ed, generation, &id, p);
         }
         StreamEv::Tool { name, .. } => {
             if READS.contains(&name.as_str()) {
@@ -1144,7 +1150,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         }
         // Not the credential its billing gives: it stops, and its end says why (`billing.rs`) — a board's
         // every member with it (the rest would bill the same way)
-        StreamEv::Conversation { key_source, .. } | StreamEv::Initialized { key_source, .. } => {
+        StreamEv::Conversation { key_source, .. } | StreamEv::Ready { key_source, .. } => {
             let keep = ed.config.llm.keep_env_key;
             let role = crate::billing::Role::Reviewer;
             // (once: every member says its credential twice, and the others' lines may be queued behind)
@@ -1498,35 +1504,30 @@ fn cut(text: &str, max: usize) -> String {
     }
 }
 
-/// Our answer to one of its control requests — to its process only.
-fn respond(ed: &mut Editor, generation: u64, request_id: &str, response: Value) {
+/// Its answer to permission ask `id` — to its process only.
+fn answer_permission(ed: &mut Editor, generation: u64, id: &str, p: Permission) {
     let Some(r) = ed.workspace.reviewer.as_ref() else { return };
     let Some(i) = r.by_generation(generation) else { return };
-    if let Some((_, stdin)) = &r.members[i].proc {
-        let _ = stdin.send(llm::control_response(request_id, response));
+    if let Some((_, a)) = &r.members[i].proc {
+        a.answer_permission(id, p);
     }
 }
 
-fn deny(message: &str) -> Value {
-    json!({ "behavior": "deny", "message": message })
+/// A permission ask of its claude's for `tool`: no tool of Claude Code's is its — every one it asks for is
+/// refused, said why.
+fn permission(ed: &Editor, generation: u64, tool: &str) -> Permission {
+    let role =
+        ed.workspace.reviewer.as_ref().and_then(|r| Some(r.members[r.by_generation(generation)?].role));
+    Permission::Deny { message: refused(tool, role) }
 }
 
-/// A control request from its claude → our answer (None: later — a read or a search, done on a worker). No tool
-/// of Claude Code's is its: every permission it asks for is refused; `mcp_message` is its own small server.
-fn control(ed: &mut Editor, generation: u64, request_id: &str, req: &Value) -> Option<Value> {
-    if req["subtype"] == "can_use_tool" {
-        let tool = req["tool_name"].as_str().unwrap_or_default();
-        let role =
-            ed.workspace.reviewer.as_ref().and_then(|r| Some(r.members[r.by_generation(generation)?].role));
-        return Some(deny(&refused(tool, role)));
+/// Its MCP server's answer (`response` a JSON-RPC message) to ask `id` — to its process only.
+fn answer_mcp(ed: &mut Editor, generation: u64, id: &str, response: Value) {
+    let Some(r) = ed.workspace.reviewer.as_ref() else { return };
+    let Some(i) = r.by_generation(generation) else { return };
+    if let Some((_, a)) = &r.members[i].proc {
+        a.answer_mcp(id, response);
     }
-    if req["subtype"] != "mcp_message" || req["server_name"] != "tarae" {
-        return Some(json!({}));
-    }
-    if reading(ed, generation, request_id, &req["message"]) {
-        return None;
-    }
-    Some(json!({ "mcp_response": mcp(ed, generation, &req["message"]) }))
 }
 
 /// Its `read` or `search` (`msg` a `tools/call` of one, from a member still reading): over its snapshot
@@ -1560,7 +1561,7 @@ fn reading(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> b
                 crate::codereview::read_off(&mut r.unread, &seen);
             }
             let response = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-            respond(ed, generation, &request_id, json!({ "mcp_response": response }));
+            answer_mcp(ed, generation, &request_id, response);
         }
     });
     true
@@ -3391,7 +3392,7 @@ mod tests {
         {
             let generation = angle(&ed, name).unwrap();
             let request = note_on(id, 1, "a.txt", 2, text)["request"].clone();
-            on_event(&mut ed, generation, StreamEv::Control { request_id: id.into(), request });
+            on_event(&mut ed, generation, crate::agent::claude::test::control(id, request));
             on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
         }
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
@@ -3501,7 +3502,7 @@ mod tests {
         };
         assert_eq!(skeptics(&ed), 1, "its claim so far went to a skeptic");
         let request = note_on("c2", 2, "a.txt", 1, "Line one too")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c2".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c2", request));
         let b = ed.workspace.reviewer.as_ref().unwrap().board.as_deref().unwrap();
         assert_eq!(b.claims.len(), 1, "the late note isn't a claim");
         // A skeptic offered `note` (the one tool list) and trying it is told what it has: judge
@@ -3511,8 +3512,8 @@ mod tests {
         };
         settle_until(&mut ed, |ed| skeptic(ed) != 0);
         let generation = skeptic(&ed);
-        let ask = can_use("k1", "mcp__tarae__note", json!({"path": "a.txt", "line": 1, "text": "x"}));
-        let denied = control(&mut ed, generation, "k1", &ask["request"]).unwrap().to_string();
+        let denied =
+            crate::agent::claude::test::answer(permission(&ed, generation, "mcp__tarae__note")).to_string();
         assert!(denied.contains("deny") && denied.contains("the judge tool (mcp__tarae__judge)"), "{denied}");
         stop(&mut ed);
         assert_eq!(board_notes(&ed).len(), 1, "the one claim, pinned unchecked");
@@ -3562,7 +3563,7 @@ mod tests {
                     args["same_as"] = json!(m);
                 }
                 let request = judged(id, 1, args)["request"].clone();
-                on_event(ed, generation(ed, g), StreamEv::Control { request_id: id.into(), request });
+                on_event(ed, generation(ed, g), crate::agent::claude::test::control(id, request));
             };
             let end = |ed: &mut Editor, g: usize| {
                 on_event(ed, generation(ed, g), StreamEv::Done(Ok("Done.".into())))
@@ -3762,7 +3763,7 @@ mod tests {
         });
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "Line two is wrong")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
         let r = ed.workspace.reviewer.as_ref().unwrap();
         assert!(r.queued() && r.members.iter().any(|m| matches!(m.role, Role::Skeptic(_))), "the handover");
@@ -4205,11 +4206,7 @@ mod tests {
         assert_eq!(board_notes(&ed).len(), 1, "pinned unchecked");
         let (took, generation) = (r.took, r.members[1].generation);
         for key_source in [Some("apiKeyHelper".to_string()), Some("apiKeyHelper".to_string())] {
-            on_event(
-                &mut ed,
-                generation,
-                StreamEv::Initialized { models: Vec::new(), key_source, account: None },
-            );
+            on_event(&mut ed, generation, StreamEv::Ready { models: Vec::new(), key_source, account: None });
         }
         let stopped = ed.messages.iter().filter(|m| m.2.starts_with("the board stopped:")).count();
         assert_eq!(
@@ -4415,7 +4412,7 @@ mod tests {
             let (c, t) = (generation(&ed, 0), generation(&ed, 1));
             if claim {
                 let request = note_on("c1", 1, "a.txt", 2, "Line two is wrong")["request"].clone();
-                on_event(&mut ed, c, StreamEv::Control { request_id: "c1".into(), request });
+                on_event(&mut ed, c, crate::agent::claude::test::control("c1", request));
             }
             on_event(&mut ed, c, StreamEv::Done(Err("claude: it ended".into())));
             let tests_end = if tests_fail { Err("claude: it ended".into()) } else { Ok("None.".into()) };
@@ -4509,7 +4506,7 @@ mod tests {
         assert_eq!(member_state(&ed, "correctness"), State::Reading, "under way: it goes on");
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "Line two is wrong")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         let r = ed.workspace.reviewer.as_ref().unwrap();
@@ -4687,7 +4684,7 @@ mod tests {
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let note = |ed: &mut Editor, id: &str, line: u64, text: &str| {
             let request = note_on(id, 1, "a.txt", line, text)["request"].clone();
-            on_event(ed, generation, StreamEv::Control { request_id: id.into(), request });
+            on_event(ed, generation, crate::agent::claude::test::control(id, request));
         };
         // (one placed while it reads — named at its end — and two after it ended, one of those on changed lines:
         // named as it lands)
@@ -4756,7 +4753,7 @@ mod tests {
         // Done with a finding not sent: said, and the key that reads it; a click there reads it too
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "two is new")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         let line = status(&mut ed);
@@ -4827,7 +4824,7 @@ mod tests {
         let r = ed.workspace.reviewer.as_ref().unwrap();
         let generation = r.members.iter().find(|m| m.state == State::Reading).unwrap().generation;
         let request = note_on("c1", 1, "a.txt", 2, "Line two is wrong")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         stop(&mut ed);
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| r.placing == 0));
         let notes = board_notes(&ed);
@@ -4979,7 +4976,7 @@ mod tests {
         });
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "two is new")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         // (the author's chat: a fake that answers its message)
         let chat_log = dir.join("chat.log");
         ed.config.llm.command = "sh".into();
@@ -5112,7 +5109,7 @@ mod tests {
         });
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "two is new")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         assert!(findings_in(&ed.workspace).unwrap()[0].placing, "still being placed");
         crate::codereview::send(&mut ed);
         assert!(ed.messages.last().unwrap().2.contains("still being placed"), "{:?}", ed.messages.last());
@@ -5140,7 +5137,7 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "two is new")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| r.placing == 0));
         let n = &findings_in(&ed.workspace).unwrap()[0];
         assert_eq!((n.lines.clone(), n.placing), (1..2, false));
@@ -5162,7 +5159,7 @@ mod tests {
         });
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "two is new")["request"].clone();
-        on_event(&mut ed, generation, StreamEv::Control { request_id: "c1".into(), request });
+        on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
         let id = findings_in(&ed.workspace).unwrap()[0].id;
         assert_eq!(ed.workspace.reviewer.as_ref().unwrap().placing, 1, "still being placed");
         crate::notes::close(&mut ed, id);

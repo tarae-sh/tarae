@@ -4,13 +4,15 @@
 //! permission requests.
 //!
 //! - claude runs with `--permission-prompt-tool stdio` and none of Claude Code's tools (`--tools ""`): a
-//!   `control_request {subtype: "can_use_tool"}` it still sends is answered `{behavior: "deny", message}` — but
-//!   a read's (`reads.rs`).
+//!   permission ask it still sends (`StreamEv::Permission`) is denied, its message saying why — but a read's
+//!   (`reads.rs`).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::Value;
+
+use crate::agent::Permission;
 
 use crate::document::DocId;
 use crate::editor::Editor;
@@ -225,14 +227,14 @@ pub fn at_end_set(ed: &mut Editor, on: bool) {
     }
 }
 
-/// A `can_use_tool` request: answered now (Some) or after its card (None). The chat has none of Claude Code's
-/// tools, so only a read's is asked (`reads.rs`); any other is denied — tarae's `edit` makes every change.
-pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> {
-    let tool = req["tool_name"].as_str().unwrap_or_default();
+/// A permission ask (`tool` on `input`): answered now (Some) or after its card (None). The chat has none of
+/// Claude Code's tools, so only a read's is asked (`reads.rs`); any other is denied — tarae's `edit` makes every
+/// change.
+pub fn request(ed: &mut Editor, request_id: &str, tool: &str, input: Value) -> Option<Permission> {
     if crate::reads::TOOLS.contains(&tool) {
-        return crate::reads::request(ed, request_id, req);
+        return crate::reads::request(ed, request_id, tool, input);
     }
-    Some(json!({ "behavior": "deny", "message": format!("{tool} isn't available in tarae's chat") }))
+    Some(Permission::Deny { message: format!("{tool} isn't available in tarae's chat") })
 }
 
 /// Whether an edit to `path` (as Claude named it, from the root) changes a name Claude's runs can't write
@@ -461,6 +463,8 @@ pub fn aside_path(root: &Path, path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     /// Review at the end lets in only edits that land inside the project (`paths::inside` — where the path
@@ -579,7 +583,7 @@ mod tests {
         let mut ed = chat_for(&dir, &dir.join("log"));
         let input = json!({ "file_path": dir.join("a.rs"), "old_string": "a", "new_string": "b" });
         let r =
-            request(&mut ed, "p1", &json!({ "tool_name": "Edit", "input": input })).expect("answered now");
+            crate::agent::claude::test::answer(request(&mut ed, "p1", "Edit", input).expect("answered now"));
         assert_eq!(r["behavior"], "deny");
         assert_eq!(r["message"], "Edit isn't available in tarae's chat");
         assert!(ed.workspace.claude.review.is_none());

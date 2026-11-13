@@ -537,8 +537,7 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             if session == ed.workspace.id
                 && ed.workspace.claude.ask.as_ref().is_some_and(|a| a.generation == call.generation) =>
         {
-            let response = response(&call, r);
-            crate::ask::respond(ed, &call.request_id, json!({ "mcp_response": response }));
+            crate::ask::answer_mcp(ed, &call.request_id, response(&call, r));
         }
         Some(session) if session == ed.workspace.id => {
             // (a session tool's answer: the parent's news after it, told once — `orchestra::News`; and what the user
@@ -560,8 +559,7 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             hits_shown(ed, &call, &r);
             let (len, pictures) = r.as_ref().map_or_else(|e| (e.len(), 0), |p| (parts_len(p), pictures(p)));
             sized(ed, &call.tool, len, call.output, pictures);
-            let response = response(&call, r);
-            crate::chat::respond(ed, &call.request_id, json!({ "mcp_response": response }));
+            crate::chat::answer_mcp(ed, &call.request_id, response(&call, r));
         }
         Some(session) if !ed.background() => {
             ed.with_workspace(session, move |ed| deliver(ed, call, r));

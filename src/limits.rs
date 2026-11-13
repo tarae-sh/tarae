@@ -21,9 +21,6 @@ use serde_json::{Value, json};
 
 use crate::editor::Editor;
 
-/// The request id tarae asks `get_usage` under — its answer comes back with it.
-pub const REQUEST_ID: &str = "tarae-usage";
-
 /// A reading younger than this, or a question asked that recently, isn't asked for again.
 pub const FRESH_MS: u64 = 10 * 60_000;
 
@@ -351,13 +348,6 @@ fn whole(p: f64) -> Option<u32> {
     (p.is_finite() && p >= 0.0).then(|| p.round().min(u32::MAX as f64) as u32)
 }
 
-/// The `get_usage` question (no transcript scan).
-pub fn request() -> String {
-    json!({"type": "control_request", "request_id": REQUEST_ID,
-           "request": {"subtype": "get_usage", "skip_behaviors": true}})
-    .to_string()
-}
-
 /// An ISO 8601 time (`2026-10-13T01:00:00.123+00:00`, `…Z`) as unix ms — None: not one.
 pub fn iso_ms(s: &str) -> Option<u64> {
     let b = s.as_bytes();
@@ -532,7 +522,7 @@ fn ask(ed: &mut Editor, readings: bool) {
     if !l.ask || l.pending == Some(c.generation()) || asked || (readings && l.fresh(now)) {
         return;
     }
-    if c.to_claude(request()) {
+    if c.agent().is_some_and(crate::agent::Agent::ask_limits) {
         (l.asked_ms, l.pending) = (Some(now), Some(c.generation()));
     }
 }

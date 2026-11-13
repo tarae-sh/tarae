@@ -13,6 +13,8 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
+use crate::agent::Permission;
+
 use crate::allow::Scope;
 use crate::editor::Editor;
 
@@ -392,8 +394,10 @@ fn reply(ed: &mut Editor, p: Pending, allowed: bool, no: &str) {
             }
         }
         Some(t) => crate::tools::answer(ed, t.call, Err(no.to_string())),
-        None if allowed => crate::chat::respond(ed, &p.request_id, allow(&p.input)),
-        None => crate::chat::respond(ed, &p.request_id, json!({ "behavior": "deny", "message": no })),
+        None if allowed => {
+            crate::chat::answer_permission(ed, &p.request_id, Permission::Allow { input: p.input })
+        }
+        None => crate::chat::answer_permission(ed, &p.request_id, Permission::Deny { message: no.clone() }),
     }
 }
 
@@ -1121,13 +1125,12 @@ pub fn run_ended(ed: &mut Editor) {
     }
 }
 
-/// A `can_use_tool` ask for one of `TOOLS` — decided on a worker (paths resolved, the kept answers read),
-/// then allowed, or put to the user.
-pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> {
-    let tool = req["tool_name"].as_str().unwrap_or_default().to_string();
+/// A permission ask for one of `TOOLS` (`tool` on `input`) — decided on a worker (paths resolved, the kept
+/// answers read), then allowed, or put to the user.
+pub fn request(ed: &mut Editor, request_id: &str, tool: &str, input: Value) -> Option<Permission> {
+    let tool = tool.to_string();
     let c = ed.workspace.claude.chat.as_ref()?;
     let (generation, made) = (c.generation(), Made::of(&c.ran));
-    let input = req["input"].clone();
     let request_id = request_id.to_string();
     // (the root, a real path, is where claude runs — its relative paths are from there)
     let basis = ed.caps_basis();
@@ -1149,10 +1152,10 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
                 return;
             };
             if ok {
-                return crate::chat::respond(ed, &request_id, allow(&input));
+                return crate::chat::answer_permission(ed, &request_id, Permission::Allow { input });
             }
-            if let Some(no) = said_no(c, &look) {
-                return crate::chat::respond(ed, &request_id, json!({ "behavior": "deny", "message": no }));
+            if let Some(message) = said_no(c, &look) {
+                return crate::chat::answer_permission(ed, &request_id, Permission::Deny { message });
             }
             let since = std::time::Instant::now();
             let own = None;
@@ -1532,10 +1535,6 @@ pub fn card_text(
     }
     let warning = lines.first().zip(lines.last()).map(|(a, b)| *a..*b + 1);
     (q, warning)
-}
-
-fn allow(input: &Value) -> Value {
-    json!({ "behavior": "allow", "updatedInput": input })
 }
 
 pub const TITLE: &str = "Claude wants to read — outside the project";
@@ -2111,7 +2110,7 @@ mod tests {
             o.question.split('\n').skip(r.start).take(r.len()).collect::<Vec<_>>().join("\n")
         };
         let ask = |ed: &mut Editor, id: &str, f: &str| {
-            request(ed, id, &json!({"tool_name": "Read", "input": {"file_path": out.join(f)}}));
+            request(ed, id, "Read", json!({"file_path": out.join(f)}));
         };
         ask(&mut ed, "1", "hosts.yml");
         settle(&mut ed, &|ed| !ed.offers.is_empty());

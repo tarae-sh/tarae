@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::agent::{Agent, Prompt};
 use crate::cardreview::{Input, Stage, Tokens, Verdict};
 use crate::chat::{Chat, Role};
 use crate::editor::Editor;
@@ -315,11 +316,11 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
         }
     };
     let nonce = crate::cardreview::nonce(&pending.input, crate::cardreview::random_pick);
-    let message = llm::user_message(&crate::cardreview::prompt(&pending.input, Stage::Two, &nonce));
+    let message = Prompt::Text(crate::cardreview::prompt(&pending.input, Stage::Two, &nonce));
     ed.auto_cards.insert(card, pending);
     match stand_in(ed) {
-        Some(tx) => {
-            let _ = tx.send(message);
+        Some(lines) => {
+            let _ = Agent::from(lines).prompt(message);
         }
         None => {
             let cfg = llm::LlmConfig {
@@ -337,7 +338,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
                         .map_err(|e| e.said(&cfg.command, false))?;
                     let pid = child.id();
                     let sent = match child.stdin.take().map(llm::Lines::new) {
-                        Some(stdin) => stdin.send(message).map_err(|e| e.to_string()),
+                        Some(stdin) => Agent::from(stdin).prompt(message).map_err(|e| e.to_string()),
                         None => Err("no stdin".into()),
                     };
                     if let Err(e) = sent {
@@ -345,7 +346,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
                         let _ = child.wait();
                         return Err(e);
                     }
-                    llm::pump(child, true, tx, move |ev| {
+                    llm::pump(child, None, true, tx, move |ev| {
                         Some(Box::new(move |ed: &mut Editor| on_event(ed, card, run, ev)))
                     });
                     Ok((pid, folder))
@@ -362,11 +363,11 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
 
 /// A test's stand-in reviewer (`Editor.auto_cards_told`): no process, the message it's told kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<std::sync::mpsc::Sender<String>> {
-    ed.auto_cards_told.clone()
+fn stand_in(ed: &Editor) -> Option<llm::Lines> {
+    ed.auto_cards_told.clone().map(llm::Lines::to)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<std::sync::mpsc::Sender<String>> {
+fn stand_in(_: &Editor) -> Option<llm::Lines> {
     None
 }
 

@@ -10,8 +10,6 @@
 //! - The chat's title says which (`Opus 5.5 · high`) while it's idle — the model that answered (`init`, then
 //!   each answer's `message.model`); when that isn't what's asked for, both (`claude-sonnet-5-5 · asked opus`).
 
-use serde_json::json;
-
 use crate::editor::Editor;
 
 #[cfg(test)]
@@ -235,7 +233,9 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     // (what the conversation ran on — the line over the input says what the next message costs)
     ed.switching();
     let mut unsaved = choose(ed, "llm.model", if value == "default" { "" } else { &value })?;
-    crate::chat::request(ed, json!({ "subtype": "set_model", "model": value }));
+    if let Some(a) = crate::chat::agent(ed) {
+        a.set_model(&value);
+    }
     // (what answers is known again from the next answer — until then the title says what was asked for; what it
     // runs on now is this chat's)
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
@@ -262,12 +262,9 @@ pub fn set_effort(ed: &mut Editor, level: &str) -> Result<(), String> {
     let level = if level == "default" { "" } else { level };
     ed.switching();
     let unsaved = choose(ed, "llm.effort", level)?;
-    // (null = the model's own — measured: thinking back at the untouched default's)
-    let effort = if level.is_empty() { serde_json::Value::Null } else { json!(level) };
-    crate::chat::request(
-        ed,
-        json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": effort } }),
-    );
+    if let Some(a) = crate::chat::agent(ed) {
+        a.set_effort(Some(level).filter(|l| !l.is_empty()));
+    }
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.runs_on.1 = level.to_string();
     }

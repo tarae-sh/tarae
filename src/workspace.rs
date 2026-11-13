@@ -1389,9 +1389,8 @@ impl Editor {
                     }
                     crate::offer::Asker::Permission { request_id, generation } => {
                         if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() == generation) {
-                            let deny =
-                                serde_json::json!({ "behavior": "deny", "message": crate::offer::LOST });
-                            crate::chat::respond(ed, &request_id, deny);
+                            let deny = crate::agent::Permission::Deny { message: crate::offer::LOST.into() };
+                            crate::chat::answer_permission(ed, &request_id, deny);
                         }
                     }
                 }

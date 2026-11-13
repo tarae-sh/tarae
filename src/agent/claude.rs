@@ -1,10 +1,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::sync::Arc;
+use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use crate::agent::{ModelInfo, StreamEv};
+use crate::agent::{ModelInfo, Permission, Prompt, StreamEv};
 use crate::billing::Credential;
 use crate::event::{Apply, Event};
 use crate::llm::{ClaudeEnv, Env, LlmConfig, judged, process_names, spawn_failed};
@@ -177,6 +178,85 @@ pub fn interrupt_message() -> String {
         .to_string()
 }
 
+/// The request id tarae asks `get_usage` under — its answer comes back with it (`parse_line`).
+pub const REQUEST_ID: &str = "tarae-usage";
+
+/// How long a prompt's part kept an hour stays in the cache (`PromptPart::cache_hour`) — the reviewer's
+/// `promptCacheTtl` says the same, so Claude Code's own breakpoints keep it as long.
+pub const CACHE_HOUR: &str = "1h";
+
+/// A prompt as one user message line: its text, or its parts as text blocks.
+fn prompt_line(p: Prompt) -> String {
+    let block = |text: String, hour: bool| match hour {
+        true => serde_json::json!({ "type": "text", "text": text,
+            "cache_control": { "type": "ephemeral", "ttl": CACHE_HOUR } }),
+        false => serde_json::json!({ "type": "text", "text": text }),
+    };
+    match p {
+        Prompt::Text(t) => user_message(&t),
+        Prompt::Parts(parts) => {
+            user_content(parts.into_iter().map(|p| block(p.text, p.cache_hour)).collect())
+        }
+    }
+}
+
+/// A permission's answer as Claude Code's permission prompt takes it.
+fn permission(p: Permission) -> serde_json::Value {
+    match p {
+        Permission::Allow { input } => serde_json::json!({ "behavior": "allow", "updatedInput": input }),
+        Permission::Deny { message } => serde_json::json!({ "behavior": "deny", "message": message }),
+    }
+}
+
+/// What the `Agent` handle says to a claude, each a line of its stream-json.
+impl Lines {
+    pub(super) fn initialize(&self) -> std::io::Result<()> {
+        self.send(initialize_message(&["tarae"]))
+    }
+
+    pub(super) fn prompt(&self, p: Prompt) -> std::io::Result<()> {
+        self.send(prompt_line(p))
+    }
+
+    pub(super) fn stop_turn(&self) -> bool {
+        self.send(interrupt_message()).is_ok()
+    }
+
+    pub(super) fn answer_mcp(&self, id: &str, response: serde_json::Value) {
+        let _ = self.send(control_response(id, serde_json::json!({ "mcp_response": response })));
+    }
+
+    pub(super) fn answer_permission(&self, id: &str, p: Permission) {
+        let _ = self.send(control_response(id, permission(p)));
+    }
+
+    pub(super) fn set_model(&self, model: &str) -> bool {
+        self.request(serde_json::json!({ "subtype": "set_model", "model": model }))
+    }
+
+    /// (null: the model's own — measured: thinking back at the untouched default's)
+    pub(super) fn set_effort(&self, effort: Option<&str>) -> bool {
+        self.request(
+            serde_json::json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": effort } }),
+        )
+    }
+
+    /// The `get_usage` question (no transcript scan), under `REQUEST_ID`.
+    pub(super) fn ask_limits(&self) -> bool {
+        let line = serde_json::json!({"type": "control_request", "request_id": REQUEST_ID,
+               "request": {"subtype": "get_usage", "skip_behaviors": true}});
+        self.send(line.to_string()).is_ok()
+    }
+
+    /// A control request of ours whose answer isn't needed (a model or effort chosen), under an id of its own.
+    fn request(&self, request: serde_json::Value) -> bool {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = format!("tarae-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let line = serde_json::json!({ "type": "control_request", "request_id": id, "request": request });
+        self.send(line.to_string()).is_ok()
+    }
+}
+
 /// The claude processes `pump` reads that aren't reaped yet — the only pids `kill` signals. A reaped one's pid
 /// is the system's to give anyone: `pump` reaped it, then waited for stderr before its exit's event cleared the
 /// pid where it's kept, and a kill meanwhile (a chat reset, an editor dropped) went to whoever had it by then
@@ -214,14 +294,22 @@ fn reap(child: &mut Child) {
 /// cold start is 8–10 s) reads nothing yet, and a pipe takes 64 KB before a write waits — one message can
 /// carry the file, other unsaved buffers and a screen: measured, a 200 KB message held the main loop as long
 /// as the reader didn't read (2.0 s for a stand-in sleeping 2 s). Dropped: what's queued still goes, then
-/// stdin closes.
-pub struct Lines(std::sync::mpsc::Sender<String>);
+/// stdin closes — its pump's `Weak` doesn't keep it open.
+pub struct Lines(Arc<Sender<String>>);
+
+/// A claude's stdin as its `pump` holds it: the wire's own answers go through it while a `Lines` is kept.
+pub struct Weak(std::sync::Weak<Sender<String>>);
 
 impl Lines {
     /// Tests: lines that go to `tx`, no process, no thread (`Editor.claude_lines`).
     #[cfg(test)]
-    pub fn to(tx: std::sync::mpsc::Sender<String>) -> Lines {
-        Lines(tx)
+    pub fn to(tx: Sender<String>) -> Lines {
+        Lines(Arc::new(tx))
+    }
+
+    /// What its `pump` holds.
+    pub fn weak(&self) -> Weak {
+        Weak(Arc::downgrade(&self.0))
     }
 
     pub fn new(mut stdin: std::process::ChildStdin) -> Lines {
@@ -234,7 +322,7 @@ impl Lines {
                 }
             }
         });
-        Lines(tx)
+        Lines(Arc::new(tx))
     }
 
     /// Err: an earlier write failed — the process doesn't read anymore.
@@ -246,7 +334,7 @@ impl Lines {
     #[cfg(test)]
     pub fn stand_in() -> (Lines, std::sync::mpsc::Receiver<String>) {
         let (tx, rx) = channel::<String>();
-        (Lines(tx), rx)
+        (Lines(Arc::new(tx)), rx)
     }
 }
 
@@ -261,9 +349,11 @@ pub const FLUSH: Duration = Duration::from_millis(25);
 /// With `once`, reaps the process after the first turn (ask). Otherwise runs until the process exits (chat).
 /// stderr is drained separately (so a full pipe doesn't stall the child) — its last line is the error text.
 /// stdout is read on a thread of its own (`tarae-llm-lines`), its lines handed over through a channel this one
-/// waits on no longer than what it holds may wait (`FLUSH`).
+/// waits on no longer than what it holds may wait (`FLUSH`). `own`: its stdin, where a control request no one
+/// above the wire answers gets its `{}` (None: it asks none — a claude without tarae's tools).
 pub fn pump(
     mut child: Child,
+    own: Option<Weak>,
     once: bool,
     tx: crate::event::Tx,
     route: impl Fn(StreamEv) -> Option<Apply> + Send + 'static,
@@ -339,6 +429,14 @@ pub fn pump(
                 }
             };
             let Ok(ev) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            // (a control request no one above the wire answers: `{}` from here, so claude never waits on it —
+            // the only line written off the main loop)
+            if let Some(id) = unanswered(&ev) {
+                if let Some(stdin) = own.as_ref().and_then(|w| w.0.upgrade()) {
+                    let _ = stdin.send(control_response(id, serde_json::json!({})));
+                }
+                continue;
+            }
             // (what it costs — the same line may carry a tool call or the turn's end too)
             if let Some(u) = usage_line(&ev, crate::usage::now_ms())
                 && !send(u)
@@ -409,14 +507,12 @@ pub fn pump(
                     }
                 }
                 // Answered on the main loop · said where it happened (text streamed before it goes first)
-                Some(c @ (StreamEv::Control { .. } | StreamEv::Compaction(_))) => {
+                Some(c @ (StreamEv::Mcp { .. } | StreamEv::Permission { .. } | StreamEv::Compaction(_))) => {
                     if !flush(&mut pending, pending_thought) || !send(c) {
                         break;
                     }
                 }
-                Some(
-                    e @ (StreamEv::Conversation { .. } | StreamEv::Initialized { .. } | StreamEv::Limits(_)),
-                ) => {
+                Some(e @ (StreamEv::Conversation { .. } | StreamEv::Ready { .. } | StreamEv::Limits(_))) => {
                     if !send(e) {
                         break;
                     }
@@ -609,12 +705,29 @@ fn thinking_edge(ev: &serde_json::Value, open: &mut Option<u64>) -> Option<bool>
     }
 }
 
+/// A control request of claude's that comes up as no event (another subtype, another server's message): its id,
+/// for the wire's own `{}`.
+fn unanswered(ev: &serde_json::Value) -> Option<&str> {
+    (ev["type"] == "control_request" && parse_line(ev).is_none()).then(|| ev["request_id"].as_str()).flatten()
+}
+
 pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
     match ev["type"].as_str()? {
-        "control_request" => Some(StreamEv::Control {
-            request_id: ev["request_id"].as_str()?.to_string(),
-            request: ev["request"].clone(),
-        }),
+        // tarae's MCP server's messages and permission asks — any other is the wire's (`unanswered`)
+        "control_request" => {
+            let (id, req) = (ev["request_id"].as_str()?.to_string(), &ev["request"]);
+            match req["subtype"].as_str()? {
+                "can_use_tool" => Some(StreamEv::Permission {
+                    id,
+                    tool: req["tool_name"].as_str().unwrap_or_default().to_string(),
+                    input: req["input"].clone(),
+                }),
+                "mcp_message" if req["server_name"] == "tarae" => {
+                    Some(StreamEv::Mcp { id, message: req["message"].clone() })
+                }
+                _ => None,
+            }
+        }
         "stream_event" => {
             let delta = &ev["event"]["delta"];
             match delta["type"].as_str()? {
@@ -639,13 +752,13 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
         }),
         "control_response" if ev["response"]["request_id"] == "tarae-init" => {
             let r = &ev["response"]["response"];
-            Some(StreamEv::Initialized {
+            Some(StreamEv::Ready {
                 models: ModelInfo::list(&r["models"]),
                 key_source: r["account"]["apiKeySource"].as_str().map(String::from),
                 account: crate::usage::Account::of(&r["account"]),
             })
         }
-        "control_response" if ev["response"]["request_id"] == crate::limits::REQUEST_ID => {
+        "control_response" if ev["response"]["request_id"] == REQUEST_ID => {
             Some(StreamEv::Limits(crate::limits::of_answer(&ev["response"], crate::usage::now_ms())))
         }
         "result" => {
@@ -659,6 +772,22 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
             }))
         }
         _ => None,
+    }
+}
+
+/// Tests: claude's control request (`request` its body — an `mcp_message`, a `can_use_tool`) as the wire hands
+/// it up, decoded from its line as one from claude is.
+#[cfg(test)]
+pub mod test {
+    pub fn control(request_id: &str, request: serde_json::Value) -> crate::agent::StreamEv {
+        let line =
+            serde_json::json!({"type": "control_request", "request_id": request_id, "request": request});
+        super::parse_line(&line).expect("a control request the wire hands up")
+    }
+
+    /// A permission's answer as the wire sends it to claude.
+    pub fn answer(p: crate::agent::Permission) -> serde_json::Value {
+        super::permission(p)
     }
 }
 
@@ -689,7 +818,7 @@ mod tests {
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let mut ours = stand_in();
         let (pid, stdin) = (ours.id(), ours.stdin.take());
-        pump(ours, false, ed.events.sender(), |_| None);
+        pump(ours, None, false, ed.events.sender(), |_| None);
         kill(pid);
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         while UNREAPED.lock().unwrap().contains(&pid) {
@@ -713,12 +842,68 @@ mod tests {
         let pid = child.id();
         let (tx, rx) = channel::<bool>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
-        pump(child, false, ed.events.sender(), move |ev| {
+        pump(child, None, false, ed.events.sender(), move |ev| {
             let _ = tx.send(matches!(ev, StreamEv::Exit(_)));
             None
         });
         assert_eq!(rx.recv_timeout(crate::test_results::PATIENCE), Ok(true), "its end told");
         assert!(!UNREAPED.lock().unwrap().contains(&pid), "reaped");
+    }
+
+    /// Agents beside Claude, condition 3: a control request no one above the wire answers (another subtype, another
+    /// server's MCP message) is answered `{}` by the wire itself, through its pump's hold on stdin, and comes up as
+    /// no event; and that hold doesn't keep stdin open: the handle dropped, the stand-in reads its end.
+    #[test]
+    fn the_wire_answers_what_no_one_above_it_does_and_a_dropped_handle_closes_stdin() {
+        let dir = crate::scratch::Scratch::new("claude-wire-answers");
+        let script = r#"printf '%s\n' '{"type":"control_request","request_id":"x1","request":{"subtype":"hook_callback"}}'
+printf '%s\n' '{"type":"control_request","request_id":"x2","request":{"subtype":"mcp_message","server_name":"other","message":{}}}'
+read -r a; read -r b; printf '%s\n%s\n' "$a" "$b" > "$1/answers"
+while read -r l; do :; done
+echo closed > "$1/eof""#;
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", script, "sh"])
+            .arg(dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let lines = Lines::new(child.stdin.take().unwrap());
+        let (tx, rx) = channel::<String>();
+        let ed = crate::editor::Editor::new(crate::config::Config::default());
+        pump(child, Some(lines.weak()), false, ed.events.sender(), move |ev| {
+            let said = match ev {
+                StreamEv::Mcp { id, .. } | StreamEv::Permission { id, .. } => format!("up {id}"),
+                StreamEv::Exit(_) => "exit".to_string(),
+                _ => return None,
+            };
+            let _ = tx.send(said);
+            None
+        });
+        let read = |name: &str| {
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            loop {
+                if let Ok(text) = std::fs::read_to_string(dir.join(name))
+                    && text.ends_with('\n')
+                {
+                    return text;
+                }
+                assert!(std::time::Instant::now() < end, "the stand-in wrote no {name}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let answers: Vec<serde_json::Value> =
+            read("answers").lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        for (a, id) in answers.iter().zip(["x1", "x2"]) {
+            assert_eq!(a["type"], "control_response", "{a}");
+            assert_eq!(a["response"]["request_id"], id, "{a}");
+            assert_eq!(a["response"]["response"], serde_json::json!({}), "{a}");
+        }
+        assert!(std::fs::read_to_string(dir.join("eof")).is_err(), "stdin open while the handle is kept");
+        drop(lines);
+        assert_eq!(read("eof"), "closed\n", "the handle dropped: stdin closed");
+        assert_eq!(rx.recv_timeout(crate::test_results::PATIENCE).as_deref(), Ok("exit"), "no event came up");
     }
 
     /// A delta that came within `FLUSH` of the last batch goes out when its time is up — never held for the next
@@ -753,7 +938,7 @@ mod tests {
         let (tx, rx) = channel::<(std::time::Instant, String)>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let _ = child.stdin.take();
-        pump(child, false, ed.events.sender(), move |ev| {
+        pump(child, None, false, ed.events.sender(), move |ev| {
             let said = match ev {
                 StreamEv::Text(t) => format!("text {t}"),
                 StreamEv::Writing(d) => d
@@ -815,7 +1000,7 @@ mod tests {
         let (tx, rx) = channel::<String>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let _ = child.stdin.take();
-        pump(child, false, ed.events.sender(), move |ev| {
+        pump(child, None, false, ed.events.sender(), move |ev| {
             let said = match ev {
                 StreamEv::ThinkingBlock(open) => format!("block {}", if open { "open" } else { "closed" }),
                 StreamEv::Thought(t) => format!("thought {t}"),

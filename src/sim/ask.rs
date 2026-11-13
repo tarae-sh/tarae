@@ -153,7 +153,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
                 serde_json::json!({"edits": [{"file_path": path, "whole": true, "new_string": new_string}]});
             let request = serde_json::json!({"subtype": "mcp_message", "server_name": "tarae", "message": {
                 "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "edit", "arguments": edit}}});
-            crate::ask::on_event(ed, g, StreamEv::Control { request_id: format!("ask-{id}"), request });
+            crate::ask::on_event(ed, g, crate::agent::claude::test::control(&format!("ask-{id}"), request));
             let mut w = world.borrow_mut();
             w.calls.push(id);
             w.called = true;

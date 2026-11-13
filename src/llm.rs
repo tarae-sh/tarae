@@ -24,12 +24,11 @@ use crate::transaction::{Change, Transaction};
 use crate::workspace::Here;
 
 use crate::agent::claude::DEFAULT_ARGS;
-pub use crate::agent::claude::{
-    Lines, SpawnError, command, control_response, initialize_message, interrupt_message, kill, pump, spawn,
-    user_content, user_message, with_flag, with_tools,
-};
+pub use crate::agent::claude::{Lines, SpawnError, command, kill, pump, spawn, with_flag, with_tools};
 #[cfg(test)]
-pub(crate) use crate::agent::claude::{parse_line, usage_line};
+pub(crate) use crate::agent::claude::{
+    control_response, initialize_message, parse_line, usage_line, user_message,
+};
 pub use crate::agent::{ModelInfo, StreamEv};
 
 /// `llm.sandbox-hosts`: with the network on, the hosts Claude's commands reach without asking (piece C1b).
@@ -784,10 +783,10 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
     // Write the message and close stdin — the process exits on its own after this one turn (written off the
     // main loop: a commit draft's prompt can be 80 KB, and claude still starting reads nothing yet).
     // Before anything is installed: a process without stdin leaves no review waiting forever.
-    let sent =
-        child.stdin.take().ok_or_else(|| "claude: no stdin".to_string()).and_then(|stdin| {
-            Lines::new(stdin).send(user_message(prompt)).map_err(|e| format!("claude: {e}"))
-        });
+    let sent = child.stdin.take().ok_or_else(|| "claude: no stdin".to_string()).and_then(|stdin| {
+        let agent = crate::agent::Agent::from(Lines::new(stdin));
+        agent.prompt(crate::agent::Prompt::Text(prompt.to_string())).map_err(|e| format!("claude: {e}"))
+    });
     if let Err(e) = sent {
         // Reaped off the main thread
         crate::event::thread("tarae-reap", move || {
@@ -800,7 +799,7 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
     let generation = ed.llm_generation;
     ed.workspace.claude.review = Some(Review::new(generation, doc_id, instruction, vec![hunk]));
     ed.llm_pid = Some(child.id());
-    pump(child, true, ed.events.sender(), move |ev| {
+    pump(child, None, true, ed.events.sender(), move |ev| {
         Some(match ev {
             StreamEv::Thinking | StreamEv::Thought(_) => Box::new(move |ed: &mut Editor| {
                 if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
@@ -842,13 +841,14 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
             | StreamEv::Money(_)
             | StreamEv::Usage(_)
             | StreamEv::Answered(_)
-            | StreamEv::Initialized { .. }
+            | StreamEv::Ready { .. }
             | StreamEv::Tool { .. }
             | StreamEv::Writing(_)
             | StreamEv::ThinkingBlock(_)
             | StreamEv::ToolResult { .. }
             | StreamEv::Searched(_)
-            | StreamEv::Control { .. }
+            | StreamEv::Mcp { .. }
+            | StreamEv::Permission { .. }
             | StreamEv::Compaction(_)
             | StreamEv::Exit(_) => {
                 return None;

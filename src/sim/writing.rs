@@ -207,7 +207,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             crate::chat::stream_event(
                 ed,
                 g,
-                StreamEv::Control { request_id: format!("r{}", w.turn), request },
+                crate::agent::claude::test::control(&format!("r{}", w.turn), request),
             );
             "the call made".into()
         }

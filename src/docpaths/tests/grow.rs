@@ -83,7 +83,7 @@ fn turn(ed: &mut Editor, buf: &mut Vec<u8>, acts: &mut Acts, w: crate::event::Wo
             "params": {"name": "read", "arguments": input}}});
         let r = format!("r{t}-{c}");
         act(acts, 3, || {
-            stream(ed, w, move || StreamEv::Control { request_id: r, request });
+            stream(ed, w, move || crate::agent::claude::test::control(&r, request));
             drain(ed);
         });
         let text = "fn a() {}\n".repeat(400);

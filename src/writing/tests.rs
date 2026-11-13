@@ -232,7 +232,7 @@ fn the_review_opens_on_the_same_rows() {
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
-    crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
+    crate::chat::stream_event(&mut ed, g, crate::agent::claude::test::control("c1", request));
     settle(&mut ed, |ed| ed.workspace.claude.review.is_some());
     crate::llm::review_focus(&mut ed);
     let review = frame(&mut ed, 100, 30);
@@ -943,7 +943,7 @@ fn an_added_lines_cursor_stays_put_when_it_lands() {
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
-    crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
+    crate::chat::stream_event(&mut ed, g, crate::agent::claude::test::control("c1", request));
     settle(&mut ed, |ed| ed.doc().text.to_string().contains("let c = 3;"));
     assert_eq!(ed.doc().text.line(3).to_string(), "    let c = 3;\n");
     assert_eq!((led(&ed), ed.cursor_line()), (Some(3), 0), "landed: on its first line, where it was");
@@ -968,7 +968,7 @@ fn an_edit_landing_unseen_leads_the_view_there() {
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
-    crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
+    crate::chat::stream_event(&mut ed, g, crate::agent::claude::test::control("c1", request));
     settle(&mut ed, |ed| ed.doc().text.to_string().contains("let b = 20;"));
     assert!(ed.workspace.claude.review.is_none(), "unseen");
     let changed = ed.doc().text.to_string().lines().position(|l| l == "    let b = 20;").unwrap();
@@ -996,7 +996,7 @@ fn an_edit_accepted_in_its_review_leads_the_cursor_there() {
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
-    crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
+    crate::chat::stream_event(&mut ed, g, crate::agent::claude::test::control("c1", request));
     settle(&mut ed, |ed| ed.workspace.claude.review.is_some());
     crate::llm::review_focus(&mut ed);
     frame(&mut ed, 100, 30);
@@ -1021,7 +1021,7 @@ fn call_edit(ed: &mut Editor, g: u64, id: &str, rpc: u64, input: &str) {
     crate::chat::stream_event(ed, g, tool);
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": rpc, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
-    crate::chat::stream_event(ed, g, StreamEv::Control { request_id: format!("c{rpc}"), request });
+    crate::chat::stream_event(ed, g, crate::agent::claude::test::control(&format!("c{rpc}"), request));
 }
 
 /// tarae's edit of `file` replacing `old` with `new`, its keys in the order the model writes them.

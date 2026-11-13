@@ -380,7 +380,7 @@ fn a_card_answered_by_keys_keeps_the_answer_and_its_verdict() {
     ed.auto_cards_told = Some(tx);
     let req =
         serde_json::json!({ "tool_name": "Read", "input": { "file_path": "/opt/tarae-nowhere/notes.txt" } });
-    assert_eq!(crate::reads::request(&mut ed, "r1", &req), None);
+    assert_eq!(crate::reads::request(&mut ed, "r1", "Read", req["input"].clone()), None);
     let end = Instant::now() + crate::test_results::PATIENCE;
     while ed.offers.is_empty() {
         assert!(Instant::now() < end, "no card came");

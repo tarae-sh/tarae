@@ -32,6 +32,7 @@ use std::time::Instant;
 use serde_json::Value;
 
 use super::fetch::Fetched;
+use crate::agent::{Agent, Prompt};
 use crate::editor::Editor;
 use crate::llm::{self, StreamEv};
 use crate::tools::Call;
@@ -428,10 +429,10 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
         &ed.config.llm.web_search_model,
     );
     let id = crate::tools::generation();
-    let message = llm::user_message(&query.message());
+    let message = Prompt::Text(query.message());
     let (pid, folder) = match stand_in(ed) {
-        Some(tx) => {
-            let _ = tx.send(message);
+        Some(lines) => {
+            let _ = Agent::from(lines).prompt(message);
             (None, None)
         }
         None => {
@@ -443,12 +444,12 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
                 return Err("claude: no stdin".into());
             };
             // (dropped once sent: its stdin closes after the message, and `-p` answers it)
-            if let Err(e) = stdin.send(message) {
+            if let Err(e) = Agent::from(stdin).prompt(message) {
                 reap(child);
                 return Err(format!("claude: {e}"));
             }
             let pid = child.id();
-            llm::pump(child, true, ed.events.sender(), move |ev| {
+            llm::pump(child, None, true, ed.events.sender(), move |ev| {
                 Some(Box::new(move |ed: &mut Editor| on_event(ed, id, ev)))
             });
             (Some(pid), Some(folder))
@@ -482,11 +483,11 @@ fn reap(mut child: std::process::Child) {
 
 /// A test's stand-in helper (`Editor.search_lines`): no process, what it's told kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<std::sync::mpsc::Sender<String>> {
-    ed.search_lines.clone()
+fn stand_in(ed: &Editor) -> Option<llm::Lines> {
+    ed.search_lines.clone().map(llm::Lines::to)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<std::sync::mpsc::Sender<String>> {
+fn stand_in(_: &Editor) -> Option<llm::Lines> {
     None
 }
 

@@ -21,6 +21,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::agent::{Agent, Permission, Prompt};
 use crate::document::DocId;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
@@ -608,8 +609,8 @@ pub enum State {
 }
 
 struct Proc {
-    /// Its stdin, written off the main loop (`llm::Lines`)
-    stdin: llm::Lines,
+    /// What tarae says to it (its lines written off the main loop)
+    agent: Agent,
     pid: u32,
 }
 
@@ -1346,9 +1347,15 @@ impl Chat {
         self.settings.waiting() || (self.held && !self.running())
     }
 
-    /// A line to its claude — whether it went (not running: no).
+    /// Its claude, while it runs.
+    pub(crate) fn agent(&self) -> Option<&Agent> {
+        self.proc.as_ref().map(|p| &p.agent)
+    }
+
+    /// Tests: a line of the test's own to its claude — whether it went (not running: no).
+    #[cfg(test)]
     pub(crate) fn to_claude(&self, line: String) -> bool {
-        self.proc.as_ref().is_some_and(|p| p.stdin.send(line).is_ok())
+        self.agent().is_some_and(|a| a.lines().send(line).is_ok())
     }
 
     /// A line of tarae's in the conversation — once, not again right under itself.
@@ -2513,7 +2520,7 @@ fn settings_again(ed: &mut Editor) -> bool {
 #[cfg(test)]
 pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
     let (stdin, rx) = llm::Lines::stand_in();
-    c.proc = Some(Proc { stdin, pid: 0 });
+    c.proc = Some(Proc { agent: stdin.into(), pid: 0 });
     rx
 }
 
@@ -2581,7 +2588,7 @@ fn ensure_proc(ed: &mut Editor) {
     if let Some(tx) = ed.claude_lines.clone() {
         // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
         c.generation = crate::tools::generation();
-        c.proc = Some(Proc { stdin: llm::Lines::to(tx), pid: 0 });
+        c.proc = Some(Proc { agent: llm::Lines::to(tx).into(), pid: 0 });
         (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
         return;
     }
@@ -2633,8 +2640,9 @@ fn ensure_proc(ed: &mut Editor) {
     c.runs_on = (cfg.model.clone(), cfg.effort.clone());
     c.launched = Some((cfg, extra.iter().map(|s| s.to_string()).collect()));
     let Some(stdin) = child.stdin.take().map(llm::Lines::new) else { return };
+    let (own, agent) = (stdin.weak(), Agent::from(stdin));
     // tarae's MCP server (its tools) — registered before anything else is said
-    let _ = stdin.send(llm::initialize_message(&["tarae"]));
+    let _ = agent.initialize();
     // A fresh process has seen no file yet — and said no credential yet: the last one's may not be its
     c.sent.clear();
     (ed.workspace.claude.usage.key_source, ed.workspace.claude.usage.plan_event) = (None, false);
@@ -2643,9 +2651,9 @@ fn ensure_proc(ed: &mut Editor) {
     // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
     c.generation = crate::tools::generation();
     let generation = c.generation;
-    c.proc = Some(Proc { stdin, pid: child.id() });
+    c.proc = Some(Proc { agent, pid: child.id() });
     (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
-    llm::pump(child, false, tx, move |ev| {
+    llm::pump(child, Some(own), false, tx, move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
     // (a process replaced mid-turn: what the last one was writing is never heard of again — `writing.rs`)
@@ -2780,7 +2788,9 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 log.line("claude", "warn", &said);
                 c.note(&said);
                 c.stopping = true;
-                c.to_claude(llm::interrupt_message());
+                if let Some(a) = c.agent() {
+                    a.stop_turn();
+                }
             }
             // (the credential it reported, each turn — `limits.rs`)
             if key_source.is_some() {
@@ -2799,7 +2809,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 keep(ed);
             }
         }
-        StreamEv::Initialized { models, key_source, account } => {
+        StreamEv::Ready { models, key_source, account } => {
             c.models = models;
             // Not the credential its billing gives, as it starts: it stops — said
             if let Some(said) = wrong(c, key_source.as_deref()) {
@@ -2944,12 +2954,21 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 ed.git_tab_follow();
             }
         }
-        StreamEv::Control { request_id, request } => {
-            // Answered now, or (an edit) once its review ends
-            if let Some(response) = control(ed, generation, &request_id, &request)
+        // tarae's MCP server (its tools, `tools.rs`): answered now, or (an edit) once its review ends
+        StreamEv::Mcp { id, message } => {
+            if let Some(response) = crate::tools::mcp(ed, generation, &id, &message)
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
             {
-                respond(ed, &request_id, response);
+                answer_mcp(ed, &id, response);
+            }
+        }
+        // A permission ask: a read's (`reads.rs`, maybe after its card), any other denied (`edits::request`)
+        StreamEv::Permission { id, tool, input } => {
+            ed.workspace.claude.usage.tally.asked(&id, &tool);
+            if let Some(p) = crate::edits::request(ed, &id, &tool, input)
+                && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
+            {
+                answer_permission(ed, &id, p);
             }
         }
         StreamEv::Text(t) => {
@@ -3892,7 +3911,7 @@ fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
     let focus = ed.workspace.viewer.focus;
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.busy()) else { return false };
     let Some(p) = &mut c.proc else { return false };
-    if p.stdin.send(llm::user_message(text)).is_err() {
+    if p.agent.prompt(Prompt::Text(text.to_string())).is_err() {
         llm::kill(p.pid);
         return false;
     }
@@ -4029,7 +4048,7 @@ fn submit_as(
     // claude no longer has it goes again to the new one; any other end is said once, as an exit mid-turn is
     // (the news's row in the chat once it went — the person sees what its Claude was told, in order)
     let mut news_row = None;
-    if p.stdin.send(llm::user_message(&content)).is_err() {
+    if p.agent.prompt(Prompt::Text(content.clone())).is_err() {
         // (said with the next message that goes; ended, if it only closed its stdin — so its exit comes)
         ed.workspace.claude.checkpoints.tell = told;
         if let Some((_, _, kept)) = news {
@@ -4180,43 +4199,26 @@ pub fn turn_gathered(ed: &mut Editor, n: Option<String>) {
     crate::restart::turn_over(ed);
 }
 
-/// A control request of ours to the chat's process (a model or effort chosen) — its answer isn't needed.
-pub fn request(ed: &mut Editor, request: serde_json::Value) {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    if let Some(p) = ed.workspace.claude.chat.as_mut().and_then(|c| c.proc.as_mut()) {
-        let id = format!("tarae-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        let line = serde_json::json!({ "type": "control_request", "request_id": id, "request": request });
-        let _ = p.stdin.send(line.to_string());
+/// The chat's claude of now, while it runs.
+pub fn agent(ed: &Editor) -> Option<&Agent> {
+    ed.workspace.claude.chat.as_ref().and_then(Chat::agent)
+}
+
+/// tarae's MCP server's answer (`response` its JSON-RPC message) to ask `id` of the chat's process of now.
+pub fn answer_mcp(ed: &mut Editor, id: &str, response: serde_json::Value) {
+    ed.workspace.claude.usage.tally.answer(id, false);
+    if let Some(a) = agent(ed) {
+        a.answer_mcp(id, response);
     }
 }
 
-/// Our answer to one of claude's control requests (the chat process of now).
-pub fn respond(ed: &mut Editor, request_id: &str, response: serde_json::Value) {
-    // (a permission's answer: a no makes the call's failed result a declined one — `calls.rs`)
-    ed.workspace.claude.usage.tally.answer(request_id, response["behavior"] == "deny");
-    if let Some(p) = ed.workspace.claude.chat.as_mut().and_then(|c| c.proc.as_mut()) {
-        let _ = p.stdin.send(llm::control_response(request_id, response));
+/// The answer to permission ask `id` of the chat's process of now: a no makes the call's failed result a declined
+/// one (`calls.rs`).
+pub fn answer_permission(ed: &mut Editor, id: &str, p: Permission) {
+    ed.workspace.claude.usage.tally.answer(id, matches!(p, Permission::Deny { .. }));
+    if let Some(a) = agent(ed) {
+        a.answer_permission(id, p);
     }
-}
-
-/// A control request from claude → our answer (None = later). `mcp_message` = tarae's MCP server (its
-/// tools, `tools.rs`); `can_use_tool` = a read's ask, any other denied (`edits::request`).
-fn control(
-    ed: &mut Editor,
-    generation: u64,
-    request_id: &str,
-    req: &serde_json::Value,
-) -> Option<serde_json::Value> {
-    use serde_json::json;
-    if req["subtype"] == "can_use_tool" {
-        ed.workspace.claude.usage.tally.asked(request_id, req["tool_name"].as_str().unwrap_or_default());
-        return crate::edits::request(ed, request_id, req);
-    }
-    if req["subtype"] != "mcp_message" || req["server_name"] != "tarae" {
-        return Some(json!({}));
-    }
-    let response = crate::tools::mcp(ed, generation, request_id, &req["message"])?;
-    Some(json!({ "mcp_response": response }))
 }
 
 /// Tests: the stream says the turn ended — `stopped` by the user (`C-c`), or answered.
@@ -4237,7 +4239,7 @@ pub fn stop(ed: &mut Editor) {
     let asked = match &mut c.proc {
         Some(p) => {
             c.stopping = true;
-            let _ = p.stdin.send(llm::interrupt_message());
+            p.agent.stop_turn();
             true
         }
         None => false,
@@ -6235,7 +6237,7 @@ mod tests {
             // (the writer has met the ended process once a line can't be handed to it)
             let end = Instant::now() + crate::test_results::PATIENCE;
             let p = ed.workspace.claude.chat.as_ref().unwrap().proc.as_ref().unwrap();
-            while p.stdin.send(String::new()).is_ok() {
+            while p.agent.lines().send(String::new()).is_ok() {
                 assert!(Instant::now() < end, "the writer still writes");
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -7597,7 +7599,10 @@ mod tests {
         // Claude's Read, through the request's worker: the repository found there (review J 16)
         let input =
             serde_json::json!({"tool_name": "Read", "input": {"file_path": clean.join("docs/README")}});
-        assert!(crate::reads::request(&mut ed, "r1", &input).is_none(), "it waits for the card");
+        assert!(
+            crate::reads::request(&mut ed, "r1", "Read", input["input"].clone()).is_none(),
+            "it waits for the card"
+        );
         until(&mut ed, "the repository offered", &|ed| !ed.offers.is_empty() && card(ed).0.is_some());
         let asked = match &ed.offers[0].what {
             crate::offer::What::Read { pending, .. } => (**pending).clone(),
@@ -7691,7 +7696,7 @@ mod tests {
         ed.workspace.set_at(crate::workspace::Here::Chat);
         let ask = |ed: &mut Editor, id: &str, f: &str| {
             let req = serde_json::json!({"tool_name": "Read", "input": {"file_path": shots.join(f)}});
-            crate::reads::request(ed, id, &req);
+            crate::reads::request(ed, id, "Read", req["input"].clone());
         };
         let folder = |ed: &Editor| match ed.offers.first().map(|o| (&o.what, o.rev)) {
             Some((crate::offer::What::Read { folder, .. }, rev)) => Some((folder.clone(), rev)),
