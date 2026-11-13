@@ -900,6 +900,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         offer_buttons: offer.as_ref().map(|c| c.buttons.clone()).unwrap_or_default(),
         offer_way: offer.as_ref().and_then(|c| c.way_at),
         offer_card: offer.as_ref().map(OfferCard::rect),
+        offer_top: offer.as_ref().and_then(|c| c.top),
         asks_drawn: offer.as_ref().map(OfferCard::drawn_ids).unwrap_or_default(),
         top_strip: Default::default(),
         news: Default::default(),
@@ -1243,6 +1244,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         editor.screen.offer_buttons = offer.as_ref().map(|c| c.buttons.clone()).unwrap_or_default();
         editor.screen.offer_way = offer.as_ref().and_then(|c| c.way_at);
         editor.screen.offer_card = offer.as_ref().map(OfferCard::rect);
+        editor.screen.offer_top = offer.as_ref().and_then(|c| c.top);
         editor.screen.asks_drawn = offer.as_ref().map(OfferCard::drawn_ids).unwrap_or_default();
         editor.screen.offer_cut = offer.as_ref().filter(|c| !c.bar).map(|c| c.cut);
     }
@@ -14555,6 +14557,11 @@ struct OfferCard {
     /// Stepped aside to a one-row bar while its text is read in its buffer (U8): `lines` = title, how far. Else in
     /// a frame (D3) — its title (`lines[0]`) the frame's name, one cell of padding inside.
     bar: bool,
+    /// Standing whole: its id, its top row and the room it stands in — kept by the next frame (`Screen.offer_top`).
+    top: Option<crate::editor::CardTop>,
+    /// Rows of `lines` that say why a key of yours was just refused, said in place (`Editor::offer_marked_now`): bold,
+    /// the accent's `▎` at their left, a pulse over them where things move.
+    marked: Vec<usize>,
 }
 
 /// A card stacked behind the front one (`OfferCard.peeks`): its depth (1..), title, start time if downloading, whether it
@@ -14975,6 +14982,8 @@ impl OfferCard {
             cut: 0,
             seen: (0, 0..0),
             bar: false,
+            top: None,
+            marked: Vec::new(),
         })
     }
 
@@ -15038,6 +15047,8 @@ impl OfferCard {
             cut: 0,
             seen: (0, 0..0),
             bar: false,
+            top: None,
+            marked: Vec::new(),
         }
     }
 
@@ -15112,6 +15123,39 @@ impl OfferCard {
         {
             return None;
         }
+        // A card up and in sight keeps its top row (#561, the design session's rule): what changes inside it — a
+        // refused key's reason, its words renewed (#537), a count — grows it downward, past the area's foot (over the
+        // chat's input, its rule and its hints) down onto the cards' floor (the row of air over the status line, taken
+        // while it's grown), never its title lifted: take 3's end card rose three rows at a refused `y`, its foot on the
+        // input's rule, and a still zoom on it lost its title. Only what the floor can't hold lifts it, by just those
+        // rows (no chat: the area's foot is the floor) — never its body cut to stay:
+        // a weighty card cut waits for `v` before its yes. Shorter, its foot rises. Laid anew — its foot on the
+        // area's — where another card comes in front, the room it stands in changed, or it wasn't standing whole the
+        // frame before.
+        let area = (ax, aw, atop, arows);
+        let floor = card_floor(lay);
+        // A refused key whose reason it says already — its hold, in its warning lines (`Offer::says_its_hold`): said in
+        // place, those lines marked (`marked`), no rows added for it (#561: the design session's, on take 3's end card).
+        let in_place = editor.offer_said_now().is_some_and(|s| o.says_its_hold(s));
+        let kept_top = (editor.screen.offer_top)
+            .filter(|t| {
+                !measuring
+                    && t.0 == o.id
+                    && t.2 == area
+                    && editor.offers.first().is_some_and(|f| f.id == o.id)
+            })
+            .map(|t| t.1)
+            .filter(|&y| y > atop && y < floor);
+        // A card covers the chat's input only while the card has the keys (the design session's, on the user's "while
+        // you type nothing moves"): standing on the input's rule and without them — the keys in the input, or `esc` to
+        // the code, the input there for the next `i` — it keeps its rows, never over the input, never lifted: its room
+        // the rows from its top down to the area's foot, what a renewal adds past them cut as a card too tall for its
+        // area is (its `↓ N more lines` row, its answers its bottom line); given the keys (`C-q`, a press on it), laid by
+        // the rule above, whole. (its top is kept cut or not: `top` is a card standing in its frame, whatever it left out)
+        let over_input = chat_foot(editor, lay).is_some() && !editor.card_has_keys();
+        let held_in = kept_top.filter(|&y| over_input && atop + arows + 1 - y >= 5);
+        // (its room, as the area's counts it: a row above its top as above the area's)
+        let rows = held_in.map_or(arows, |y| atop + arows + 1 - y);
         let pad = CARD_PAD;
         // (its right edge: its area's — the chat's foot a cell in from the screen's right, a docked list's, else the
         // code's; one width whatever the chat — #177, the user 2026-10-27: as wide as what it says needs, its reading
@@ -15199,11 +15243,11 @@ impl OfferCard {
                 // it draws — built, counted against the room the cut uses (its answers, a refused key's reason),
                 // built again with one more line left out — never a second count beside them
                 let said_rows = match editor.offer_said_now() {
-                    Some(s) => 1 + card_rows(s, max_inner).len().min(2),
-                    None => 0,
+                    Some(s) if !in_place => 1 + card_rows(s, max_inner).len().min(2),
+                    _ => 0,
                 };
                 // (and a row of air under it — `bottom` below; its answers are its frame's bottom line)
-                let room = arows.saturating_sub(2 * pad + said_rows + 1);
+                let room = rows.saturating_sub(2 * pad + said_rows + 1);
                 // (the card's rows with the question's lines `skip` left out — their warning and diff rows marked)
                 let build = |skip: &[usize],
                              warn: &mut Vec<usize>,
@@ -15373,6 +15417,8 @@ impl OfferCard {
                     cut: 0,
                     seen: (0, 0..0),
                     bar: true,
+                    top: None,
+                    marked: Vec::new(),
                 },
                 false,
             ));
@@ -15381,7 +15427,7 @@ impl OfferCard {
         // A key it refused: why, over its answers in the warning colour — never cut away with its body (no
         // silent refusal; the status line's flash was missed)
         let said: Vec<(Fit, bool)> = match editor.offer_said_now() {
-            Some(s) if matches!(o.state, OfferState::Asking) => {
+            Some(s) if matches!(o.state, OfferState::Asking) && !in_place => {
                 let mut v = vec![(Fit::default(), true)];
                 v.extend(wrapped(s, 2));
                 v
@@ -15390,7 +15436,7 @@ impl OfferCard {
         };
         // Taller than the room: the body cut to fit, its last row saying how much is left (`v` views it all);
         // the buttons stay, its bottom line (#14: an 88-line card wasn't drawn at all, so it couldn't be answered)
-        let room = arows.saturating_sub(2 * pad + said.len() + 1);
+        let room = rows.saturating_sub(2 * pad + said.len() + 1);
         let mut cut = 0;
         // (the cut row's forms all fit: the card keeps its width as it says another)
         let mut cut_floor = 0;
@@ -15400,7 +15446,8 @@ impl OfferCard {
         let body_rows = lines.len().saturating_sub(1);
         let mut seen = (body_rows, 0..body_rows);
         if lines.len() > room {
-            if room < 3 {
+            // (held where it stood while you type: down to its title and how much more, whatever its room — never gone)
+            if room < 3 && (held_in.is_none() || room < 2) {
                 return None;
             }
             let scrolled = editor.offer_skip.get().filter(|s| (s.0, s.1) == (o.id, o.rev)).map_or(0, |s| s.2);
@@ -15454,6 +15501,11 @@ impl OfferCard {
         // (the body's rows only: not the cut row, nor what's said under it)
         let body = lines.len() - usize::from(cut > 0 || above > 0);
         diff.retain(|&(i, _)| i < body);
+        // (its hold's lines — the reason a key of yours was just refused, said in place: marked until the next key)
+        let marked: Vec<usize> = match in_place && editor.offer_marked_now() {
+            true => warn.iter().copied().filter(|&i| i > 0 && i < body).collect(),
+            false => Vec::new(),
+        };
         for row in said {
             if !row.0.is_empty() {
                 warn.push(lines.len());
@@ -15565,7 +15617,13 @@ impl OfferCard {
         // (the area's last row left free: over the chat's foot the input's rule, the card's frame right on it; over the
         // slot or the status line a row of air — `asks_foot`)
         let bottom = atop + arows - 1;
-        let y = bottom.checked_sub(h)?.max(atop);
+        let y = match (held_in, kept_top) {
+            // (the keys in the chat's input: where it stood, its room down to the area's foot)
+            (Some(y), _) => y,
+            // (its last row on the floor at most)
+            (None, Some(y)) => y.min((floor + 1).checked_sub(h)?).max(atop),
+            (None, None) => bottom.checked_sub(h)?.max(atop),
+        };
         let x = (ax + aw).saturating_sub(width + 1);
         // Back cards: one row each above the front card (as room allows, max three — beyond that "1/N" tells) —
         // a row of air between them and its frame (two cards never touch): this session's, then every other session's
@@ -15662,6 +15720,8 @@ impl OfferCard {
                 cut,
                 seen,
                 bar: false,
+                top: (!measuring && front).then_some((o.id, y, area)),
+                marked,
             },
             grown,
         ))
@@ -15864,13 +15924,27 @@ impl OfferCard {
             if i == 0 {
                 continue;
             }
-            // (its title row flashes, brought into sight from a link)
-            let lit = |s: Style| if i == 0 { flashed(ui, editor, &id, s) } else { s };
+            // (its title row flashes, brought into sight from a link; a row saying why a key of yours was just refused,
+            // said in place, lit by its pulse — the press's ground, drying)
+            let marked = self.marked.contains(&i);
+            let pulse = if marked { editor.pressed(&crate::motion::Place::Held(self.id)) } else { 0.0 };
+            let lit = |s: Style| match (i, pulse > 0.0) {
+                (0, _) => flashed(ui, editor, &id, s),
+                (_, true) => Style { bg: flash_bg(ui, s.bg, pulse).or(s.bg), ..s },
+                _ => s,
+            };
             let (body, dim) = (lit(body), lit(dim));
             queue!(out, MoveTo(self.x as u16, row as u16))?;
             apply(out, body)?;
-            // (the frame's side, then a cell of padding)
-            queue!(out, Print("  "))?;
+            // (the frame's side, then a cell of padding — the accent's `▎` there on a row marked as the reason)
+            match marked {
+                true => {
+                    queue!(out, Print(" "))?;
+                    apply(out, Style { fg: ui.accent.fg, ..body })?;
+                    queue!(out, Print("▎"))?;
+                }
+                false => queue!(out, Print("  "))?,
+            }
             let diff = self.diff.iter().find(|d| d.0 == i).map(|d| d.1);
             let row_style = lit(if self.warn.contains(&i) {
                 warning
@@ -15889,6 +15963,7 @@ impl OfferCard {
             } else {
                 body
             });
+            let row_style = Style { bold: row_style.bold || marked, ..row_style };
             apply(out, row_style)?;
             // (a session's name: in its colour, at full strength in a faint row too, whole on its row's card as here —
             // only one that's there whole: the row's cut can reach it, and the `…` is no part of it)

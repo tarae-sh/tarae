@@ -981,6 +981,12 @@ impl Offer {
         }
     }
 
+    /// Whether `why` — a key's refusal — is its hold (`held`) and its text says it already, in its warning lines: said in
+    /// place then, those lines marked, no rows added (#561).
+    pub fn says_its_hold(&self, why: &str) -> bool {
+        self.held.as_deref() == Some(why) && self.warning.as_ref().is_some_and(|w| !w.is_empty())
+    }
+
     /// The held rebase it asks about, if it's that card (`s` stashes, `g` shows the changes).
     pub fn held(&self) -> Option<&crate::rebase::Held> {
         match &self.what {
@@ -2724,7 +2730,20 @@ impl crate::editor::Editor {
         let Some((id, rev)) = self.offers.first().map(|o| (o.id, o.rev)) else { return };
         let msg = msg.into();
         self.recorded(crate::editor::ToastKind::Info, msg.clone());
+        // (a reason it says already, its hold in its warning lines: said in place — those lines marked until the next
+        // key, a pulse over them where things move; no rows added, #561)
+        if self.offers.first().is_some_and(|o| o.says_its_hold(&msg)) {
+            self.offer_marked = Some((id, rev, self.input_seq));
+            self.press(crate::motion::Place::Held(id));
+        }
         self.offer_said = Some((id, rev, msg));
+    }
+
+    /// Whether the front card's lines that say a refused key's reason are marked now: that key the last input, the card
+    /// as it was (`offer_marked`).
+    pub fn offer_marked_now(&self) -> bool {
+        let Some(o) = self.offers.first() else { return false };
+        self.offer_marked == Some((o.id, o.rev, self.input_seq))
     }
 
     /// What the front card says about the last key it refused (None: none, or it was about another card or

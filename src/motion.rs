@@ -751,6 +751,8 @@ pub enum Place {
     Badge(crate::sizes::Slot),
     /// The sandbox's line leading a run's output (#474a, `term::lead_row`), come where its panel drew none (§6).
     Refused(crate::sizes::Slot),
+    /// A card's lines that say why a key of yours was refused, by the card's id (#561: its hold, said in place).
+    Held(u64),
 }
 
 /// The act a flash shows.

@@ -11,7 +11,10 @@
 //! answers the next card unseen (the review of 7b). Each `y` is judged by it — one that reaches a card the model
 //! hasn't focused must leave it up (the code's yank, or refused and said on it), one that reaches the focused card
 //! must answer it (light cards: `y` ends what never began, the card goes). After every step the editor's focus is
-//! the model's.
+//! the model's, and a card standing whole frame after frame kept its top row (#561) — its text rewritten taller or
+//! shorter as it's up: risen only to stand on the floor where it grew past it, never down; and over the chat's input
+//! (the chat open beside, the keys taken there as `space l` takes them) only while the card has the keys — without them
+//! never over the input nor its rule, its top unmoved.
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
@@ -21,7 +24,8 @@ use crate::editor::Editor;
 use crate::key::Key;
 use crate::offer::{Offer, What};
 
-const SEEDS: &[u64] = &[0, 1, 2, 7, 10];
+/// (13: #566, a press on a frame that drew only another session's peek; 15: that model's break-once found it too)
+const SEEDS: &[u64] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 const INPUTS: usize = 60;
 
@@ -40,6 +44,9 @@ struct Model {
     next: Option<(u64, u64)>,
     frames: u64,
     sessions: (crate::event::WorkspaceId, crate::event::WorkspaceId),
+    /// The front card standing whole at the last check: the frame it was drawn in, its id, its top row, and whether it
+    /// stood over the chat's input without the keys (held).
+    drawn: Cell<Option<(u64, u64, usize, bool)>>,
 }
 
 impl Model {
@@ -59,6 +66,10 @@ fn run(choices: Choices) -> Vec<String> {
     let mut sim = Sim::new("a_card_takes_the_keys_only_once_focused", choices, LIMIT);
     sim.frames = Some((100, 24));
     let mut ed = Editor::new(crate::config::Config::default());
+    // (the chat open beside: its input below the asks, where the keys go by `space l` — a stand-in claude behind it)
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
     let main = ed.workspace.id;
     let other = ed.workspace_open(dir.path()).unwrap();
     ed.workspace_switch(main);
@@ -141,8 +152,19 @@ fn input(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>, wrong: &Cell<Op
 fn step(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>, wrong: &Cell<Option<String>>) -> String {
     let c = &mut sim.choices;
     // (by arm: a key 6, a card 3, a card rewritten 1, a press 1, a session switch 1, a frame 1, time passing 1,
-    // `y y` in one batch 2)
-    match c.weighted(&[6, 3, 1, 1, 1, 1, 1, 2]) {
+    // `y y` in one batch 2, the keys to the chat's input 1)
+    match c.weighted(&[6, 3, 1, 1, 1, 1, 1, 2, 1]) {
+        8 => {
+            // (the keys to the chat's input, as `space l` takes them — without the claude it warms, which the simulation
+            // doesn't model — only where no card has them, which every key there takes; a frame after it)
+            if ed.card_has_keys() {
+                return "the keys stay: the card has them".into();
+            }
+            ed.workspace.set_at(crate::workspace::Here::Chat);
+            crate::term::render(ed, &mut Vec::new(), 100, 24).unwrap();
+            model.borrow_mut().sync(ed);
+            "the keys to the chat's input".into()
+        }
         0 => {
             let k = *c.pick(&["j", "k", "y", "y", "y", "esc", "C-q", "C-q"]);
             key(sim, ed, model, wrong, k, true);
@@ -178,19 +200,31 @@ fn step(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>, wrong: &Cell<Opt
             };
             let what =
                 What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: crate::clock::now() };
-            ed.push_offer(Offer::new(title, "3 files not viewed.", "", String::new(), what));
-            format!("card#{} rewritten", ed.offers[0].id)
+            // (taller or shorter than it was, by turns — its top kept either way, #561; no choice taken for it, the
+            // walk as it was)
+            let text = match ed.offers[0].rev % 2 {
+                0 => "3 files not viewed.\n\n  src/a.rs\n  src/b.rs\n  src/c.rs",
+                _ => "3 files not viewed.",
+            };
+            ed.push_offer(Offer::new(title, text, "", String::new(), what));
+            format!("card#{} rewritten, {} rows", ed.offers[0].id, text.lines().count())
         }
         3 => {
-            // (a press on the card in sight: focused)
+            // (a press where the last frame drew a card's stack — what that frame drew there takes it, as the editor
+            // reads it (`mouse_under`): the stack's rows (its back cards', the air between, its own) focus the card in
+            // front now, a back row's bringing that one forward; anything else there takes the keys from the card.
+            // #566: the model took every press on the stack's rect for the card — one aimed from a frame that drew
+            // only another session's peek (the card in front come since, undrawn) landed under that peek, on the code,
+            // and the code took the keys)
             let Some((x, y, _, _)) = ed.screen.offer_card else { return "no card to press".into() };
             let (x, y) = (x + 2, y + 1);
-            // (a back card's row brings it to the front, focused; an answer is a key's to judge, not pressed here)
-            let button =
-                ed.screen.offer_buttons.iter().find(|b| b.0 == y && (b.1..b.2).contains(&x)).map(|b| b.3);
-            if button.is_some_and(|k| !k.is_ascii_digit()) {
+            let under = ed.mouse_under(crate::event::MouseKind::Down, x, y);
+            let on_card = under.surface == crate::mouse::Surface::Card;
+            // (an answer is a key's to judge, not pressed here)
+            if matches!(under.part, crate::mouse::Part::Answer(k) if on_card && !k.is_ascii_digit()) {
                 return "no press: an answer there".into();
             }
+            let back = matches!(under.part, crate::mouse::Part::Answer(k) if k.is_ascii_digit());
             let press = crate::event::Mouse {
                 kind: crate::event::MouseKind::Down,
                 x: x as u16,
@@ -198,13 +232,13 @@ fn step(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>, wrong: &Cell<Opt
                 alt: false,
                 ctrl: false,
             };
-            let before = front(ed);
             sim.batch(ed, crate::event::Event::Mouse(press));
-            let f = if button.is_some() { front(ed) } else { before };
-            if let Some(f) = f {
-                model.borrow_mut().focused = Some((f.0, f.1));
+            model.borrow_mut().focused = front(ed).filter(|_| on_card).map(|f| (f.0, f.1));
+            match (on_card, back) {
+                (true, true) => "a press on the card's back row".into(),
+                (true, false) => "a press on the card".into(),
+                (false, _) => "a press under the card's last frame, off it".into(),
             }
-            format!("a press on the card{}", if button.is_some() { "'s back row" } else { "" })
         }
         4 => {
             let (main, other) = model.borrow().sessions;
@@ -241,6 +275,31 @@ fn held(ed: &Editor, m: &Model, wrong: &Cell<Option<String>>) -> Result<(), Stri
     if waiting.is_some() != (front(ed).is_some() && !focused) {
         return Err(format!("keys.waiting {waiting:?} — the model's focus {:?}", m.focused));
     }
+    // (#561: the same card standing whole in a later frame kept its top — or rose to stand on the floor, grown past
+    // it; and while the keys are in the chat's input, frame after frame, never moved and never over the input or its rule)
+    // (a card covers the chat's input only while it has the keys: the input drawn and the card without them, held)
+    let held = ed.screen.chat_input.get().is_some() && !ed.card_has_keys();
+    let now = ed.screen.offer_top.map(|t| (ed.frames, t.0, t.1, held));
+    let foot = ed.screen.offer_card.map(|r| r.1 + r.3 - 1);
+    if let (Some((f0, id0, top0, held0)), Some((f1, id1, top1, held1))) = (m.drawn.get(), now)
+        && id0 == id1
+        && f1 != f0
+    {
+        let input = ed.screen.chat_input.get().map(|i| i.y);
+        if held0 && held1 && (top1 != top0 || foot.zip(input).is_some_and(|(f, i)| f + 1 >= i)) {
+            return Err(format!(
+                "card#{id1} moved or covered the input without the keys: its top {top0} → {top1}, its foot {foot:?}, \
+                 the input's first row {input:?}"
+            ));
+        }
+        let floor = ed.screen.height.map(|h| h.saturating_sub(1));
+        if top1 != top0 && (top1 > top0 || foot != floor) {
+            return Err(format!(
+                "card#{id1}'s top moved {top0} → {top1} (its foot {foot:?}, the floor {floor:?})"
+            ));
+        }
+    }
+    m.drawn.set(now);
     Ok(())
 }
 

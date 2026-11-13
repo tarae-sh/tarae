@@ -552,6 +552,9 @@ impl RunRows {
     }
 }
 
+/// A card standing whole: its id, its top row, and the room it stands in (columns from, width, rows from, rows).
+pub type CardTop = (u64, usize, (usize, usize, usize, usize));
+
 /// Screen layout of the last frame (term.rs fills it on every draw).
 #[derive(Clone, Debug, Default)]
 pub struct Screen {
@@ -612,6 +615,9 @@ pub struct Screen {
     pub offer_way: Option<(usize, usize, usize)>,
     /// The front card as drawn, its back cards' rows too (x, y, width, height) — the UI state's `at`.
     pub offer_card: Option<(usize, usize, usize, usize)>,
+    /// The front card standing whole this frame: its id, its top row and the room it stands in (`term::asks_area`'s) —
+    /// the next frame keeps that top while the same card stands in the same room (#561).
+    pub offer_top: Option<CardTop>,
     /// The cards this frame draws, each whole or as its peek (the front's id first; any session's): what waits in
     /// sight — the status line's `▲N waiting` counts only the rest (polish landing 1).
     pub asks_drawn: Vec<u64>,
@@ -1517,6 +1523,9 @@ pub struct Editor {
     pub pointing: Option<crate::uistate::point::Pointing>,
     /// The last key a card refused, and why: (its id, its rev, what it says) — on the card (`offer_refused`).
     pub offer_said: Option<(u64, u64, String)>,
+    /// A refused key whose reason the card already says (`Offer::says_its_hold`): its id, its rev and that key's
+    /// `input_seq` — those lines marked as the reason until the next key (`offer_marked_now`, #561).
+    pub offer_marked: Option<(u64, u64, u64)>,
     /// The keys of the command waiting for a character (`on_next_char`) — the status line shows them.
     pub(crate) char_for: String,
     /// Whether Claude's commands can be sandboxed here (`sandbox.rs`) — found with the first one.
@@ -1854,6 +1863,7 @@ impl Editor {
             ui_flash: None,
             pointing: None,
             offer_said: None,
+            offer_marked: None,
             char_for: String::new(),
             sandbox: if cfg!(test) { crate::sandbox::Availability::Bypass } else { Default::default() },
             restart: None,

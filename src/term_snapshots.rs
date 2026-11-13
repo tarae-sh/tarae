@@ -3729,6 +3729,146 @@ fn snapshot_review_end_held_by_a_high_change() {
     s.check("review_end_held");
 }
 
+/// A card up and in sight keeps its top row (#561): the review's end card, its yes held by two high-risk changes, keeps
+/// its title on its row (take 3's end card rose three rows at a refused `y`, its foot on the input's rule, and a still
+/// zoom on it lost its title) — a `y` refused on it for its hold, which its orange lines say already, said in place: those
+/// lines marked (bold, the accent's `▎`) until the next key, no row added; a refusal it doesn't say, its rows grown
+/// down; and its words renewed when one change is looked at (#537: a count and a place fewer).
+#[test]
+fn a_card_in_sight_keeps_its_top_row_as_it_says_more_or_less() {
+    let base: String = (1..=5).map(|i| format!("let line_{i} = {i};\n")).collect();
+    let l: Vec<&str> = base.lines().collect();
+    let now = format!(
+        "{}\n{}\nlet pid = unsafe {{ getpid() }};\n{}\n{}\n{}\nlet uid = unsafe {{ getuid() }};\n",
+        l[0], l[1], l[2], l[3], l[4]
+    );
+    let mut s = review_of(112, 30, &base, &now);
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
+    r.set_rules(crate::risk::Rules::with(&[("rust", &["rust"], &[r"\bunsafe\b"], &[])], &[], &[]));
+    // (the chat open, as in take 3: the card over its foot, standing on its input's rule)
+    s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    s.frame();
+    crate::codereview::close_asked(&mut s.ed);
+    assert!(
+        s.ed.offers[0].question.contains("2 high-risk changes not looked at"),
+        "{}",
+        s.ed.offers[0].question
+    );
+    // (the row its title is drawn on, and the card's rows)
+    let at = |s: &mut Shot| -> (usize, Vec<String>) {
+        let rows = rows_of(s, (0, 0, s.w as usize, s.h as usize));
+        let title = rows.iter().position(|r| r.contains("End tarae's review?")).expect("its title drawn");
+        (title, rows)
+    };
+    let foot = |rows: &[String]| rows.iter().rposition(|r| r.contains("╰─")).expect("its bottom line");
+    let (top, rows) = at(&mut s);
+    // (a `y` refused on it: its hold, which its orange lines say — said there, those lines marked, no row added)
+    s.keys("<C-q>y");
+    let said = s.ed.offer_said_now().unwrap_or_default().to_string();
+    assert!(said.contains("not looked at"), "refused, said: {said:?}");
+    let (refused, rows_refused) = at(&mut s);
+    let both = |a: &[String], b: &[String]| format!("{}\n— then —\n{}", a.join("\n"), b.join("\n"));
+    assert_eq!(
+        (refused, foot(&rows_refused)),
+        (top, foot(&rows)),
+        "a refused y moved it:\n{}",
+        both(&rows, &rows_refused)
+    );
+    for line in
+        ["▎2 high-risk changes not looked at — it ends", "▎had a look (h goes to them", "▎  src/demo.rs:3"]
+    {
+        assert!(rows_refused.iter().any(|r| r.contains(line)), "marked: {line}\n{}", rows_refused.join("\n"));
+    }
+    assert!(!rows_refused.iter().any(|r| r.contains("space v h on each, in a review")), "no row added");
+    // (the next key: the mark gone, the card as it was)
+    s.keys("<esc>");
+    let (_, rows_after) = at(&mut s);
+    assert!(!rows_after.iter().any(|r| r.contains("▎2 high-risk")), "{}", rows_after.join("\n"));
+    // (a refusal it doesn't say — on the card with the keys, as a refused key is: its rows, grown down, the title where
+    // it was)
+    s.keys("<C-q>");
+    s.ed.offer_refused("not taken — it came as the card did");
+    let (other, rows_other) = at(&mut s);
+    assert_eq!(other, top, "{}", both(&rows, &rows_other));
+    assert!(
+        rows_other.iter().any(|r| r.contains("not taken — it came as the card did")),
+        "{}",
+        rows_other.join("\n")
+    );
+    assert!(foot(&rows_other) > foot(&rows), "grown down: {}", rows_other.join("\n"));
+    // (one looked at: its words renewed, the count and the places one fewer)
+    let key = s.ed.workspace.code_review.as_ref().unwrap().high_unseen_keys(&s.ed)[0];
+    s.ed.workspace.looked.insert(key);
+    let rev = s.ed.offers[0].rev;
+    crate::codereview::end_card_sync(&mut s.ed);
+    assert!(s.ed.offers[0].rev > rev, "renewed");
+    assert!(
+        s.ed.offers[0].question.contains("1 high-risk change not looked at"),
+        "{}",
+        s.ed.offers[0].question
+    );
+    let (renewed, rows_renewed) = at(&mut s);
+    assert_eq!(renewed, top, "renewed, its title moved:\n{}", rows_renewed.join("\n"));
+}
+
+/// A card covers the chat's input only while the card has the keys (#561, the design session's, on "while you type
+/// nothing moves"): renewed from one row to three with the keys in the input, it covers neither the input nor its rule
+/// and lifts not — what doesn't fit cut, its answers its bottom line; `esc` to the code isn't turning to it: still cut,
+/// the input there for the next `i`; `C-q` gives it the keys and it stands whole, its top where it was.
+#[test]
+fn a_card_covers_the_chats_input_only_while_it_has_the_keys() {
+    use crate::offer::{Offer, What};
+    use crate::uistate::{Region, Takes};
+    let mut s = Shot::new(112, 30);
+    s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    s.ed.workspace.set_at(crate::workspace::Here::Chat);
+    s.frame();
+    let k = s.ed.keys_to();
+    assert_eq!((k.region, k.takes), (Region::Chat, Takes::Text), "the keys in the chat's input");
+    let what = || What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: crate::clock::now() };
+    s.ed.push_offer(Offer::new("End the review?".into(), "2 files not viewed.", "", String::new(), what()));
+    let all = |s: &mut Shot| rows_of(s, (0, 0, s.w as usize, s.h as usize));
+    let rows = all(&mut s);
+    let title =
+        |rows: &[String]| rows.iter().position(|r| r.contains("End the review?")).expect("its title drawn");
+    let foot = |rows: &[String]| rows.iter().rposition(|r| r.contains("╰─")).expect("its bottom line");
+    let input = s.ed.screen.chat_input.get().expect("the chat's input drawn").y;
+    let (top, bottom) = (title(&rows), foot(&rows));
+    assert!(bottom < input - 1, "standing over the input's rule: {}", rows.join("\n"));
+    // (renewed from elsewhere, one row to three, the keys still in the input)
+    let three = "3 files not viewed.\n\n  src/a.rs";
+    s.ed.push_offer(Offer::new("End the review?".into(), three, "", String::new(), what()));
+    assert_eq!(s.ed.keys_to().region, Region::Chat, "the keys stayed in the input");
+    let renewed = all(&mut s);
+    let both = format!("{}\n— then —\n{}", rows.join("\n"), renewed.join("\n"));
+    assert_eq!((title(&renewed), foot(&renewed)), (top, bottom), "its rows moved:\n{both}");
+    for y in input - 1..s.h as usize {
+        assert_eq!(renewed[y], rows[y], "row {y}, the input's or under it:\n{both}");
+    }
+    assert!(renewed.iter().any(|r| r.contains("more lines")), "cut, saying so:\n{both}");
+    // (`esc` to the code — through the input's own normal mode where it has one: not the card's keys, still held)
+    for _ in 0..2 {
+        if s.ed.keys_to().region == Region::Chat {
+            s.keys("<esc>");
+        }
+    }
+    assert_eq!(s.ed.keys_to().region, Region::Code, "esc took the keys to the code");
+    let code = all(&mut s);
+    let both = format!("{}\n— then, esc —\n{}", renewed.join("\n"), code.join("\n"));
+    assert_eq!((title(&code), foot(&code)), (top, bottom), "esc'd, its rows moved:\n{both}");
+    assert!(code.iter().any(|r| r.contains("more lines")), "esc'd, still cut:\n{both}");
+    assert_eq!(code[input], renewed[input], "esc'd, the input in sight as it was:\n{both}");
+    // (turned to: whole, its top where it was)
+    s.keys("<C-q>");
+    let turned = all(&mut s);
+    assert_eq!(title(&turned), top, "turned to, its title moved:\n{}", turned.join("\n"));
+    assert!(
+        turned.iter().any(|r| r.contains("src/a.rs")) && !turned.iter().any(|r| r.contains("more lines")),
+        "{}",
+        turned.join("\n")
+    );
+}
+
 /// `now` under code review against `base` on a `w`×`h` screen, the rail of files up (as `snapshot_review`).
 fn review_of(w: u16, h: u16, base: &str, now: &str) -> Shot {
     use crate::codereview::{Base, CodeReview, File};
