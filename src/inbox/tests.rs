@@ -259,9 +259,11 @@ fn c_q_goes_to_the_oldest_in_any_session() {
     // (#94: tarae's own card, parked in a session whose turn ended behind)
     park(&mut ed, third, tarae(30));
     session(&mut ed, third).claude.turn_end = Some((Instant::now(), Ok(())));
-    // The status line counts none: both in sight as peeks, its way in said once
+    // The status line counts none: both in sight as peeks, the oldest's saying its way in (#544: `C-q` at its end)
     let rows = screen(&mut ed, 160, 30);
-    assert!(rows[29].contains("C-q answer") && !rows[29].contains("waiting"), "{}", rows[29]);
+    assert!(!rows[29].contains("C-q") && !rows[29].contains("waiting"), "{}", rows[29]);
+    let older = rows.iter().find(|r| r.contains("back asks")).expect("back's peek");
+    assert!(older.trim_end().ends_with("C-q"), "the oldest's peek says C-q: {older}");
     // C-q: to back's (the oldest), its card up
     feed(&mut ed, "<C-q>");
     // (front's comes meanwhile, the newest: it waits behind)

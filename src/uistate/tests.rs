@@ -1848,14 +1848,17 @@ pub(crate) fn ways_in(ed: &mut Editor, key: &str, (w, h): (u16, u16)) -> Result<
             // every mention is its way in)
             let pair =
                 after.strip_prefix(" answer").is_some_and(|r| !r.starts_with(|c: char| c.is_alphabetic()));
-            if y != status && !pair {
+            let x = line[..at].chars().count();
+            // (a card's peek: its count alone at its row's end, `C-q ×3` — the card it stands for, #544)
+            let card_peek =
+                (ed.screen.asks_ways.iter()).find(|w| w.1 == y && x >= w.2 && x < w.3).map(|w| w.0);
+            if y != status && !pair && card_peek.is_none() {
                 continue;
             }
-            let x = line[..at].chars().count();
             let peek = ed.screen.review_peek.get().map(|p| (p.0, p.1, p.2, 1));
             let names = if y == status {
                 Names::Next
-            } else if ed.screen.offer_card.is_some_and(|r| inside(r, x, y)) {
+            } else if card_peek.is_some() || ed.screen.offer_card.is_some_and(|r| inside(r, x, y)) {
                 Names::Card
             } else if ed.screen.review_area.get().is_some_and(|r| inside(r, x, y))
                 || peek.is_some_and(|r| inside(r, x, y))
@@ -1869,7 +1872,7 @@ pub(crate) fn ways_in(ed: &mut Editor, key: &str, (w, h): (u16, u16)) -> Result<
                 return Err(format!("`{key}` drawn at row {y} by nothing known:\n{text}"));
             };
             let at = match names {
-                Names::Card => ed.offers.first().map(|o| Region::Card(o.id)),
+                Names::Card => card_peek.or(ed.offers.first().map(|o| o.id)).map(Region::Card),
                 Names::Review => Some(Region::EditReview),
                 Names::Next => None,
             };
@@ -1935,9 +1938,48 @@ fn every_c_q_hint_is_where_c_q_goes() {
         }
     }
     assert_eq!(checked, 48);
-    for k in [Names::Card, Names::Review, Names::Next] {
+    // (the status line's way in is met where a peek's count folds — every wait here says its own:
+    // `a_narrow_peek_keeps_its_title_whole_and_folds_its_count_first`)
+    for k in [Names::Card, Names::Review] {
         assert!(kinds.contains(&k), "the walk met no way in naming the {k:?}: it checks nothing there");
     }
+}
+
+/// #544, the design session 2026-11-13: a card behind's peek says its count at its row's end, and where the row is narrow
+/// the title wins — the count folds first, never the title cut beside it; folded, the status line says the way in (its
+/// press reaches what draws none), and shown, it doesn't. The three waits' scene (the oldest card behind, the first press's),
+/// at every width from wide to narrow.
+#[test]
+fn a_narrow_peek_keeps_its_title_whole_and_folds_its_count_first() {
+    let title = crate::claudetrust::TITLE;
+    let (mut folded, mut shown) = (0, 0);
+    for w in (40..=160u16).rev() {
+        let mut ed = waiting_scene(true, true, true, false);
+        ed.focus_sync();
+        crate::term::render(&mut ed, &mut Vec::new(), w, 40).unwrap();
+        let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), w, 40).unwrap();
+        let rows: Vec<&str> = text.lines().collect();
+        let Some(row) = rows.iter().find(|r| r.contains("Trust this project")) else { continue };
+        let count = row.trim_end().ends_with("C-q") || row.contains("C-q ×");
+        assert!(row.contains(title) || !count, "{w} wide: its count shown, its title cut:\n{text}");
+        let status = rows.last().unwrap();
+        match (row.contains(title), count) {
+            (true, false) => {
+                folded += 1;
+                assert!(
+                    status.contains("C-q"),
+                    "{w} wide: the count folded, the status line silent:\n{text}"
+                );
+            }
+            (_, true) => {
+                shown += 1;
+                assert!(!status.contains("C-q"), "{w} wide: the peek says it, the status line too:\n{text}");
+            }
+            _ => {}
+        }
+    }
+    assert!(shown > 0, "no width showed the peek's count");
+    assert!(folded > 0, "no width folded the count with the title whole");
 }
 
 /// #544 (2), user 2026-11-13: each waiting thing says how many `C-q`s reach it, and that many do. Two waiting (Claude's
@@ -1961,21 +2003,31 @@ fn c_q_says_how_many_presses_reach_each_wait_and_steps_on() {
         let ways: Vec<Way> =
             ways_drawn(&mut ed, "C-q").into_iter().filter(|w| w.names != Names::Next).collect();
         // (the counts: the review and the card in front each say theirs; a second card behind, the oldest, is the first
-        // press's — its peek names no key)
-        let mut counts: Vec<(Names, usize)> = ways.iter().map(|w| (w.names, w.n)).collect();
-        counts.dedup();
+        // press's — its peek says `C-q` at its row's end, #544)
+        let front = Region::Card(ed.offers[0].id);
+        let behind = ed.offers.get(1).map(|o| Region::Card(o.id));
         let (review, card) = match (review_first, cards) {
             (true, false) => (1, 2),
             (false, false) => (2, 1),
             (true, true) => (2, 3),
             (false, true) => (3, 2),
         };
-        for (names, n) in &counts {
-            let want = if *names == Names::Review { review } else { card };
-            assert_eq!(*n, want, "{scene}: {names:?} says ×{n}: {ways:#?}");
+        for w in &ways {
+            let want = match w.at {
+                Some(Region::EditReview) => review,
+                Some(r) if r == front => card,
+                r if r.is_some() && r == behind => 1,
+                r => panic!("{scene}: `{}` names {r:?}", w.row),
+            };
+            assert_eq!(w.n, want, "{scene}: `{}` says ×{}: {ways:#?}", w.row, w.n);
         }
-        assert!(counts.iter().any(|c| c.0 == Names::Review), "{scene}: the review says its count: {ways:#?}");
-        assert!(counts.iter().any(|c| c.0 == Names::Card), "{scene}: the card says its count: {ways:#?}");
+        let said = |r: Option<Region>| ways.iter().any(|w| w.at == r);
+        assert!(said(Some(Region::EditReview)), "{scene}: the review says its count: {ways:#?}");
+        assert!(said(Some(front)), "{scene}: the card says its count: {ways:#?}");
+        assert!(!cards || said(behind), "{scene}: the card behind, its peek, says its count: {ways:#?}");
+        for k in 1..=waits {
+            assert!(ways.iter().any(|w| w.n == k), "{scene}: nothing says press {k}'s: {ways:#?}");
+        }
         let mut landed = Vec::new();
         for _ in 0..=waits {
             feed(&mut ed, &["<C-q>"]);

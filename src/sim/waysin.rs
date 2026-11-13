@@ -63,11 +63,14 @@ fn run(choices: Choices) -> Vec<String> {
     sim.trace().to_vec()
 }
 
-/// Where the keys go once the next `C-q` reaches the card in front or the review (`c_q_next`), as a drawn way names it.
+/// Where the keys go once the next `C-q` reaches a card (in front, or behind it: its peek says it) or the review
+/// (`c_q_line`'s first), as a drawn way names it.
 fn reaches(ed: &Editor) -> Option<Region> {
-    match ed.c_q_next()? {
-        Waiting::Card(id) => Some(Region::Card(id)),
-        Waiting::Review => Some(Region::EditReview),
+    let first = ed.c_q_line().into_iter().next()?;
+    match (ed.c_q_next(), first.card()) {
+        (Some(Waiting::Review), _) => Some(Region::EditReview),
+        (_, Some(id)) => Some(Region::Card(id)),
+        _ => None,
     }
 }
 

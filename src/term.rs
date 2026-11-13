@@ -848,6 +848,9 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     if front.is_some() && editor.card_next == front {
         editor.card_focus = editor.card_next.take();
         editor.card_handed = front.map(|f| (f.0, f.1, editor.frames));
+        // (laid again as it holds them: this frame is the one it has them in — its `esc back`, and every count, `C-q ×2`
+        // a peek said, read from them, #544)
+        offer = OfferCard::new(editor, &lay);
     }
     // Drawn whole: all of it has been in sight — every row of its body in some frame, a cut one's as the wheel brought
     // them (#84: never from the wheel's offset, which can step past rows between frames); its bar is no card in sight
@@ -902,6 +905,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         offer_card: offer.as_ref().map(OfferCard::rect),
         offer_top: offer.as_ref().and_then(|c| c.top),
         asks_drawn: offer.as_ref().map(OfferCard::drawn_ids).unwrap_or_default(),
+        asks_ways: offer.as_ref().map(OfferCard::peek_ways).unwrap_or_default(),
         top_strip: Default::default(),
         news: Default::default(),
         offer_held: offer.is_none()
@@ -1246,6 +1250,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         editor.screen.offer_card = offer.as_ref().map(OfferCard::rect);
         editor.screen.offer_top = offer.as_ref().and_then(|c| c.top);
         editor.screen.asks_drawn = offer.as_ref().map(OfferCard::drawn_ids).unwrap_or_default();
+        editor.screen.asks_ways = offer.as_ref().map(OfferCard::peek_ways).unwrap_or_default();
         editor.screen.offer_cut = offer.as_ref().filter(|c| !c.bar).map(|c| c.cut);
     }
     // (the front card this frame had no room for — the status line says the size it needs: nothing of yours answers a
@@ -12594,14 +12599,17 @@ fn draw_statusline(
     // (drawn on what `C-q` reaches, or what holds the keys — where `C-q` lets go or is refused — #544: a card or review in
     // sight that `C-q` passes over says nothing of it)
     // (what holds the keys with nothing else waiting: its `C-q` gives them back, nothing to say; else the next press's
-    // target says it where it's drawn — a card behind, a peek, names no key: the line does, #544)
+    // target says it where it's drawn — its bottom line, its peek's count, the review's head or peek; a peek too narrow
+    // for its count, or none drawn: the line does, #544)
     let review_drawn = editor.screen.review_area.get().is_some() || editor.screen.review_peek.get().is_some();
     let line = editor.c_q_line();
-    let way_drawn = match editor.c_q_next() {
+    let peek_said = |id: u64| editor.screen.asks_ways.iter().any(|w| w.0 == id);
+    let way_drawn = match (editor.c_q_next(), line.first().and_then(crate::inbox::Entry::card)) {
         _ if line.is_empty() => editor.c_q_held().is_some(),
-        Some(crate::inbox::Waiting::Card(_)) => editor.screen.offer_way.is_some(),
-        Some(crate::inbox::Waiting::Review) => review_drawn,
-        None => false,
+        (Some(crate::inbox::Waiting::Card(id)), _) => editor.screen.offer_way.is_some() || peek_said(id),
+        (Some(crate::inbox::Waiting::Review), _) => review_drawn,
+        (None, Some(id)) => peek_said(id),
+        (None, None) => false,
     };
     // What Claude is doing now (`now.rs`), after the mode word — and after whose turn it is where the chip names it: the
     // step and its time, its last sentence, the plan's step — the sentence cut to the room left below, once the rest is in.
@@ -14565,8 +14573,39 @@ struct OfferCard {
 }
 
 /// A card stacked behind the front one (`OfferCard.peeks`): its depth (1..), title, start time if downloading, whether it
-/// failed, its id, whom it's about (its session's name and colour), and its place on its row (x, width — `peek_span`).
-type Peek = (usize, String, Option<std::time::Instant>, bool, u64, Option<(String, u8)>, (usize, usize));
+/// failed, its id, whom it's about (its session's name and colour), its place on its row (x, width — `peek_span`), and
+/// its count where the row holds it (`peek_way`).
+type Peek = (
+    usize,
+    String,
+    Option<std::time::Instant>,
+    bool,
+    u64,
+    Option<(String, u8)>,
+    (usize, usize),
+    Option<String>,
+);
+
+/// A peek laid with its count (#544, the design session 2026-11-13): how many `C-q`s reach card `id`
+/// (`Editor::way_in`, `C-q ×3`), at its row's right end — two cells of air after its title (`need`, `peek_need`, has
+/// them), one after it. Its place (`peek_span`, depth `k` behind `front`) as wide as both ask where the row has room —
+/// never wider than its own card (`whole`, #177's review: a press brings it at the stack's width) —; where it hasn't, the
+/// title wins: the count folds, the peek as wide as its title alone asks (the status line says the way in).
+fn peek_laid(
+    editor: &Editor,
+    (front, k): ((usize, usize), usize),
+    need: usize,
+    id: u64,
+    whole: impl Fn() -> usize,
+) -> ((usize, usize), Option<String>) {
+    let way = editor.way_in(crate::inbox::Waiting::Card(id));
+    let way_w = way.as_ref().map_or(0, |w| w.width() + 1);
+    let at = peek_span(front, k, need + way_w, &whole);
+    match way.filter(|w| at.1 > need + w.width()) {
+        Some(w) => (at, Some(w)),
+        None => (peek_span(front, k, need, &whole), None),
+    }
+}
 
 /// How many cells a back card is inset on each side relative to the one in front.
 const PEEK_INSET: usize = 2;
@@ -14754,7 +14793,8 @@ pub(crate) fn card_line(ed: &Editor) -> Option<String> {
     let (bytes, cols, rows) = ed.last_frame.as_ref()?;
     let mut p = vt100::Parser::new(*rows, *cols, 0);
     p.process(bytes);
-    p.screen().rows(x as u16, w as u16).nth(y + h - 1)
+    // (from its frame's corner: a peek wider than it — for its title, its count — reaches left of it, the stack's rect too)
+    p.screen().rows(x as u16, w as u16).nth(y + h - 1).map(|l| l.trim_start().to_string())
 }
 
 /// The front card's bottom line in the last frame drawn checked against the rule that lays it, on any system — for a
@@ -14946,9 +14986,10 @@ impl OfferCard {
                 let about = Some((l.label().to_string(), l.claude.colour));
                 let title = asks_title(about.as_ref(), &p.title);
                 let whole = || Self::width_of(editor, lay, p).unwrap_or(reading);
-                let at = peek_span((x, width), k + 1, peek_need(&title, false), whole);
+                let need = peek_need(&title, false);
+                let (at, way) = peek_laid(editor, ((x, width), k + 1), need, p.id, whole);
                 let failed = matches!(p.state, crate::offer::OfferState::Failed(_));
-                (k + 1, title, None, failed, p.id, about, at)
+                (k + 1, title, None, failed, p.id, about, at, way)
             })
             .filter(|p| p.6.1 > 8)
             .collect();
@@ -14956,7 +14997,7 @@ impl OfferCard {
             return None;
         }
         let buttons = (peeks.iter())
-            .map(|&(k, .., (px, pw))| (bottom - k, px, px + pw, char::from(b'0' + k as u8)))
+            .map(|&(k, .., (px, pw), _)| (bottom - k, px, px + pw, char::from(b'0' + k as u8)))
             .collect();
         Some(Self {
             id: 0,
@@ -15014,12 +15055,13 @@ impl OfferCard {
                 true => width,
                 false => Self::width_of(editor, lay, p).unwrap_or(reading),
             };
-            let ((px, pw), py) = (peek_span((x, width), k, peek_need(&title, false), whole), bottom - k);
+            let need = peek_need(&title, false);
+            let (((px, pw), way), py) = (peek_laid(editor, ((x, width), k), need, p.id, whole), bottom - k);
             if pw <= 8 || opened.iter().any(|&r| overlaps((px, py, pw, 1), r)) {
                 continue;
             }
             let failed = matches!(p.state, crate::offer::OfferState::Failed(_));
-            peeks.push((k, title, None, failed, p.id, about, (px, pw)));
+            peeks.push((k, title, None, failed, p.id, about, (px, pw), way));
             let key = if k == 1 { crate::mouse::WAY } else { char::from(b'0' + (k - 1) as u8) };
             buttons.push((py, px, px + pw, key));
         }
@@ -15646,8 +15688,9 @@ impl OfferCard {
                 };
                 let title = asks_title(about.as_ref(), &p.title);
                 let whole = || Self::width_of(editor, lay, p).unwrap_or(reading);
-                let at = peek_span((x, width), k + 1, peek_need(&title, started.is_some()), whole);
-                (k + 1, title, started, matches!(p.state, OfferState::Failed(_)), p.id, about, at)
+                let need = peek_need(&title, started.is_some());
+                let (at, way) = peek_laid(editor, ((x, width), k + 1), need, p.id, whole);
+                (k + 1, title, started, matches!(p.state, OfferState::Failed(_)), p.id, about, at, way)
             })
             .filter(|p| p.6.1 > 8)
             .collect::<Vec<_>>();
@@ -15671,7 +15714,7 @@ impl OfferCard {
                 at = end + 3;
             }
         }
-        for &(k, .., (px, pw)) in &peeks {
+        for &(k, .., (px, pw), _) in &peeks {
             buttons.push((y - k - 1, px, px + pw, char::from(b'0' + k as u8)));
         }
         if cut > 0 || above > 0 {
@@ -15749,6 +15792,13 @@ impl OfferCard {
         // (a peek wider than the card for its title reaches left of it)
         let left = self.peeks.iter().map(|p| p.6.0).min().unwrap_or(self.x).min(self.x);
         (left, self.y - back, self.x + self.width() - left, self.rows() + back)
+    }
+
+    /// The peeks this frame draws with their count (#544): (its card's id, its row, its first column, past its last) —
+    /// `Screen.asks_ways`.
+    fn peek_ways(&self) -> Vec<(u64, usize, usize, usize)> {
+        let peeks = self.peeks.iter().filter(|p| !self.bar && p.7.is_some());
+        peeks.map(|p| (p.4, self.y - p.0 - self.air(), p.6.0, p.6.0 + p.6.1)).collect()
     }
 
     /// The row of air between the back cards and the front card's frame (none without back cards).
@@ -15850,7 +15900,7 @@ impl OfferCard {
             apply(out, air_style)?;
             queue!(out, MoveTo(self.x as u16, (self.y - 1) as u16), Spaces(width))?;
         }
-        for (k, title, started, failed, peek, about, (px, pw)) in self.peeks.iter().rev() {
+        for (k, title, started, failed, peek, about, (px, pw), way) in self.peeks.iter().rev() {
             let (px, pw, py) = (*px, *pw, self.y - k - air);
             let peek_id = format!("card#{peek}");
             spot(*peek, px, py, pw);
@@ -15871,7 +15921,10 @@ impl OfferCard {
                 .unwrap_or_default();
             // (its mark at the right end, before the working sign)
             let mark_w = if mark.is_some() { 2 } else { 0 };
-            let room = pw.saturating_sub(5 + tail.width() + mark_w);
+            // (its count at the right end, two cells after its title whole — a mark beside it: the count folds first)
+            let way = way.as_ref().filter(|k| pw > 5 + title.width() + tail.width() + mark_w + k.width());
+            let way_w = way.map_or(0, |k| k.width() + 1);
+            let room = pw.saturating_sub(5 + tail.width() + mark_w + way_w);
             let t = crate::whole::fit(title, room);
             crate::whole::at(crate::whole::On::Card, &t, (px + 3, py), text, (px, px + pw));
             let mut spans = vec![(" ".to_string(), text), ("▎".to_string(), bar_st), (" ".to_string(), text)];
@@ -15884,10 +15937,18 @@ impl OfferCard {
                     }
                     None => t.shown(),
                 };
-            let gap = " ".repeat(pw.saturating_sub(3 + t.width() + tail.width() + mark_w));
+            // (the count's cells: the key, then the cell of air the row ends on)
+            let count_w = way.map_or(0, |k| k.width() + 1);
+            let gap = " ".repeat(pw.saturating_sub(3 + t.width() + tail.width() + mark_w + count_w));
             spans.push((format!("{rest}{gap}"), text));
             if let Some((m, st)) = mark {
                 spans.push((format!("{m} "), st));
+            }
+            // (bold dim, as every hint's key — the count as the bottom lines write it, `C-q ×3`)
+            if let Some(k) = way {
+                let key = Style { bold: true, fg: ui.hint_key.or(ui.virt.fg), bg, ..Style::default() };
+                spans.push((k.clone(), key));
+                spans.push((" ".to_string(), text));
             }
             spans.push((tail, bar_st));
             queue!(out, MoveTo(px as u16, py as u16))?;

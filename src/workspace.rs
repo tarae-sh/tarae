@@ -2053,9 +2053,11 @@ mod tests {
             let (x, y, cw, ch) = ed.screen.offer_card.expect("its rect");
             assert_eq!((y, ch), (peek, 1), "{w}: one row");
             assert!(x + cw + 1 >= w - 1 && peek > h / 2, "{w}: bottom-right: {x}+{cw} at {peek}\n{rows:#?}");
+            // (its way in at its peek's end, #544 — the status line says none, nor that it waits)
+            assert!(rows[peek].trim_end().ends_with("C-q"), "{w}: its way said on it: {}", rows[peek]);
             assert!(
-                rows[h - 1].contains("C-q answer") && !rows[h - 1].contains("waiting"),
-                "{w}: in sight, its way said: {}",
+                !rows[h - 1].contains("C-q") && !rows[h - 1].contains("waiting"),
+                "{w}: in sight, its way said once: {}",
                 rows[h - 1]
             );
         }

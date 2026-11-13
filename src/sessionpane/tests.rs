@@ -641,15 +641,17 @@ fn a_card_that_came_on_its_own_folds_off_the_session_list() {
         rows.iter().position(|r| r.contains("Claude asks")).unwrap_or_else(|| panic!("its peek:\n{s}"));
     assert!(peek >= list.y + list.h, "under the list, never over it (row {peek}, list {list:?}):\n{s}");
     assert_eq!(ed.screen.asks_drawn, [ed.offers[0].id], "its peek is it in sight");
+    // (its way in on its peek, its count at the row's end — #544: the status line says none, nor that it waits)
     let status = rows.last().copied().unwrap_or_default();
-    assert!(status.contains("C-q answer") && !status.contains("waiting"), "{status}");
-    // A press on the status line's way in: it stands whole, the keys its
-    let spot = (ed.screen.word_spots.borrow().iter())
-        .find(|w| w.on == crate::mouse::Surface::Status && w.press == crate::wordspot::Press::Card)
-        .cloned()
-        .unwrap_or_else(|| panic!("`C-q answer` a button: {status}"));
+    assert!(rows[peek].trim_end().ends_with("C-q"), "its peek says its way in: {}", rows[peek]);
+    assert!(!status.contains("C-q") && !status.contains("waiting"), "{status}");
+    // A press on its peek, its way in: it stands whole, the keys its
+    let spot = (ed.screen.offer_buttons.iter())
+        .find(|b| b.0 == peek && b.3 == crate::mouse::WAY)
+        .copied()
+        .unwrap_or_else(|| panic!("its peek a button: {:?}", ed.screen.offer_buttons));
     for kind in [crate::event::MouseKind::Down, crate::event::MouseKind::Up] {
-        let (x, y) = (((spot.from + spot.to) / 2) as u16, spot.y as u16);
+        let (x, y) = (((spot.1 + spot.2) / 2) as u16, spot.0 as u16);
         ed.handle_mouse(crate::event::Mouse { kind, x, y, alt: false, ctrl: false });
     }
     let s = frame(&mut ed, 80, 24);

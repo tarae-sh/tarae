@@ -14,9 +14,9 @@
       "aside": false,
       "asks": "End the review?",
       "at": [
-        73,
+        66,
         30,
-        46,
+        53,
         5
       ],
       "cut": 0,
@@ -249,9 +249,9 @@
       "kind": "ask",
       "must": true,
       "rect": [
-        73,
+        66,
         30,
-        46,
+        53,
         5
       ]
     },
@@ -349,9 +349,9 @@
           "float": true,
           "id": "card#2",
           "rect": [
-            73,
+            66,
             30,
-            46,
+            53,
             5
           ],
           "shows": "card"

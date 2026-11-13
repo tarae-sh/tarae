@@ -393,16 +393,20 @@ impl Editor {
         [front, Some(Waiting::Review)].into_iter().flatten().find(|&w| self.entry_is(&first, w))
     }
 
-    /// The way in `what` says on itself (a card's bottom line, the review's head or peek), read from where `C-q` goes
-    /// (#544): how many presses reach it (`c_q_line`) — `C-q` on the next, `C-q ×2` on the one after, inside zellij its
-    /// twin. None for what holds the keys (its `C-q` steps on; a card's own line says `esc back`) and for a card not in
-    /// front (its peek names no key).
+    /// The way in `what` says on itself (a card's bottom line or its peek — one behind, another session's —, the review's
+    /// head or peek), read from where `C-q` goes (#544): how many presses reach it (`c_q_line`) — `C-q` on the next,
+    /// `C-q ×2` on the one after, inside zellij its twin. None for what holds the keys (its `C-q` steps on; a card's own
+    /// line says `esc back`), and past a press that switches to a third session (it orders what's after it anew: each
+    /// press before it stays here or goes to its own session).
     pub fn way_in(&self, what: Waiting) -> Option<String> {
-        let front = self.offers.first().filter(|o| !o.installing()).map(|o| o.id);
-        if matches!(what, Waiting::Card(id) if front != Some(id)) {
+        let line = self.c_q_line();
+        let at = line.iter().position(|e| self.entry_is(e, what))?;
+        let here = self.workspace.id;
+        let its = line[at].session_id();
+        if line[..at].iter().any(|e| e.session_id() != here && e.session_id() != its) {
             return None;
         }
-        let n = self.c_q_line().iter().position(|e| self.entry_is(e, what))? + 1;
+        let n = at + 1;
         let key = self.key_said("C-q");
         Some(if n == 1 { key } else { format!("{key} ×{n}") })
     }

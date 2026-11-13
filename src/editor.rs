@@ -621,6 +621,9 @@ pub struct Screen {
     /// The cards this frame draws, each whole or as its peek (the front's id first; any session's): what waits in
     /// sight — the status line's `▲N waiting` counts only the rest (polish landing 1).
     pub asks_drawn: Vec<u64>,
+    /// The peeks this frame draws with their count (`C-q ×3`, #544): (its card's id, its row, its first column, past its
+    /// last) — a way in in sight, as the front card's `offer_way`.
+    pub asks_ways: Vec<(u64, usize, usize, usize)>,
     /// The sessions' strip drawn on the screen's top row this frame (`term::draw_header`): the home of a bring's
     /// progress — the status line's chip says it only on a frame with none (#319).
     pub top_strip: std::cell::Cell<bool>,
@@ -16471,11 +16474,12 @@ mod tests {
         let tabs = tabs.unwrap_or_else(|| panic!("the tabs: {r:#?}"));
         assert!(tabs == 0 && !r[0].contains("claude"), "the chat's top line: {r:#?}");
         // Narrow: the states fold to what needs you, then the sessions into `+N` — names whole, the front and the one
-        // waiting always in, the order kept; `+` gone while `+N` shows. What waits is its peek's, the status line
-        // saying the way in
+        // waiting always in, the order kept; `+` gone while `+N` shows. What waits is its peek's, its way in at the
+        // peek's end (#544), the status line saying none
         let r = rows(&mut ed, 100);
         assert!(r[0].contains("─ main · parser ▲ · +1 ─"), "{}", r[0]);
-        assert!(r[23].contains("● normal   C-q answer"), "{}", r[23]);
+        assert!(r.iter().any(|r| r.contains("parser") && r.trim_end().ends_with("C-q")), "its peek: {r:#?}");
+        assert!(!r[23].contains("C-q"), "{}", r[23]);
         // A click on a tab: that session, whole
         let r = rows(&mut ed, 200);
         let x = r[tabs].find("fix-login").map(|b| r[tabs][..b].chars().count()).unwrap();
@@ -16490,7 +16494,13 @@ mod tests {
         // No chat there: the chip, then the list from it
         let r = rows(&mut ed, 120);
         let status = r.iter().position(|r| r.contains("● normal")).expect("the status line");
-        assert!(r[status].contains("● normal   fix-login-everywhere C-q answer"), "{}", r[status]);
+        // (the ask waiting elsewhere: its peek says its way in at its end, #544 — the status line names none)
+        assert!(
+            r[status].contains("● normal   fix-login-everywhere") && !r[status].contains("C-q"),
+            "{}",
+            r[status]
+        );
+        assert!(r.iter().any(|r| r.trim_end().ends_with("C-q")), "its peek: {r:#?}");
         let x = r[status].find("fix-login").map(|b| r[status][..b].chars().count()).unwrap();
         ed.handle_mouse(Mouse {
             kind: MouseKind::Down,
