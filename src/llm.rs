@@ -1668,6 +1668,32 @@ pub fn review_way_in(ed: &mut Editor, key: Key) -> bool {
     true
 }
 
+/// The focused edit review lets go of the keys, waiting on unanswered (its `esc`, and `C-q` stepping on — #544): back
+/// to the chat if they came from it (Some(true)), else to the code, where it folds to its peek (Some(false)). None:
+/// it didn't have them.
+pub fn review_let_go(ed: &mut Editor) -> Option<bool> {
+    let rev = ed.workspace.claude.review.as_mut().filter(|r| r.ready && r.focused)?;
+    rev.focused = false;
+    let chat = rev.from_chat && ed.workspace.claude.chat.is_some();
+    match chat {
+        true => ed.workspace.set_at(Here::Chat),
+        false => {
+            // (the keys on the code: it folds to its peek, the code in sight)
+            rev.fold();
+            ed.mode = crate::editor::Mode::Normal;
+        }
+    }
+    Some(chat)
+}
+
+/// The focused review's `esc`: the keys back where they came from (`review_let_go`), said with its way in. True.
+fn review_back(ed: &mut Editor) -> bool {
+    let to = if review_let_go(ed) == Some(true) { "chat" } else { "code" };
+    let key = ed.way_in(crate::inbox::Waiting::Review).unwrap_or_else(|| ed.key_said("C-q"));
+    ed.set_status(format!("back to the {to} — the change waits unanswered, {key} answers it"));
+    true
+}
+
 /// Every event: the edit review's focus follows the keys. Focused, it lets go once they leave the code (a hop, a
 /// press elsewhere); waiting, it folds to its peek once they're on the code — and stays folded.
 pub fn review_keys_sync(ed: &mut Editor) {
@@ -1835,6 +1861,10 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
     if !rev.focused {
         return false;
     }
+    // `C-q` steps on to what waits next (#544: as a card's does); nothing else waiting, the keys back as `esc`
+    if key.ctrl && !key.alt && key.code == Code::Char('q') {
+        return ed.c_q_step() || review_back(ed);
+    }
     let scroll = |rev: &mut Review, by: isize| {
         rev.scroll = rev.scroll.saturating_add_signed(by);
         rev.follow = false;
@@ -1848,28 +1878,7 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
         (Code::Char('b'), true, false) | (Code::PageUp, false, false) => scroll(rev, -page),
         (Code::Char('e'), true, false) => scroll(rev, 1),
         (Code::Char('y'), true, false) => scroll(rev, -1),
-        (Code::Esc, ..) => {
-            rev.focused = false;
-            match ed.workspace.claude.chat.as_mut().filter(|_| rev.from_chat) {
-                Some(_) => {
-                    ed.workspace.set_at(Here::Chat);
-                    let key = ed.key_said("C-q");
-                    ed.set_status(format!(
-                        "back to the chat — the change waits unanswered, {key} answers it"
-                    ));
-                }
-                None => {
-                    // (the keys on the code: it folds to its peek, the code in sight)
-                    rev.fold();
-                    ed.mode = crate::editor::Mode::Normal;
-                    let key = ed.key_said("C-q");
-                    ed.set_status(format!(
-                        "back to the code — the change waits unanswered, {key} answers it"
-                    ));
-                }
-            }
-            return true;
-        }
+        (Code::Esc, ..) => return review_back(ed),
         _ => return review_answer(ed, key),
     };
     if done {

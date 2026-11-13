@@ -1038,9 +1038,9 @@ fn each_status_line_word_does_its_own() {
     let mut ed = editor();
     crate::uistate::tests::edit_review(&mut ed);
     chat(&mut ed, "");
-    let s = status_word(&mut ed, &Press::Card);
+    let s = status_word(&mut ed, &Press::Change);
     assert_eq!(s.spans[0].0, "claude ● change");
-    press_word(&mut ed, &Press::Card);
+    press_word(&mut ed, &Press::Change);
     assert_eq!(ed.keys_to().region, crate::uistate::Region::EditReview, "the review's keys");
 }
 

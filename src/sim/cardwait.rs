@@ -4,7 +4,8 @@
 //! parked, then up again), frames, and the user taking their time.
 //!
 //! The scenario keeps its own model of which card is focused — by id and `rev`, from what it did alone: `C-q` or a
-//! press focuses the front (`C-q` again, `esc`, a switch, the card's text changing let go), your own card coming to
+//! press focuses the front (`C-q` again steps on to the next card waiting, else lets go — #544; `esc`, a switch, the
+//! card's text changing let go), your own card coming to
 //! the front is focused, and an answer hands the keys on only while going through them (the answered card not
 //! yours) or to one of yours — and only at a frame that draws it: `y y` in one batch (a repeat, a yank typed on) never
 //! answers the next card unseen (the review of 7b). Each `y` is judged by it — one that reaches a card the model
@@ -88,6 +89,8 @@ fn key(
 ) {
     let before = front(ed);
     let session = ed.workspace.id;
+    // (another card waiting, here behind it or in a session behind — a focused one's `C-q` steps on to it, #544)
+    let others = !ed.c_q_line().is_empty();
     let event = crate::event::Event::Key(k.parse::<Key>().unwrap());
     match framed {
         true => sim.batch(ed, event),
@@ -112,8 +115,11 @@ fn key(
             }
         }
         "esc" if had => m.focused = None,
-        // (focused: let go; else to this session's card, or — none here — the next up anywhere)
-        "C-q" if had => m.focused = None,
+        // (focused: on to the next card waiting — brought to the front, its session's too — none: let go; else to this
+        // session's card, or — none here — the next up anywhere)
+        "C-q" if had => {
+            m.focused = front(ed).filter(|f| others && Some(f.0) != before.map(|b| b.0)).map(|f| (f.0, f.1))
+        }
         "C-q" => {
             let here = before.is_some();
             m.focused = match front(ed) {

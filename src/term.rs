@@ -10232,7 +10232,8 @@ fn draw_review_header(
     // leads — the way in, as a waiting card's bottom line says it — and the answers follow faint: the lit line and
     // the cursor say where the keys are. Each in a short form too, for when the row can't hold them whole (beside
     // the chat it cut esc's off)
-    let waiting = !rev.focused;
+    // (a card holding the keys over it — `C-w w` from it: the keys aren't its, it's drawn waiting, its count said)
+    let waiting = !rev.focused || editor.card_has_keys();
     // (inside zellij its twin — worked out only where the header says it: it reads where the keys are and the inbox; said
     // only where `C-q` reaches it — another waiting first, none: its answers faint, #544)
     let c_q = match current && waiting {
@@ -12590,13 +12591,16 @@ fn draw_statusline(
     // header; its peeks alone, or none drawn, the line does — once)
     // (drawn on what `C-q` reaches, or what holds the keys — where `C-q` lets go or is refused — #544: a card or review in
     // sight that `C-q` passes over says nothing of it)
+    // (what holds the keys with nothing else waiting: its `C-q` gives them back, nothing to say; else the next press's
+    // target says it where it's drawn — a card behind, a peek, names no key: the line does, #544)
     let review_drawn = editor.screen.review_area.get().is_some() || editor.screen.review_peek.get().is_some();
-    let said_on = |w: crate::inbox::Waiting| editor.way_in(w).is_some();
-    let way_drawn = editor.card_has_keys()
-        || editor.workspace.claude.review.as_ref().is_some_and(|r| r.focused)
-        || editor.offers.first().is_some_and(|o| said_on(crate::inbox::Waiting::Card(o.id)))
-            && editor.screen.offer_way.is_some()
-        || said_on(crate::inbox::Waiting::Review) && review_drawn;
+    let line = editor.c_q_line();
+    let way_drawn = match editor.c_q_next() {
+        _ if line.is_empty() => editor.c_q_held().is_some(),
+        Some(crate::inbox::Waiting::Card(_)) => editor.screen.offer_way.is_some(),
+        Some(crate::inbox::Waiting::Review) => review_drawn,
+        None => false,
+    };
     // What Claude is doing now (`now.rs`), after the mode word — and after whose turn it is where the chip names it: the
     // step and its time, its last sentence, the plan's step — the sentence cut to the room left below, once the rest is in.
     // While the follow card says the step (`short`, focus B1), the turn's cell alone — blank where `▲N waiting` says it
@@ -13176,7 +13180,7 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
         UNSENT => Some(Press::Command("chat_open")),
         BRANCH => Some(Press::Command("git_panel")),
         ZOOMED => Some(Press::Command("zoom_toggle")),
-        CLAUDE_CHANGE if review => Some(Press::Card),
+        CLAUDE_CHANGE if review => Some(Press::Change),
         PROCS_MARK | PROCS_SAYS => Some(Press::Command(":procs")),
         DIAGNOSTICS => Some(Press::Command("diagnostics_picker")),
         INBOX_NEXT => Some(Press::Card),
@@ -21338,20 +21342,12 @@ fn draw_chat(
         // (a card up asks mid-turn: the chat keeps the keys, `C-q` hands them over — frictions26 — named by what it
         // reaches, #544: the card, or Claude's edit review waiting before it; another session's card in front it switches
         // to. Not while a card holds them already: given by `C-q`, its answers answer it)
-        let reaches = match editor.next_up() {
+        // (what the next press reaches — `c_q_line`'s first, as `way_in` counts it)
+        let reaches = match editor.c_q_next() {
             _ if !c.busy() || editor.card_has_keys() => None,
-            crate::inbox::Next::Card(_) => Some("answer card"),
-            crate::inbox::Next::Review
-                if editor.workspace.claude.review.as_ref().is_some_and(crate::llm::Review::waits) =>
-            {
-                Some("answer review")
-            }
-            crate::inbox::Next::Go(e)
-                if e.card().is_some() && e.card() == editor.offers.first().map(|o| o.id) =>
-            {
-                Some("answer card")
-            }
-            _ => None,
+            Some(crate::inbox::Waiting::Card(_)) => Some("answer card"),
+            Some(crate::inbox::Waiting::Review) => Some("answer review"),
+            None => None,
         };
         if let Some(what) = reaches {
             c_q = editor.key_said("C-q");

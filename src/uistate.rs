@@ -394,11 +394,13 @@ impl Editor {
         }
         let modal = self.picker.is_some() || self.prompt.is_some();
         let next = self.next_up();
-        // `card_key`: focused, every key is the front card's but the window prefix (`C-q` and `esc` let go); not
+        // `card_key`: focused, every key is the front card's but the window prefix (`C-q` steps on, `esc` lets go); not
         // focused, `C-q` focuses it when it's the next up (`inbox::next_up`: this session's own first, then the
         // oldest) — a card sees no other key (P3 §3.8)
         let up = self.offers.first().filter(|o| !o.installing() && !modal);
         let held = up.is_some() && self.card_has_keys();
+        // (the edit review holding the keys: its `C-q` steps on, its own layer below — #544)
+        let review_held = self.c_q_held() == Some(crate::inbox::Waiting::Review);
         // (`card_key`: handed the keys by an answer, not drawn yet — its answers refused and said on it, the rest go on)
         if let Some(o) = up.filter(|o| !held && self.card_next == Some((o.id, o.rev))) {
             let letters = (' '..='~').filter(|&c| o.acts_on(c)).map(ch).collect();
@@ -411,7 +413,7 @@ impl Editor {
             } else if self.offer_reading() {
                 // (its text the buffer in sight: `C-q` gives it the keys whatever is next up)
                 v.push(shortcut(Region::Card(o.id), Filter::Only(crate::inbox::way_in_keys())));
-            } else if next == crate::inbox::Next::Card(o.id) {
+            } else if next == crate::inbox::Next::Card(o.id) && !review_held {
                 v.push(shortcut(Region::Card(o.id), Filter::Only(crate::inbox::way_in_keys())));
             }
         }
@@ -427,7 +429,7 @@ impl Editor {
             next,
             crate::inbox::Next::Go(_) | crate::inbox::Next::Done(_) | crate::inbox::Next::None
         );
-        if !modal && !held && elsewhere {
+        if !modal && !held && !review_held && elsewhere {
             v.push(shortcut(Region::NextCard, Filter::Only(crate::inbox::way_in_keys())));
         }
         // `follow_key`: the follow card with the keys — every key but the window prefix (its sizes, the keys staying):

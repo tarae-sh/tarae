@@ -342,22 +342,92 @@ impl Editor {
         }
     }
 
+    /// What holds the keys among what waits here: the card in front focused, or this session's edit review.
+    pub fn c_q_held(&self) -> Option<Waiting> {
+        if self.card_has_keys() {
+            return self.offers.first().map(|o| Waiting::Card(o.id));
+        }
+        let review = self.workspace.claude.review.as_ref().is_some_and(|r| r.ready && r.focused);
+        review.then_some(Waiting::Review)
+    }
+
+    /// Whether inbox entry `e` is `what`, the front card or this session's edit review.
+    fn entry_is(&self, e: &Entry, what: Waiting) -> bool {
+        match what {
+            Waiting::Card(id) => e.card() == Some(id),
+            Waiting::Review => e.up == "review" && e.session_id() == self.workspace.id,
+        }
+    }
+
+    /// What successive `C-q`s reach from here, press by press (#544, user 2026-11-13): what asks, in the inbox's order
+    /// (`in_line`, this session's own first — #198), round from where the keys are. Nothing holding them, the first is
+    /// `next_up`'s; what holds them (a card, the review) is passed over, the next after it first. Its text read in its
+    /// buffer, the card in front first (its `C-q` gives it the keys, `card_key`). Empty: nothing else waits — `C-q` on
+    /// what holds the keys gives them back.
+    pub fn c_q_line(&self) -> Vec<Entry> {
+        let front = !self.background();
+        let here = self.workspace.id;
+        let (mut line, rest): (Vec<Entry>, Vec<Entry>) = (self.inbox().into_iter())
+            .filter(Entry::asks_answer)
+            .partition(|e| front && e.session_id() == here);
+        line.extend(rest);
+        let card = self.offers.first().filter(|o| !o.installing()).map(|o| Waiting::Card(o.id));
+        let reading = card.filter(|_| self.offer_reading() && !self.card_has_keys());
+        if let Some(w) = reading {
+            if let Some(i) = line.iter().position(|e| self.entry_is(e, w)) {
+                line.rotate_left(i);
+            }
+        } else if let Some(w) = self.c_q_held()
+            && let Some(i) = line.iter().position(|e| self.entry_is(e, w))
+        {
+            line.rotate_left(i);
+            line.remove(0);
+        }
+        line
+    }
+
+    /// What the next `C-q` reaches, when it's the card in front or this session's edit review (`c_q_line`'s first).
+    pub fn c_q_next(&self) -> Option<Waiting> {
+        let front = self.offers.first().filter(|o| !o.installing()).map(|o| Waiting::Card(o.id));
+        let first = self.c_q_line().into_iter().next()?;
+        [front, Some(Waiting::Review)].into_iter().flatten().find(|&w| self.entry_is(&first, w))
+    }
+
     /// The way in `what` says on itself (a card's bottom line, the review's head or peek), read from where `C-q` goes
-    /// (#544): `C-q` — inside zellij its twin — on the one it reaches (`next_up`; a card whose text is read in its buffer
-    /// takes it first, `card_key`); None on the rest: no pair, their answers faint, nothing naming a key that goes
-    /// elsewhere. A card holding the keys: none — its `C-q` gives them back (its own line says `esc back`).
+    /// (#544): how many presses reach it (`c_q_line`) — `C-q` on the next, `C-q ×2` on the one after, inside zellij its
+    /// twin. None for what holds the keys (its `C-q` steps on; a card's own line says `esc back`) and for a card not in
+    /// front (its peek names no key).
     pub fn way_in(&self, what: Waiting) -> Option<String> {
         let front = self.offers.first().filter(|o| !o.installing()).map(|o| o.id);
-        let reached = match self.next_up() {
-            _ if self.card_has_keys() => None,
-            _ if self.offer_reading() => front.map(Waiting::Card),
-            Next::Card(id) => Some(Waiting::Card(id)),
-            Next::Review => Some(Waiting::Review),
-            // (the card in front about another session: `C-q` goes there and gives it the keys — `inbox_next`)
-            Next::Go(e) if e.card().is_some() && e.card() == front => front.map(Waiting::Card),
-            _ => None,
-        };
-        (reached == Some(what)).then(|| self.key_said("C-q"))
+        if matches!(what, Waiting::Card(id) if front != Some(id)) {
+            return None;
+        }
+        let n = self.c_q_line().iter().position(|e| self.entry_is(e, what))? + 1;
+        let key = self.key_said("C-q");
+        Some(if n == 1 { key } else { format!("{key} ×{n}") })
+    }
+
+    /// `C-q` on what holds the keys (a card focused, the edit review), something else waiting (#544): the keys let go
+    /// of it — it waits on, as after `esc` — and go to the next in `c_q_line`. False: nothing else waits (the caller
+    /// gives them back).
+    pub(crate) fn c_q_step(&mut self) -> bool {
+        let Some(e) = self.c_q_line().into_iter().next() else { return false };
+        self.card_focus = None;
+        crate::llm::review_let_go(self);
+        let front = |ed: &Editor| ed.offers.first().filter(|o| !o.installing()).map(|o| o.id);
+        let here = e.session_id() == self.workspace.id && !self.background();
+        match e.card() {
+            Some(id) if here && front(self) == Some(id) => self.card_focus_front(),
+            None if here && e.up == "review" => crate::llm::review_focus(self),
+            // (elsewhere: a card behind brought forward, another session's — as `C-q` goes there unheld)
+            _ => {
+                self.inbox_to(&e);
+                if e.card().is_some() && e.card() == front(self) {
+                    self.card_focus_front();
+                }
+            }
+        }
+        true
     }
 
     /// Whether this session's edit review comes before the card in front in the inbox's order (`in_line`) — `C-w w`'s

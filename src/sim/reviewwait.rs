@@ -162,7 +162,8 @@ fn key_framed(
     match (m.focused, k) {
         // (its answer: the review ends, the keys back in the chat)
         (true, _) if decided && after.is_none() => m.focused = false,
-        (true, "esc") => m.focused = false,
+        // (`C-q` steps on to what waits next, #544 — here nothing else does: the keys back to the chat, as `esc`)
+        (true, "esc" | "C-q") => m.focused = false,
         (true, _) if now != typed => {
             wrong.set(Some(format!("{k}, the review focused, typed into the chat: {now:?}")))
         }

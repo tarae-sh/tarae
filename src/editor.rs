@@ -6227,9 +6227,10 @@ impl Editor {
     }
 
     /// `C-q` while a card is up — this session's first, then the one that has waited longest (`inbox.rs`) —
-    /// focuses it from wherever the keys are (#24); while it has them, its answers answer it and Esc — or
-    /// `C-q` again — gives them back unanswered (#25, #94), the card staying up, and the window prefix (`C-w`) goes
-    /// on from where they were — other keys are said on it, what it asks. True if the key was the card's.
+    /// focuses it from wherever the keys are (#24); while it has them, its answers answer it and Esc gives them back
+    /// unanswered (#25, #94) — `C-q` again steps on to what waits next, or gives them back when nothing else waits
+    /// (#544) —, the card staying up, and the window prefix (`C-w`) goes on from where they were — other keys are said
+    /// on it, what it asks. True if the key was the card's.
     fn card_key(&mut self, key: Key) -> bool {
         // (a sequence's first key: the floating pane a window prefix left is forgotten — `C-w w` reaches it again
         // after; the follow card's own, set for the one key it hands on, `follow_key` forgets)
@@ -6271,14 +6272,23 @@ impl Editor {
                 });
                 return true;
             }
+            // Holding them: on to what waits next (#544, user 2026-11-13 — its count on each, `way_in`); nothing
+            // else waiting, back (the toggle, #25)
             if has {
-                self.card_focus = None;
-                self.set_status(format!("keys back — the card waits, {} answers it", self.key_said("C-q")));
+                if !self.c_q_step() {
+                    self.card_focus = None;
+                    self.set_status(format!(
+                        "keys back — the card waits, {} answers it",
+                        self.key_said("C-q")
+                    ));
+                }
                 return true;
             }
             // (another goes first — stacked under it here and older, or, nothing asking here, one in a
-            // session behind: `C-q` goes there)
-            if self.next_up() != crate::inbox::Next::Card(id) {
+            // session behind: `C-q` goes there; the edit review holding the keys: its `C-q` steps on, `review_key`)
+            if self.next_up() != crate::inbox::Next::Card(id)
+                || self.c_q_held() == Some(crate::inbox::Waiting::Review)
+            {
                 return false;
             }
             self.card_focus_front();
@@ -6422,6 +6432,7 @@ impl Editor {
             && key.code == Code::Char('q')
             && self.picker.is_none()
             && self.prompt.is_none()
+            && self.c_q_held() != Some(crate::inbox::Waiting::Review)
             && matches!(
                 self.next_up(),
                 crate::inbox::Next::Go(_) | crate::inbox::Next::Done(_) | crate::inbox::Next::None
@@ -14908,7 +14919,8 @@ mod tests {
             ed.docs.iter().find(|d| Some(d.id) == id).and_then(|d| d.path.clone())
         };
         assert_eq!(reviewed(&ed).as_deref(), Some(build.as_path()));
-        feed(&mut ed, "<C-q>y");
+        // (focused above: its answer — a `C-q` now would give the keys back, nothing else waiting, #544)
+        feed(&mut ed, "y");
         assert!(tool_answer_to(&mut ed, &log, "c3").contains("accepted by the user: build.rs"));
         // c4: outside the project, not made
         let a = tool_answer_to(&mut ed, &log, "c4");

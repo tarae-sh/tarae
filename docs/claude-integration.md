@@ -237,6 +237,12 @@ is never an answer. `C-q`, a click on it or `C-w w` (its last stop) focuses it �
 accent, `esc back` where `C-q answer` was (the answers stay where they were), the status line says `card`, your
 draft stays as it was.
 
+When more than one thing waits — Claude's edit review and a card, or two cards — each says how many presses reach it:
+`C-q answer` on the next, `C-q ×2 answer` on the one after, in the inbox's order (oldest first; the chat's foot names the
+next, `C-q answer review`). A second `C-q` steps on to the next waiting thing; it gives the keys back only when nothing
+else waits. `esc` gives them back from any of them. A card stacked behind another shows only its title: the presses
+reach it in turn all the same.
+
 A card is as wide as what it says needs — its text wrapped to half the screen (30 to 56 cells), its title, its bottom
 line — whether the chat is open or not: over the chat's foot a short ask is narrower than the chat, a long one
 reaches left over the code, its corner bottom-right either way.

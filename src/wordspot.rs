@@ -23,6 +23,9 @@ pub enum Press {
     /// `▲ waits`, Claude's change waiting, the inbox's `· C-q`: `C-q`'s act — the card or the review waiting gets the
     /// keys, from wherever they are, in any mode (the card's key comes first in `handle_key`).
     Card,
+    /// `claude ● change`: Claude's edit review gets the keys — the change the word names, whatever else waits before it
+    /// in `C-q`'s order (#544: as `C-q` it went to an older card, the word naming the change).
+    Change,
     /// `follow` · `paused`: `C-f`'s act — paused or off, following again; following, off (`follow::toggle`).
     Follow,
     /// The turn's word and time: Claude's place followed (`now::press`, the status line's word's).
@@ -212,6 +215,10 @@ pub fn press(ed: &mut Editor, i: usize) {
             if let Ok(k) = "C-q".parse() {
                 ed.handle_key(k);
             }
+        }
+        Press::Change => {
+            ed.card_focus = None;
+            crate::llm::review_focus(ed);
         }
         Press::Follow => crate::follow::toggle(ed),
         Press::Now => crate::now::press(ed),

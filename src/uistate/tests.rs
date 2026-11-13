@@ -978,6 +978,21 @@ pub(crate) const SCENES: &[Scene] = &[
         });
         edit_review(ed);
     }),
+    // (#544 (2): something else waiting, what holds the keys passes `C-q` on — the review's to the card, the card's to
+    // the review — never gives them back)
+    ("Claude's edit review and a card, the review focused with C-q: its C-q steps on to the card", |ed| {
+        edit_review(ed);
+        let r = ed.workspace.claude.review.as_mut().unwrap();
+        r.asked = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        light_card(ed);
+        feed(ed, &["<C-q>"]);
+    }),
+    ("a card and Claude's edit review, the card focused with C-q: its C-q steps on to the review", |ed| {
+        edit_review(ed);
+        light_card(ed);
+        ed.offers[0].since = ed.offers[0].since.checked_sub(Duration::from_secs(60)).unwrap();
+        feed(ed, &["<C-q>"]);
+    }),
 ];
 
 use crate::split::{PaneId, Share, Split};
@@ -1783,6 +1798,8 @@ fn waiting_scene(review_first: bool, in_chat: bool, cards: bool, zellij: bool) -
     light_card(&mut ed);
     let front = ed.offers.len() - 1;
     ed.offer_to_front(front);
+    // (brought forward as a press does, it took the keys: they stay in the chat or the code, every card waiting)
+    ed.card_focus = None;
     match review_first {
         true => ed.workspace.claude.review.as_mut().unwrap().asked = old(Instant::now(), 60),
         false => ed.offers[0].since = old(ed.offers[0].since, 60),
@@ -1791,19 +1808,25 @@ fn waiting_scene(review_first: bool, in_chat: bool, cards: bool, zellij: bool) -
     ed
 }
 
+/// A way in a frame drew (#544): what it names, how many presses it says reach it (`C-q ×2 answer`: 2), where the keys
+/// are once they do (`Region::Card` of the card in front as drawn, `Region::EditReview`; the status line's: None), its row.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Way {
+    pub names: Names,
+    pub n: usize,
+    pub at: Option<Region>,
+    pub row: String,
+}
+
 /// Every way in this frame draws naming `key` (`C-q`, inside zellij `F2`), and what it names, by where it stands: the
 /// card's frame, the review's area or peek, the chat's `answer card` / `answer review`, the status line.
-fn ways_drawn(ed: &mut Editor, key: &str) -> Vec<(Names, String)> {
+fn ways_drawn(ed: &mut Editor, key: &str) -> Vec<Way> {
     ways_in(ed, key, (120, 40)).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// `ways_drawn` on a frame of `w`×`h` (the simulation's too, `sim/waysin.rs`) — one anywhere else is an error naming its
 /// row.
-pub(crate) fn ways_in(
-    ed: &mut Editor,
-    key: &str,
-    (w, h): (u16, u16),
-) -> Result<Vec<(Names, String)>, String> {
+pub(crate) fn ways_in(ed: &mut Editor, key: &str, (w, h): (u16, u16)) -> Result<Vec<Way>, String> {
     ed.focus_sync();
     crate::term::render(ed, &mut Vec::new(), w, h).unwrap();
     let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), w, h).unwrap();
@@ -1815,6 +1838,12 @@ pub(crate) fn ways_in(
     for (y, line) in text.lines().enumerate() {
         for (at, _) in line.match_indices(key) {
             let after = &line[at + key.len()..];
+            // (its count, `×N` after the key — none: 1)
+            let digits = |s: &str| s.chars().take_while(char::is_ascii_digit).collect::<String>();
+            let (n, after) = match after.strip_prefix(" ×").map(|r| (digits(r), r)) {
+                Some((d, r)) if !d.is_empty() => (d.parse().unwrap(), &r[d.len()..]),
+                _ => (1, after),
+            };
             // (a way in is a pair, `C-q answer…`; a message naming the key — a toast's refusal — isn't one; the status line's
             // every mention is its way in)
             let pair =
@@ -1839,7 +1868,12 @@ pub(crate) fn ways_in(
             } else {
                 return Err(format!("`{key}` drawn at row {y} by nothing known:\n{text}"));
             };
-            out.push((names, line.trim().to_string()));
+            let at = match names {
+                Names::Card => ed.offers.first().map(|o| Region::Card(o.id)),
+                Names::Review => Some(Region::EditReview),
+                Names::Next => None,
+            };
+            out.push(Way { names, n, at, row: line.trim().to_string() });
         }
     }
     Ok(out)
@@ -1847,8 +1881,9 @@ pub(crate) fn ways_in(
 
 /// #544: every hint that names `C-q` (inside zellij its twin) names where it goes. Two or more waiting — Claude's edit
 /// review and a card, either one first; two cards and the review — the keys in Claude's busy chat or in the code, then
-/// after each `C-q` along the walk (the review focused, a card focused): each drawn way in (`ways_drawn`) is about what
-/// the key then gives the keys to, and the status line's only where it gives them somewhere; what it reaches says it.
+/// after each `C-q` along the walk (the review focused, a card focused, each `C-q` stepping on): each drawn way in
+/// (`ways_drawn`) saying one press is about what the key then gives the keys to, one saying more (`×2`) isn't, and the
+/// status line's only where it gives them somewhere; what it reaches says it.
 #[test]
 fn every_c_q_hint_is_where_c_q_goes() {
     let (mut checked, mut kinds) = (0, Vec::new());
@@ -1863,36 +1898,33 @@ fn every_c_q_hint_is_where_c_q_goes() {
             (false, false, true),
         ] {
             let mut ed = waiting_scene(review_first, in_chat, cards, zellij);
-            for step in 0..3 {
+            for step in 0..4 {
                 let scene = format!(
                     "zellij {zellij}, review first {review_first}, chat {in_chat}, cards {cards}, step {step}"
                 );
                 let ways = ways_drawn(&mut ed, key);
                 let before = ed.keys_to().region;
-                // (reached: what waited took the keys — a focused card's `C-q` gives them back, to a review under it too)
-                let review_waited =
-                    ed.workspace.claude.review.as_ref().is_some_and(crate::llm::Review::waits);
                 feed(&mut ed, &[press]);
                 frame(&mut ed);
                 let after = ed.keys_to().region;
-                let reached = match after {
-                    _ if after == before => None,
-                    Region::Card(_) => Some(Names::Card),
-                    Region::EditReview if review_waited => Some(Names::Review),
-                    _ => None,
-                };
-                for (names, row) in &ways {
-                    kinds.push(*names);
-                    match names {
+                let reached =
+                    Some(after).filter(|a| *a != before && matches!(a, Region::Card(_) | Region::EditReview));
+                for w in &ways {
+                    kinds.push(w.names);
+                    let row = &w.row;
+                    match w.names {
                         Names::Next => assert!(
                             reached.is_some(),
                             "{scene}: the status line says `{key}`, it reaches nothing: {row}"
                         ),
-                        n => assert_eq!(
-                            Some(*n),
-                            reached,
-                            "{scene}: `{row}` names {n:?}; `{key}` gave the keys to {after:?}"
+                        _ if w.n == 1 => assert_eq!(
+                            w.at, reached,
+                            "{scene}: `{row}` names {:?}; `{key}` gave the keys to {after:?}",
+                            w.names
                         ),
+                        _ => {
+                            assert_ne!(w.at, reached, "{scene}: `{row}` says ×{}, one press reached it", w.n)
+                        }
                     }
                 }
                 if let Some(r) = reached {
@@ -1902,10 +1934,91 @@ fn every_c_q_hint_is_where_c_q_goes() {
             }
         }
     }
-    assert_eq!(checked, 36);
+    assert_eq!(checked, 48);
     for k in [Names::Card, Names::Review, Names::Next] {
         assert!(kinds.contains(&k), "the walk met no way in naming the {k:?}: it checks nothing there");
     }
+}
+
+/// #544 (2), user 2026-11-13: each waiting thing says how many `C-q`s reach it, and that many do. Two waiting (Claude's
+/// edit review and a card, either first) and three (a second card behind, older than both), from the busy chat and from
+/// the code: every `C-q ×k` the first frame draws names where the k-th press lands (`keys_to`); the presses land on each
+/// once, then round to the first (something else waits); `esc` gives the keys back where they were. With one waiting,
+/// a second `C-q` gives them back (a card's toggle, and now the review's).
+#[test]
+fn c_q_says_how_many_presses_reach_each_wait_and_steps_on() {
+    for (review_first, in_chat, cards) in [
+        (true, true, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
+        (false, false, true),
+    ] {
+        let scene = format!("review first {review_first}, chat {in_chat}, cards {cards}");
+        let mut ed = waiting_scene(review_first, in_chat, cards, false);
+        let home = ed.keys_to().region;
+        let waits = 2 + usize::from(cards);
+        let ways: Vec<Way> =
+            ways_drawn(&mut ed, "C-q").into_iter().filter(|w| w.names != Names::Next).collect();
+        // (the counts: the review and the card in front each say theirs; a second card behind, the oldest, is the first
+        // press's — its peek names no key)
+        let mut counts: Vec<(Names, usize)> = ways.iter().map(|w| (w.names, w.n)).collect();
+        counts.dedup();
+        let (review, card) = match (review_first, cards) {
+            (true, false) => (1, 2),
+            (false, false) => (2, 1),
+            (true, true) => (2, 3),
+            (false, true) => (3, 2),
+        };
+        for (names, n) in &counts {
+            let want = if *names == Names::Review { review } else { card };
+            assert_eq!(*n, want, "{scene}: {names:?} says ×{n}: {ways:#?}");
+        }
+        assert!(counts.iter().any(|c| c.0 == Names::Review), "{scene}: the review says its count: {ways:#?}");
+        assert!(counts.iter().any(|c| c.0 == Names::Card), "{scene}: the card says its count: {ways:#?}");
+        let mut landed = Vec::new();
+        for _ in 0..=waits {
+            feed(&mut ed, &["<C-q>"]);
+            frame(&mut ed);
+            landed.push(ed.keys_to().region);
+        }
+        for (i, r) in landed.iter().enumerate() {
+            assert!(matches!(r, Region::Card(_) | Region::EditReview), "{scene}: press {} → {r:?}", i + 1);
+            assert!(!landed[..i.min(waits)].contains(r) || i == waits, "{scene}: each once: {landed:?}");
+        }
+        assert_eq!(landed[waits], landed[0], "{scene}: past the last, round to the first: {landed:?}");
+        for w in &ways {
+            assert_eq!(w.at.as_ref(), landed.get(w.n - 1), "{scene}: `{}` says ×{}: {landed:?}", w.row, w.n);
+        }
+        feed(&mut ed, &["<esc>"]);
+        frame(&mut ed);
+        assert_eq!(ed.keys_to().region, home, "{scene}: esc gives them back where they were");
+    }
+    // One waiting: the second `C-q` gives the keys back — the card answered, the review alone; then a card alone
+    let mut ed = waiting_scene(true, true, false, false);
+    feed(&mut ed, &["<C-q>", "<C-q>"]);
+    frame(&mut ed);
+    assert!(matches!(ed.keys_to().region, Region::Card(_)), "{:?}", ed.keys_to().region);
+    feed(&mut ed, &["n"]);
+    frame(&mut ed);
+    assert!(ed.offers.is_empty(), "answered");
+    assert_eq!(ways_drawn(&mut ed, "C-q").iter().map(|w| w.n).max(), Some(1), "one waits: no ×N");
+    let home = ed.keys_to().region;
+    feed(&mut ed, &["<C-q>"]);
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::EditReview);
+    feed(&mut ed, &["<C-q>"]);
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, home, "the review alone: its C-q gives the keys back");
+    assert!(ed.workspace.claude.review.as_ref().is_some_and(crate::llm::Review::waits), "it waits on");
+    let mut ed = editor();
+    chat(&mut ed, "");
+    light_card(&mut ed);
+    frame(&mut ed);
+    feed(&mut ed, &["<C-q>"]);
+    assert!(matches!(ed.keys_to().region, Region::Card(_)));
+    feed(&mut ed, &["<C-q>"]);
+    assert_eq!(ed.keys_to().region, Region::Chat, "a card alone: its C-q gives the keys back");
 }
 
 /// #544: `C-w w`'s round takes what waits in the order `C-q` does (`in_line`): from the chat (the last pane), the one

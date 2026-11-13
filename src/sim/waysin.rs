@@ -4,17 +4,18 @@
 //! after it (minutes apart, so the inbox's order is the order they came, whichever clock each is on).
 //!
 //! After every step, a frame: every `C-q answer` pair drawn (a card's bottom line, the review's head or peek, the chat's
-//! foot) names the one `C-q` goes to (`next_up`), and no other. At each `C-q`: what it gave the keys to is what the frame
-//! before said, and the status line said `C-q` only where it gave them somewhere.
+//! foot) names the one `C-q` goes to (`c_q_next`), and no other — the rest say how many presses reach them (`C-q ×2`).
+//! At each `C-q`: what it gave the keys to is what the frame before said one press reaches, the status line said `C-q`
+//! only where it gave them somewhere, and what said `×2` before says `C-q` after (#544 (2): each press steps on).
 
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
 use super::{Choices, Sim};
 use crate::editor::Editor;
-use crate::inbox::Next;
+use crate::inbox::Waiting;
 use crate::uistate::Region;
-use crate::uistate::tests::Names;
+use crate::uistate::tests::{Names, Way};
 
 const NAME: &str = "every_way_in_names_where_c_q_goes";
 
@@ -62,25 +63,23 @@ fn run(choices: Choices) -> Vec<String> {
     sim.trace().to_vec()
 }
 
-/// What `C-q` reaches here now, as a drawn way in names it (a card holding the keys: nothing — its `C-q` gives them back).
-fn reaches(ed: &Editor) -> Option<Names> {
-    let front = ed.offers.first().map(|o| o.id);
-    match ed.next_up() {
-        _ if ed.card_has_keys() => None,
-        _ if ed.offer_reading() => Some(Names::Card),
-        Next::Card(_) => Some(Names::Card),
-        Next::Review => Some(Names::Review),
-        Next::Go(e) if e.card().is_some() && e.card() == front => Some(Names::Card),
-        _ => None,
+/// Where the keys go once the next `C-q` reaches the card in front or the review (`c_q_next`), as a drawn way names it.
+fn reaches(ed: &Editor) -> Option<Region> {
+    match ed.c_q_next()? {
+        Waiting::Card(id) => Some(Region::Card(id)),
+        Waiting::Review => Some(Region::EditReview),
     }
 }
 
-/// A frame: every pair drawn names what `C-q` reaches, and no other.
-fn judge(ed: &mut Editor, size: (u16, u16)) -> Result<Vec<(Names, String)>, String> {
+/// A frame: every pair drawn saying one press names what `C-q` reaches, and no other says one press.
+fn judge(ed: &mut Editor, size: (u16, u16)) -> Result<Vec<Way>, String> {
     let ways = crate::uistate::tests::ways_in(ed, "C-q", size)?;
     let reached = reaches(ed);
-    if let Some((n, row)) = ways.iter().find(|(n, _)| *n != Names::Next && Some(*n) != reached) {
-        return Err(format!("`{row}` names the {n:?}; C-q reaches {reached:?}"));
+    if let Some(w) = ways.iter().find(|w| w.names != Names::Next && w.n == 1 && w.at != reached) {
+        return Err(format!("`{}` names the {:?}; C-q reaches {reached:?}", w.row, w.names));
+    }
+    if let Some(w) = ways.iter().find(|w| w.n > 1 && w.at == reached) {
+        return Err(format!("`{}` says ×{}; one C-q reaches it", w.row, w.n));
     }
     Ok(ways)
 }
@@ -124,32 +123,38 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World, wrong: &Cell<Option<Strin
                     return "C-q (the frame before it wrong)".into();
                 }
             };
+            let shown = (ed.last_frame.as_ref())
+                .and_then(|f| crate::screen::text(f.0.as_slice(), w.size.0, w.size.1))
+                .unwrap_or_default();
             let before = ed.keys_to().region;
-            // (reached: what waited took the keys — a focused card's `C-q` gives them back, to a review under it too)
-            let review_waited = ed.workspace.claude.review.as_ref().is_some_and(crate::llm::Review::waits);
+            // (reached: what waited took the keys — a focused one's `C-q` steps on, or gives them back)
             ed.handle_key("C-q".parse().unwrap());
             ed.focus_sync();
             crate::term::render(ed, &mut Vec::new(), w.size.0, w.size.1).unwrap();
             let after = ed.keys_to().region;
-            let reached = match after {
-                _ if after == before => None,
-                Region::Card(_) => Some(Names::Card),
-                Region::EditReview if review_waited => Some(Names::Review),
-                _ => None,
-            };
-            for (n, row) in &ways {
-                let right = match n {
+            let reached =
+                Some(after).filter(|a| *a != before && matches!(a, Region::Card(_) | Region::EditReview));
+            for way in ways.iter().filter(|way| way.n == 1) {
+                let right = match way.names {
                     Names::Next => reached.is_some(),
-                    n => Some(*n) == reached,
+                    _ => way.at == reached,
                 };
                 if !right {
+                    let row = &way.row;
                     wrong.set(Some(format!(
                         "`{row}` said C-q, it gave the keys to {after:?} (from {before:?})"
                     )));
                 }
             }
             if reached.is_some() && ways.is_empty() {
-                wrong.set(Some(format!("C-q gave the keys to {after:?}, nothing drawn said so")));
+                wrong.set(Some(format!("C-q gave the keys to {after:?}, nothing drawn said so:\n{shown}")));
+            }
+            // (what said ×2 says C-q now, wherever it's still drawn)
+            let now = crate::uistate::tests::ways_in(ed, "C-q", w.size).unwrap_or_default();
+            for two in ways.iter().filter(|way| way.n == 2) {
+                if let Some(was) = now.iter().find(|n| n.at == two.at && n.n != 1) {
+                    wrong.set(Some(format!("`{}` said ×2; after one C-q it says `{}`", two.row, was.row)));
+                }
             }
             format!("key C-q: {before:?} → {after:?}")
         }
@@ -186,7 +191,7 @@ fn print(ed: &Editor) -> String {
     format!(
         "cards {} · review {r:?} · next {:?} · keys {:?}",
         ed.offers.len(),
-        ed.next_up(),
+        ed.c_q_next(),
         ed.keys_to().region
     )
 }
