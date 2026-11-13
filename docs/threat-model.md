@@ -438,7 +438,7 @@ Not kept:
   its runs' network aren't guarded further — their cards already say that what Claude has read can go out there.
   The token is wiped from tarae's own buffers as they go (`zeroize`); the TLS library's buffers and the process's
   environment keep their copies.
-  test: `sandbox::runenv::tests::a_wikis_token_is_never_a_runs`, `llm::tests::every_claude_tarae_starts_has_no_wiki_token`,
+  test: `sandbox::runenv::tests::a_wikis_token_is_never_a_runs`, `agent::claude::tests::every_claude_tarae_starts_has_no_wiki_token`,
   `web::fetch::tests::the_token_goes_only_with_requests_under_the_base`,
   `web::tool::tests::a_token_read_asks_on_its_own_card_whatever_runs_reach`,
   `web::tool::tests::a_plain_answer_never_covers_a_token_read`,
@@ -941,7 +941,7 @@ Kept:
   Both were removed. Your login, settings, `CLAUDE.md` and conversations are claude's as they are in your own
   CLI, and your Claude settings a hold-back's baseline; claude cleans its old conversations as your
   `cleanupPeriodDays` says, as your own Claude Code does — a project's is held (below).
-  test: `llm::tests::every_claude_starts_as_its_own_program` ·
+  test: `agent::claude::tests::every_claude_starts_as_its_own_program` ·
   `claudetrust::tests::a_chat_starts_held_back_while_its_card_waits` ·
   `claudetrust::tests::your_claude_settings_are_the_baseline_where_claude_loads_them`
 - **It doesn't update itself** from tarae: you update it (decision A), never a program swapped under a chat that's
@@ -949,14 +949,14 @@ Kept:
   the sandbox, without `DISABLE_UPDATES` or `DISABLE_AUTOUPDATER` (a tarae started with one passed it on), and
   says what came in the versions folder ("Installation complete" with nothing new: a warning); the chat says once when the claude it runs was installed over two weeks ago (without the network
   tarae can tell its age, not whether a newer one exists).
-  test: `llm::tests::every_claude_tarae_starts_has_its_updates_off` ·
+  test: `agent::claude::tests::every_claude_tarae_starts_has_its_updates_off` ·
   `claudeupdate::tests::an_old_claude_is_said_with_how_to_update_it` ·
   `claudeupdate::tests::claude_update_runs_as_your_own_task`
 - **It reads no auto memory**: every claude tarae starts gets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, which outranks
   the setting `autoMemoryEnabled` (a project's settings can't turn it back on), and never `CLAUDE_MEMORY_STORES`
   (team memory). The memory folder is the repository's, shared by every checkout; what's there is another tool's
   notes, and memory a tarae claude wrote would be obeyed later by your own Claude Code.
-  test: `llm::tests::every_claude_tarae_starts_has_its_memory_off`
+  test: `agent::claude::tests::every_claude_tarae_starts_has_its_memory_off`
 - **Its tools**: tarae's own, in-process — none of Claude Code's (`--tools ""`): no Edit or Write (tarae's `edit`
   makes every change), no Read (tarae's `read` reads images too), no Bash, no WebFetch or WebSearch, no Grep or
   Glob, no Task.
@@ -1030,7 +1030,7 @@ Kept:
   `llm::tests::keys_go_to_claude_only_when_you_keep_them_outside_claude_code`
 - **Your SSH agent**: no claude tarae starts gets `SSH_AUTH_SOCK` (its git only reads status, it never needs the
   agent). A socket it finds on its own is reached (G20).
-  test: `llm::tests::every_claude_tarae_starts_has_no_ssh_agent`
+  test: `agent::claude::tests::every_claude_tarae_starts_has_no_ssh_agent`
 - **Where tarae's AppArmor profile lends user namespaces**, what starts for Claude doesn't get them.
   test: `spawn::tests::only_claudes_and_plugins_processes_are_kept_from_user_namespaces` ·
   `seccomp::tests::what_starts_outside_for_claude_makes_no_user_namespace`
@@ -1293,8 +1293,8 @@ Not Claude's, but a hostile repository reaches them:
 | G17 | claude's own git reads a repository's config (`core.fsmonitor` …) | it's claude's, not tarae's | measured: its git didn't run the fsmonitor that a plain `git status` there runs (2.1.296) |
 | G18 | `llm.sandbox = false` runs Claude's commands unconfined with no card | your choice, said in the title | said; a project needs your trust to set it |
 | G19 | claude writes `~/.claude.json`, which holds your user-scope MCP servers (commands your own claude starts) | claude's state lives in it | said; the chat runs `--strict-mcp-config` |
-| G20 | claude inherited `SSH_AUTH_SOCK`: the agent signed with your keys for it | claude runs as you (G1) | narrowed: no claude tarae starts gets `SSH_AUTH_SOCK` (test: `llm::tests::every_claude_tarae_starts_has_no_ssh_agent`); left: an agent socket claude finds on its own is reached |
-| G21 | Claude Code's auto-memory (`~/.claude/projects/<project>/memory/`) was read unasked, shared by every checkout | inside claude's own folder | closed: tarae starts every claude with auto memory off (test: `llm::tests::every_claude_tarae_starts_has_its_memory_off`); left: claude's own code could still read it, as G1 |
+| G20 | claude inherited `SSH_AUTH_SOCK`: the agent signed with your keys for it | claude runs as you (G1) | narrowed: no claude tarae starts gets `SSH_AUTH_SOCK` (test: `agent::claude::tests::every_claude_tarae_starts_has_no_ssh_agent`); left: an agent socket claude finds on its own is reached |
+| G21 | Claude Code's auto-memory (`~/.claude/projects/<project>/memory/`) was read unasked, shared by every checkout | inside claude's own folder | closed: tarae starts every claude with auto memory off (test: `agent::claude::tests::every_claude_tarae_starts_has_its_memory_off`); left: claude's own code could still read it, as G1 |
 | G23 | macOS: a folder renamed into the project carries protected names past their deny — Seatbelt checks a rename's two paths, not what's in it: a run makes `x/` in temp holding `build.rs`/`Cargo.toml`/`.cargo/`, then moves it to the project as `crates/x` | no Seatbelt rule for a folder's contents on rename | caught after the run, asked before anything runs it, as G10 (§1.2: new files, ignored folders' names, names past 5,000 new files, links, repositories); left: an ignored folder that was there before, what a leftover makes later, no git checkout, your terminal (said on its line) |
 | G26 | macOS: where the network reaches a host as the run starts, trust's service (`com.apple.trustd.agent`) is reachable, and it fetches revocation lists and issuers itself, outside tarae's proxy | Go's TLS (and Security.framework's) asks it: without it `x509: OSStatus -26276`, measured | only then (as srt's `enableWeakerNetworkIsolation`), never with every host asked; left: a run can make it fetch a URL a certificate names |
 | G27 | macOS: System V shared memory and `setpriority` are refused a run's own too, and a System V segment it makes can't be removed — `shmget` isn't checked, `shmctl(IPC_RMID)` is refused (measured: the probe's 4 KB segment stayed) | the deny-default profile, as srt's (it allows neither); a segment's key doesn't say whose it is; no rule refuses the making (XNU asks the policy nothing then) | said; a tool that needs either (a SysV user, `renice`) fails in the sandbox — a `BASE` row only with a measured need; what was made while a run ran and nothing attached (32 fill the Mac until a restart) its report names with the `ipcrm` that frees them — never removed: nothing ties a segment to the run (its maker may be gone, or the user's own program), so the user decides (`sandbox/sysv.rs`, frictions 56) |

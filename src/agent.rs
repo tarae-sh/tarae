@@ -1,3 +1,5 @@
+pub mod claude;
+
 /// A model claude offers (`initialize` → `models`, measured): its alias or id, what it's called, a line
 /// about it, the model it stands for now, and the effort levels it takes (none: it has no such knob).
 #[derive(Clone, Debug, PartialEq, Eq)]

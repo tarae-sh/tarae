@@ -1,5 +1,16 @@
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::time::Duration;
+
+use crate::agent::{ModelInfo, StreamEv};
+use crate::billing::Credential;
+use crate::event::{Apply, Event};
+use crate::llm::{ClaudeEnv, Env, LlmConfig, judged, process_names, spawn_failed};
+
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
-const DEFAULT_ARGS: &[&str] = &[
+pub(crate) const DEFAULT_ARGS: &[&str] = &[
     "-p",
     "--input-format",
     "stream-json",
@@ -651,6 +662,10 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
     /// frictions28 T1: `kill` signals only a claude `pump` still holds unreaped — a stand-in of the test's own
     /// that no `pump` has is left running; one `pump` reads is ended, and once reaped its pid is out of the list
     /// (a kill then sends nothing: the pid may be anyone's).
@@ -1021,3 +1036,4 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
         assert_eq!(args[at("--allowedTools") + 1], "Read,Grep,Glob,mcp__tarae__note");
         assert!(args.windows(2).all(|w| w[0] != "--setting-sources" || w[1].is_empty()), "rest kept");
     }
+}

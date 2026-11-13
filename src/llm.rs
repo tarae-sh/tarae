@@ -12,22 +12,18 @@
 //! → the in-buffer review (y/n per change) → applied as one transaction. Cancel = kill the process. `space i` is a
 //! one-turn claude of its own with tarae's `read` and `edit` (`ask.rs`), whose waiting card and review are these.
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{RecvTimeoutError, channel};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ropey::Rope;
 
-use crate::billing::Credential;
 use crate::document::DocId;
 use crate::editor::Editor;
-use crate::event::{Apply, Event};
 use crate::key::{Code, Key};
 use crate::transaction::{Change, Transaction};
 use crate::workspace::Here;
 
+use crate::agent::claude::DEFAULT_ARGS;
 pub use crate::agent::claude::{
     Lines, SpawnError, command, control_response, initialize_message, interrupt_message, kill, pump, spawn,
     user_content, user_message, with_flag, with_tools,
@@ -289,7 +285,8 @@ pub fn config_said(ed: &Editor, warnings: &[String]) -> String {
 mod claudeenv;
 #[cfg(test)]
 use claudeenv::NESTED_BY;
-use claudeenv::{CREDENTIALS, THE_HOSTS, judged};
+pub(crate) use claudeenv::judged;
+use claudeenv::{CREDENTIALS, THE_HOSTS};
 pub use claudeenv::{ClaudeEnv, claude_env};
 
 /// Whether `name` is Claude Code's own — a login, a host's, a setting (`ANTHROPIC_*`, `CLAUDE*`): never a wiki's
@@ -315,7 +312,7 @@ pub fn env_var(given: Option<&Env>, name: &str) -> Option<String> {
 }
 
 /// The process's environment's names (a name that isn't UTF-8 is none of the rules').
-fn process_names() -> Vec<String> {
+pub(crate) fn process_names() -> Vec<String> {
     std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).collect()
 }
 
@@ -1342,7 +1339,11 @@ mod held_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::process::Command;
+    use std::time::Duration;
+
     use super::*;
+    use crate::billing::Credential;
 
     // ── Claude's environment ──
 
