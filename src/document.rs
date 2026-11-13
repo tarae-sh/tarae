@@ -152,6 +152,9 @@ pub struct DocLsp {
     /// The server that answered no hints while at its work (`$/progress`, its pack's status): asked again once
     /// it has nothing under way (`inlay_after_work`, #195).
     pub inlay_at_work: Option<ClientId>,
+    /// Where a jump that opened it outside its server's roots came from (#533): that server serves it, judged by
+    /// that root's trust, where its pack says it may (`codetrust::Reached`). Set only as a jump makes the buffer.
+    pub reached: Option<crate::codetrust::Reached>,
 }
 
 impl DocLsp {

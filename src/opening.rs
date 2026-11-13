@@ -154,6 +154,8 @@ impl Editor {
         // (the one under way let go, a shown one too: this one is what you asked for now)
         self.opening = None;
         self.showing = None;
+        // (a jump's origin goes with the buffer this open makes — one open already is never moved: #533)
+        let reached = self.lsp.reach_next.take();
         if let Some(i) = self.docs.first(&path, |_| true) {
             if jump {
                 self.push_jump();
@@ -166,6 +168,7 @@ impl Editor {
             return then(self, Ok((id, true)));
         }
         let id = self.alloc_id();
+        self.lsp.reaching = reached.map(|r| (id, r));
         self.opening = Some(self.opening_of(id, path.clone(), jump, Box::new(then), Opener::You));
         if self.read_inline {
             let r = read(&path);
@@ -364,6 +367,7 @@ impl Editor {
         doc.loading = false;
         doc.claudes_only = by == Opener::Claude;
         doc.review_only = by == Opener::Review;
+        doc.lsp.reached = self.lsp.reaching.take_if(|(at, _)| *at == id).map(|(_, r)| r);
         let unparsed = match r.syntax {
             Some(Ok(syn)) => {
                 doc.syntax = Some(syn);

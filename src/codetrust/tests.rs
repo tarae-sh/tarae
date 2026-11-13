@@ -607,6 +607,292 @@ fn lombok_its_import_downloaded_restarts_jdtls_with_it_once() {
     assert_eq!(jdtls(&ed).map(|c| c.id), Some(cid), "runs on");
 }
 
+/// Keys to the editor, as typed (`<esc>`), the servers told at the end.
+fn feed(ed: &mut Editor, keys: &str) {
+    let mut chars = keys.chars();
+    while let Some(c) = chars.next() {
+        let key: crate::key::Key = match c {
+            '<' => chars.by_ref().take_while(|&c| c != '>').collect::<String>().parse().unwrap(),
+            _ => c.to_string().parse().unwrap(),
+        };
+        ed.handle_key(key);
+    }
+    ed.lsp_flush();
+}
+
+/// #533: the project's folder (the one tarae was opened on), its code trusted and its server — the stand-in — up
+/// and ready; and a library outside it, a cargo root of its own (std's `library/`, a crate in the registry), with
+/// `src/vec.rs`, `src/boxed.rs` and `src/rc.rs`. The project, the library and the server.
+fn ready_project(
+    s: &crate::scratch::Scratch,
+    lib: &crate::scratch::Scratch,
+) -> (Editor, PathBuf, PathBuf, crate::lsp::ClientId) {
+    let (mut ed, dir) = setup(s);
+    ed.workspace.root = dir.clone();
+    ed.open(&dir.join("main.rs")).unwrap();
+    assert!(until(&mut ed, |ed| card(ed).is_some()));
+    let id = card(&ed).unwrap().id;
+    ed.code_trust_answer(id, &dir, true);
+    let cid = ed.doc().lsp.client.expect("started on the yes");
+    let caps = serde_json::json!({ "positionEncoding": "utf-8", "definitionProvider": true });
+    ed.on_lsp_message(cid, serde_json::json!({ "id": 0, "result": { "capabilities": caps } }));
+    (ed, dir, library(lib, "Cargo.toml", "rs"), cid)
+}
+
+/// A library's folder (real) with `marker` in it and `src/{vec,boxed,rc}.{ext}`.
+fn library(lib: &crate::scratch::Scratch, marker: &str, ext: &str) -> PathBuf {
+    let l = std::fs::canonicalize(lib.path()).unwrap();
+    std::fs::create_dir(l.join("src")).unwrap();
+    std::fs::write(l.join(marker), "[package]\nname = \"alloc\"\n").unwrap();
+    for f in ["vec", "boxed", "rc"] {
+        std::fs::write(l.join("src").join(format!("{f}.{ext}")), "pub fn new() {}\n").unwrap();
+    }
+    l
+}
+
+/// `gd` in the front file, server `cid` answering with a place in `to`: its buffer in front once the read lands.
+fn jump(ed: &mut Editor, cid: crate::lsp::ClientId, to: &Path) {
+    use crate::lsp_editor::{Goto, Kind};
+    feed(ed, "gd");
+    let asked = ed.lsp.pending.iter().filter(|(_, p)| matches!(p.kind, Kind::Goto(Goto::Definition)));
+    let id = asked.map(|((_, id), _)| *id).max().expect("asked");
+    let at = serde_json::json!({ "uri": crate::lsp::uri(to), "range": {
+        "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 10 } } });
+    ed.on_lsp_message(cid, serde_json::json!({ "id": id, "result": [at] }));
+    assert!(until(ed, |ed| ed.doc().path.as_deref() == Some(to)), "jumped to {}", to.display());
+}
+
+/// What the stand-in `log` was sent, once it holds `what` (it writes as it reads).
+fn sent(log: &Path, what: &str) -> String {
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    loop {
+        let got = std::fs::read_to_string(log).unwrap_or_default();
+        if got.contains(what) || std::time::Instant::now() > end {
+            return got;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// #533: from a trusted project, `gd` into a library outside it (std's `vec/mod.rs`, a registry crate) is served by
+/// the project's rust-analyzer — its pack says it may: no card, no second server; the library's folder never gets a
+/// trust entry, a server root or a workspace folder; the server is told the file; the pane says the server's ready, as
+/// for the project's own files. A jump on from there keeps the project's root.
+#[test]
+fn a_jump_into_a_library_is_served_by_the_projects_server_and_asks_nothing() {
+    let (s, lib) =
+        (crate::scratch::Scratch::new("code-trust-reach"), crate::scratch::Scratch::new("code-trust-lib"));
+    let (mut ed, dir, l, cid) = ready_project(&s, &lib);
+    let vec = l.join("src/vec.rs");
+    jump(&mut ed, cid, &vec);
+    assert_eq!(ed.doc().lsp.client, Some(cid), "the project's server");
+    let origin = Reached { server: "rust-analyzer".into(), root: dir.clone() };
+    assert_eq!(ed.doc().lsp.reached.as_ref(), Some(&origin));
+    assert!(card(&ed).is_none(), "no card");
+    assert_eq!(ed.lsp_state(), Some((LspDot::Ready, "rust-analyzer".into())));
+    let ras: Vec<&crate::lsp::Client> = ed.lsp.clients.iter().filter(|c| c.name == "rust-analyzer").collect();
+    assert_eq!(ras.len(), 1, "no second server");
+    assert!(!ras[0].root.starts_with(&l) && !ras[0].roots.iter().any(|r| r.starts_with(&l)), "never a root");
+    let log = sent(&dir.join("ra.log"), "vec.rs");
+    assert!(log.contains("textDocument/didOpen") && log.contains("vec.rs"), "told the file: {log}");
+    assert!(!log.contains("didChangeWorkspaceFolders"), "never a workspace folder: {log}");
+    // (on from there: still the project's)
+    feed(&mut ed, "<esc>");
+    let caps = serde_json::json!({ "positionEncoding": "utf-8", "definitionProvider": true });
+    ed.on_lsp_message(cid, serde_json::json!({ "id": 0, "result": { "capabilities": caps } }));
+    let boxed = l.join("src/boxed.rs");
+    jump(&mut ed, cid, &boxed);
+    assert_eq!((ed.doc().lsp.client, ed.doc().lsp.reached.as_ref()), (Some(cid), Some(&origin)));
+    assert!(!ed.code_trust.contains_key(&l) && card(&ed).is_none(), "no trust entry for the library");
+    ed.writes_flush();
+}
+
+/// #533: a server whose pack doesn't say `serves-outside-roots` (zls: it would run every `build.zig` from the file's
+/// folder up) leaves a jump's file to its own root and its own card — which names that root by its path, kept at its
+/// end, says it's outside this project and leaves #517's sentence to the folder tarae was opened on.
+#[test]
+fn a_server_without_the_key_leaves_the_library_its_own_card() {
+    let (s, lib) =
+        (crate::scratch::Scratch::new("code-trust-zls"), crate::scratch::Scratch::new("code-trust-zlib"));
+    let dir = std::fs::canonicalize(s.path()).unwrap();
+    std::fs::write(dir.join("main.zig"), "pub fn main() void {}\n").unwrap();
+    let cfg = format!(
+        "[lsp.zls]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > '{}/zls.log'\"]\n[lang.zig]\nlsp = [\"zls\"]\n",
+        dir.display()
+    );
+    let (config, w) = crate::config::parse(&cfg);
+    assert!(w.is_empty(), "{w:?}");
+    let mut ed = Editor::new(config);
+    (ed.code_gate, ed.trust_path, ed.workspace.root) = (true, Some(dir.join("trust.json")), dir.clone());
+    ed.open(&dir.join("main.zig")).unwrap();
+    assert!(until(&mut ed, |ed| card(ed).is_some()));
+    let c = card(&ed).unwrap();
+    assert!(
+        c.question.ends_with("A repository made here keeps the answer.")
+            && !c.question.contains("outside this"),
+        "the folder tarae was opened on: as ever, #517's sentence kept: {}",
+        c.question
+    );
+    let id = c.id;
+    ed.code_trust_answer(id, &dir, true);
+    let cid = ed.doc().lsp.client.expect("started on the yes");
+    let caps = serde_json::json!({ "positionEncoding": "utf-8", "definitionProvider": true });
+    ed.on_lsp_message(cid, serde_json::json!({ "id": 0, "result": { "capabilities": caps } }));
+    let l = library(&lib, "build.zig", "zig");
+    let std = l.join("src/vec.zig");
+    jump(&mut ed, cid, &std);
+    assert!(ed.doc().lsp.reached.is_none() && ed.doc().lsp.client.is_none(), "not the project's");
+    assert!(until(&mut ed, |ed| card(ed).is_some()), "its own card");
+    let c = card(&ed).unwrap();
+    let root = crate::lsp::find_root_for("zig", &std);
+    assert!(matches!(&c.what, crate::offer::What::CodeTrust { root: r } if *r == root));
+    let path = crate::allow::tilde(&root);
+    assert!(
+        c.question
+            .starts_with(&format!("{path}\nIt's outside this project. Its language servers run its code"))
+            && !c.question.contains("keeps the answer"),
+        "{}",
+        c.question
+    );
+    assert!(c.paths == [0] && c.ends.is_empty(), "the path: whole, never cut");
+    assert_eq!(ed.lsp_state(), Some((LspDot::Untrusted, "zig".into())));
+    ed.writes_flush();
+}
+
+/// #533: the path a card trusts is shown whole: broken only after a `/`, each row after the first two cells in, no
+/// row wider than the card — at the 80 columns' card (56 cells) and narrower ones; a name wider than its row breaks
+/// inside, nothing left out.
+#[test]
+fn a_trusted_path_is_shown_whole_broken_only_at_a_slash() {
+    let p = "~/.rustup/toolchains/1.99.0-aarch64-apple-darwin/lib/rustlib/src/rust/library";
+    let rows = crate::term::path_rows(p, 56);
+    assert_eq!(rows, ["~/.rustup/toolchains/1.99.0-aarch64-apple-darwin/lib/", "  rustlib/src/rust/library"]);
+    // (30: its widest name, 28 cells, just fits a row two cells in; 20: it doesn't — broken inside, still whole)
+    for w in [56, 40, 30, 20] {
+        let rows = crate::term::path_rows(p, w);
+        assert_eq!(rows.iter().map(|r| r.trim_start()).collect::<String>(), p, "whole at {w}");
+        assert!(rows.iter().all(|r| unicode_width::UnicodeWidthStr::width(r.as_str()) <= w), "{rows:?}");
+        assert!(rows[1..].iter().all(|r| r.starts_with("  ")), "two cells in: {rows:?}");
+        if w >= 30 {
+            assert!(
+                rows[..rows.len() - 1].iter().all(|r| r.ends_with('/')),
+                "broken at a `/` at {w}: {rows:?}"
+            );
+        }
+    }
+    let long = crate::term::path_rows("/tmp/a-name-much-wider-than-its-row", 12);
+    assert_eq!(
+        long.iter().map(|r| r.trim_start()).collect::<String>(),
+        "/tmp/a-name-much-wider-than-its-row"
+    );
+    assert_eq!(crate::term::path_rows("/tmp/itoa", 56), ["/tmp/itoa"]);
+    // (a name wider than its row breaks at a grapheme cluster, never inside one: macOS gives names decomposed — NFD
+    // Hangul as jamo, `é` as e + ◌́ — and a family emoji is people joined by U+200D)
+    let nfd = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}\u{1111}\u{1169}\u{11af}\u{1103}\u{1165}";
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    for name in [nfd.repeat(3), "cafe\u{301}".repeat(4), format!("{family}{family}{family}x")] {
+        let p = format!("/tmp/{name}");
+        let boundaries: Vec<usize> =
+            unicode_segmentation::UnicodeSegmentation::grapheme_indices(p.as_str(), true)
+                .map(|(i, _)| i)
+                .chain([p.len()])
+                .collect();
+        for w in [7, 8, 9, 10] {
+            let rows = crate::term::path_rows(&p, w);
+            let parts: Vec<&str> =
+                rows.iter().enumerate().map(|(i, r)| if i == 0 { &r[..] } else { &r[2..] }).collect();
+            assert_eq!(parts.concat(), p, "whole at {w}: {rows:?}");
+            let mut at = 0;
+            for part in &parts {
+                at += part.len();
+                assert!(boundaries.contains(&at), "a cluster split at {w}: {rows:?}");
+            }
+        }
+    }
+}
+
+/// #533: a path dependency whose own card you answered `n`: a jump into it from the trusted project is the project's
+/// server's, and leaves its answer and its waiting files as they were; a file of it already open stays its own, held
+/// (a jump never moves an open buffer); one opened by hand is held as ever.
+#[test]
+fn a_jump_into_a_refused_folder_leaves_its_answer_and_its_own_open_held() {
+    let (s, lib) =
+        (crate::scratch::Scratch::new("code-trust-q"), crate::scratch::Scratch::new("code-trust-qlib"));
+    let (mut ed, dir, q, cid) = ready_project(&s, &lib);
+    let (vec, boxed, rc) =
+        (q.join("src/vec.rs"), q.join("src/vec.rs").with_file_name("boxed.rs"), q.join("src/rc.rs"));
+    ed.open(&vec).unwrap();
+    assert!(until(&mut ed, |ed| card(ed).is_some_and(|c| c.question.contains("outside this project"))));
+    let id = card(&ed).unwrap().id;
+    ed.code_trust_answer(id, &q, false);
+    let entry = |ed: &Editor| ed.code_trust.get(&q).map(|r| (r.state, r.held.clone()));
+    let before = entry(&ed);
+    assert_eq!(before.as_ref().map(|b| b.0), Some(Some(State::Ignored)));
+    ed.open(&dir.join("main.rs")).unwrap();
+    jump(&mut ed, cid, &boxed);
+    assert_eq!(ed.doc().lsp.client, Some(cid), "the project's server: its graph builds it already");
+    assert_eq!(entry(&ed), before, "its answer and its waiting files untouched");
+    ed.open(&dir.join("main.rs")).unwrap();
+    jump(&mut ed, cid, &vec);
+    assert!(ed.doc().lsp.reached.is_none() && ed.doc().lsp.client.is_none(), "open already: never moved");
+    assert_eq!(ed.lsp_state(), Some((LspDot::Untrusted, "rust".into())));
+    assert_eq!(entry(&ed), before);
+    ed.open(&rc).unwrap();
+    assert!(ed.doc().lsp.client.is_none() && card(&ed).is_none(), "by hand: held, not asked again");
+    ed.writes_flush();
+}
+
+/// #533: `:code-untrust` from a file a jump reached takes back the project's trust — the file's server stops with the
+/// project's, it waits on the project's card, and the project's yes serves it again.
+#[test]
+fn code_untrust_takes_a_reached_file_with_its_project() {
+    let (s, lib) =
+        (crate::scratch::Scratch::new("code-trust-ru"), crate::scratch::Scratch::new("code-trust-rulib"));
+    let (mut ed, dir, l, cid) = ready_project(&s, &lib);
+    let vec = l.join("src/vec.rs");
+    jump(&mut ed, cid, &vec);
+    assert!(until(&mut ed, |ed| ed.trust_writing == 0));
+    ed.code_untrust().unwrap();
+    assert!(!has_server(&ed, &vec), "stopped with the project's");
+    assert!(until(&mut ed, |ed| card(ed).is_some()), "asked again");
+    let c = card(&ed).unwrap();
+    assert!(matches!(&c.what, crate::offer::What::CodeTrust { root } if *root == dir), "the project's card");
+    assert_eq!(ed.lsp_state(), Some((LspDot::Untrusted, "rust".into())));
+    let id = c.id;
+    ed.code_trust_answer(id, &dir, true);
+    assert!(has_server(&ed, &vec) && !ed.code_trust.contains_key(&l), "the project's again");
+    ed.writes_flush();
+}
+
+/// #533: a file a jump reached is kept with its origin among the files to restore; the next tarae reopens it served
+/// by the project's server again, with no card for the library.
+#[test]
+fn a_restart_keeps_a_reached_files_origin() {
+    let (s, lib) =
+        (crate::scratch::Scratch::new("code-trust-rs"), crate::scratch::Scratch::new("code-trust-rslib"));
+    let (mut ed, dir, l, cid) = ready_project(&s, &lib);
+    let vec = l.join("src/vec.rs");
+    jump(&mut ed, cid, &vec);
+    assert!(until(&mut ed, |ed| ed.trust_writing == 0), "the yes kept");
+    ed.restore_record();
+    let origin = Reached { server: "rust-analyzer".into(), root: dir.clone() };
+    assert_eq!(ed.restore.reached(&dir, &vec), Some(origin.clone()), "kept with the files");
+    let (mut next, _) = setup(&s);
+    next.workspace.root = dir.clone();
+    next.restore = std::mem::take(&mut ed.restore);
+    assert_eq!(next.restore_files(), 2);
+    let at = next.docs.iter().find(|d| d.path.as_deref() == Some(vec.as_path())).expect("reopened");
+    assert_eq!(at.lsp.reached.as_ref(), Some(&origin));
+    // (outside every checkout: its server once it's shown — #141)
+    let now = crate::clock::now();
+    next.servers_follow_sight(now);
+    assert!(until(&mut next, |ed| has_server(ed, &vec)), "served again");
+    assert!(card(&next).is_none() && !next.code_trust.contains_key(&l), "no card for the library");
+    for e in [&mut ed, &mut next] {
+        e.writes_flush();
+    }
+}
+
 /// With the gate off (tests, or a server no pack marks), servers start as ever.
 #[test]
 fn a_server_no_pack_marks_starts() {

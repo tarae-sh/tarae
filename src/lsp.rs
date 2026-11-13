@@ -71,6 +71,12 @@ pub struct ServerTraits {
     /// `watched-files`: told at its start that tarae watches its files (`lspwatch.rs`) — for a server a probe
     /// showed asking only for what tarae can give (docs/languages.md). Off: it watches them itself.
     pub watched_files: bool,
+    /// `serves-outside-roots`: a file one of its jumps reached outside its roots is its to serve, judged by the
+    /// trust of the root it was reached from (#533, `Reached`) — set only for a server measured to load no
+    /// workspace for such a file (rust-analyzer's `didOpen` of std ran no `cargo` or `rustc`). Off: the file's own
+    /// root, its own trust (zls would run every `build.zig` above it). A pack's key only: a project's config can't
+    /// reach `[server.*]`.
+    pub serves_outside_roots: bool,
 }
 
 /// A pack's `progress = { … }`: a server's own notification of what it's doing, shown as progress.
@@ -224,6 +230,7 @@ pub static NO_TRAITS: ServerTraits = ServerTraits {
     agents: Vec::new(),
     hold_saves: None,
     watched_files: false,
+    serves_outside_roots: false,
 };
 
 /// The names `spec` goes by in the packs: its own, then the built-in servers whose command it runs (`[lsp.py]

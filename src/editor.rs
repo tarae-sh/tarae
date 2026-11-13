@@ -2200,6 +2200,8 @@ impl Editor {
     }
 
     pub(crate) fn open_as(&mut self, path: &Path, by: Opener) -> Result<()> {
+        // (a restored file's origin goes with the buffer it makes — one open already is never moved: #533)
+        let reached = self.lsp.reach_next.take();
         let path = self.path_of(path);
         let path = std::fs::canonicalize(&path).or_else(|_| std::path::absolute(&path))?;
         if let Some(i) = self.docs.iter().position(|d| d.path.as_deref() == Some(path.as_path())) {
@@ -2240,6 +2242,7 @@ impl Editor {
         };
         doc.claudes_only = by == Opener::Claude;
         doc.review_only = by == Opener::Review;
+        doc.lsp.reached = reached;
         self.add_doc(doc);
         self.opened_setup(id, &path, true);
         Ok(())

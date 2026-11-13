@@ -1539,6 +1539,30 @@ Z = ["move_line_down", ":sh touch marker"]
         assert_eq!(i.editor.restart_build, "");
     }
 
+    /// #533: a project's `.tarae.toml` can't mark a server as one that serves a jump's file outside its roots, trusted
+    /// or not — `serves-outside-roots` is a pack's key (`[server.*]`, the shipped packs' or your own runtime folder's),
+    /// which no config reads: zls stays without it, rust-analyzer keeps its pack's.
+    #[test]
+    fn a_projects_config_cannot_mark_a_server_serving_outside_its_roots() {
+        use crate::trust::Store;
+        let src = "[lsp.zls]\ncommand = \"zls\"\nserves-outside-roots = true\n\n[server.zls]\nserves-outside-roots = true\n\n\
+                   [server.rust-analyzer]\nserves-outside-roots = false\n";
+        let (_dir, path) = project_file("outside-roots", src);
+        let (untrusted, _) = load_from(None, Some(path.clone()), &Store::default());
+        let mut store = Store::default();
+        let hash = untrusted.project.as_ref().expect("a server's command waits for trust").hash;
+        store.answer(crate::trust::Kind::Tarae, &path, hash, true, 0);
+        let (trusted, _) = load_from(None, Some(path.clone()), &store);
+        assert!(trusted.editor.lsp.servers.contains_key("zls"), "trusted: its [lsp.zls] taken");
+        for c in [&untrusted, &trusted] {
+            let zls =
+                c.editor.lsp.servers.get("zls").cloned().or_else(|| crate::lsp::default_spec("zls")).unwrap();
+            assert!(!crate::lsp::traits(&zls).serves_outside_roots, "zls stays without it");
+            let ra = crate::lsp::default_spec("rust-analyzer").unwrap();
+            assert!(crate::lsp::traits(&ra).serves_outside_roots, "rust-analyzer keeps its pack's");
+        }
+    }
+
     /// What starts a language server waits for trust (G13: rust-analyzer runs a project's build scripts and proc
     /// macros): `editor.lsp`, and a `[lang.*]` `lsp`/`also` naming a server the language doesn't list — a list
     /// that only narrows goes in untrusted.

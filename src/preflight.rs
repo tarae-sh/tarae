@@ -1595,10 +1595,16 @@ mod tests {
         expected.remove("cargo perf");
         // (on purpose: the plugins' step runs network tests by name — each of them CI's network job's too — but
         // this Mac's own)
-        const THIS_MACS: &[(&str, &str)] = &[(
-            "plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run",
-            "macOS's sandbox and cargo's cache warm: no macOS job in CI",
-        )];
+        const THIS_MACS: &[(&str, &str)] = &[
+            (
+                "plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run",
+                "macOS's sandbox and cargo's cache warm: no macOS job in CI",
+            ),
+            (
+                "a_jump_into_a_dependency_runs_nothing_there_nor_the_toolchain_it_names",
+                "#533's tripwire, a live test: the real rust-analyzer and rustup — CI's runners have no rust-analyzer",
+            ),
+        ];
         let network = ci.lines().find(|l| l.contains("-- --ignored")).expect("the network job");
         let mut named = Vec::new();
         for step in ours.iter().filter(|c| c.contains("-- --ignored --exact ")) {

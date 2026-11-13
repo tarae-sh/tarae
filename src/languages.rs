@@ -22,7 +22,9 @@
 //!   how it starts beyond `args` (`args-add`, `args-unless`, `init`); `progress = { method, kind, text, done,
 //!   done-text, error }`, `virtual = { scheme, fetch, language, title-join }` (`virtualdoc.rs`),
 //!   `client-commands`; `hold-saves` (a didSave waits out that progress's first run); `watched-files` (told tarae
-//!   watches its files — `lspwatch.rs`); `runs-project-code` (it waits for the repository's trust — `codetrust.rs`) and, only with
+//!   watches its files — `lspwatch.rs`); `serves-outside-roots` (a file its jump reached outside its roots is its to
+//!   serve, under the trust of the root it came from — `codetrust.rs`, #533); `runs-project-code` (it waits for the
+//!   repository's trust — `codetrust.rs`) and, only with
 //!   it, `[[…agents]]` = `{ name, files, uses, version, jars, at-least, arg, unless }`: what's loaded into it where the
 //!   project uses it (`lspagent.rs`).
 //! - `config-files = { toml = [...], json = [...] }`: files checked for parse errors before a save (`disk.rs`;
@@ -528,6 +530,7 @@ pub(crate) const SERVER_KEYS: &[&str] = &[
     "agents",
     "hold-saves",
     "watched-files",
+    "serves-outside-roots",
 ];
 
 fn server_of(e: &Entry) -> Result<(ServerSpec, ServerTraits), String> {
@@ -676,6 +679,10 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
         watched_files: match t.get("watched-files") {
             None => false,
             Some(v) => v.as_bool().ok_or("`watched-files` is true or false")?,
+        },
+        serves_outside_roots: match t.get("serves-outside-roots") {
+            None => false,
+            Some(v) => v.as_bool().ok_or("`serves-outside-roots` is true or false")?,
         },
     })
 }

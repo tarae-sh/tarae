@@ -46,6 +46,10 @@ pub struct Offer {
     /// The question's lines that keep their end (`read ~/…/x.patch · 515 B · 2 files`): one row, never wrapped —
     /// their first word whole, the rest cut on the left (`term::fit_left`) so a path's name and what follows stay.
     pub ends: Vec<usize>,
+    /// The question's lines that are a path being trusted (a code-trust card's root outside the project, #533): shown
+    /// whole, never cut — broken only after a `/`, each row after the first two cells in (`term::path_rows`) — at full
+    /// strength, so it stands apart from the sentences.
+    pub paths: Vec<usize>,
     /// The question's lines that are a list's rows (a set card's sessions, `orchestra.rs`): one row each, never
     /// wrapped, cut at their end — the text given is what the cut card under the mouse says whole.
     pub rows: Vec<(usize, String)>,
@@ -665,6 +669,7 @@ impl Offer {
             warnings: Vec::new(),
             diff: None,
             ends: Vec::new(),
+            paths: Vec::new(),
             rows: Vec::new(),
             named: Vec::new(),
             told: Vec::new(),

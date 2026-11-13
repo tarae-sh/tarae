@@ -43,6 +43,16 @@ fn place(root: &Path) -> Place {
     }
 }
 
+/// #533: where a buffer a jump made outside the answering server's roots was reached from — that server, and the root
+/// the asking file was served at (a reached file's own origin carried on). A server whose pack says
+/// `serves-outside-roots` serves it there, judged by that root's answer: no root of its own, so no card and no second
+/// server, and nothing of it ever a server's root or workspace folder. Kept with the restored files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reached {
+    pub server: String,
+    pub root: PathBuf,
+}
+
 /// A server root's trust, as read and answered.
 #[derive(Clone, Debug, Default)]
 pub struct Root {
@@ -98,6 +108,37 @@ pub struct Looks {
 }
 
 impl Editor {
+    /// The root `server` is judged and served at for document `id` (at `path`, in language `lang`): the one it was
+    /// reached from where that server's pack says it may serve it there (#533), else its own.
+    pub(crate) fn code_root(
+        &self,
+        server: &crate::lsp::ServerSpec,
+        lang: &str,
+        path: &Path,
+        id: DocId,
+    ) -> PathBuf {
+        let reached = self.docs.iter().find(|d| d.id == id).and_then(|d| d.lsp.reached.as_ref());
+        match reached.filter(|r| r.server == server.name && crate::lsp::traits(server).serves_outside_roots) {
+            Some(r) => r.root.clone(),
+            None => crate::lsp::find_root_for(lang, path),
+        }
+    }
+
+    /// A jump server `cid` answered for document `from` leads to `to`: its origin when `to` is outside the root
+    /// `from` was served at and the server may serve it there (#533) — None: its own root, as any file's.
+    pub(crate) fn reach_from(&self, cid: crate::lsp::ClientId, from: DocId, to: &Path) -> Option<Reached> {
+        let c = self.client(cid).filter(|c| c.traits.serves_outside_roots)?;
+        let d = self.docs.iter().find(|d| d.id == from)?;
+        let root = match &d.lsp.reached {
+            Some(r) if r.server == c.name => r.root.clone(),
+            _ => {
+                let path = d.path.as_deref()?;
+                crate::lsp::find_root_for(&crate::syntax::detect(path)?.name, path)
+            }
+        };
+        (!to.starts_with(&root)).then(|| Reached { server: c.name.clone(), root })
+    }
+
     /// Whether `server` may start for files under `root` now — false: file `doc` waits for it, the root's trust
     /// read, or asked about, or — trusted — its agents looked for. Every server that runs no code of the project's
     /// starts.
@@ -360,34 +401,50 @@ impl Editor {
             });
         let at = up.clone().unwrap_or_else(|| root.to_path_buf());
         let name = at.file_name().map_or_else(|| at.display().to_string(), |n| n.to_string_lossy().into());
-        let mut q = format!(
-            "Its language servers run {} code as you, outside the sandbox, as they start:\n",
-            crate::workspace::possessive(&name)
-        );
+        // (#533: a root outside every checkout — a dependency's, the toolchain's — named by its path, whole on lines of
+        // its own, broken only at a `/`: it's what's being trusted; its folder's name alone reads as one of yours)
+        let outside = !self.in_a_checkout(&at);
+        let mut q = match outside {
+            true => format!(
+                "{}\nIt's outside this project. Its language servers run its code as you, outside the sandbox, as \
+                 they start:\n",
+                crate::allow::tilde(&at)
+            ),
+            false => format!(
+                "Its language servers run {} code as you, outside the sandbox, as they start:\n",
+                crate::workspace::possessive(&name)
+            ),
+        };
         for (s, words) in &servers {
             q.push_str(&format!("\n  {s} — {words}"));
         }
         q.push_str("\n\nUntil you trust it they don't start.");
         match repo {
             true => q.push_str(" Every checkout of it shares the answer."),
-            // (#517: carried to it)
-            false => q.push_str(" A repository made here keeps the answer."),
+            // (#517: carried to a repository made there — only from the folder tarae was opened on, #533)
+            false if at == self.workspace.root => q.push_str(" A repository made here keeps the answer."),
+            false => {}
         }
-        let o = crate::offer::Offer::new(
+        let first = if outside { 3 } else { 2 };
+        let mut o = crate::offer::Offer::new(
             (if repo { TITLE } else { FOLDER_TITLE }).into(),
             &q,
             "",
             "Code trust".into(),
             What::CodeTrust { root: at.clone() },
         )
-        .deciding(2..2 + servers.len());
+        .deciding(first..first + servers.len());
+        if outside {
+            o.paths = vec![0];
+        }
         if up.is_none() {
             return self.push_offer(o);
         }
         let same = |x: &crate::offer::Offer| matches!(&x.what, What::CodeTrust { root } if *root == at);
         let fresh = |old: &mut crate::offer::Offer| {
             if old.question != o.question {
-                (old.question, old.decided) = (o.question.clone(), o.decided.clone());
+                (old.question, old.decided, old.paths) =
+                    (o.question.clone(), o.decided.clone(), o.paths.clone());
                 old.rev += 1;
             }
         };
@@ -518,10 +575,14 @@ impl Editor {
     /// at the next one).
     pub fn code_untrust(&mut self) -> Result<(), String> {
         let path = self.doc().path.clone().ok_or("this buffer has no file")?;
+        // (a file a jump reached: the root it came from — #533)
+        let reached = self.doc().lsp.reached.as_ref().map(|r| r.root.clone());
         let (root, place) = self
             .code_trust
             .iter()
-            .find(|(p, r)| path.starts_with(p) && r.state == Some(State::Trusted))
+            .find(|(p, r)| {
+                (path.starts_with(p) || reached.as_ref() == Some(p)) && r.state == Some(State::Trusted)
+            })
             .map(|(p, r)| (p.clone(), r.place.clone()))
             .ok_or("this repository's code isn't trusted here")?;
         // (read with its trust, so always there once trusted; worked out here only if it ever weren't)

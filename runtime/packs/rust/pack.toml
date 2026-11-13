@@ -188,6 +188,10 @@ report = "another Linux check on its Docker ({who})"
 # It runs the project's code as it starts (G13): `cargo metadata` runs the toolchain `rust-toolchain.toml` names and
 # `.cargo/config`'s `rustc-wrapper`, then the build scripts and proc macros — it waits for the repository's trust
 runs-project-code = "its build scripts and proc macros, and the toolchain and rustc wrapper it names"
+# A `g d` into std or a dependency is served by the project's own (#533): measured, its `didOpen` of a file outside
+# its roots loads no workspace — no `cargo`, no `rustc`, no build script in 60 s (tests/live.rs's
+# `a_jump_into_std_is_served_by_the_projects_server_and_runs_nothing_there`)
+serves-outside-roots = true
 leave-out = { init = "files.exclude", each = "{rel}" }
 # One for every checkout of a repository on one toolchain (`editor.lsp-share`): rustup's toolchain files say
 # which; `checkOnSave` held off while a swap's new one loads (a start with checks checks every folder); it

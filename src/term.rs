@@ -15309,6 +15309,11 @@ impl OfferCard {
                         let listed = o.rows.iter().find(|r| r.0 == k).map(|r| r.1.as_str());
                         let mut rows = match (diffs.contains(&k), o.ends.contains(&k)) {
                             (true, _) => vec![(crate::cut::fit(part, max_inner).into(), true)],
+                            // (a path being trusted: whole, broken only at a `/`, at full strength — #533)
+                            _ if o.paths.contains(&k) => path_rows(part, max_inner)
+                                .into_iter()
+                                .map(|r| (Fit::plain(r), false))
+                                .collect(),
                             // (a list's row: one row, cut at its end, its whole the row's own text)
                             // (a part of more — its row says `…` — the whole on its card; else only where it's cut)
                             _ if listed.is_some() => {
@@ -23923,6 +23928,31 @@ fn pad_right(s: &str, width: usize) -> String {
     format!("{s}{}", " ".repeat(width.saturating_sub(s.width())))
 }
 
+/// A path being trusted, as rows of at most `width` cells: whole, never cut — broken only after a `/`, each row after
+/// the first two cells in, so the rows read as one path (#533's card). A single name wider than its row is the one place
+/// it breaks inside a name (still whole: nothing left out).
+pub(crate) fn path_rows(path: &str, width: usize) -> Vec<String> {
+    let room = |rows: &Vec<String>| if rows.is_empty() { width } else { width.saturating_sub(2).max(1) };
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for seg in path.split_inclusive('/') {
+        if !row.is_empty() && row.width() + seg.width() > room(&rows) {
+            rows.push(std::mem::take(&mut row));
+        }
+        // (inside a name: by grapheme cluster — macOS's names come decomposed, a syllable as jamo, `é` as e + ◌́)
+        for c in crate::graphemes::cells(seg, 0, 1) {
+            if !row.is_empty() && row.width() + c.width > room(&rows) {
+                rows.push(std::mem::take(&mut row));
+            }
+            row.push_str(seg.get(c.bytes).unwrap_or_default());
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows.iter().enumerate().map(|(i, r)| if i == 0 { r.clone() } else { format!("  {r}") }).collect()
+}
+
 /// `fit_left` for a path and what follows it (`~/x/y/z.patch · 515 B`): its start (`~/`, `/`) kept, the cut
 /// at a folder — `~/…/y/z.patch · 515 B`, never mid-name while a folder's `/` is left to cut at.
 fn fit_path_left(s: &str, width: usize) -> String {
@@ -28709,6 +28739,7 @@ mod tests {
                 warnings: Vec::new(),
                 diff: None,
                 ends: Vec::new(),
+                paths: Vec::new(),
                 rows: Vec::new(),
                 named: Vec::new(),
                 told: Vec::new(),

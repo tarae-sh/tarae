@@ -211,6 +211,15 @@ impl State {
         }
     }
 
+    /// Where file `f`, last open in folder `cwd`, was reached from by a jump (#533) — its server serves it there again.
+    pub fn reached(&self, cwd: &Path, f: &Path) -> Option<crate::codetrust::Reached> {
+        let r = self.root.get("folders")?.get(cwd.to_str()?)?.get("reached")?.get(f.to_str()?)?;
+        Some(crate::codetrust::Reached {
+            server: r.get("server")?.as_str()?.to_string(),
+            root: PathBuf::from(r.get("root")?.as_str()?),
+        })
+    }
+
     /// The files last open in this folder: (files, index being viewed).
     pub fn files(&self, cwd: &Path) -> Option<(Vec<PathBuf>, usize)> {
         let s = self.root.get("folders")?.get(cwd.to_str()?)?;
@@ -254,7 +263,13 @@ impl Editor {
         // (outside the checkouts, a file's server waits until it's shown — #141)
         self.lsp.unseen_later = true;
         for (i, f) in files.iter().enumerate() {
-            if !f.is_file() || self.open_now(f).is_err() {
+            // (a file a jump reached: served where it was reached from again — #533)
+            self.lsp.reach_next = self.restore.reached(&self.workspace.root, f);
+            if !f.is_file() {
+                self.lsp.reach_next = None;
+                continue;
+            }
+            if self.open_now(f).is_err() {
                 continue;
             }
             opened += 1;
@@ -288,7 +303,7 @@ impl Editor {
     }
 
     /// What `save_restore` writes, put in `self.restore` (tests read it back from there).
-    fn restore_record(&mut self) {
+    pub(crate) fn restore_record(&mut self) {
         // (every session's notes, each under its own checkout)
         let notes: Vec<(PathBuf, Vec<Value>)> = self
             .sessions_in_order()
@@ -353,10 +368,24 @@ impl Editor {
             // (never a preview: the tab's or the rail's look at a file, not one you opened)
             let files: Vec<&str> =
                 self.docs.iter().filter(|d| !d.preview).filter_map(|d| d.path.as_ref()?.to_str()).collect();
+            // (where a jump reached each from — #533)
+            let reached: Map<String, Value> = self
+                .docs
+                .iter()
+                .filter(|d| !d.preview)
+                .filter_map(|d| {
+                    let (p, r) = (d.path.as_ref()?.to_str()?, d.lsp.reached.as_ref()?);
+                    Some((p.to_string(), json!({ "server": r.server, "root": r.root.to_str()? })))
+                })
+                .collect();
             let folders = root.entry("folders").or_insert_with(|| json!({}));
             if let Some(map) = folders.as_object_mut() {
                 if !files.is_empty() {
-                    map.insert(cwd.to_string(), json!({ "files": files, "current": self.current }));
+                    let mut entry = json!({ "files": files, "current": self.current });
+                    if !reached.is_empty() {
+                        entry["reached"] = Value::Object(reached);
+                    }
+                    map.insert(cwd.to_string(), entry);
                 } else if opened {
                     map.remove(cwd);
                 }

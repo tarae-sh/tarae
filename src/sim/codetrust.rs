@@ -56,6 +56,17 @@ fn a_look_begun_before_a_take_back_never_starts_its_server() {
     super::seeds(name, SEEDS_LOOKS, |c| run(name, c, Mode::Looks));
 }
 
+const SEEDS_REACHED: &[u64] = &[0, 1, 2, 3];
+
+/// #533: beside the plain inputs, a library's file outside the repository — reached by a jump from root a, as
+/// `codetrust::Reached` — asks for rust-analyzer: it's judged by a's answer only, and the library never gets a trust
+/// entry of its own, whatever the card, `:code-trust` and `:code-untrust` did meanwhile.
+#[test]
+fn a_reached_file_is_judged_by_its_origins_trust_only() {
+    let name = "a_reached_file_is_judged_by_its_origins_trust_only";
+    super::seeds(name, SEEDS_REACHED, |c| run(name, c, Mode::Reached));
+}
+
 /// Which scenario a run is.
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -64,6 +75,8 @@ enum Mode {
     Elsewhere,
     /// jdtls alone asked for, every card answered yes.
     Looks,
+    /// A library's file a jump reached from root a asks too (#533).
+    Reached,
 }
 
 fn run(name: &str, choices: Choices, mode: Mode) -> Vec<String> {
@@ -89,8 +102,20 @@ fn run(name: &str, choices: Choices, mode: Mode) -> Vec<String> {
     // (its looks in a home of its own: an empty one)
     std::fs::create_dir(repo.join("home")).unwrap();
     ed.agent_looks.home = Some(repo.join("home"));
+    // (#533: a library outside the repository, a cargo root of its own, its file reached from a by a jump)
+    let lib_dir = crate::scratch::Scratch::new(&format!("sim-code-trust-lib-{n}"));
+    let lib = std::fs::canonicalize(lib_dir.path()).unwrap();
+    std::fs::write(lib.join("Cargo.toml"), "[package]\nname = \"alloc\"\n").unwrap();
+    std::fs::write(lib.join("vec.rs"), "pub fn new() {}\n").unwrap();
+    let mut world = World::default();
+    if mode == Mode::Reached {
+        ed.open(&lib.join("vec.rs")).unwrap();
+        let origin = crate::codetrust::Reached { server: "rust-analyzer".into(), root: roots[0].clone() };
+        ed.doc_mut().lsp.reached = Some(origin);
+        world.lib = Some((ed.doc().id, lib.join("vec.rs"), lib.clone()));
+    }
     ed.open(&roots[0].join("main.rs")).unwrap();
-    let world = RefCell::new(World::default());
+    let world = RefCell::new(world);
     sim.walk(
         &mut ed,
         INPUTS,
@@ -122,16 +147,20 @@ struct World {
     wrong: Option<String>,
     /// The last answer was a yes, and no take-back came after it: what may be trusted.
     yes: bool,
+    /// #533: the reached library file (its buffer, its path) and the library's folder.
+    lib: Option<(crate::document::DocId, PathBuf, PathBuf)>,
 }
 
 fn input(sim: &mut Sim, ed: &mut Editor, roots: &[PathBuf], world: &RefCell<World>, mode: Mode) -> String {
     let c = &mut sim.choices;
     // (by arm: its file asks for its server 3, the card answered 2, :code-trust 1, :code-untrust 1, time 1,
     // :code-untrust and its file asking for jdtls again 1 (2 for the looks) — another tarae's yes 1)
+    // (and the reached file asking 3)
     let weights: &[usize] = match mode {
         Mode::Plain => &[3, 2, 1, 1, 1, 1],
         Mode::Elsewhere => &[3, 2, 1, 1, 1, 1, 1],
         Mode::Looks => &[3, 2, 1, 1, 1, 2],
+        Mode::Reached => &[3, 2, 1, 1, 1, 1, 0, 3],
     };
     match c.weighted(weights) {
         0 => {
@@ -190,6 +219,11 @@ fn input(sim: &mut Sim, ed: &mut Editor, roots: &[PathBuf], world: &RefCell<Worl
             world.borrow_mut().yes = true;
             "another tarae's y".into()
         }
+        7 => {
+            let Some((id, path, _)) = world.borrow().lib.clone() else { unreachable!("its mode's arm") };
+            let says = ask_reached(ed, id, &path, &roots[0], world);
+            format!("the library's vec.rs, reached from a, asks for rust-analyzer: {says}")
+        }
         _ => unreachable!("one arm a weight"),
     }
 }
@@ -221,6 +255,35 @@ fn ask(ed: &mut Editor, root: &Path, name: &str, world: &RefCell<World>) -> &'st
     if yes { "starts" } else { "waits" }
 }
 
+/// #533: the reached file `id` (at `path`) asks the gate for rust-analyzer at the root `code_root` gives it (as
+/// `attach_lsp` does) — judged anywhere but `origin`, or a yes while `origin` isn't trusted, kept in `world`.
+fn ask_reached(
+    ed: &mut Editor,
+    id: crate::document::DocId,
+    path: &Path,
+    origin: &Path,
+    world: &RefCell<World>,
+) -> &'static str {
+    let server = crate::lsp::ServerSpec {
+        name: "rust-analyzer".into(),
+        command: "rust-analyzer".into(),
+        args: Vec::new(),
+        except: Vec::new(),
+    };
+    let root = ed.code_root(&server, "rust", path, id);
+    if root != origin {
+        world.borrow_mut().wrong =
+            Some(format!("the reached file judged at {}, not its origin", root.display()));
+    }
+    let was = trusted(ed, origin);
+    let yes = ed.code_trusted(&server, &root, id);
+    if yes && !was {
+        world.borrow_mut().wrong =
+            Some("the gate let the reached file's rust-analyzer start, a untrusted".into());
+    }
+    if yes { "served" } else { "waits" }
+}
+
 /// The gate never said yes untrusted, nor before an agent was known; no root trusted but by a yes no take-back came
 /// after (a store read begun before it, landing after); a trusted root's files wait for nothing but a server's own
 /// look under way, and what a server would start with is its latest look's; no root trusted while its repository is
@@ -231,6 +294,12 @@ fn held(ed: &Editor, roots: &[PathBuf], world: &RefCell<World>) -> Result<(), St
     let world = world.borrow();
     if let Some(w) = world.wrong.as_ref() {
         return Err(w.clone());
+    }
+    // (#533: the library never a root of its own)
+    if let Some((_, _, lib)) = world.lib.as_ref()
+        && ed.code_trust.keys().any(|r| r.starts_with(lib))
+    {
+        return Err(format!("the library {} got a trust entry of its own", lib.display()));
     }
     let cards = ed.offers.iter().filter(|o| matches!(o.what, crate::offer::What::CodeTrust { .. })).count();
     let read = |s| roots.iter().any(|r| ed.code_trust.get(r).is_some_and(|t| t.state == Some(s)));

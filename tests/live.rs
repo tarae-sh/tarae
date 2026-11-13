@@ -185,6 +185,229 @@ fn rust_analyzer_diagnoses_completes_and_jumps() {
     t.wait_for("util.rs after gd", |s| s.rows[0].contains("util.rs") && s.contains("pub fn same"));
 }
 
+/// A program's output, trimmed.
+fn output_of(program: &str, args: &[&str]) -> String {
+    let o = Command::new(program).args(args).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// #533's view of what rust-analyzer runs: `cargo` and `rustc` as shims beside the sandbox's home (outside the
+/// project) logging each call — its time (ms), the tool, the toolchain pinned for it (`tc=`, `RUSTUP_TOOLCHAIN` or
+/// `unset`), its working folder, its arguments — then running yours (rustup's proxies: unpinned, a
+/// `rust-toolchain.toml` in the working folder picks the toolchain). rust-analyzer takes `$CARGO` and `$RUSTC` first.
+/// The sandbox, with them in its environment, and the log.
+fn with_shims(sb: Sandbox) -> (Sandbox, std::path::PathBuf) {
+    let shim = sb.home().with_file_name("shim");
+    std::fs::create_dir_all(&shim).unwrap();
+    let log = shim.join("calls.log");
+    for tool in ["cargo", "rustc"] {
+        let real = output_of("sh", &["-c", &format!("command -v {tool}")]);
+        let now = "perl -MTime::HiRes=time -e 'printf \"%.3f\", time'";
+        let script = format!(
+            "#!/bin/sh\necho \"$({now}) {tool} tc=${{RUSTUP_TOOLCHAIN-unset}} cwd=$PWD $*\" >> '{}'\nexec '{real}' \"$@\"\n",
+            log.display()
+        );
+        std::fs::write(shim.join(tool), script).unwrap();
+        Command::new("chmod").arg("755").arg(shim.join(tool)).status().unwrap();
+    }
+    let (cargo, rustc) = (shim.join("cargo"), shim.join("rustc"));
+    (sb.with_env("CARGO", &cargo.to_string_lossy()).with_env("RUSTC", &rustc.to_string_lossy()), log)
+}
+
+/// Waits until the shims' `log` has had no new line for 10 s (rust-analyzer's start-up loads — measured: three
+/// within ~2 s of its start, each querying `rustc` in the project and in the sysroot's `library/` — may still be under
+/// way after "rust-analyzer ready"), at most `LIVE_TIMEOUT`; then its length, where the jump's minute starts.
+fn shims_quiet(log: &Path) -> usize {
+    let end = Instant::now() + LIVE_TIMEOUT;
+    let (mut len, mut since) = (0, Instant::now());
+    loop {
+        let now = std::fs::read_to_string(log).map(|s| s.len()).unwrap_or(0);
+        if now != len {
+            (len, since) = (now, Instant::now());
+        }
+        if since.elapsed() >= Duration::from_secs(10) {
+            return len;
+        }
+        assert!(
+            Instant::now() < end,
+            "the shims never went quiet:\n{}",
+            std::fs::read_to_string(log).unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The shims' lines past byte `from`, after a minute: what ran after the jump.
+fn the_minute_after(log: &Path, from: usize) -> Vec<String> {
+    std::thread::sleep(Duration::from_secs(60));
+    let all = std::fs::read_to_string(log).unwrap_or_default();
+    all.get(from.min(all.len())..).unwrap_or_default().lines().map(str::to_string).collect()
+}
+
+/// A shim line's working folder.
+fn cwd_of(line: &str) -> &str {
+    line.split_once(" cwd=").map_or("", |(_, r)| r.split(' ').next().unwrap_or(""))
+}
+
+/// #533: from a trusted project, `gd` on `Vec::new` opens std's `vec/mod.rs` with no card — the project's
+/// rust-analyzer serves it (its pack's `serves-outside-roots`). In the minute after, measured by the shims once
+/// rust-analyzer's start-up has gone quiet: no `cargo` (no build script), and nothing runs with a working folder
+/// outside the project and the sysroot. The sysroot's own `rustc` queries (in `library/`, at every workspace load) pick
+/// no toolchain of the library's: it holds no `rust-toolchain` file — checked. The hover there answers.
+#[test]
+#[ignore = "live: run with `cargo live`"]
+fn a_jump_into_std_is_served_by_the_projects_server_and_runs_nothing_there() {
+    if !have("rust-analyzer") || !have("cargo") || !have("rustc") {
+        return;
+    }
+    let sysroot = std::path::PathBuf::from(output_of("rustc", &["--print", "sysroot"]));
+    let library = sysroot.join("lib/rustlib/src/rust/library");
+    if !library.join("alloc/src/vec/mod.rs").is_file() && skip("no rust-src (rustup component add rust-src)")
+    {
+        return;
+    }
+    for f in ["rust-toolchain", "rust-toolchain.toml"] {
+        assert!(!library.join(f).exists(), "std's library/ names a toolchain of its own: {f}");
+    }
+    let (sb, log) = with_shims(Sandbox::live("reach"));
+    std::fs::create_dir_all(sb.file("src")).unwrap();
+    sb.write("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    sb.write("src/lib.rs", "pub fn make() -> Vec<u8> {\n    Vec::new()\n}\n");
+    // (a repository, as the other live projects: its card and its trust a repository's — `code_trusted` waits for that)
+    sb.git(&["init", "-q", "-b", "main"]);
+    let mut t = sb.spawn(&["src/lib.rs"]);
+    code_trusted(&mut t);
+    t.wait_text("rust-analyzer ready");
+    let from = shims_quiet(&log);
+    t.send("/::new\r");
+    t.wait_text("/::new");
+    let s = until(&mut t, "gd", "vec/mod.rs after gd", |s| {
+        s.rows[0].contains("vec") && s.rows[0].contains("mod.rs")
+    });
+    assert!(!s.contains("Trust this folder") && !s.contains("Trust this repository"), "no card\n{s}");
+    let after = the_minute_after(&log, from);
+    let project = std::fs::canonicalize(sb.work()).unwrap();
+    let outside: Vec<&String> = after
+        .iter()
+        .filter(|l| {
+            let cwd = Path::new(cwd_of(l));
+            l.contains(" cargo tc=") || !(cwd.starts_with(&project) || cwd.starts_with(&sysroot))
+        })
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "after the jump, cargo or a run outside the project and the sysroot:\n{outside:#?}"
+    );
+    assert!(!t.screen().contains("Trust this folder"), "no card later either\n{}", t.screen());
+    assert!(!t.screen().status().contains("untrusted"), "served\n{}", t.screen());
+    // (the project's server answers there: the hover on `new`)
+    until(&mut t, " k", "the hover in vec/mod.rs", |s| s.contains("Constructs a new, empty"));
+}
+
+/// #533, the case that matters: a path dependency outside the project, its `rust-toolchain.toml` naming a toolchain of
+/// its own — a stand-in in the test's own folder that logs each run, then runs the real one — with rust-analyzer
+/// started both ways: as rustup's proxy (rustup pins the toolchain for it and all it runs) and as the toolchain's own
+/// binary (nothing pinned for it: it pins what it runs to the sysroot it found in the project). `gd` into the dependency
+/// is served by the project's rust-analyzer with no card. Measured (2026-11-13): the project's own start-up check
+/// compiles the dependency with its folder as `rustc`'s working folder, on the project's yes, and that may land after
+/// the jump — so what's held is the toolchain, not the folder: in the whole session the stand-in never runs, every call
+/// in the dependency's folder has a toolchain pinned, and after the jump no `cargo`. The control after: rustup's proxy,
+/// unpinned, in the dependency runs the stand-in — so a run of it would have shown.
+#[test]
+#[ignore = "live: run with `cargo live`"]
+fn a_jump_into_a_dependency_runs_nothing_there_nor_the_toolchain_it_names() {
+    // (`:preflight-full`'s tripwire: a skip prints `skipped: …`, which its step's note says. No rustup: no toolchain
+    // file is ever read — nothing to hold)
+    if !have("rust-analyzer") || !have("cargo") || !have("rustc") || !have("rustup") {
+        return;
+    }
+    let sysroot = output_of("rustc", &["--print", "sysroot"]);
+    for plain in [false, true] {
+        dependency_case(&sysroot, plain);
+    }
+}
+
+/// `a_jump_into_a_dependency_runs_nothing_there_nor_the_toolchain_it_names` with rust-analyzer as rustup's proxy, or
+/// (`plain`) as the toolchain's own binary.
+fn dependency_case(sysroot: &str, plain: bool) {
+    let (sb, log) = with_shims(Sandbox::live(if plain { "reach-dep-plain" } else { "reach-dep-proxy" }));
+    if plain {
+        let ra = format!("{sysroot}/bin/rust-analyzer");
+        if !Path::new(&ra).is_file()
+            && skip(&format!("the toolchain has no rust-analyzer binary of its own ({ra})"))
+        {
+            return;
+        }
+        sb.write_config(&format!("{LIVE_CONFIG}\n[lsp.rust-analyzer]\ncommand = \"{ra}\"\n"));
+    }
+    // (the dependency and the stand-in toolchain beside the sandbox's home: outside the project, inside the test's folder)
+    let (dep, tc) = (sb.home().with_file_name("dep"), sb.home().with_file_name("tc"));
+    let standin = sb.home().with_file_name("standin.log");
+    std::fs::create_dir_all(dep.join("src")).unwrap();
+    std::fs::create_dir_all(tc.join("bin")).unwrap();
+    for tool in ["cargo", "rustc"] {
+        let script = format!(
+            "#!/bin/sh\necho \"{tool} cwd=$PWD $*\" >> '{}'\nexec '{sysroot}/bin/{tool}' \"$@\"\n",
+            standin.display()
+        );
+        std::fs::write(tc.join("bin").join(tool), script).unwrap();
+        Command::new("chmod").arg("755").arg(tc.join("bin").join(tool)).status().unwrap();
+    }
+    std::fs::write(
+        dep.join("Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(dep.join("src/lib.rs"), "pub fn helper() -> u8 {\n    1\n}\n").unwrap();
+    std::fs::write(dep.join("rust-toolchain.toml"), format!("[toolchain]\npath = \"{}\"\n", tc.display()))
+        .unwrap();
+    std::fs::create_dir_all(sb.file("src")).unwrap();
+    sb.write(
+        "Cargo.toml",
+        &format!(
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = {{ path = \"{}\" }}\n",
+            dep.display()
+        ),
+    );
+    sb.write("src/lib.rs", "pub fn make() -> u8 {\n    dep::helper()\n}\n");
+    sb.git(&["init", "-q", "-b", "main"]);
+    // (no pinned toolchain in what tarae gets: under it, the dependency's rust-toolchain.toml would never count)
+    assert!(!sb.env().iter().any(|(k, _)| k.to_string_lossy().starts_with("RUSTUP_TOOLCHAIN")), "pinned");
+    let mut t = sb.spawn(&["src/lib.rs"]);
+    code_trusted(&mut t);
+    t.wait_text("rust-analyzer ready");
+    let from = shims_quiet(&log);
+    t.send("/helper\r");
+    t.wait_text("/helper");
+    let s = until(&mut t, "gd", "the dependency's lib.rs after gd", |s| {
+        s.rows[0].contains("dep") && s.rows[0].contains("lib.rs")
+    });
+    assert!(!s.contains("Trust this folder") && !s.contains("Trust this repository"), "no card\n{s}");
+    let after = the_minute_after(&log, from);
+    let dep = std::fs::canonicalize(&dep).unwrap();
+    let cargo: Vec<&String> = after.iter().filter(|l| l.contains(" cargo tc=")).collect();
+    assert!(cargo.is_empty(), "plain {plain}: cargo after the jump:\n{cargo:#?}");
+    let session = std::fs::read_to_string(&log).unwrap_or_default();
+    let unpinned: Vec<&str> = session
+        .lines()
+        .filter(|l| Path::new(cwd_of(l)).starts_with(&dep) && l.contains(" tc=unset "))
+        .collect();
+    assert!(
+        unpinned.is_empty(),
+        "plain {plain}: a run in the dependency with no toolchain pinned:\n{unpinned:#?}"
+    );
+    let toolchain = std::fs::read_to_string(&standin).unwrap_or_default();
+    assert!(toolchain.is_empty(), "plain {plain}: the dependency's toolchain ran:\n{toolchain}");
+    assert!(!t.screen().status().contains("untrusted"), "served\n{}", t.screen());
+    // (the control: rustup's proxy in the dependency runs its stand-in — a run there would have shown)
+    let proxy = output_of("sh", &["-c", "command -v rustc"]);
+    let mut control = Command::new(&proxy);
+    control.arg("-vV").current_dir(&dep).env_remove("RUSTUP_TOOLCHAIN").env_remove("RUSTUP_TOOLCHAIN_SOURCE");
+    let ok = control.output().unwrap().status.success();
+    let ran = std::fs::read_to_string(&standin).unwrap_or_default();
+    assert!(ok && ran.lines().count() == 1, "the stand-in didn't run in the control: {ran:?}");
+}
+
 #[test]
 #[ignore = "live: run with `cargo live`"]
 fn cargo_test_at_the_cursor_marks_the_failure() {

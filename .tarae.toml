@@ -52,6 +52,10 @@ steps = [
   { name = "plugins", cmd = "cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_plugins_pass_their_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin", full = true },
   # (a new plugin crate builds in a sandboxed run, cargo's build files inside it — PD1's H2; cargo's cache warm)
   { name = "plugin sandboxed", cmd = "cargo test --bin tarae -- --ignored --exact plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run", full = true },
+  # #533's tripwire, before every push: a dependency's rust-toolchain.toml never counts in what rust-analyzer runs —
+  # rust-analyzer's and rustup's pinning, a new rust-analyzer the thing that could change it; our live test, rust-analyzer
+  # started both ways (~2.5 min, the real rust-analyzer, no Claude). No rust-analyzer or rustup here: a pass with its note
+  { name = "toolchain pin", cmd = "RUST_TEST_NOCAPTURE=1 cargo test --test live -- --ignored --exact a_jump_into_a_dependency_runs_nothing_there_nor_the_toolchain_it_names", note = "skipped: ", full = true },
 ]
 
 # What a card for one of Claude's commands warns of besides the packs' (`cardwarn.rs`): `cargo xtask linux` runs

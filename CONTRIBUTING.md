@@ -33,8 +33,10 @@ cargo fmt                                # rustfmt.toml: max_width = 110
 Before sending a change, these checks must all pass — `:preflight-full` runs them in tarae (`.tarae.toml`'s
 `[preflight]`), and CI runs the same ones. `:preflight` alone — and bringing a session in — runs the quick
 set: fmt, clippy, Linux's clippy and test (the bundled-grammars builds, perf and the plugins' suites — CI's network
-job's tests of `tarae plugin test`, by name — are marked `full = true`). The last line, a new plugin crate built in a
-sandboxed run, is this Mac's own (`:preflight-full` only): macOS's sandbox and cargo's cache warm — CI has neither. Linux's
+job's tests of `tarae plugin test`, by name — are marked `full = true`). The last two lines are this Mac's own
+(`:preflight-full` only): a new plugin crate built in a sandboxed run (macOS's sandbox and cargo's cache warm — CI has
+neither), and the toolchain tripwire (#533: a live test with the real rust-analyzer and rustup, about 2.5 minutes; where
+either is missing it passes with a note saying so). Linux's
 clippy is `cargo xtask linux clippy` in Docker — CI's clippy job, both its lines, on the pinned toolchain; where Docker
 isn't reachable it fails saying so (`--no-skip`), never a pass:
 
@@ -49,6 +51,7 @@ cargo test --workspace --features bundled-grammars
 cargo perf
 cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_plugins_pass_their_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin
 cargo test --bin tarae -- --ignored --exact plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run
+RUST_TEST_NOCAPTURE=1 cargo test --test live -- --ignored --exact a_jump_into_a_dependency_runs_nothing_there_nor_the_toolchain_it_names
 ```
 
 Checks of your own go in `.tarae.local.toml` at the root — its `[preflight] steps` run after these, for you only

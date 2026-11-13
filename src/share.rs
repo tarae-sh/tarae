@@ -468,18 +468,16 @@ impl Editor {
         self.lsp.share.room.unwrap_or(room)
     }
 
-    /// The main server for document `id` (in `path`) of a kind that's shared: the one serving its folder;
+    /// The main server for document `id` (at server root `root`) of a kind that's shared: the one serving its folder;
     /// else none yet — its folder's key read first (a worker), or its folder joining a server of the same
     /// repository and toolchain at that one's next swap; else a new one, for its folder alone (a folder
     /// outside git: its own, as before).
     pub(crate) fn share_attach(
         &mut self,
         server: &lsp::ServerSpec,
-        lang: &str,
-        path: &Path,
+        root: PathBuf,
         id: DocId,
     ) -> Option<ClientId> {
-        let root = lsp::find_root_for(lang, path);
         let named = |c: &&Client| c.name == server.name;
         if let Some(c) = self
             .lsp
@@ -508,7 +506,7 @@ impl Editor {
                 return None;
             }
         };
-        let Some(key) = key else { return self.lsp_spawn(server, lang, path) };
+        let Some(key) = key else { return self.lsp_spawn_at(server, root) };
         let same = self
             .lsp
             .clients

@@ -56,6 +56,11 @@ impl Default for Clock {
 #[derive(Default)]
 pub struct LspState {
     pub clients: Vec<Client>,
+    /// #533: the origin of the next open, set by a jump just before it opens (`lsp_jump`, a restored file) — taken
+    /// by that open, never by a later one.
+    pub(crate) reach_next: Option<crate::codetrust::Reached>,
+    /// The origin of the open under way, by its buffer's id — the buffer made with it as the read lands.
+    pub(crate) reaching: Option<(DocId, crate::codetrust::Reached)>,
     next_id: ClientId,
     /// tarae's own server for web pages (`web/serve.rs`) and what it answers from.
     pub(crate) web: Option<(ClientId, crate::web::serve::Store)>,
@@ -588,8 +593,9 @@ impl Editor {
             return;
         }
         // No project for a server that needs one: none started (said once per folder, in the log — not a
-        // message on screen at every open)
-        if let Some(markers) = lsp::project_markers(&spec.name)
+        // message on screen at every open) — but a file a jump reached from one: its project's (#533)
+        if doc.lsp.reached.is_none()
+            && let Some(markers) = lsp::project_markers(&spec.name)
             && lsp::root_by_markers(&path, markers).is_none()
         {
             let dir = path.parent().unwrap_or(&path).display().to_string();
@@ -607,15 +613,21 @@ impl Editor {
             doc.lsp.clients().filter_map(|c| self.client(c).map(|c| c.name.clone())).collect();
         let has_main = doc.lsp.client.is_some();
         if !has_main {
-            match lsp::find_server(&spec.name, &self.config.lsp) {
+            // (its root: its own, or — a jump's file outside the roots of a server that may serve it there — the root
+            // it was reached from, #533: judged by that one's trust, served by that one's server, never a root of its own)
+            let found = lsp::find_server(&spec.name, &self.config.lsp).map(|s| {
+                let root = self.code_root(&s, &spec.name, &path, id);
+                (s, root)
+            });
+            match found {
                 // (one that runs the project's code waits for the repository's trust — G13, `codetrust.rs`)
-                Some(server) if !self.code_trusted(&server, &lsp::find_root_for(&spec.name, &path), id) => {}
-                Some(server) => {
+                Some((server, root)) if !self.code_trusted(&server, &root, id) => {}
+                Some((server, root)) => {
                     self.lsp.server_for.insert(spec.name.clone(), server.name.clone());
                     // (one for a repository's checkouts: `share.rs` — None while it's being arranged)
                     let cid = match self.config.lsp.shares(&server.name, lsp::traits(&server)) {
-                        true => self.share_attach(&server, &spec.name, &path, id),
-                        false => self.lsp_spawn(&server, &spec.name, &path),
+                        true => self.share_attach(&server, root, id),
+                        false => self.lsp_spawn_at(&server, root),
                     };
                     if let Some(cid) = cid {
                         let u16 = self.client(cid).is_some_and(|c| c.ready && c.encoding == Encoding::Utf16);
@@ -687,7 +699,15 @@ impl Editor {
         lang: &str,
         path: &std::path::Path,
     ) -> Option<ClientId> {
-        let root = lsp::find_root_for(lang, path);
+        self.lsp_spawn_at(server, lsp::find_root_for(lang, path))
+    }
+
+    /// The running server `server` at `root`, or a new one there — None if it couldn't start.
+    pub(crate) fn lsp_spawn_at(
+        &mut self,
+        server: &lsp::ServerSpec,
+        root: std::path::PathBuf,
+    ) -> Option<ClientId> {
         if let Some(c) = self.lsp.clients.iter().find(|c| c.name == server.name && c.root == root) {
             return Some(c.id);
         }
@@ -1752,6 +1772,8 @@ impl Editor {
                     }
                     // One place: go straight there (references always list — even one is worth seeing)
                     [(path, pos)] if goto != Goto::References => {
+                        // (outside the asking file's root: the buffer it makes is the answering server's — #533)
+                        self.lsp.reach_next = self.reach_from(cid, p.doc, path);
                         self.lsp_jump(path, pos, enc);
                         self.trace_ends("jumped");
                     }
@@ -2682,7 +2704,7 @@ impl Editor {
     }
 
     /// Whether `path` is in one of the sessions' checkouts.
-    fn in_a_checkout(&self, path: &std::path::Path) -> bool {
+    pub(crate) fn in_a_checkout(&self, path: &std::path::Path) -> bool {
         std::iter::once(&self.workspace).chain(&self.workspaces).any(|l| path.starts_with(&l.root))
     }
 

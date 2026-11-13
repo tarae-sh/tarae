@@ -75,8 +75,11 @@ offer-grammars = false
 ";
 
 /// Variables a live run doesn't pass on from the shell it was started in: the running Claude Code's
-/// (a nested claude would take them as its own), multiplexers', and ones that change what tarae shows.
-const LIVE_DROP: &[&str] = &["CLAUDE", "TMUX", "ZELLIJ", "TARAE_", "XDG_", "COLORFGBG", "TERM", "NO_COLOR"];
+/// (a nested claude would take them as its own), multiplexers', ones that change what tarae shows, and the toolchain
+/// rustup pins for whatever runs under `cargo` (`RUSTUP_TOOLCHAIN`, `_SOURCE`: `cargo test`'s children get them, your
+/// shell doesn't — with them, every `rust-toolchain.toml` is overridden, #533's measure).
+const LIVE_DROP: &[&str] =
+    &["CLAUDE", "TMUX", "ZELLIJ", "TARAE_", "XDG_", "COLORFGBG", "TERM", "NO_COLOR", "RUSTUP_TOOLCHAIN"];
 
 // ── Sandbox ──────────────────────────────────────────────────────────────────
 
