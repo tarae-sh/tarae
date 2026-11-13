@@ -1,6 +1,10 @@
+pub mod flags;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+#[cfg(test)]
+use std::process::Stdio;
+use std::process::{Child, Command};
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
@@ -55,7 +59,9 @@ impl ModelInfo {
 /// laid into its `--settings`). `given`: `Editor::claude_env` — a test's stand-in for tarae's environment, laid
 /// over the process's as if inherited (None: the process's own); what's left out is judged on it alone, and the
 /// process's names those rules judge aren't inherited (`judged`). As you, as every other tool runs claude: no
-/// sandbox of its own (user decision 2026-10-17) — what it does through its tools goes through tarae.
+/// sandbox of its own (user decision 2026-10-17) — what it does through its tools goes through tarae. Tests'
+/// (a start is `agent::spawn`, on its role's flags).
+#[cfg(test)]
 pub fn spawn(
     cfg: &LlmConfig,
     extra: &[&str],
@@ -135,6 +141,8 @@ pub enum SpawnError {
     Start(std::io::Error),
     /// Its billing can't be laid into its arguments (`billing::args`).
     Billing(String),
+    /// Its arguments can't be made (`agent::args`).
+    Args(String),
 }
 
 impl SpawnError {
@@ -142,7 +150,7 @@ impl SpawnError {
     pub fn said(&self, command: &str, whole: bool) -> String {
         match self {
             SpawnError::Start(e) => spawn_failed(command, e, whole),
-            SpawnError::Billing(why) => why.clone(),
+            SpawnError::Billing(why) | SpawnError::Args(why) => why.clone(),
         }
     }
 }
@@ -193,9 +201,10 @@ pub const CAPS: Caps = Caps {
     own_tools_off: true,
 };
 
-/// Whether a claude's last words refuse `--thinking-display` (an older CLI): started again without it.
-pub fn refused_thinking(err: &str) -> bool {
-    err.contains("thinking-display")
+/// Whether a claude that ended saying `err` is started again, and how: one whose last words refuse
+/// `--thinking-display` (an older CLI), without it — once.
+pub(super) fn again(err: &str, now: super::Again) -> Option<super::Again> {
+    (err.contains("thinking-display") && !now.thinking_plain).then_some(super::Again { thinking_plain: true })
 }
 
 /// The request id tarae asks `get_usage` under — its answer comes back with it (`parse_line`).

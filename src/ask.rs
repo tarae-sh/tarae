@@ -38,13 +38,6 @@ const SYSTEM: &str = "You make one change in the user's editor: the change they 
 attribute is an editor buffer, not a file: give that id as edit's file_path, and to read. Don't explain the change: \
 the user reviews it in their editor.";
 
-/// Its tools: tarae's two, none of Claude Code's.
-const ALLOWED: &str = "mcp__tarae__read,mcp__tarae__edit";
-const DISALLOWED: &str = "Read,Grep,Glob,Edit,Write,NotebookEdit,Bash,WebFetch,WebSearch,Task";
-
-/// The most requests it makes: it has tools now, and a few reads and an edit's retry fit.
-const MAX_TURNS: &str = "10";
-
 /// What a read past the project and its buffer is told: it asks no card (no one is in a conversation to answer it).
 pub const READS_ONLY: &str = "space i reads only the project and the buffer it was asked in";
 
@@ -177,9 +170,12 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     let (stdin, child) = match stand_in(ed) {
         Some(lines) => (lines, None),
         None => {
-            let cfg = llm::LlmConfig { args: args(&cfg.args), ..cfg };
-            let extra = ["--append-system-prompt", SYSTEM, "--permission-prompt-tool", "stdio"];
-            let mut child = llm::spawn(&cfg, &extra, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
+            // (its tools tarae's two, no conversation, no settings, a request cap — its wire's flags)
+            let start = crate::agent::Start {
+                system: Some(SYSTEM),
+                ..crate::agent::Start::new(crate::agent::Role::Ask, &cfg)
+            };
+            let mut child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
                 .map_err(|e| e.said(&cfg.command, false))?;
             let Some(stdin) = child.stdin.take().map(llm::Lines::new) else {
                 reap(child);
@@ -255,35 +251,6 @@ fn stand_in(ed: &Editor) -> Option<llm::Lines> {
 #[cfg(not(test))]
 fn stand_in(_: &Editor) -> Option<llm::Lines> {
     None
-}
-
-/// Its claude's arguments from `base` (`llm.args`): never a conversation to continue, no settings, tarae's two tools
-/// only, a request cap.
-fn args(base: &[String]) -> Vec<String> {
-    let mut args: Vec<String> = Vec::with_capacity(base.len() + 12);
-    let mut it = base.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--resume" | "--session-id" => {
-                it.next();
-            }
-            "--continue" | "--fork-session" => {}
-            _ => args.push(a.clone()),
-        }
-    }
-    let mut args = llm::with_tools(&args, "", ALLOWED);
-    if !args.iter().any(|a| a == "--no-session-persistence") {
-        args.push("--no-session-persistence".into());
-    }
-    for (flag, value) in [
-        ("--setting-sources", ""),
-        ("--disallowedTools", DISALLOWED),
-        ("--permission-mode", "default"),
-        ("--max-turns", MAX_TURNS),
-    ] {
-        args = llm::with_flag(&args, flag, value);
-    }
-    args
 }
 
 /// The ask of `generation`, if it's still the session's.
@@ -614,32 +581,4 @@ fn edit(ed: &mut Editor, generation: u64, call: Call, args: &Value) -> Result<()
     }
     reviewing(ed);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    /// Its arguments from `llm.args` with a conversation's flags in them: none of those survives, and it has no
-    /// settings, Claude Code's tools disallowed, tarae's two allowed, its request cap.
-    #[test]
-    fn its_args_carry_no_conversation_and_its_own_limits() {
-        let mut base = crate::llm::LlmConfig::default().args;
-        base.extend(["--resume", "x", "--continue", "--session-id", "y", "--fork-session"].map(String::from));
-        let args = super::args(&base);
-        for gone in ["--resume", "x", "--continue", "--session-id", "y", "--fork-session"] {
-            assert!(!args.iter().any(|a| a == gone), "{gone} in {args:?}");
-        }
-        let value = |flag: &str| {
-            let at: Vec<usize> =
-                args.iter().enumerate().filter(|(_, a)| *a == flag).map(|(i, _)| i).collect();
-            assert_eq!(at.len(), 1, "{flag} once: {args:?}");
-            args[at[0] + 1].as_str()
-        };
-        assert_eq!(value("--setting-sources"), "");
-        assert_eq!(value("--disallowedTools"), super::DISALLOWED);
-        assert_eq!(value("--max-turns"), "10");
-        assert_eq!(value("--tools"), "");
-        assert_eq!(value("--allowedTools"), "mcp__tarae__read,mcp__tarae__edit");
-        assert_eq!(value("--permission-mode"), "default");
-        assert!(args.iter().any(|a| a == "--no-session-persistence") && args.iter().any(|a| a == "-p"));
-    }
 }

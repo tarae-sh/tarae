@@ -24,10 +24,10 @@ use crate::transaction::{Change, Transaction};
 use crate::workspace::Here;
 
 use crate::agent::claude::DEFAULT_ARGS;
-pub use crate::agent::claude::{Lines, SpawnError, command, kill, pump, spawn, with_flag, with_tools};
+pub use crate::agent::claude::{Lines, kill, pump, with_flag, with_tools};
 #[cfg(test)]
 pub(crate) use crate::agent::claude::{
-    control_response, initialize_message, parse_line, usage_line, user_message,
+    command, control_response, initialize_message, parse_line, spawn, usage_line, user_message,
 };
 pub use crate::agent::{ModelInfo, StreamEv};
 
@@ -784,7 +784,8 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
     let cfg = ed.config.llm.clone();
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
     // (its own process, started now: posix_spawn returns at once, claude's start is the child's)
-    let mut child = spawn(&cfg, &[], &ed.workspace.root, ed.claude_env.as_ref(), &cred)
+    let start = crate::agent::Start::new(crate::agent::Role::Draft, &cfg);
+    let mut child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
         .map_err(|e| e.said(&cfg.command, false))?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
     // Write the message and close stdin — the process exits on its own after this one turn (written off the

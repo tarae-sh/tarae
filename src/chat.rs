@@ -94,32 +94,6 @@ pub(crate) fn system() -> String {
     format!("{base}{SYSTEM_REFACTOR}{SYSTEM_UI}")
 }
 
-/// The tools the chat process gets. Reading and tarae's own (`note`, `run_tests`, `run` — `tools.rs`) are
-/// allowed up front: the tests are the project's own, run the way the user runs them, in view, and any code
-/// Claude wrote for them was reviewed; `run` asks the user itself for anything but the checks. No Grep or
-/// Glob: tarae's `search` and `read` do what they did — 54 exploration turns on three builds called Grep never
-/// and Glob 3 times, and leaving them out takes 1,570 tokens off every request (tests/live.rs `chat_tools_ab`,
-/// 2026-10-13).
-/// No Edit or Write: tarae's `edit` makes every change (`ALLOWED`'s; the A/B that decided it: tests/live.rs
-/// `chat_edit_ab`, 2026-10-13 — as correct, 31 % fewer tokens), so the chat has no tool of Claude Code's at all.
-/// No Read: tarae's `read` reads images too (readimg, 2026-10-20 — `media.rs`; the A/B: tests/live.rs
-/// `chat_reads_a_screenshot_ab`).
-const TOOLS: &str = "";
-/// Not Read: allowed by name it reads anywhere unasked (measured — `reads.rs` answers it).
-/// (`references`, `symbols`, `definition` and `diagnostics` read inside the project only — `nav.rs`; `search`
-/// and `read` outside it only as Read would, on its card — `reads::Gate`; `rename` and `replace` land as Claude's
-/// edits do, in the review — `refactor.rs`, and `edit` too — `edittool.rs`; none of them reads or changes a file
-/// named like a key before Claude was let read it — `reads::Keys`; `ui` the screen's structure at Claude's level
-/// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `sessions_start` asks on its
-/// own card, `session_send` and `sessions` reach only the chat's own children, and only a parent's chat lists them —
-/// `orchestra.rs`; `plugin` asks on its own card — `plugin/install.rs`; `web_search` asks on its own card, a chat's
-/// first — `web/search.rs` — and is listed only with `llm.web-search` on)
-const ALLOWED: &str = "mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
-mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
-mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
-mcp__tarae__plugin,mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act,\
-mcp__tarae__web_search,mcp__tarae__code";
-
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
 /// `allowed-tools` pre-approves tools with no trust asked (`--tools` already leaves the tool out; a deny no level
@@ -638,8 +612,8 @@ pub struct Chat {
     hop: usize,
     /// The editor follows where Claude reads (`C-f`).
     pub follow: crate::follow::Follow,
-    /// This claude doesn't know `--thinking-display` (older CLI) — spawn without it.
-    no_thought_flag: bool,
+    /// How its next start differs, as its wire asked when the last one ended (`agent::again`) — None: as asked.
+    again: Option<crate::agent::Again>,
     /// Its claude would have started but the config doesn't read (`llm::held`): it starts once it does (`config_read`).
     pub(crate) held: bool,
     /// A new conversation was asked for (`C-l`, `:chat-new`) — a session brought back doesn't continue its own when
@@ -1242,7 +1216,7 @@ impl Chat {
             stopping: false,
             hop: 0,
             follow: Default::default(),
-            no_thought_flag: false,
+            again: None,
             held: false,
             started_new: false,
             clear_asked: None,
@@ -2532,6 +2506,25 @@ pub(crate) fn stand_in_own(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
     stand_in(c)
 }
 
+/// Tests: a chat's claude started as `ensure_proc` starts it, on the test's own program (`llm.command`): what it was
+/// started with (`Chat.launched`: its config, and the arguments after its own) — continuing `resume` (a fork of it
+/// with `fork`), its thinking flag refused before with `no_thought`.
+#[cfg(test)]
+pub(crate) fn launched_as(
+    ed: &mut Editor,
+    resume: Option<&str>,
+    fork: bool,
+    no_thought: bool,
+) -> Option<(llm::LlmConfig, Vec<String>)> {
+    let mut c = Chat::new();
+    // (its thinking flag refused as an older claude refuses it: the wire's own word for it)
+    let again = no_thought.then(|| crate::agent::again("error: unknown option '--thinking-display'", None));
+    (c.resume, c.fork, c.again) = (resume.map(String::from), fork, again.flatten());
+    ed.workspace.claude.chat = Some(c);
+    ensure_proc(ed);
+    ed.workspace.claude.chat.as_ref()?.launched.clone()
+}
+
 /// Tests: the conversation the next process resumes (`Chat.resume`) — one claude may no longer have.
 #[cfg(test)]
 pub(crate) fn resuming(c: &mut Chat, id: &str) {
@@ -2593,43 +2586,29 @@ fn ensure_proc(ed: &mut Editor) {
         (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
         return;
     }
-    let mut args = llm::with_tools(&cfg.args, TOOLS, ALLOWED);
-    // The conversation is kept by claude too, so it can be continued (`chats.rs`)
-    args.retain(|a| a != "--no-session-persistence");
-    // Only tarae's own MCP server, whatever `llm.args` says: under `-p` a project's `.mcp.json` servers connect
-    // unasked
-    if !args.iter().any(|a| a == "--strict-mcp-config") {
-        args.push("--strict-mcp-config".into());
-    }
     // (where its agent can: else it begins a conversation — a fork's too, never the source's own)
-    if let Some(id) = c.resume.as_ref().filter(|_| caps.resume && (!c.fork || caps.fork)) {
-        args.extend(["--resume".to_string(), id.clone()]);
-        // (a fork's first claude: the source's conversation copied under a new id, the source's untouched)
-        if c.fork {
-            args.push("--fork-session".into());
-        }
-    }
-    if let Some((settings, sources)) = settings {
-        // CLAUDE.md files and settings as `claude` loads them — but hooks don't run, and edits always come
-        // here as a review (an `ask` rule and the default mode outrank any allow rule or accept-edits mode)
-        args = llm::with_flag(&args, "--setting-sources", &sources);
-        args = llm::with_flag(&args, "--settings", &settings);
-        args = llm::with_flag(&args, "--permission-mode", "default");
-    }
-    let cfg = llm::LlmConfig { args, ..cfg };
+    let resume = c.resume.clone().filter(|_| caps.resume && (!c.fork || caps.fork));
+    let (fork, thinking_text, again) = (c.fork, caps.thinking_text, c.again);
     // (your wikis' one line, only while `web.signed-in` names one — fixed for this process: the cache holds)
     let system = system() + &crate::web::signed::prompt(&cfg.signed_in);
-    let mut extra = vec!["--append-system-prompt", system.as_str(), "--permission-prompt-tool", "stdio"];
-    if !c.no_thought_flag && caps.thinking_text {
-        extra.extend(["--thinking-display", "summarized"]);
-    }
-    // Who pays (`billing.rs`): an API session's key helper goes into the `--settings` above, merged
-    let started = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Chat).and_then(|cred| {
-        let child = llm::spawn(&cfg, &extra, &ed.workspace.root, ed.claude_env.as_ref(), &cred);
-        child.map(|child| (child, cred.billing())).map_err(|e| e.said(&cfg.command, true))
+    let start = crate::agent::Start {
+        system: Some(&system),
+        resume: resume.as_deref().map(|conversation| crate::agent::Resume { conversation, fork }),
+        thinking_text,
+        again,
+        claude: crate::agent::ClaudeStart {
+            settings: settings.as_ref().map(|(s, sources)| (s.as_str(), sources.as_str())),
+        },
+        ..crate::agent::Start::new(crate::agent::Role::Chat, &cfg)
+    };
+    // Who pays (`billing.rs`): an API session's key helper goes into its `--settings`, merged
+    let started = crate::agent::args(&start).and_then(|launched| {
+        let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Chat)?;
+        let child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred);
+        child.map(|child| (child, cred.billing(), launched)).map_err(|e| e.said(&cfg.command, true))
     });
     let Some(c) = &mut ed.workspace.claude.chat else { return };
-    let (mut child, billing) = match started {
+    let (mut child, billing, launched) = match started {
         Ok(started) => started,
         Err(said) => {
             // (once: opening the chat tries, and so does sending — the ask line gone with its message, said here only)
@@ -2640,7 +2619,7 @@ fn ensure_proc(ed: &mut Editor) {
     };
     c.billing = Some(billing);
     c.runs_on = (cfg.model.clone(), cfg.effort.clone());
-    c.launched = Some((cfg, extra.iter().map(|s| s.to_string()).collect()));
+    c.launched = Some((llm::LlmConfig { args: launched.args, ..cfg }, launched.extra));
     let Some(stdin) = child.stdin.take().map(llm::Lines::new) else { return };
     let (own, agent) = (stdin.weak(), Agent::from(stdin));
     // tarae's MCP server (its tools) — registered before anything else is said
@@ -3212,8 +3191,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 return send_queued(ed);
             }
             // An older claude without the flag: quietly again without it
-            if crate::agent::claude::refused_thinking(&err) && !c.no_thought_flag {
-                c.no_thought_flag = true;
+            if let Some(again) = crate::agent::again(&err, c.again) {
+                c.again = Some(again);
                 if c.state != State::Idle {
                     c.state = State::Idle;
                     c.msgs.push(Msg::new(Role::Note, "restarted claude — send again", ""));
@@ -5216,6 +5195,7 @@ pub fn apply_code(ed: &mut Editor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::claude::flags::chat::{ALLOWED, TOOLS};
 
     /// The flow plan's piece 3 (the user, 2026-11-03: no floating reader): the conversation is the docked column — `C-w e`
     /// from the chat says so and moves nothing, nothing said for anything that is in sight; `esc` leaves the column

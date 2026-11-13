@@ -30,19 +30,8 @@ use crate::agent::{Agent, Permission, Prompt, PromptPart};
 use crate::editor::Editor;
 use crate::llm::{self, StreamEv};
 
-/// Its tools: none of Claude Code's — tarae's own, allowed up front: its reading of the snapshot and its findings.
-const TOOLS: &str = "";
-const ALLOWED: &str = "mcp__tarae__read,mcp__tarae__search,mcp__tarae__note";
-/// A skeptic's: its reading and its verdicts.
-const JUDGE_ALLOWED: &str = "mcp__tarae__read,mcp__tarae__search,mcp__tarae__judge";
 /// Its reading tools, as its stream names them (each call one read).
 const READS: &[&str] = &["mcp__tarae__read", "mcp__tarae__search"];
-/// What it may never use, named too (`--tools` already leaves them out).
-const DISALLOWED: &str = "Read,Grep,Glob,Edit,Write,NotebookEdit,Bash,WebFetch,WebSearch,Task";
-/// Its turns at most (a read is one): a review that wanders stops.
-const MAX_TURNS: &str = "60";
-/// A skeptic's turns at most: it traces a few claims, it doesn't read the change whole.
-const SKEPTIC_TURNS: &str = "25";
 /// How long a board's other angles wait for its first one's first request (its prompt — the system prompt
 /// and the diff, the same for each — then in the account's prompt cache): the others read it from there.
 /// `Editor.reviewer_stagger` holds it (none in tests, unless a test says).
@@ -386,75 +375,13 @@ pub fn ask_in_for(
     });
 }
 
-/// The reviewer's claude: its arguments from `args` (llm.args), the speed flags kept — never a conversation
-/// to continue, no settings, its tools only.
-/// A skeptic's one tool of tarae's is `judge`, and its turns are fewer. Err: a board's member, and llm.args
-/// passes `--settings` as a file — tarae can't lay its cache's TTL into it unread (as `billing::args`).
-pub fn args_for(base: &[String], role: Role) -> Result<Vec<String>, String> {
-    let mut args: Vec<String> = Vec::with_capacity(base.len() + 12);
-    let mut it = base.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            // (another conversation — the chat's — is never its own)
-            "--resume" | "--session-id" => {
-                it.next();
-            }
-            "--continue" | "--fork-session" => {}
-            _ => args.push(a.clone()),
-        }
+/// Member `role`'s start on `cfg`: tarae's words beside Claude Code's own (its flags, each role's, its wire's —
+/// `agent::claude::flags::reviewer`).
+fn start(cfg: &llm::LlmConfig, role: Role) -> crate::agent::Start<'_> {
+    crate::agent::Start {
+        system: Some(SYSTEM),
+        ..crate::agent::Start::new(crate::agent::Role::Reviewer(role), cfg)
     }
-    let skeptic = matches!(role, Role::Skeptic(_));
-    let mut args = llm::with_tools(&args, TOOLS, if skeptic { JUDGE_ALLOWED } else { ALLOWED });
-    if !args.iter().any(|a| a == "--no-session-persistence") {
-        args.push("--no-session-persistence".into());
-    }
-    args = llm::with_flag(&args, "--setting-sources", "");
-    args = llm::with_flag(&args, "--disallowedTools", DISALLOWED);
-    args = llm::with_flag(&args, "--permission-mode", "default");
-    args = llm::with_flag(&args, "--max-turns", if skeptic { SKEPTIC_TURNS } else { MAX_TURNS });
-    if !matches!(role, Role::One) {
-        // A board's members cache an hour, on a key too (its default is five minutes): the prefix's block is an
-        // hour's (`content`), and Claude Code's own breakpoints must be the same (`member_command`). Laid into a
-        // `--settings` object given (the key's helper is laid in after, `billing::args`)
-        let given = args.iter().rposition(|a| a == "--settings").and_then(|i| args.get(i + 1));
-        let mut settings = match given.map(|v| serde_json::from_str::<Value>(v)) {
-            None => serde_json::Map::new(),
-            Some(Ok(Value::Object(m))) => m,
-            Some(_) => return Err(SETTINGS_FILE.into()),
-        };
-        settings.insert("promptCacheTtl".into(), json!(CACHE_TTL));
-        args = llm::with_flag(&args, "--settings", &Value::Object(settings).to_string());
-    }
-    Ok(args)
-}
-
-const SETTINGS_FILE: &str =
-    "llm.args passes --settings as a file — tarae can't add the board's cache time to it (give it as JSON)";
-
-/// The TTL of a board's cache: the prefix's block and Claude Code's own breakpoints alike — the API refuses a
-/// longer one after a shorter one (measured: a 400 for an hour's block after Claude Code's 5-minute ones on a key).
-const CACHE_TTL: &str = crate::agent::claude::CACHE_HOUR;
-
-/// What sets Claude Code's cache TTL over `promptCacheTtl` (its env-vars reference) — a board's members never
-/// get them: theirs must be `CACHE_TTL`.
-const CACHE_TTL_ENV: &[&str] = &["FORCE_PROMPT_CACHING_5M", "CLAUDE_CODE_PROMPT_CACHE_TTL"];
-
-/// Member `role`'s claude, not started: `llm::command`'s; a board's member without `CACHE_TTL_ENV`.
-fn member_command(
-    cfg: &llm::LlmConfig,
-    extra: &[&str],
-    root: &Path,
-    given: Option<&llm::Env>,
-    cred: &crate::billing::Credential,
-    role: Role,
-) -> Result<std::process::Command, llm::SpawnError> {
-    let mut cmd = llm::command(cfg, extra, root, given, cred)?;
-    if !matches!(role, Role::One) {
-        for name in CACHE_TTL_ENV {
-            cmd.env_remove(name);
-        }
-    }
-    Ok(cmd)
 }
 
 /// A name for a block (the diff's, the claims') that its text doesn't hold.
@@ -675,7 +602,7 @@ pub(crate) fn begin(
 ) {
     // (a board its members can't be started for: said once, before any is asked — never its settings dropped)
     if board.is_some()
-        && let Err(e) = args_for(&ed.config.llm.args, Role::Angle(0))
+        && let Err(e) = crate::agent::args(&start(&ed.config.llm, Role::Angle(0)))
     {
         // (one its parent's Claude proposed: that parent told, never left waiting for its end)
         if let Some(p) = parent {
@@ -1008,24 +935,17 @@ fn launch(ed: &mut Editor, i: usize) {
     }
     let (role, root, content) = (m.role, r.root.clone(), content(r, m));
     let cfg = ed.config.llm.clone();
-    let extra = ["--append-system-prompt", SYSTEM, "--permission-prompt-tool", "stdio"];
+    let start = start(&cfg, role);
     // Who pays: `llm.reviewer-billing`, else its session's (`billing.rs`)
-    let cred = args_for(&cfg.args, role).and_then(|args| {
-        let cred = ed.credential(ed.reviewer_billing(), crate::billing::Role::Reviewer)?;
-        Ok((llm::LlmConfig { args, ..cfg.clone() }, cred))
-    });
+    let cred = crate::agent::args(&start)
+        .and_then(|_| ed.credential(ed.reviewer_billing(), crate::billing::Role::Reviewer));
     // (no claude while the config doesn't read — `llm::held`: those waiting end with it, said)
     let cred = match llm::held(ed) {
         Some(why) => Err(why),
         None => cred,
     };
-    let started = cred.and_then(|(cfg, cred)| {
-        let child =
-            member_command(&cfg, &extra, &root, ed.claude_env.as_ref(), &cred, role).and_then(|mut c| {
-                use std::process::Stdio;
-                c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-                c.spawn().map_err(llm::SpawnError::Start)
-            });
+    let started = cred.and_then(|cred| {
+        let child = crate::agent::spawn(&start, &root, ed.claude_env.as_ref(), &cred);
         child.map(|child| (child, cred.billing())).map_err(|e| e.said(&cfg.command, false))
     });
     // (what keeps one from starting — its credential, its command — keeps those waiting too: they end with it,
@@ -2170,6 +2090,7 @@ fn verdict_sync(ed: &mut Editor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::claude::flags::reviewer::{CACHE_TTL_ENV, DISALLOWED, SETTINGS_FILE, args_for};
 
     /// Events handled until `done` holds — a board's card in front answered `y`, the yes every board test here takes
     /// for granted (the card's own test asks it itself: `space_v_capital_c_asks_then_starts_the_board`).
@@ -4273,7 +4194,7 @@ mod tests {
         let env: llm::Env = CACHE_TTL_ENV.iter().map(|n| (n.to_string(), "5m".to_string())).collect();
         let cred = ed.credential(Billing::Api, crate::billing::Role::Reviewer).unwrap();
         let kept = |role| {
-            let cmd = member_command(&ed.config.llm, &[], &repo, Some(&env), &cred, role).unwrap();
+            let cmd = crate::agent::command(&start(&ed.config.llm, role), &repo, Some(&env), &cred).unwrap();
             let mut kept: Vec<_> = cmd
                 .get_envs()
                 .filter(|(k, _)| CACHE_TTL_ENV.iter().any(|n| k == n))

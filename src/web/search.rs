@@ -44,14 +44,6 @@ pub const MODEL: &str = "haiku";
 const SYSTEM: &str = "You run one web search for another model. Call WebSearch once, with the user's words as the \
 query; when they name sites, give those as its allowed_domains. Don't answer from memory.";
 
-/// Its one tool, and Claude Code's others disallowed (tarae's MCP server isn't there: `--strict-mcp-config` and no
-/// `initialize`).
-const TOOLS: &str = "WebSearch";
-const DISALLOWED: &str = "Read,Grep,Glob,Edit,Write,NotebookEdit,Bash,WebFetch,Task";
-
-/// One request: the tool runs and its result comes, then the `result` with the cost — no closing words (probe C).
-const MAX_TURNS: &str = "1";
-
 /// Pages the chat gets at most (the search engine gives 17–19).
 pub const RESULTS_MAX: usize = 10;
 /// Helpers running at once — each its own `claude -p`, a few hundred MB, and one message may ask ten searches: the rest
@@ -170,43 +162,20 @@ pub fn query_of(args: &Value) -> Result<Query, String> {
 /// A query or a site refused for a key-shaped word.
 const KEY_LIKE: &str = "the query looks like it holds a key or a token, and its words would leave the machine — search with plain words";
 
-/// The helper's arguments from `base` (`llm.args`): never a conversation to continue, no settings, WebSearch alone,
-/// one request.
-fn args(base: &[String]) -> Vec<String> {
-    let mut args: Vec<String> = Vec::with_capacity(base.len() + 12);
-    let mut it = base.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--resume" | "--session-id" | "--system-prompt" | "--append-system-prompt" => {
-                it.next();
-            }
-            "--continue" | "--fork-session" => {}
-            _ => args.push(a.clone()),
-        }
-    }
-    let mut args = llm::with_tools(&args, TOOLS, TOOLS);
-    for flag in ["--no-session-persistence", "--strict-mcp-config"] {
-        if !args.iter().any(|a| a == flag) {
-            args.push(flag.into());
-        }
-    }
-    for (flag, value) in [
-        ("--setting-sources", ""),
-        ("--disallowedTools", DISALLOWED),
-        ("--permission-mode", "default"),
-        ("--max-turns", MAX_TURNS),
-        ("--system-prompt", SYSTEM),
-    ] {
-        args = llm::with_flag(&args, flag, value);
-    }
-    args
+/// The helper's config from the session's: the model of `llm.web-search-model`, no effort (the chat's would go to
+/// haiku — `llm::command` passes it on). Its arguments are its wire's (`agent::Role::WebSearch`): never a
+/// conversation to continue, no settings, WebSearch alone, one request, `SYSTEM` in place of Claude Code's prompt.
+pub(crate) fn config(base: llm::LlmConfig, model: &str) -> llm::LlmConfig {
+    let model = if model.trim().is_empty() { MODEL } else { model.trim() };
+    llm::LlmConfig { model: Some(model.to_string()), effort: String::new(), ..base }
 }
 
-/// The helper's config from the session's: its arguments, the model of `llm.web-search-model`, no effort (the chat's
-/// would go to haiku — `llm::command` passes it on).
-fn config(base: llm::LlmConfig, model: &str) -> llm::LlmConfig {
-    let model = if model.trim().is_empty() { MODEL } else { model.trim() };
-    llm::LlmConfig { args: args(&base.args), model: Some(model.to_string()), effort: String::new(), ..base }
+/// The helper's start on `cfg` (`config`'s).
+pub(crate) fn helper(cfg: &llm::LlmConfig) -> crate::agent::Start<'_> {
+    crate::agent::Start {
+        system: Some(SYSTEM),
+        ..crate::agent::Start::new(crate::agent::Role::WebSearch, cfg)
+    }
 }
 
 /// A search's helper while it runs (`Session.searches`).
@@ -437,7 +406,7 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
         }
         None => {
             let folder = Folder::made()?;
-            let mut child = llm::spawn(&cfg, &[], &folder.0, ed.claude_env.as_ref(), &cred)
+            let mut child = crate::agent::spawn(&helper(&cfg), &folder.0, ed.claude_env.as_ref(), &cred)
                 .map_err(|e| e.said(&cfg.command, false))?;
             let Some(stdin) = child.stdin.take().map(llm::Lines::new) else {
                 reap(child);

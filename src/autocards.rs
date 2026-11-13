@@ -242,27 +242,19 @@ pub fn prepare(ed: &Editor, o: &Offer) -> Option<Prepared> {
     })
 }
 
-/// The reviewer's flags: `cardreview::args`' (no tools, no MCP, no settings, one turn, `POLICY`), its stream read by
-/// `llm::pump` — the model said by its config (`llm::command` adds it).
+/// The reviewer's start on `cfg`, `policy` its system prompt (`POLICY`'s text): its flags its wire's —
+/// `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `llm::pump`, the model said by
+/// its config (`llm::command` adds it).
+fn start<'a>(cfg: &'a llm::LlmConfig, policy: &'a str) -> crate::agent::Start<'a> {
+    let role = crate::agent::Role::CardReview { max_usd: MAX_USD };
+    crate::agent::Start { system: Some(policy), ..crate::agent::Start::new(role, cfg) }
+}
+
+/// Tests: the reviewer's flags, as `start` gives them.
+#[cfg(test)]
 pub fn args() -> Vec<String> {
-    let mut out = Vec::new();
-    let mut it = crate::cardreview::args(MODEL, &POLICY.text(), Some(MAX_USD)).into_iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--model" => {
-                it.next();
-            }
-            "--output-format" => {
-                it.next();
-                out.extend(
-                    ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
-                        .map(String::from),
-                );
-            }
-            _ => out.push(a),
-        }
-    }
-    out
+    let cfg = llm::LlmConfig::default();
+    crate::agent::args(&start(&cfg, &POLICY.text())).expect("its flags").args
 }
 
 static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -324,7 +316,6 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
         }
         None => {
             let cfg = llm::LlmConfig {
-                args: args(),
                 model: Some(MODEL.into()),
                 effort: String::new(),
                 keep_env_key: llm::keeps_key(ed),
@@ -334,8 +325,10 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
             ed.events.jobs().spawn(move || {
                 let started = (|| -> Result<(u32, Folder), String> {
                     let folder = Folder::made()?;
-                    let mut child = llm::spawn(&cfg, &[], &folder.0, env.as_ref(), &cred)
-                        .map_err(|e| e.said(&cfg.command, false))?;
+                    let policy = POLICY.text();
+                    let mut child =
+                        crate::agent::spawn(&start(&cfg, &policy), &folder.0, env.as_ref(), &cred)
+                            .map_err(|e| e.said(&cfg.command, false))?;
                     let pid = child.id();
                     let sent = match child.stdin.take().map(llm::Lines::new) {
                         Some(stdin) => Agent::from(stdin).prompt(message).map_err(|e| e.to_string()),

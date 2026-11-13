@@ -1,5 +1,8 @@
 pub mod claude;
 
+#[cfg(test)]
+mod argv_tests;
+
 /// A running agent: what tarae says to it. Its kind's lines are its wire's (`claude.rs`); everything above the
 /// wire asks this handle, and none of it names the kind.
 pub enum Agent {
@@ -114,6 +117,119 @@ impl Default for &'static Caps {
     fn default() -> Self {
         &claude::CAPS
     }
+}
+
+/// Which start it is — its wire turns it, with the rest of its `Start`, into its own arguments.
+#[derive(Clone, Copy, Debug)]
+pub enum Role {
+    Chat,
+    /// `space i`'s.
+    Ask,
+    /// A commit draft's.
+    Draft,
+    Reviewer(crate::reviewer::Role),
+    /// The web search's helper.
+    WebSearch,
+    /// Auto cards' reviewer, its spend's backstop.
+    CardReview {
+        max_usd: f64,
+    },
+}
+
+/// What a start asks for; its wire says it in its own arguments (`args`).
+pub struct Start<'a> {
+    pub role: Role,
+    /// Its program, model, effort and `llm.args`.
+    pub cfg: &'a crate::llm::LlmConfig,
+    /// tarae's words before any message: beside the agent's own (the chat's, the ask's, the reviewer's), or in
+    /// their place (the web search's, a card review's).
+    pub system: Option<&'a str>,
+    /// A conversation continued (the chat's).
+    pub resume: Option<Resume<'a>>,
+    /// Its thinking said as text (the chat's, where its agent can — `Caps::thinking_text`).
+    pub thinking_text: bool,
+    /// How it differs from what's asked, as its wire said when the last start ended (`again`).
+    pub again: Option<Again>,
+    /// What only Claude's wire reads.
+    pub claude: ClaudeStart<'a>,
+}
+
+impl<'a> Start<'a> {
+    /// `role`'s start on `cfg`: no words of tarae's, no conversation continued, no thinking text, no settings.
+    pub fn new(role: Role, cfg: &'a crate::llm::LlmConfig) -> Start<'a> {
+        Start {
+            role,
+            cfg,
+            system: None,
+            resume: None,
+            thinking_text: false,
+            again: None,
+            claude: ClaudeStart::default(),
+        }
+    }
+}
+
+/// How a start is tried again, as its wire asked (`again`): kept by whoever starts it and given back in its next
+/// `Start`, what it means its wire's alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Again {
+    /// Its thinking not asked for as text (an older claude refuses `--thinking-display`).
+    thinking_plain: bool,
+}
+
+/// Whether a process that ended saying `err` is to be started again, and how — `now` how the last start already
+/// differed. None: nothing to try again (its end is said as any end is).
+pub fn again(err: &str, now: Option<Again>) -> Option<Again> {
+    claude::again(err, now.unwrap_or_default())
+}
+
+/// A conversation continued: its id, and whether as a fork (copied under a new id, the source's left as it was).
+pub struct Resume<'a> {
+    pub conversation: &'a str,
+    pub fork: bool,
+}
+
+/// Claude's own part of a start.
+#[derive(Default)]
+pub struct ClaudeStart<'a> {
+    /// The chat's `--settings` and the sources it loads (`claudetrust::ready`).
+    pub settings: Option<(&'a str, &'a str)>,
+}
+
+/// A start's arguments as its wire gives them: those in place of `llm.args`, and those after (`Chat.launched` keeps
+/// both).
+pub struct Args {
+    pub args: Vec<String>,
+    pub extra: Vec<String>,
+}
+
+/// `s`'s arguments, its wire's. Err: `llm.args` can't take what it must add (a board's `--settings` given as a file).
+pub fn args(s: &Start) -> Result<Args, String> {
+    claude::flags::of(s)
+}
+
+/// `s`'s process, not started: its program, arguments and environment — run in `dir`, `given` a test's stand-in for
+/// tarae's environment, paid for by `cred`.
+pub fn command(
+    s: &Start,
+    dir: &std::path::Path,
+    given: Option<&crate::llm::Env>,
+    cred: &crate::billing::Credential,
+) -> Result<std::process::Command, claude::SpawnError> {
+    claude::flags::command(s, dir, given, cred)
+}
+
+/// `command`, started, its stdin, stdout and stderr piped.
+pub fn spawn(
+    s: &Start,
+    dir: &std::path::Path,
+    given: Option<&crate::llm::Env>,
+    cred: &crate::billing::Credential,
+) -> Result<std::process::Child, claude::SpawnError> {
+    use std::process::Stdio;
+    let mut cmd = command(s, dir, given, cred)?;
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.spawn().map_err(claude::SpawnError::Start)
 }
 
 /// A message to an agent: its text, or its parts — one kept in the cache an hour (a board's shared prefix,
