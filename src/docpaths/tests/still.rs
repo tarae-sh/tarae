@@ -47,7 +47,7 @@ fn event(ed: &Editor, kind: Kind, n: usize) -> Event {
             let g = ed.workspaces[0].claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
             let words = if n.is_multiple_of(2) { "Let me look " } else { "at the map. " };
             let apply = move |ed: &mut Editor| {
-                crate::chat::stream_event(ed, g, crate::llm::StreamEv::Text(words.into()));
+                crate::chat::stream_event(ed, g, crate::agent::Event::Text(words.into()));
             };
             Event::For(w, ed.claude_of(w), Box::new(apply))
         }

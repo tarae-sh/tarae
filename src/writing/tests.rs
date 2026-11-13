@@ -5,10 +5,10 @@ use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::agent::Event;
 use crate::chat::State;
 use crate::config::Config;
 use crate::key::{Code, Key};
-use crate::llm::StreamEv;
 use crate::test_results::settle_until as settle;
 
 const TEXT: &str = "fn main() {\n    let a = 1;\n    let b = 2;\n    println!(\"{a} {b}\");\n}\n";
@@ -71,7 +71,7 @@ impl Writer {
             self.scan.feed(&piece);
             let done = done && at == chars.len();
             let d = Delta { call: self.call.clone(), pieces: self.scan.take(), done };
-            crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+            crate::chat::stream_event(ed, g, Event::Writing(d));
         }
     }
 }
@@ -203,7 +203,7 @@ fn an_edit_is_drawn_as_it_is_written() {
         "nothing bleeding once whole"
     );
     // The turn's end takes it away
-    crate::chat::stream_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
+    crate::chat::stream_event(&mut ed, g, Event::Done(Ok(String::new())));
     assert!(ed.doc().writing.is_none());
     assert!(!frame(&mut ed, 100, 30).iter().any(|r| r.ends_with("let b = 20;")));
 }
@@ -228,7 +228,7 @@ fn the_review_opens_on_the_same_rows() {
     crate::chat::stream_event(
         &mut ed,
         g,
-        StreamEv::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
+        Event::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
@@ -561,11 +561,7 @@ fn a_key_sequence_under_way_holds_the_cursor_and_its_end_decides() {
     let (mut ed, _dir, _g) = scene("writing-sequence-move");
     frame(&mut ed, 100, 30);
     let read = json!({"file_path": _dir.join("a.rs"), "offset": 1, "limit": 1});
-    crate::chat::stream_event(
-        &mut ed,
-        _g,
-        StreamEv::Tool { id: "r1".into(), name: "Read".into(), input: read },
-    );
+    crate::chat::stream_event(&mut ed, _g, Event::Tool { id: "r1".into(), name: "Read".into(), input: read });
     press(&mut ed, "2");
     assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "a count alone: not yet");
     press(&mut ed, "j");
@@ -588,7 +584,7 @@ fn follow_comes_back_after_a_word_motion_or_a_search() {
             crate::chat::stream_event(
                 &mut ed,
                 g,
-                StreamEv::Tool { id: "r1".into(), name: "Read".into(), input: read },
+                Event::Tool { id: "r1".into(), name: "Read".into(), input: read },
             );
             assert_eq!((led(&ed), ed.cursor_line()), (Some(2), 0));
             press(&mut ed, keys);
@@ -621,11 +617,7 @@ fn select_holds_follow_until_you_leave_it() {
     ed.config.llm.follow_resume = 1;
     frame(&mut ed, 100, 30);
     let read = json!({"file_path": dir.join("a.rs"), "offset": 3, "limit": 1});
-    crate::chat::stream_event(
-        &mut ed,
-        g,
-        StreamEv::Tool { id: "r1".into(), name: "Read".into(), input: read },
-    );
+    crate::chat::stream_event(&mut ed, g, Event::Tool { id: "r1".into(), name: "Read".into(), input: read });
     press(&mut ed, "vl");
     assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "SELECT: you took over");
     // The quiet while's wake comes and goes (every event until none for a while): follow still waits
@@ -634,11 +626,7 @@ fn select_holds_follow_until_you_leave_it() {
     }
     assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "SELECT holds it past the quiet while");
     let read = json!({"file_path": dir.join("a.rs"), "offset": 5, "limit": 1});
-    crate::chat::stream_event(
-        &mut ed,
-        g,
-        StreamEv::Tool { id: "r2".into(), name: "Read".into(), input: read },
-    );
+    crate::chat::stream_event(&mut ed, g, Event::Tool { id: "r2".into(), name: "Read".into(), input: read });
     assert_eq!(ed.cursor_line(), 0, "no stop moves it");
     let r = ed.doc().selection().primary();
     assert!(r.to() - r.from() > 1, "your selection stays");
@@ -677,7 +665,7 @@ fn an_edit_of_yours_where_the_cursor_is_pauses_follow() {
         crate::chat::stream_event(
             &mut ed,
             g,
-            StreamEv::Tool { id: "r1".into(), name: "Read".into(), input: read },
+            Event::Tool { id: "r1".into(), name: "Read".into(), input: read },
         );
         assert_eq!(ed.cursor_line(), 0);
         assert!(crate::follow::leads(&ed), "{keys}: led");
@@ -693,7 +681,7 @@ fn an_edit_of_yours_where_the_cursor_is_pauses_follow() {
         crate::chat::stream_event(
             &mut ed,
             g,
-            StreamEv::Tool { id: "r2".into(), name: "Read".into(), input: read },
+            Event::Tool { id: "r2".into(), name: "Read".into(), input: read },
         );
         assert_eq!(ed.cursor_line(), 0, "{keys}: stays with you");
     }
@@ -757,14 +745,10 @@ fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     let line = status(&frame(&mut ed, 100, 30));
     assert!(line.contains("● chat · follow"), "{line}");
     // Nothing written any more, a read: the accent bar on its line
-    crate::chat::stream_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
+    crate::chat::stream_event(&mut ed, g, Event::Done(Ok(String::new())));
     ed.workspace.claude.chat.as_mut().unwrap().state = State::Thinking;
     let read = json!({"file_path": dir.join("a.rs"), "offset": 4, "limit": 1});
-    crate::chat::stream_event(
-        &mut ed,
-        g,
-        StreamEv::Tool { id: "r1".into(), name: "Read".into(), input: read },
-    );
+    crate::chat::stream_event(&mut ed, g, Event::Tool { id: "r1".into(), name: "Read".into(), input: read });
     assert_eq!((led(&ed), ed.cursor_line()), (Some(3), 0));
     let (mark, bar) = fg_before(&mut ed, r#"    println!("{a} {b}");"#);
     assert_eq!((mark, bar.as_str()), (claude_colour(&ed), "▎"), "Claude's place marked");
@@ -939,7 +923,7 @@ fn an_added_lines_cursor_stays_put_when_it_lands() {
     crate::chat::stream_event(
         &mut ed,
         g,
-        StreamEv::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
+        Event::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
@@ -964,7 +948,7 @@ fn an_edit_landing_unseen_leads_the_view_there() {
     crate::chat::stream_event(
         &mut ed,
         g,
-        StreamEv::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
+        Event::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
@@ -992,7 +976,7 @@ fn an_edit_accepted_in_its_review_leads_the_cursor_there() {
     crate::chat::stream_event(
         &mut ed,
         g,
-        StreamEv::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
+        Event::Tool { id: "t1".into(), name: "mcp__tarae__edit".into(), input: input.clone() },
     );
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
@@ -1017,7 +1001,7 @@ fn an_edit_accepted_in_its_review_leads_the_cursor_there() {
 /// tarae's edit made as claude makes it, its input whole: the call, then tarae's tool call (`rpc` its id).
 fn call_edit(ed: &mut Editor, g: u64, id: &str, rpc: u64, input: &str) {
     let input: Value = serde_json::from_str(input).unwrap();
-    let tool = StreamEv::Tool { id: id.into(), name: "mcp__tarae__edit".into(), input: input.clone() };
+    let tool = Event::Tool { id: id.into(), name: "mcp__tarae__edit".into(), input: input.clone() };
     crate::chat::stream_event(ed, g, tool);
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": rpc, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
@@ -1513,7 +1497,7 @@ fn an_edit_streams_from_its_lines_to_its_rows() {
     }
     for d in r.take() {
         assert_eq!(d.call, "e1");
-        crate::chat::stream_event(&mut ed, g, StreamEv::Writing(d));
+        crate::chat::stream_event(&mut ed, g, Event::Writing(d));
     }
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let rows = frame(&mut ed, 100, 30);
@@ -1576,7 +1560,7 @@ fn reduce_motion_and_calm_on_the_frame() {
     );
     assert!(ed.tick_wanted().unwrap() > crate::editor::TICK * 2, "the wait's frames a second apart");
     // A toast with nothing waited on: its one frame as its time is up — at `full`, frames while it fades in
-    crate::chat::stream_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
+    crate::chat::stream_event(&mut ed, g, Event::Done(Ok(String::new())));
     ed.toasts.clear();
     ed.set_status("saved");
     let calm = ed.tick_wanted().unwrap();
@@ -1704,7 +1688,7 @@ fn perf_small_edit_written_into_a_big_file() {
     for (k, piece) in chars.chunks(16).enumerate().take(profiling.unwrap_or(usize::MAX)) {
         scan.feed(&piece.iter().collect::<String>());
         let d = Delta { call: "big1".into(), pieces: scan.take(), done: false };
-        let apply = move |ed: &mut Editor| crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+        let apply = move |ed: &mut Editor| crate::chat::stream_event(ed, g, Event::Writing(d));
         let t = Instant::now();
         ed.handle_event(crate::event::Event::Job(Box::new(apply)));
         events.push(t.elapsed());

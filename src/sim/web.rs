@@ -128,25 +128,25 @@ fn input(sim: &mut Sim, ed: &mut Editor, fetched: &str, n: u64) -> String {
             let Some(s) = ed.workspace.claude.searches.first() else { return "(no search runs)".into() };
             // (named by its words: its id is a process-wide count, never the same run to run)
             let (id, answered, words) = (s.id, s.answered, s.query.words.clone());
-            use crate::llm::StreamEv;
+            use crate::agent::Event;
             let ev = match *c.pick(&[0, 1, 2]) {
-                0 if !answered => StreamEv::Searched(Box::new(crate::web::search::Found {
+                0 if !answered => Event::Searched(Box::new(crate::web::search::Found {
                     links: vec![crate::web::search::Link {
                         title: "Tokio".into(),
                         url: "https://tokio.test/".into(),
                     }],
                     summary: String::new(),
                 })),
-                0 | 1 => StreamEv::Spent(crate::usage::Spent {
+                0 | 1 => Event::Spent(crate::usage::Spent {
                     total_cost: Some(0.01),
                     at_ms: n,
                     ..Default::default()
                 }),
-                _ => StreamEv::Done(Err("error_max_turns".into())),
+                _ => Event::Done(Err("error_max_turns".into())),
             };
             let what = match &ev {
-                StreamEv::Searched(_) => "its list",
-                StreamEv::Spent(_) => "its cost",
+                Event::Searched(_) => "its list",
+                Event::Spent(_) => "its cost",
                 _ => "its end",
             };
             crate::web::search::on_event(ed, id, ev);

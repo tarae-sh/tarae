@@ -347,7 +347,7 @@ impl Places {
         // (a simulation's stand-in was started with nothing: claude's own default, every scope)
         let c = w.claude.chat.as_ref()?;
         let args = c.launched.as_ref().map_or(&[][..], |l| &l.0.args[..]);
-        // (a test's stand-in is the whole of the environment, as `llm::spawn` lays it — else tarae's own, never in
+        // (a test's stand-in is the whole of the environment, as `agent::spawn` lays it — else tarae's own, never in
         // a test build)
         let names = std::iter::once(MIN_VAR).chain(OFF.iter().copied().filter(|k| k.starts_with("DISABLE_")));
         let env =

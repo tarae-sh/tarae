@@ -10,9 +10,9 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
-use crate::llm::StreamEv;
 use crate::split::PaneId;
 use crate::writing::{Delta, Scan};
 
@@ -137,7 +137,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, a: PaneId, w: &mut World) -> String {
             scan.feed(&piece);
             let d = Delta { call, pieces: scan.take(), done: end == chars.len() };
             let before = crate::follow::led_in(ed, a);
-            crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+            crate::chat::stream_event(ed, g, Event::Writing(d));
             let now = crate::follow::led_in(ed, a);
             if let Some(line) = now.filter(|_| now != before) {
                 let doc = ed.docs.iter().find(|d| d.path == ed.doc().path).expect("a.rs");
@@ -167,14 +167,14 @@ fn step(sim: &mut Sim, ed: &mut Editor, a: PaneId, w: &mut World) -> String {
             let path = ed.workspace.root.join("a.rs");
             let input = serde_json::json!({"file_path": path, "offset": line + 1, "limit": 1});
             let id = format!("r{}", w.inputs);
-            crate::chat::stream_event(ed, g, StreamEv::Tool { id, name: "Read".into(), input });
+            crate::chat::stream_event(ed, g, Event::Tool { id, name: "Read".into(), input });
             format!("a read of line {}", line + 1)
         }
         4 => {
             if !busy {
                 return "(no turn to end)".into();
             }
-            crate::chat::stream_event(ed, g, StreamEv::Done(Ok(String::new())));
+            crate::chat::stream_event(ed, g, Event::Done(Ok(String::new())));
             "the turn ends".into()
         }
         5 => {

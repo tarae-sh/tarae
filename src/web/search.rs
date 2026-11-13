@@ -5,9 +5,9 @@
 //!   `llm.web-search-model` (`haiku`) with the chat's effort cleared, Claude Code's WebSearch its one tool and the rest
 //!   disallowed, no MCP, no settings, no memory, no session kept, `--max-turns 1`, tarae's short system prompt (step
 //!   1's probe: Claude Code's own cost twice as much and searched twice), in an empty folder of its own (`Folder`),
-//!   told the query alone, never the conversation. `llm::command`'s environment as it is: its named removals, the
+//!   told the query alone, never the conversation. `agent::command`'s environment as it is: its named removals, the
 //!   login kept.
-//! - **What the chat gets**: its WebSearch result (`llm::StreamEv::Searched`, read from the stream's
+//! - **What the chat gets**: its WebSearch result (`agent::Event::Searched`, read from the stream's
 //!   `tool_use_result`) — up to `RESULTS_MAX` pages, title and address, and how many were found (the probe's search
 //!   found 19); no dates (none survives Claude Code's tool) —
 //!   framed as `read` frames a page: one line saying someone other than the user wrote it, inside `<results … id=…>`
@@ -32,9 +32,9 @@ use std::time::Instant;
 use serde_json::Value;
 
 use super::fetch::Fetched;
-use crate::agent::{Agent, Prompt};
+use crate::agent::{self, Agent, Event, Prompt};
 use crate::editor::Editor;
-use crate::llm::{self, StreamEv};
+use crate::llm;
 use crate::tools::Call;
 
 /// `llm.web-search-model`'s default.
@@ -163,7 +163,7 @@ pub fn query_of(args: &Value) -> Result<Query, String> {
 const KEY_LIKE: &str = "the query looks like it holds a key or a token, and its words would leave the machine — search with plain words";
 
 /// The helper's config from the session's: the model of `llm.web-search-model`, no effort (the chat's would go to
-/// haiku — `llm::command` passes it on). Its arguments are its wire's (`agent::Role::WebSearch`): never a
+/// haiku — `agent::command` passes it on). Its arguments are its wire's (`agent::Role::WebSearch`): never a
 /// conversation to continue, no settings, WebSearch alone, one request, `SYSTEM` in place of Claude Code's prompt.
 pub(crate) fn config(base: llm::LlmConfig, model: &str) -> llm::LlmConfig {
     let model = if model.trim().is_empty() { MODEL } else { model.trim() };
@@ -408,7 +408,7 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
             let folder = Folder::made()?;
             let mut child = crate::agent::spawn(&helper(&cfg), &folder.0, ed.claude_env.as_ref(), &cred)
                 .map_err(|e| e.said(&cfg.command, false))?;
-            let Some(stdin) = child.stdin.take().map(llm::Lines::new) else {
+            let Some(stdin) = child.stdin.take().map(agent::Lines::new) else {
                 reap(child);
                 return Err("claude: no stdin".into());
             };
@@ -418,7 +418,7 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
                 return Err(format!("claude: {e}"));
             }
             let pid = child.id();
-            llm::pump(child, None, true, ed.events.sender(), move |ev| {
+            agent::pump(child, None, true, ed.events.sender(), move |ev| {
                 Some(Box::new(move |ed: &mut Editor| on_event(ed, id, ev)))
             });
             (Some(pid), Some(folder))
@@ -452,44 +452,44 @@ fn reap(mut child: std::process::Child) {
 
 /// A test's stand-in helper (`Editor.search_lines`): no process, what it's told kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<llm::Lines> {
-    ed.search_lines.clone().map(llm::Lines::to)
+fn stand_in(ed: &Editor) -> Option<agent::Lines> {
+    ed.search_lines.clone().map(agent::Lines::to)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<llm::Lines> {
+fn stand_in(_: &Editor) -> Option<agent::Lines> {
     None
 }
 
 /// An event of search `id`'s stream.
-pub(crate) fn on_event(ed: &mut Editor, id: u64, ev: StreamEv) {
+pub(crate) fn on_event(ed: &mut Editor, id: u64, ev: Event) {
     let Some(s) = ed.workspace.claude.searches.iter_mut().find(|s| s.id == id) else { return };
     let (billing, keep) = (s.billing, s.keep);
     match ev {
-        StreamEv::ToolResult { error, text, .. } => {
+        Event::ToolResult { error, text, .. } => {
             s.ran = true;
             if error {
                 s.failed = Some(text);
             }
         }
-        StreamEv::Searched(found) => landed(ed, id, *found),
+        Event::Searched(found) => landed(ed, id, *found),
         // (what it cost is the asking chat's, an entry of its own beside the chat's turns)
-        StreamEv::Spent(s) if !s.counts.any() && s.total_cost.is_none() => {}
-        StreamEv::Spent(s) => {
+        Event::Spent(s) if !s.counts.any() && s.total_cost.is_none() => {}
+        Event::Spent(s) => {
             ed.workspace.claude.usage.aside(s, "web-search");
             ed.calls_record();
             crate::usage::view_sync(ed);
         }
-        StreamEv::Limits(r) => crate::limits::seen(ed, r),
+        Event::Limits(r) => crate::limits::seen(ed, r),
         // (the credential it says it runs on — another than its billing's stops it: `billing.rs`)
-        StreamEv::Conversation { key_source, .. } => {
+        Event::Conversation { key_source, .. } => {
             let role = crate::billing::Role::WebSearch;
             if let Some(said) = crate::billing::checked(billing, keep, role, key_source.as_deref()) {
                 crate::log::line("claude", "warn", &said);
                 ended(ed, id, Err(said));
             }
         }
-        StreamEv::Done(r) => ended(ed, id, r),
-        StreamEv::Exit(e) => ended(ed, id, Err(if e.is_empty() { "claude stopped".into() } else { e })),
+        Event::Done(r) => ended(ed, id, r),
+        Event::Exit(e) => ended(ed, id, Err(if e.is_empty() { "claude stopped".into() } else { e })),
         _ => {}
     }
 }
@@ -544,7 +544,7 @@ fn gone(ed: &mut Editor, id: u64) -> Option<Search> {
     let at = ed.workspace.claude.searches.iter().position(|s| s.id == id)?;
     let s = ed.workspace.claude.searches.remove(at);
     if let Some(pid) = s.pid {
-        llm::kill(pid);
+        agent::kill(pid);
     }
     Some(s)
 }

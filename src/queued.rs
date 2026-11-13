@@ -746,7 +746,7 @@ mod tests {
         // (the tool_use block first, then its request — as claude sends a call)
         let tool = |ed: &mut Editor, id: &str, cmd: &str| {
             let input = json!({ "command": cmd });
-            let ev = crate::llm::StreamEv::Tool { id: id.into(), name: "mcp__tarae__run".into(), input };
+            let ev = crate::agent::Event::Tool { id: id.into(), name: "mcp__tarae__run".into(), input };
             crate::chat::stream_event(ed, generation, ev);
         };
         tool(&mut ed, "t1", "sh slow.sh");

@@ -23,13 +23,7 @@ use crate::key::{Code, Key};
 use crate::transaction::{Change, Transaction};
 use crate::workspace::Here;
 
-use crate::agent::claude::DEFAULT_ARGS;
-pub use crate::agent::claude::{Lines, kill, pump, with_flag, with_tools};
-#[cfg(test)]
-pub(crate) use crate::agent::claude::{
-    command, control_response, initialize_message, parse_line, spawn, usage_line, user_message,
-};
-pub use crate::agent::{ModelInfo, StreamEv};
+use crate::agent::{Event, Lines, kill, pump};
 
 /// `llm.sandbox-hosts`: with the network on, the hosts Claude's commands reach without asking (piece C1b).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -182,7 +176,7 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             command: "claude".into(),
-            args: DEFAULT_ARGS.iter().map(|s| s.to_string()).collect(),
+            args: crate::agent::DEFAULT_ARGS.iter().map(|s| s.to_string()).collect(),
             model: None,
             effort: String::new(),
             follow: true,
@@ -774,6 +768,11 @@ pub fn stop_waiting(ed: &mut Editor, generation: Option<u64>, said: &str) {
     ed.set_warning(format!("Claude's {what}: {said}"));
 }
 
+/// A commit draft's start on `cfg`: `llm.args` as given.
+pub(crate) fn draft_start(cfg: &LlmConfig) -> crate::agent::Start<'_> {
+    crate::agent::Start::new(crate::agent::Role::Draft, cfg)
+}
+
 /// A draft's answer for `hunk` of `doc_id`: the process, the review waiting for it, the stream into it — a turn
 /// named `draft` in `:usage` and the call-order record.
 fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: Hunk) -> Result<(), String> {
@@ -784,7 +783,7 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
     let cfg = ed.config.llm.clone();
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
     // (its own process, started now: posix_spawn returns at once, claude's start is the child's)
-    let start = crate::agent::Start::new(crate::agent::Role::Draft, &cfg);
+    let start = draft_start(&cfg);
     let mut child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
         .map_err(|e| e.said(&cfg.command, false))?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
@@ -809,33 +808,33 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
     ed.llm_pid = Some(child.id());
     pump(child, None, true, ed.events.sender(), move |ev| {
         Some(match ev {
-            StreamEv::Thinking | StreamEv::Thought(_) => Box::new(move |ed: &mut Editor| {
+            Event::Thinking | Event::Thought(_) => Box::new(move |ed: &mut Editor| {
                 if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
                     r.thinking = true;
                 }
             }),
-            StreamEv::Text(t) => Box::new(move |ed: &mut Editor| {
+            Event::Text(t) => Box::new(move |ed: &mut Editor| {
                 if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
                     r.thinking = false;
                     r.streamed.push_str(&t);
                 }
             }),
-            StreamEv::Done(r) => {
+            Event::Done(r) => {
                 let result = r.map(|out| vec![answer_of(&out)]);
                 Box::new(move |ed: &mut Editor| on_result(ed, generation, result))
             }
             // (what it cost is the session's too — a turn of its own, beside the chat's conversation; a
             // result that reports nothing has nothing to add)
-            StreamEv::Spent(s) if !s.counts.any() && s.total_cost.is_none() => return None,
-            StreamEv::Spent(s) => Box::new(move |ed: &mut Editor| {
+            Event::Spent(s) if !s.counts.any() && s.total_cost.is_none() => return None,
+            Event::Spent(s) => Box::new(move |ed: &mut Editor| {
                 ed.workspace.claude.usage.aside(s, what);
                 ed.calls_record();
                 crate::usage::view_sync(ed);
             }),
             // (the account's limits, whichever claude says them)
-            StreamEv::Limits(r) => Box::new(move |ed: &mut Editor| crate::limits::seen(ed, r)),
+            Event::Limits(r) => Box::new(move |ed: &mut Editor| crate::limits::seen(ed, r)),
             // (the credential it says it runs on — another than its billing's stops it: `billing.rs`)
-            StreamEv::Conversation { key_source, .. } => {
+            Event::Conversation { key_source, .. } => {
                 let role = crate::billing::Role::Ask;
                 let said = crate::billing::checked(billing, keep, role, key_source.as_deref())?;
                 Box::new(move |ed: &mut Editor| {
@@ -844,21 +843,21 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
                 })
             }
             // a draft runs without tools, and its conversation isn't kept
-            StreamEv::Requesting(_)
-            | StreamEv::Retry(_)
-            | StreamEv::Money(_)
-            | StreamEv::Usage(_)
-            | StreamEv::Answered(_)
-            | StreamEv::Ready { .. }
-            | StreamEv::Tool { .. }
-            | StreamEv::Writing(_)
-            | StreamEv::ThinkingBlock(_)
-            | StreamEv::ToolResult { .. }
-            | StreamEv::Searched(_)
-            | StreamEv::Mcp { .. }
-            | StreamEv::Permission { .. }
-            | StreamEv::Compaction(_)
-            | StreamEv::Exit(_) => {
+            Event::Requesting(_)
+            | Event::Retry(_)
+            | Event::Money(_)
+            | Event::Usage(_)
+            | Event::Answered(_)
+            | Event::Ready { .. }
+            | Event::Tool { .. }
+            | Event::Writing(_)
+            | Event::ThinkingBlock(_)
+            | Event::ToolResult { .. }
+            | Event::Searched(_)
+            | Event::Mcp { .. }
+            | Event::Permission { .. }
+            | Event::Compaction(_)
+            | Event::Exit(_) => {
                 return None;
             }
         })
@@ -1351,6 +1350,7 @@ pub(crate) mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::agent::claude::{parse_line, spawn};
     use crate::billing::Credential;
 
     // ── Claude's environment ──
@@ -1766,13 +1766,13 @@ pub(crate) mod tests {
     #[test]
     fn stream_lines_and_preview() {
         let delta = serde_json::json!({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ab"}}});
-        assert!(matches!(parse_line(&delta), Some(StreamEv::Text(t)) if t == "ab"));
+        assert!(matches!(parse_line(&delta), Some(Event::Text(t)) if t == "ab"));
         let think =
             serde_json::json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 5});
-        assert!(matches!(parse_line(&think), Some(StreamEv::Thinking)));
+        assert!(matches!(parse_line(&think), Some(Event::Thinking)));
         let stopped =
             serde_json::json!({"type": "result", "subtype": "error_during_execution", "result": ""});
-        assert!(matches!(parse_line(&stopped), Some(StreamEv::Done(Err(e))) if e == "stopped"));
+        assert!(matches!(parse_line(&stopped), Some(Event::Done(Err(e))) if e == "stopped"));
         // Preview: the last lines being written
         assert_eq!(preview("\nx\ny\nz", 2), vec!["y", "z"]);
         assert_eq!(preview("plain\ntext", 5), vec!["plain", "text"]);

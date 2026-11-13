@@ -1,6 +1,6 @@
 //! claude's own updates, which tarae keeps off (decision A): its updater writes a folder of programs on PATH
 //! (`~/.local/bin` and `~/.local/share/claude/versions/`), never swapped under a chat that's running, so every
-//! claude tarae starts gets `DISABLE_UPDATES` (`llm::spawn`) — and you update it yourself: `:claude-update`
+//! claude tarae starts gets `DISABLE_UPDATES` (`agent::spawn`) — and you update it yourself: `:claude-update`
 //! runs `claude update` as your own task, outside the sandbox, without that variable, and says what came.
 //!
 //! What tarae can tell without the network is how old the claude it runs is, not whether a newer one exists
@@ -94,7 +94,7 @@ pub fn seen(ed: &mut Editor, version: &str) {
     });
 }
 
-/// The variables that keep claude from updating itself (`llm::spawn` gives every claude tarae starts one): left
+/// The variables that keep claude from updating itself (`agent::spawn` gives every claude tarae starts one): left
 /// out of `:claude-update`'s run — a tarae started with one (from a shell that has it, under a Claude Code that
 /// sets it) passed it on to the task, and `claude update` did nothing.
 pub const UPDATES_OFF: &[&str] = &["DISABLE_UPDATES", "DISABLE_AUTOUPDATER"];

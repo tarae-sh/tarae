@@ -10,10 +10,9 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::chat::{Msg, Role};
 use crate::editor::Editor;
-use crate::event::Event;
-use crate::llm::StreamEv;
 
 const SEEDS: &[u64] = &[0, 1, 2, 7, 10];
 
@@ -63,9 +62,11 @@ fn run(choices: Choices) -> Vec<String> {
 }
 
 /// An event of the turn's stream, as the main loop applies it.
-fn send(ed: &mut Editor, ev: StreamEv) {
+fn send(ed: &mut Editor, ev: Event) {
     let g = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
-    ed.handle_event(Event::Job(Box::new(move |ed: &mut Editor| crate::chat::stream_event(ed, g, ev))));
+    ed.handle_event(crate::event::Event::Job(Box::new(move |ed: &mut Editor| {
+        crate::chat::stream_event(ed, g, ev)
+    })));
 }
 
 fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
@@ -82,23 +83,23 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 _ => ("mcp__tarae__read", serde_json::json!({"files": ["src/main.rs"]})),
             };
             world.calls.borrow_mut().push(id.clone());
-            send(ed, StreamEv::Tool { id: id.clone(), name: name.into(), input });
+            send(ed, Event::Tool { id: id.clone(), name: name.into(), input });
             format!("{id}: {name}")
         }
         1 => {
             let Some(id) = world.calls.borrow_mut().pop() else { return "(no call waits)".into() };
-            send(ed, StreamEv::ToolResult { id: id.clone(), text: "ok".into(), error: false });
+            send(ed, Event::ToolResult { id: id.clone(), text: "ok".into(), error: false });
             format!("{id} answered")
         }
         2 => {
             let words = *c.pick(&["Let me look", " at the map.", " I will run the tests. "]);
-            send(ed, StreamEv::Text(words.into()));
+            send(ed, Event::Text(words.into()));
             format!("words {words:?}")
         }
         3 => {
-            send(ed, StreamEv::ThinkingBlock(true));
+            send(ed, Event::ThinkingBlock(true));
             sim.wait(Duration::from_millis(1500));
-            send(ed, StreamEv::ThinkingBlock(false));
+            send(ed, Event::ThinkingBlock(false));
             "a think".into()
         }
         4 => {

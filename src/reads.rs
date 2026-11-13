@@ -1,8 +1,8 @@
 //! Claude's Read in the chat, and the reviewer's Read, Grep and Glob (the chat has had no Grep or Glob
-//! since 2026-10-13 — `chat::TOOLS`). Measured 2026-10-02 (`.sb/r1.sh`): named in
+//! since 2026-10-13 — `agent::claude::flags::chat::TOOLS`). Measured 2026-10-02 (`.sb/r1.sh`): named in
 //! `--allowedTools` they read anywhere without asking; left out, every call is a `can_use_tool` ask. So
-//! they're left out (`chat::ALLOWED`) and answered here: inside the project (the real path, links
-//! followed) or in a place the user allowed (`allow.rs`) at once; anything else on a card that says
+//! they're left out (`agent::claude::flags::chat::ALLOWED`) and answered here: inside the project (the real
+//! path, links followed) or in a place the user allowed (`allow.rs`) at once; anything else on a card that says
 //! exactly what's read — `y` once · `a` this chat · `A` always · `n` no. One card at a time; the rest wait
 //! in `Chat.reads`, and an answer for longer lets the ones it covers through. A file in the project named
 //! like a key (`sandbox::key_named_in` — what a run can't read either, 7a/7b) asks too, Read's or one a
@@ -635,7 +635,7 @@ impl Made {
 /// The files named like keys in the project Claude may read — opened on a read card or the run's panel
 /// (`Grant::Key`): this conversation's, and the project's kept ones (read from the store the first time a
 /// key-named file comes up, on the worker asking). tarae's own tools (`nav.rs`, `refactor.rs` — allowed
-/// without asking, `chat::ALLOWED`) leave the others out, as Claude's Read asks for them.
+/// without asking, `agent::claude::flags::chat::ALLOWED`) leave the others out, as Claude's Read asks for them.
 #[derive(Clone, Debug)]
 pub struct Keys {
     root: PathBuf,

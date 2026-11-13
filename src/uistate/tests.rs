@@ -3616,7 +3616,7 @@ fn perf_ui_state_busy_scene() {
 /// A session behind streaming its answer while someone watches (watchlate: watchers are told after a batch that
 /// draws nothing too, the whole state built and diffed): what one quiet batch costs — a word of the answer, as
 /// the main loop takes it (`Event::For` → the chat's stream → `term::batch_done`), ~40 a second at
-/// `llm::pump`'s 25 ms — with no watcher, with one of every kind, and a frame of the same scene beside them.
+/// `agent::pump`'s 25 ms — with no watcher, with one of every kind, and a frame of the same scene beside them.
 /// The busy scene, median of 200. For `cargo perf`. (2026-10-19, M-series, perf profile: 1.8 µs alone, 10.1
 /// watched, a frame 85.6.) Its budget is a frame's worth: past it, build only what the watchers' kinds need.
 #[test]
@@ -3637,7 +3637,7 @@ fn perf_ui_state_quiet_batch_watched() {
     frame(&mut ed);
     let batch = move |ed: &mut Editor| {
         let word = move |ed: &mut Editor| {
-            crate::chat::stream_event(ed, generation, crate::llm::StreamEv::Text("word ".into()))
+            crate::chat::stream_event(ed, generation, crate::agent::Event::Text("word ".into()))
         };
         let tag = ed.claude_of(behind);
         let unchanged = crate::term::handle_noting(ed, crate::event::Event::For(behind, tag, Box::new(word)));

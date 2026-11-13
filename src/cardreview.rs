@@ -327,7 +327,7 @@ pub fn answered(json: &str) -> Result<Answered, String> {
 /// claude's flags for one review by `model` — the prompt goes on its input, never the command line (`ps` shows
 /// that). No tools, no MCP, no settings, nothing kept, one turn, `policy` (`POLICY`, or a variant measured) instead of
 /// Claude Code's own prompt; `max_usd` a backstop per call. It runs in an empty folder, never a project: a
-/// repository's `CLAUDE.md` can't reach it. R1's worker passes the same through `llm::command`, which sets `ENV`
+/// repository's `CLAUDE.md` can't reach it. R1's worker passes the same through `agent::command`, which sets `ENV`
 /// itself.
 pub fn args(model: &str, policy: &str, max_usd: Option<f64>) -> Vec<String> {
     let mut a: Vec<String> = [
@@ -355,7 +355,7 @@ pub fn args(model: &str, policy: &str, max_usd: Option<f64>) -> Vec<String> {
     a
 }
 
-/// What a review's claude is started with besides its flags — `llm::command`'s own, as `llm::draft`'s claude has
+/// What a review's claude is started with besides its flags — `agent::command`'s own, as `llm::draft`'s claude has
 /// them: no updates, no auto memory (another tool's notes, paid for in every request).
 pub const ENV: &[(&str, &str)] = &[("DISABLE_UPDATES", "1"), ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")];
 /// …and what it never gets: team memory, the SSH agent.

@@ -586,7 +586,7 @@ fn line(o: &Outcome) -> Value {
     })
 }
 
-/// What of this process's environment the eval's claude never gets: `llm::command`'s rules (`claudeenv.rs`, one
+/// What of this process's environment the eval's claude never gets: `agent::command`'s rules (`claudeenv.rs`, one
 /// list) — run from inside a Claude Code session, that session's marks, id and effort aren't taken for its own. A key
 /// exported in the environment isn't passed, as tarae's default (`llm.environment-key` unset) has it: it would bill
 /// API credits in your login's place on a paid run. `keep_key` (`--keep-key`) passes it, as `llm.environment-key =
@@ -1200,7 +1200,7 @@ mod tests {
         assert_eq!(record_cases("").1, None);
     }
 
-    /// The eval's claude leaves out what `llm::command`'s does (`claudeenv.rs`, one list): run from inside a Claude Code
+    /// The eval's claude leaves out what `agent::command`'s does (`claudeenv.rs`, one list): run from inside a Claude Code
     /// session, its marks, id, effort and key never reach it, `--keep-key` or not; your own settings do. Outside one, an
     /// exported key is left out unless `--keep-key` — tarae's default — and who's billed is said after those rules.
     #[test]

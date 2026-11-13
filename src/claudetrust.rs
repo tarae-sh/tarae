@@ -29,7 +29,7 @@
 //!     for provider selection"), and "Subprocesses still inherit the empty value" — the chat starts none of
 //!     its own: no Bash (`chat::tools`), hooks off (`chat::CHAT_SETTINGS`), `.mcp.json` off
 //!     (`--strict-mcp-config`, `chat::ensure_proc`), tarae's tools in-process (`sdkMcpServers`,
-//!     `llm::initialize_message`). claude itself starts a few (git, `security`, `sh` for `uname`/`ps`/`ioreg`:
+//!     `claude::initialize_message`). claude itself starts a few (git, `security`, `sh` for `uname`/`ps`/`ioreg`:
 //!     measured, `docs/threat-model.md` §2): they inherit the empty values, never the project's;
 //!   - a variable your own Claude settings set too → that file isn't loaded at all (its source left out of
 //!     `--setting-sources`, so yours applies — for the project's file that's its CLAUDE.md too, Claude Code's
@@ -329,7 +329,7 @@ fn yours_of(label: &'static str, read: FileRead) -> Vec<Item> {
     }
 }
 
-/// Where Claude Code reads each of `FILES` for a chat whose claude runs in `root` (`llm::command`'s folder):
+/// Where Claude Code reads each of `FILES` for a chat whose claude runs in `root` (`agent::command`'s folder):
 /// `.claude/settings.json` from `root` itself ("no parent-directory fallback"), `.claude/settings.local.json` from
 /// the git repository's top "even when you start Claude Code in a subdirectory" (its permissions docs) — above
 /// `root` where a `.tarae.toml` keeps the project to a subfolder (`project.rs`). It reads the disk: a worker's.
@@ -585,7 +585,7 @@ impl Places {
     }
 
     /// `look` as tarae reads: git says whether the local file is yours, and claude gets tarae's environment
-    /// (`llm::spawn` passes it on) — or the one `Editor::claude_env` gives.
+    /// (`agent::spawn` passes it on) — or the one `Editor::claude_env` gives.
     fn look(&self) -> Seen {
         let yours = |p: &Path| crate::config::personal(&self.root, p).is_ok();
         let env = |n: &str| crate::llm::env_var(self.env.as_ref(), n);

@@ -5,7 +5,7 @@
 //! `Authorization` header of tarae's own GET only: over https, beyond this machine, to the base's host and port, its
 //! path at or below the base's — judged per request, so a redirect or a refresh elsewhere goes without it. It's never
 //! a run's (`runenv::of` keeps the variable out whatever passes it — the token can write the wiki), never any
-//! claude's (`llm::command` removes it), never said: its `Debug` holds no value, and a page that echoes it has it
+//! claude's (`agent::command` removes it), never said: its `Debug` holds no value, and a page that echoes it has it
 //! scrubbed (`scrubbed`) before anyone reads it. Unset, a read under the base is said, never fetched without it (it
 //! would land on a sign-in page).
 

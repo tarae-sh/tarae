@@ -11,14 +11,14 @@
 //!   can reach its state, log or cards. `--settings` outranks the user's and the project's settings files
 //!   (Claude Code's settings docs), so this helper is the one that runs — over `claudetrust`'s held-back `""`, and
 //!   over a helper of yours. Merged into the one `--settings` object the chat already passes, never beside it:
-//!   `llm::with_flag` replaces a flag, so a second would drop the first (`chat::CHAT_SETTINGS`' `ask` rules).
+//!   `agent::with_flag` replaces a flag, so a second would drop the first (`chat::CHAT_SETTINGS`' `ask` rules).
 //! - **The chat's cache lives an hour** (`promptCacheTtl: "1h"`, your decision 2026-10-10): an API key's default is
 //!   five minutes (Claude Code's env reference, `ENABLE_PROMPT_CACHING_1H`), and a chat's turns are often further
 //!   apart — each such turn would write the whole context again. The settings reference, `promptCacheTtl`: "Choose
 //!   how long the prompt cache holds the main conversation … `"1h"`: the cache holds for an hour" (Claude Code
 //!   v2.1.242+; `FORCE_PROMPT_CACHING_5M` and `CLAUDE_CODE_PROMPT_CACHE_TTL` you export still win). Not for the ask
 //!   or the reviewer: one turn each.
-//! - **An API session never takes a key from the environment** (`llm::spawn`, whatever `llm.environment-key`
+//! - **An API session never takes a key from the environment** (`agent::spawn`, whatever `llm.environment-key`
 //!   says): `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` outrank a helper (Claude Code's authentication docs, the
 //!   credential order).
 //! - **Checked, not believed** (`checked`): claude says which credential it runs on — `apiKeySource` in its answer
@@ -100,7 +100,7 @@ impl Role {
     }
 }
 
-/// What a claude is started with for its billing (`llm::spawn`).
+/// What a claude is started with for its billing (`agent::spawn`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Credential {
     /// Your Claude Code login: nothing added.
@@ -207,7 +207,7 @@ pub fn args(args: &[String], cred: &Credential) -> Result<Vec<String>, String> {
     if *hour_cache {
         json.insert("promptCacheTtl".into(), Json::String("1h".into()));
     }
-    Ok(crate::llm::with_flag(args, "--settings", &Json::Object(json).to_string()))
+    Ok(crate::agent::with_flag(args, "--settings", &Json::Object(json).to_string()))
 }
 
 /// What claude reported (`apiKeySource`) against what `billing` needs — None: as it should be (or not said);

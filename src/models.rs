@@ -14,7 +14,7 @@ use crate::editor::Editor;
 
 #[cfg(test)]
 mod tests;
-use crate::llm::ModelInfo;
+use crate::agent::ModelInfo;
 
 /// Before claude has said which it offers (the chat not open yet): the aliases every claude knows.
 fn fallback() -> Vec<ModelInfo> {

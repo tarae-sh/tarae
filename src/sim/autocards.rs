@@ -137,7 +137,7 @@ fn input(
             let frames = ed.frames;
             applied(sim, ed, move |ed| {
                 let text = format!("{MARKER}: the user asked to run the tests.\n{word}");
-                autocards::on_event(ed, card, run, crate::llm::StreamEv::Done(Ok(text)));
+                autocards::on_event(ed, card, run, crate::agent::Event::Done(Ok(text)));
             });
             match ed.frames == frames {
                 true => format!("verdict {word} on #{card}"),

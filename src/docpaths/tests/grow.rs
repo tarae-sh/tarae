@@ -5,8 +5,7 @@
 //! allocated and not freed by every thread (`allocs::total`).
 
 use super::*;
-use crate::event::Event;
-use crate::llm::StreamEv;
+use crate::agent::Event;
 
 /// The resident set, in KB (Linux's `/proc/self/status`; elsewhere none).
 fn rss_kb() -> Option<usize> {
@@ -25,14 +24,14 @@ fn drain(ed: &mut Editor) {
 /// `f` in session `w`'s workspace, as its Claude's stream reaches it behind.
 fn behind(ed: &mut Editor, w: crate::event::WorkspaceId, f: impl FnOnce(&mut Editor) + Send + 'static) {
     let s = ed.claude_of(w);
-    ed.handle_event(Event::For(w, s, Box::new(f)));
+    ed.handle_event(crate::event::Event::For(w, s, Box::new(f)));
 }
 
 fn generation(ed: &Editor) -> u64 {
     ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation)
 }
 
-fn stream(ed: &mut Editor, w: crate::event::WorkspaceId, ev: impl FnOnce() -> StreamEv + Send + 'static) {
+fn stream(ed: &mut Editor, w: crate::event::WorkspaceId, ev: impl FnOnce() -> Event + Send + 'static) {
     behind(ed, w, move |ed| {
         let g = generation(ed);
         crate::chat::stream_event(ed, g, ev());
@@ -69,14 +68,14 @@ fn turn(ed: &mut Editor, buf: &mut Vec<u8>, acts: &mut Acts, w: crate::event::Wo
     for c in 0..CALLS {
         act(acts, 1, || {
             for words in ["Let me look at ", "the map once more, ", "and then the next file.\n\n"] {
-                stream(ed, w, move || StreamEv::Text(words.into()));
+                stream(ed, w, move || Event::Text(words.into()));
             }
         });
         let id = format!("t{t}-{c}");
         let input = serde_json::json!({ "files": [format!("src/m{}.rs:1-80", c % TURN_FILES)] });
         let (i, inp) = (id.clone(), input.clone());
         act(acts, 2, || {
-            stream(ed, w, move || StreamEv::Tool { id: i, name: "mcp__tarae__read".into(), input: inp })
+            stream(ed, w, move || Event::Tool { id: i, name: "mcp__tarae__read".into(), input: inp })
         });
         let request = serde_json::json!({"subtype": "mcp_message", "server_name": "tarae", "message": {
             "jsonrpc": "2.0", "id": c, "method": "tools/call",
@@ -87,13 +86,13 @@ fn turn(ed: &mut Editor, buf: &mut Vec<u8>, acts: &mut Acts, w: crate::event::Wo
             drain(ed);
         });
         let text = "fn a() {}\n".repeat(400);
-        act(acts, 4, || stream(ed, w, move || StreamEv::ToolResult { id, text, error: false }));
+        act(acts, 4, || stream(ed, w, move || Event::ToolResult { id, text, error: false }));
         if c % 3 == 0 {
             frame(ed, acts);
         }
     }
     act(acts, 5, || {
-        stream(ed, w, || StreamEv::Done(Ok("Done: the map reads as it should.".into())));
+        stream(ed, w, || Event::Done(Ok("Done: the map reads as it should.".into())));
         drain(ed);
     });
     frame(ed, acts);

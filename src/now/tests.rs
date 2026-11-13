@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use super::*;
+use crate::agent::Event;
 use crate::chat::{Msg, Role};
-use crate::llm::StreamEv;
 
 /// An editor whose chat's turn is under way — a stand-in claude (no process) asked "keep the first strand", nothing of
 /// its answer yet.
@@ -19,7 +19,7 @@ fn at_work() -> Editor {
 }
 
 /// An event of the turn's stream, as the main loop applies it — `sync` after it, as after every event.
-fn send(ed: &mut Editor, ev: StreamEv) {
+fn send(ed: &mut Editor, ev: Event) {
     let g = ed.workspace.claude.chat.as_ref().map_or(0, Chat::generation);
     crate::chat::stream_event(ed, g, ev);
     sync(ed);
@@ -27,7 +27,7 @@ fn send(ed: &mut Editor, ev: StreamEv) {
 
 /// Claude calls tarae's `name` with `input` (its tool_use block), as call `id`.
 fn call(ed: &mut Editor, id: &str, name: &str, input: serde_json::Value) {
-    send(ed, StreamEv::Tool { id: id.into(), name: format!("mcp__tarae__{name}"), input });
+    send(ed, Event::Tool { id: id.into(), name: format!("mcp__tarae__{name}"), input });
 }
 
 /// The step as the line says it: its verb and what it acts on.
@@ -149,11 +149,8 @@ fn the_step_and_the_plans_step_are_each_drawn_once() {
     let plan = json!({"title": "Keep the first strand", "steps": steps});
     call(&mut ed, "p1", "plan", plan.clone());
     crate::plan::tool_call(&mut ed, &plan).unwrap();
-    send(&mut ed, StreamEv::ToolResult { id: "p1".into(), text: "ok".into(), error: false });
-    send(
-        &mut ed,
-        StreamEv::Text("A repeated name now keeps the first strand. I will run the tests.\n".into()),
-    );
+    send(&mut ed, Event::ToolResult { id: "p1".into(), text: "ok".into(), error: false });
+    send(&mut ed, Event::Text("A repeated name now keeps the first strand. I will run the tests.\n".into()));
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     let mut said = Vec::new();
     let mut twice = Vec::new();
@@ -231,7 +228,7 @@ fn each_step_says_what_claude_is_doing() {
         assert_eq!(said_step(&ed), *says, "{name}: whole — what it acts on and where");
         assert_eq!((s.sign, s.warn), (Sign::Mark(*mark), false), "{name}");
         // (its result back: the call's step is over — Claude's next answer on its way, the wave)
-        send(&mut ed, StreamEv::ToolResult { id: "t1".into(), text: "ok".into(), error: false });
+        send(&mut ed, Event::ToolResult { id: "t1".into(), text: "ok".into(), error: false });
         let s = step(&ed, &ed.workspace).unwrap();
         assert_eq!((s.verb, s.sign), ("thinking", Sign::Working), "{name} answered");
     }
@@ -247,15 +244,15 @@ fn each_step_says_what_claude_is_doing() {
         piece(crate::writing::Field::File, "src/main.rs", true),
         piece(crate::writing::Field::Old, "fn", false),
     ];
-    send(&mut ed, StreamEv::Writing(crate::writing::Delta { call: "t1".into(), pieces, done: false }));
+    send(&mut ed, Event::Writing(crate::writing::Delta { call: "t1".into(), pieces, done: false }));
     let s = step(&ed, &ed.workspace).unwrap();
     assert_eq!((said_step(&ed).as_str(), s.sign), ("editing src/main.rs", Sign::Mark(Mark::Edit)));
     // Thinking, prose arriving
     let mut ed = at_work();
-    send(&mut ed, StreamEv::ThinkingBlock(true));
+    send(&mut ed, Event::ThinkingBlock(true));
     assert_eq!(step(&ed, &ed.workspace).unwrap().sign, Sign::Working, "a think");
-    send(&mut ed, StreamEv::ThinkingBlock(false));
-    send(&mut ed, StreamEv::Text("Let me look".into()));
+    send(&mut ed, Event::ThinkingBlock(false));
+    send(&mut ed, Event::Text("Let me look".into()));
     let s = step(&ed, &ed.workspace).unwrap();
     assert_eq!((s.verb, s.sign), ("writing", Sign::Working), "words arriving");
     // Waiting on you: a card of its up, an edit in its review
@@ -310,7 +307,7 @@ fn each_step_says_what_claude_is_doing() {
     assert_eq!(step(&ed, &ed.workspace).unwrap().verb, "starting");
     // The turn over: none
     let mut ed = at_work();
-    send(&mut ed, StreamEv::Done(Ok("done".into())));
+    send(&mut ed, Event::Done(Ok("done".into())));
     assert_eq!(step(&ed, &ed.workspace), None);
 }
 
@@ -385,21 +382,21 @@ fn a_fence_ends_the_paragraph_before_it() {
 fn the_sentence_changes_only_when_one_ends() {
     let mut ed = at_work();
     let said_now = |ed: &Editor| said(ed.workspace.claude.chat.as_ref().unwrap());
-    send(&mut ed, StreamEv::ThinkingBlock(true));
-    send(&mut ed, StreamEv::Thought("Checking the map's keys. Then the".into()));
+    send(&mut ed, Event::ThinkingBlock(true));
+    send(&mut ed, Event::Thought("Checking the map's keys. Then the".into()));
     assert_eq!(
         said_now(&ed),
         Some(("Checking the map's keys.".into(), true)),
         "its thinking's, before any prose"
     );
-    send(&mut ed, StreamEv::Thought(" clone.".into()));
-    send(&mut ed, StreamEv::ThinkingBlock(false));
+    send(&mut ed, Event::Thought(" clone.".into()));
+    send(&mut ed, Event::ThinkingBlock(false));
     assert_eq!(said_now(&ed), Some(("Then the clone.".into(), true)), "the block closed: its last one ended");
-    send(&mut ed, StreamEv::Text("A repeated name now keeps".into()));
+    send(&mut ed, Event::Text("A repeated name now keeps".into()));
     assert_eq!(said_now(&ed), Some(("Then the clone.".into(), true)), "prose under way: still the thought's");
     let mut seen = Vec::new();
     for t in [" the first", " strand.", " I will", " run the", " unit tests.", "\n"] {
-        send(&mut ed, StreamEv::Text(t.into()));
+        send(&mut ed, Event::Text(t.into()));
         let s = said_now(&ed).map(|s| s.0).unwrap_or_default();
         if seen.last() != Some(&s) {
             seen.push(s);
@@ -412,7 +409,7 @@ fn the_sentence_changes_only_when_one_ends() {
     );
     // On the line: the thought's in italic
     let mut ed = at_work();
-    send(&mut ed, StreamEv::Thought("Checking the map's keys. ".into()));
+    send(&mut ed, Event::Thought("Checking the map's keys. ".into()));
     let line = status(&mut ed, 160, 40);
     let at = line.find("Checking").expect("the sentence on the line");
     let mut vt = vt100::Parser::new(40, 160, 0);
@@ -432,7 +429,7 @@ fn the_line_folds_the_plan_then_the_sentence() {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.plan = Some(crate::plan::Plan::from_json(&json!({"title": "Keep", "steps": steps})).unwrap());
     c.follow.on = false;
-    send(&mut ed, StreamEv::Text("A repeated name now keeps the first strand. I will run the unit tests to check that nothing else relied on the old replace.\n".into()));
+    send(&mut ed, Event::Text("A repeated name now keeps the first strand. I will run the unit tests to check that nothing else relied on the old replace.\n".into()));
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     let whole = "I will run the unit tests to check that nothing else relied on the old replace.";
     let wide = status(&mut ed, 160, 40);
@@ -473,7 +470,7 @@ use unicode_width::UnicodeWidthStr;
 #[test]
 fn the_state_says_it_and_claudes_level_never() {
     let mut ed = at_work();
-    send(&mut ed, StreamEv::Text("I will run the tests.\n".into()));
+    send(&mut ed, Event::Text("I will run the tests.\n".into()));
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     let v = ed.ui_state().json();
     let now = &v["workspaces"][0]["sessions"][0]["turn"]["now"];
@@ -482,7 +479,7 @@ fn the_state_says_it_and_claudes_level_never() {
     assert!(now["since_ms"].as_u64().is_some_and(|ms| ms > 0), "{now}");
     let claudes = ed.ui_state_claude().json().to_string();
     assert!(!claudes.contains("\"turn\"") && !claudes.contains("running cargo test"), "{claudes}");
-    send(&mut ed, StreamEv::Done(Ok("done".into())));
+    send(&mut ed, Event::Done(Ok("done".into())));
     assert!(ed.ui_state().json()["workspaces"][0]["sessions"][0]["turn"].is_null(), "between turns: none");
 }
 
@@ -582,7 +579,7 @@ fn the_signs_cells_keep_their_columns_through_a_turn() {
         seen.push((what, col(line, s.verb), format!("{top}\n{line}")));
     };
     look(&mut ed, "at work");
-    send(&mut ed, StreamEv::Text("I will look at the order.\n".into()));
+    send(&mut ed, Event::Text("I will look at the order.\n".into()));
     crate::clock::advance(STILL_AFTER);
     sync(&mut ed);
     assert_eq!(crate::shimmer::pace(&ed.workspace), Some(crate::shimmer::Pace::Still));
@@ -625,7 +622,7 @@ fn the_follow_cards_head_keeps_the_signs_cells_through_a_turn() {
             drawn.iter().find(|r| r.contains("╭─ follow")).unwrap_or_else(|| panic!("{what}: {drawn:#?}"));
         heads.push((what, head.clone()));
     };
-    send(&mut ed, StreamEv::Text("I will run the unit tests to check the order.\n".into()));
+    send(&mut ed, Event::Text("I will run the unit tests to check the order.\n".into()));
     look(&mut ed, "at work");
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     look(&mut ed, "a run under way");
@@ -692,7 +689,7 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     // (the step's time read off a held clock: under a second however slow the machine)
     crate::clock::hold();
     let mut ed = at_work();
-    send(&mut ed, StreamEv::Text("I will run the unit tests to check the order.\n".into()));
+    send(&mut ed, Event::Text("I will run the unit tests to check the order.\n".into()));
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     following(&mut ed);
     let drawn = rows(&mut ed, 160, 40);
@@ -720,14 +717,14 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     let head = rows(&mut ed, 160, 40).into_iter().find(|r| r.contains("follow ─")).unwrap();
     assert!(!head.contains("5m") && head.contains("ms"), "the step's time: {head}");
     // An edit being written, its call not made: no knot in hand says it — the head does
-    send(&mut ed, StreamEv::ToolResult { id: "t1".into(), text: "ok".into(), error: false });
+    send(&mut ed, Event::ToolResult { id: "t1".into(), text: "ok".into(), error: false });
     let piece =
         |field, add: &str, closed| crate::writing::Piece::Text { item: 0, field, add: add.into(), closed };
     let pieces = vec![
         piece(crate::writing::Field::File, "src/main.rs", true),
         piece(crate::writing::Field::Old, "fn", false),
     ];
-    send(&mut ed, StreamEv::Writing(crate::writing::Delta { call: "e1".into(), pieces, done: false }));
+    send(&mut ed, Event::Writing(crate::writing::Delta { call: "e1".into(), pieces, done: false }));
     let head = rows(&mut ed, 160, 40).into_iter().find(|r| r.contains("follow ─")).unwrap();
     assert!(head.contains("editing src/main.rs"), "the edit's verb, as its row will say it: {head}");
     // Waiting on a card: the card in sight says it — the line neither counts it nor marks it in the cell
@@ -869,7 +866,7 @@ fn the_mouse_over_the_line_shows_it_whole() {
     let mut ed = at_work();
     ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
     let long = "I will run the unit tests to check that nothing else relied on the old replace, then say what changed.";
-    send(&mut ed, StreamEv::Text(format!("{long}\n")));
+    send(&mut ed, Event::Text(format!("{long}\n")));
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     // (the column out of sight: in sight, its top line says the step and the line is short — #295)
     crate::chat::hide(&mut ed);

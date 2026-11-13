@@ -10,8 +10,8 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::editor::Editor;
-use crate::llm::StreamEv;
 use crate::sound::Sink;
 use crate::sound::said::Kind;
 use crate::writing::{Delta, Place, REVEAL_EVERY, Scan};
@@ -138,7 +138,7 @@ fn act(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path, ar
             let done = end == chars.len();
             let d = Delta { call: "t1".into(), pieces: scan.take(), done };
             ed.handle_event(crate::event::Event::Job(Box::new(move |ed: &mut Editor| {
-                crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+                crate::chat::stream_event(ed, g, Event::Writing(d));
             })));
             w.whole |= done;
             format!("{n} characters of the input ({end} of {})", chars.len())
@@ -208,7 +208,7 @@ fn act(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path, ar
             let done = end == chars.len();
             let d = Delta { call: "t2".into(), pieces: scan.take(), done };
             ed.handle_event(crate::event::Event::Job(Box::new(move |ed: &mut Editor| {
-                crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+                crate::chat::stream_event(ed, g, Event::Writing(d));
             })));
             format!("{n} characters of the next edit ({end} of {})", chars.len())
         }
@@ -218,7 +218,7 @@ fn act(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path, ar
             if !busy(ed) || !w.whole || (!next_whole && w.inputs < INPUTS) {
                 return "(no turn to end)".into();
             }
-            crate::chat::stream_event(ed, g, StreamEv::Done(Ok(String::new())));
+            crate::chat::stream_event(ed, g, Event::Done(Ok(String::new())));
             "the turn ends".into()
         }
     }

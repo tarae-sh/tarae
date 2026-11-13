@@ -7,7 +7,7 @@
 //!   tarae composes, another session's Claude's never), the steered words as `steer_take`'s note keeps them — the latest `USER_LATEST` and the first, each cut at
 //!   `USER_CUT`; a parent's proposal by the parent's chat. Words not sent yet (a waiting steer, a queued message)
 //!   stay out, said in the entry (`unsent`). Never a stream's `user` event, a tool's output or Claude's prose.
-//! - **Its run** (`review`): on a worker through `llm::spawn`, in an empty folder of its own, `cardreview::args`'
+//! - **Its run** (`review`): on a worker through `agent::spawn`, in an empty folder of its own, `cardreview::args`'
 //!   flags (no tools, no MCP, no settings, `POLICY`), billed to the card's session (`billing::Role::AutoCards`).
 //!   `CALL_LIMIT` at most; an error, a timeout or no answer is `none`. A merge (`Offer.rev`) asks again, `REVS_MAX`
 //!   revs at most a card.
@@ -22,12 +22,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::agent::{Agent, Prompt};
+use crate::agent::{self, Agent, Event, Prompt};
 use crate::cardreview::{Input, Stage, Tokens, Verdict};
 use crate::chat::{Chat, Role};
 use crate::editor::Editor;
 use crate::event::SessionId;
-use crate::llm::{self, StreamEv};
+use crate::llm;
 use crate::offer::Offer;
 
 /// The reviewer's model (R0's measure: Haiku with the reasons prompt).
@@ -243,8 +243,8 @@ pub fn prepare(ed: &Editor, o: &Offer) -> Option<Prepared> {
 }
 
 /// The reviewer's start on `cfg`, `policy` its system prompt (`POLICY`'s text): its flags its wire's —
-/// `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `llm::pump`, the model said by
-/// its config (`llm::command` adds it).
+/// `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `agent::pump`, the model said by
+/// its config (`agent::command` adds it).
 fn start<'a>(cfg: &'a llm::LlmConfig, policy: &'a str) -> crate::agent::Start<'a> {
     let role = crate::agent::Role::CardReview { max_usd: MAX_USD };
     crate::agent::Start { system: Some(policy), ..crate::agent::Start::new(role, cfg) }
@@ -330,7 +330,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
                         crate::agent::spawn(&start(&cfg, &policy), &folder.0, env.as_ref(), &cred)
                             .map_err(|e| e.said(&cfg.command, false))?;
                     let pid = child.id();
-                    let sent = match child.stdin.take().map(llm::Lines::new) {
+                    let sent = match child.stdin.take().map(agent::Lines::new) {
                         Some(stdin) => Agent::from(stdin).prompt(message).map_err(|e| e.to_string()),
                         None => Err("no stdin".into()),
                     };
@@ -339,7 +339,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
                         let _ = child.wait();
                         return Err(e);
                     }
-                    llm::pump(child, None, true, tx, move |ev| {
+                    agent::pump(child, None, true, tx, move |ev| {
                         Some(Box::new(move |ed: &mut Editor| on_event(ed, card, run, ev)))
                     });
                     Ok((pid, folder))
@@ -356,11 +356,11 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
 
 /// A test's stand-in reviewer (`Editor.auto_cards_told`): no process, the message it's told kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<llm::Lines> {
-    ed.auto_cards_told.clone().map(llm::Lines::to)
+fn stand_in(ed: &Editor) -> Option<agent::Lines> {
+    ed.auto_cards_told.clone().map(agent::Lines::to)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<llm::Lines> {
+fn stand_in(_: &Editor) -> Option<agent::Lines> {
     None
 }
 
@@ -386,29 +386,27 @@ fn began(ed: &mut Editor, card: u64, run: u64, r: Result<(u32, Folder), String>)
 }
 
 /// An event of card `card`'s review `run`. Nothing drawn, nothing logged: what it says waits for the answer.
-pub(crate) fn on_event(ed: &mut Editor, card: u64, run: u64, ev: StreamEv) {
+pub(crate) fn on_event(ed: &mut Editor, card: u64, run: u64, ev: Event) {
     ed.unchanged = true;
     let Some(p) = running(ed, card, run) else { return };
     match ev {
-        StreamEv::Text(t) => p.text += &t,
-        StreamEv::Spent(s) if !s.counts.any() && s.total_cost.is_none() => {}
-        StreamEv::Spent(s) => p.spent.push(s),
+        Event::Text(t) => p.text += &t,
+        Event::Spent(s) if !s.counts.any() && s.total_cost.is_none() => {}
+        Event::Spent(s) => p.spent.push(s),
         // (the credential it says it runs on — another than its billing's stops it, `billing.rs`; said in the record only)
-        StreamEv::Conversation { key_source, .. } => {
+        Event::Conversation { key_source, .. } => {
             let role = crate::billing::Role::AutoCards;
             if crate::billing::checked(p.billing, p.keep, role, key_source.as_deref()).is_some() {
                 stop(p.pid.take());
                 finish(ed, card, run, Err("billing".into()));
             }
         }
-        StreamEv::Done(Ok(text)) => {
+        Event::Done(Ok(text)) => {
             let text = if text.trim().is_empty() { std::mem::take(&mut p.text) } else { text };
             finish(ed, card, run, Ok(text));
         }
-        StreamEv::Done(Err(e)) => finish(ed, card, run, Err(e)),
-        StreamEv::Exit(e) => {
-            finish(ed, card, run, Err(if e.is_empty() { "claude stopped".into() } else { e }))
-        }
+        Event::Done(Err(e)) => finish(ed, card, run, Err(e)),
+        Event::Exit(e) => finish(ed, card, run, Err(if e.is_empty() { "claude stopped".into() } else { e })),
         _ => {}
     }
 }
@@ -609,10 +607,10 @@ pub fn quit(ed: &mut Editor) {
     ed.cards_record(entries);
 }
 
-/// A review's claude stopped (`llm::pump` reaps it).
+/// A review's claude stopped (`agent::pump` reaps it).
 fn stop(pid: Option<u32>) {
     if let Some(pid) = pid {
-        llm::kill(pid);
+        agent::kill(pid);
     }
 }
 

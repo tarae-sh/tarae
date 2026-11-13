@@ -403,7 +403,7 @@ fn end_turn(ed: &mut Editor, id: WorkspaceId, reply: Result<&str, &str>) {
     ed.with_workspace(id, |ed| {
         let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
         let r = reply.map(str::to_string).map_err(str::to_string);
-        crate::chat::stream_event(ed, g, crate::llm::StreamEv::Done(r));
+        crate::chat::stream_event(ed, g, crate::agent::Event::Done(r));
     });
 }
 
@@ -565,8 +565,8 @@ fn drain(ed: &mut Editor) {
 fn parent_done(ed: &mut Editor) {
     let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
     let spent = crate::usage::Spent { at_ms: crate::usage::now_ms(), ..Default::default() };
-    crate::chat::stream_event(ed, g, crate::llm::StreamEv::Spent(spent));
-    crate::chat::stream_event(ed, g, crate::llm::StreamEv::Done(Ok("ok".into())));
+    crate::chat::stream_event(ed, g, crate::agent::Event::Spent(spent));
+    crate::chat::stream_event(ed, g, crate::agent::Event::Done(Ok("ok".into())));
 }
 
 /// The parent's chat's notes.
@@ -760,7 +760,7 @@ fn a_wake_holds_through_its_claudes_exit() {
         crate::chat::resuming(c, "[gone]");
         let g = c.generation();
         let err = "No conversation found with session ID: [gone]".to_string();
-        crate::chat::stream_event(ed, g, crate::llm::StreamEv::Exit(err));
+        crate::chat::stream_event(ed, g, crate::agent::Event::Exit(err));
     });
     let c = p.ed.workspaces.iter().find(|l| l.id == kids[1]).unwrap().claude.chat.as_ref().unwrap();
     let last = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
@@ -771,7 +771,7 @@ fn a_wake_holds_through_its_claudes_exit() {
     assert_eq!(p.got(woke), 1, "{}", said(&p.ed));
     assert!(p.ed.workspace.claude.chat.as_ref().unwrap().waking.is_some());
     let g = p.ed.workspace.claude.chat.as_ref().unwrap().generation();
-    crate::chat::stream_event(&mut p.ed, g, crate::llm::StreamEv::Exit("[gone]".into()));
+    crate::chat::stream_event(&mut p.ed, g, crate::agent::Event::Exit("[gone]".into()));
     assert!(notes_of(&p.ed).iter().any(|n| n == "woke for one · cost not reported"), "{:?}", notes_of(&p.ed));
     assert!(p.ed.workspace.claude.chat.as_ref().unwrap().waking.is_none(), "its wake over");
 }
@@ -851,7 +851,7 @@ fn a_turn_the_parent_started_is_news_told_once() {
     assert!(sent.contains("sent — its turn started") && !sent.contains("news of"), "{sent}");
     p.ed.with_workspace(kids[1], |ed| {
         let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
-        crate::chat::stream_event(ed, g, crate::llm::StreamEv::Exit("[gone]".into()));
+        crate::chat::stream_event(ed, g, crate::agent::Event::Exit("[gone]".into()));
     });
     assert_eq!(p.ed.workspace.claude.news.len(), 1);
     assert!(call(&mut p.ed, 74, "session_send", json!({ "session": "one", "message": "[m]" })).is_none());
@@ -898,7 +898,7 @@ fn a_turn_cut_off_for_the_settings_is_said_so() {
         c.note("Held back — Claude started again without them, the conversation going on");
         c.settings.again = true;
         let g = c.generation();
-        crate::chat::stream_event(ed, g, crate::llm::StreamEv::Exit("[killed]".into()));
+        crate::chat::stream_event(ed, g, crate::agent::Event::Exit("[killed]".into()));
     });
     let r = text_of(&call(&mut p.ed, 96, "sessions", json!({ "session": "two" })).unwrap());
     let said = "one: the turn you started was cut off, no reply — its claude started again for the project's Claude \
@@ -929,7 +929,7 @@ fn a_parents_message_goes_again_as_its_when_the_conversation_is_gone() {
         crate::chat::resuming(c, "[gone]");
         let g = c.generation();
         let err = "No conversation found with session ID: [gone]".to_string();
-        crate::chat::stream_event(ed, g, crate::llm::StreamEv::Exit(err));
+        crate::chat::stream_event(ed, g, crate::agent::Event::Exit(err));
     });
     assert_eq!(whose(&mut p), 2, "sent again, framed and said whose again");
     let c = p.ed.workspaces.iter().find(|l| l.id == kids[1]).unwrap().claude.chat.as_ref().unwrap();
@@ -950,7 +950,7 @@ fn a_parents_message_goes_again_as_its_when_the_conversation_is_gone() {
 }
 
 /// "stopped" is the user's `C-c` only (`Chat.stopping`): an error result with no text, which the stream says as
-/// `stopped` too (`llm::parse_line`), is a failure — never "stopped by the user".
+/// `stopped` too (`claude::parse_line`), is a failure — never "stopped by the user".
 #[test]
 fn an_empty_error_is_no_stop_of_the_users() {
     let mut p = place("empty-error");

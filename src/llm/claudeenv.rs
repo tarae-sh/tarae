@@ -1,4 +1,4 @@
-//! Claude's environment: what of tarae's environment a claude it starts never gets (`llm::command`). std only —
+//! Claude's environment: what of tarae's environment a claude it starts never gets (`agent::command`). std only —
 //! xtask includes this file by `#[path]` (auto cards' eval, `xtask/src/cardeval.rs`), so its claude leaves out the
 //! same names, from this one list.
 //!
@@ -112,7 +112,7 @@ pub fn claude_env<'a>(names: impl IntoIterator<Item = &'a str>, keep_keys: bool)
 }
 
 /// Whether a rule of `claude_env` judges `name` — what a stand-in's claude never inherits from the process
-/// (`llm::command`): the process's own such names (tarae's tests run inside a Claude Code session too) would be
+/// (`agent::command`): the process's own such names (tarae's tests run inside a Claude Code session too) would be
 /// judged on nothing.
 pub fn judged(name: &str) -> bool {
     CREDENTIALS.contains(&name)

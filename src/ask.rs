@@ -1,6 +1,6 @@
 //! `space i` (audit 2.B, B′ — decided on Q1's A/B, 2026-10-26: the chat's large context cost 6.4× its small one):
 //! one turn of `claude -p` beside the chat, never queued behind its turn and never part of its conversation — on
-//! the one-shot footprint (`llm::DEFAULT_ARGS`: no settings, no conversation kept), with tarae's `read` and `edit`
+//! the one-shot footprint (`agent::DEFAULT_ARGS`: no settings, no conversation kept), with tarae's `read` and `edit`
 //! alone. Its message is the selections quoted as `space >` quotes them, whole, then the instruction; its change
 //! comes through `edit` and is reviewed in the buffer, as every edit is — its own `space u` step, named by what you
 //! asked. The chat is told nothing.
@@ -22,10 +22,10 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use crate::agent::{Agent, Permission, Prompt};
+use crate::agent::{self, Agent, Event, Permission, Prompt};
 use crate::document::DocId;
 use crate::editor::Editor;
-use crate::llm::{self, StreamEv};
+use crate::llm;
 use crate::tools::Call;
 
 /// What goes before the instruction, after the quotes (the wording Q1's A/B measured).
@@ -101,6 +101,12 @@ fn taken_as(ed: &Editor) -> Result<Option<String>, String> {
     Ok((!file).then(|| format!("buffer-{}", &crate::quote::id_for(&d.text.to_string())[1..])))
 }
 
+/// The ask's start on `cfg`: tarae's words, its tools tarae's two, no conversation, no settings, a request cap —
+/// its wire's flags.
+pub(crate) fn agent_start(cfg: &llm::LlmConfig) -> agent::Start<'_> {
+    agent::Start { system: Some(SYSTEM), ..agent::Start::new(agent::Role::Ask, cfg) }
+}
+
 /// `:ask <instruction>` (`space i`'s prompt): the selections quoted, its claude started with the message, the
 /// waiting card up.
 pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
@@ -170,14 +176,10 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     let (stdin, child) = match stand_in(ed) {
         Some(lines) => (lines, None),
         None => {
-            // (its tools tarae's two, no conversation, no settings, a request cap — its wire's flags)
-            let start = crate::agent::Start {
-                system: Some(SYSTEM),
-                ..crate::agent::Start::new(crate::agent::Role::Ask, &cfg)
-            };
+            let start = agent_start(&cfg);
             let mut child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
                 .map_err(|e| e.said(&cfg.command, false))?;
-            let Some(stdin) = child.stdin.take().map(llm::Lines::new) else {
+            let Some(stdin) = child.stdin.take().map(agent::Lines::new) else {
                 reap(child);
                 return Err("claude: no stdin".into());
             };
@@ -220,7 +222,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
         asked_by: ed.events.asked(),
     });
     if let Some(child) = child {
-        llm::pump(child, Some(own), true, ed.events.sender(), move |ev| {
+        agent::pump(child, Some(own), true, ed.events.sender(), move |ev| {
             Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
         });
     }
@@ -245,11 +247,11 @@ fn reap(mut child: std::process::Child) {
 
 /// A test's stand-in claude (`Editor.ask_lines`): no process, its lines kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<llm::Lines> {
-    ed.ask_lines.clone().map(llm::Lines::to)
+fn stand_in(ed: &Editor) -> Option<agent::Lines> {
+    ed.ask_lines.clone().map(agent::Lines::to)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<llm::Lines> {
+fn stand_in(_: &Editor) -> Option<agent::Lines> {
     None
 }
 
@@ -281,23 +283,23 @@ fn waiting(ed: &mut Editor, generation: u64) -> Option<&mut llm::Review> {
 }
 
 /// An event of its stream.
-pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
+pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
     if of(ed, generation).is_none() {
         return;
     }
     match ev {
-        StreamEv::Thinking | StreamEv::Thought(_) => {
+        Event::Thinking | Event::Thought(_) => {
             if let Some(r) = waiting(ed, generation) {
                 r.thinking = true;
             }
         }
-        StreamEv::Text(_) => {
+        Event::Text(_) => {
             if let Some(r) = waiting(ed, generation) {
                 r.thinking = false;
             }
         }
         // (its `edit`'s new text as it's written: the card's preview, a line between items)
-        StreamEv::Writing(d) => {
+        Event::Writing(d) => {
             for p in d.pieces {
                 let crate::writing::Piece::Text { item, field: crate::writing::Field::New, add, .. } = p
                 else {
@@ -315,28 +317,28 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 }
             }
         }
-        StreamEv::Mcp { id, message } => {
+        Event::Mcp { id, message } => {
             if let Some(response) = mcp(ed, generation, &id, &message) {
                 answer_mcp(ed, &id, response);
             }
         }
         // (no tool of Claude Code's is its)
-        StreamEv::Permission { id, tool, .. } => {
+        Event::Permission { id, tool, .. } => {
             if let Some(a) = ed.workspace.claude.ask.as_ref() {
                 a.agent.answer_permission(&id, Permission::Deny { message: refused(&tool) });
             }
         }
         // (what it cost is the session's: a turn of its own, beside the chat's conversation)
-        StreamEv::Spent(s) if !s.counts.any() && s.total_cost.is_none() => {}
-        StreamEv::Spent(s) => {
+        Event::Spent(s) if !s.counts.any() && s.total_cost.is_none() => {}
+        Event::Spent(s) => {
             ed.workspace.claude.usage.aside(s, "ask");
             ed.calls_record();
             crate::usage::view_sync(ed);
         }
         // (the account's limits, whichever claude says them)
-        StreamEv::Limits(r) => crate::limits::seen(ed, r),
+        Event::Limits(r) => crate::limits::seen(ed, r),
         // (the credential it says it runs on — another than its billing's stops it: `billing.rs`)
-        StreamEv::Conversation { key_source, .. } => {
+        Event::Conversation { key_source, .. } => {
             let Some(a) = of(ed, generation) else { return };
             let role = crate::billing::Role::Ask;
             if let Some(said) = crate::billing::checked(a.billing, a.keep, role, key_source.as_deref()) {
@@ -344,21 +346,19 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 stop(ed, generation, &said);
             }
         }
-        StreamEv::Done(r) => ended(ed, generation, r),
-        StreamEv::Exit(e) => {
-            ended(ed, generation, Err(if e.is_empty() { "claude stopped".into() } else { e }))
-        }
-        StreamEv::Requesting(_)
-        | StreamEv::Retry(_)
-        | StreamEv::Money(_)
-        | StreamEv::Usage(_)
-        | StreamEv::Answered(_)
-        | StreamEv::Ready { .. }
-        | StreamEv::Tool { .. }
-        | StreamEv::ThinkingBlock(_)
-        | StreamEv::ToolResult { .. }
-        | StreamEv::Searched(_)
-        | StreamEv::Compaction(_) => {}
+        Event::Done(r) => ended(ed, generation, r),
+        Event::Exit(e) => ended(ed, generation, Err(if e.is_empty() { "claude stopped".into() } else { e })),
+        Event::Requesting(_)
+        | Event::Retry(_)
+        | Event::Money(_)
+        | Event::Usage(_)
+        | Event::Answered(_)
+        | Event::Ready { .. }
+        | Event::Tool { .. }
+        | Event::ThinkingBlock(_)
+        | Event::ToolResult { .. }
+        | Event::Searched(_)
+        | Event::Compaction(_) => {}
     }
 }
 
@@ -379,7 +379,7 @@ fn stop(ed: &mut Editor, generation: u64, said: &str) {
 fn gone(ed: &mut Editor, generation: u64) -> Option<Ask> {
     let a = ed.workspace.claude.ask.take_if(|a| a.generation == generation)?;
     if let Some(pid) = a.pid {
-        llm::kill(pid);
+        agent::kill(pid);
         if ed.llm_pid == Some(pid) {
             ed.llm_pid = None;
         }

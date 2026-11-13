@@ -588,7 +588,7 @@ fn drive_command(
         late
     });
     let mut stdin = child.stdin.take();
-    // As `chat::ensure_proc`: tarae's MCP server registered first (`llm::initialize_message`), then the prompt
+    // As `chat::ensure_proc`: tarae's MCP server registered first (`claude::initialize_message`), then the prompt
     let init = json!({ "type": "control_request", "request_id": "tarae-init",
         "request": { "subtype": "initialize", "sdkMcpServers": ["tarae"] } });
     send(&mut stdin, &mut out, init.to_string());
@@ -618,7 +618,7 @@ fn drive_command(
                     }
                     _ => json!({}),
                 };
-                // (`llm::control_response`)
+                // (`claude::control_response`)
                 let id = v["request_id"].as_str().unwrap_or_default();
                 let answer = json!({ "type": "control_response",
                     "response": { "subtype": "success", "request_id": id, "response": response } });

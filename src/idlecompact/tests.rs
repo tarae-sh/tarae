@@ -222,7 +222,11 @@ fn idle_54_minutes_sends_compact_as_a_turn() {
     until(&mut ed, "/compact sent", |ed| ed.workspace.claude.idle.sent.is_some());
     until(&mut ed, "/compact got", |_| lines(&root).iter().any(|l| l.contains(COMMAND)));
     let sent = lines(&root);
-    assert_eq!(sent.last(), Some(&crate::llm::user_message(COMMAND)), "the whole message: {sent:?}");
+    assert_eq!(
+        sent.last(),
+        Some(&crate::agent::claude::user_message(COMMAND)),
+        "the whole message: {sent:?}"
+    );
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.busy(), "a turn of its own");
     let note = &c.msgs.last().unwrap();

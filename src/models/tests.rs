@@ -1,7 +1,7 @@
+use crate::agent::ModelInfo;
 use crate::editor::Editor;
 use crate::event::WorkspaceId;
 use crate::key::Key;
-use crate::llm::ModelInfo;
 use crate::scratch::Scratch;
 
 /// What the chat's claude offers: two models with effort levels, one with none.

@@ -2198,7 +2198,7 @@ impl Editor {
                 gone(self, "claude", Some(CHAT_AGAIN));
             }
             Kind::Ask => {
-                crate::llm::kill(r.pid);
+                crate::agent::kill(r.pid);
                 gone(self, "space i's claude", None);
             }
             Kind::Reviewer => {

@@ -2856,7 +2856,7 @@ fn elapsed_time_frames() {
     s.ed.workspace.claude.chat = Some(chat);
     s.ed.workspace.set_at(crate::workspace::Here::Chat);
     s.frames_both("time-running");
-    crate::chat::stream_event(&mut s.ed, generation, crate::llm::StreamEv::Done(Ok(String::new())));
+    crate::chat::stream_event(&mut s.ed, generation, crate::agent::Event::Done(Ok(String::new())));
     s.frames_both("time-ended");
     let (base, text) = five_and_thirty_added();
     for (secs, name) in [(7.4, "time-review-7s"), (80.0, "time-review-80s")] {

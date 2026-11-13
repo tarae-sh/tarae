@@ -14,9 +14,9 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
-use crate::llm::StreamEv;
 use crate::writing::{Delta, Place, Scan};
 
 // (4: the line rewritten moves as a kept line is written · 66: a review answered with something applied saves —
@@ -177,7 +177,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             let could = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.active())
                 && crate::follow::free(ed);
             let before = (cursor(ed), could, crate::follow::view_line(ed), ed.doc().id);
-            crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+            crate::chat::stream_event(ed, g, Event::Writing(d));
             if ed.keys_to().region.name() != region {
                 w.moved_keys = Some(format!("{region} → {}", ed.keys_to().region.name()));
             }
@@ -199,7 +199,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             w.made = true;
             let input: serde_json::Value = serde_json::from_str(&w.input).unwrap();
             let id = call_id(w);
-            let tool = StreamEv::Tool { id, name: "mcp__tarae__edit".into(), input: input.clone() };
+            let tool = Event::Tool { id, name: "mcp__tarae__edit".into(), input: input.clone() };
             crate::chat::stream_event(ed, g, tool);
             let request = serde_json::json!({"subtype": "mcp_message", "server_name": "tarae", "message": {
                 "jsonrpc": "2.0", "id": w.turn, "method": "tools/call",
@@ -233,7 +233,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             if !busy {
                 return "(no turn to end)".into();
             }
-            crate::chat::stream_event(ed, g, StreamEv::Done(Ok(String::new())));
+            crate::chat::stream_event(ed, g, Event::Done(Ok(String::new())));
             "the turn ends".into()
         }
         5 => {

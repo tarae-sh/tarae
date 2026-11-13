@@ -7,9 +7,9 @@ use std::path::Path;
 use serde_json::json;
 
 use super::*;
+use crate::agent::Event;
 use crate::config::Config;
 use crate::key::{Code, Key};
-use crate::llm::StreamEv;
 use crate::split::PaneId;
 
 const W: u16 = 160;
@@ -77,7 +77,7 @@ fn press(ed: &mut Editor, keys: &str) {
 fn read(ed: &mut Editor, g: u64, dir: &Path, file: &str, line: usize) {
     let input = json!({"file_path": dir.join(file), "offset": line, "limit": 1});
     let id = format!("r{file}{line}");
-    crate::chat::stream_event(ed, g, StreamEv::Tool { id, name: "Read".into(), input });
+    crate::chat::stream_event(ed, g, Event::Tool { id, name: "Read".into(), input });
 }
 
 fn follow(ed: &Editor) -> &crate::follow::Follow {
@@ -113,7 +113,7 @@ fn writing_into(ed: &mut Editor, g: u64, old: &str, new: &str, held: usize) {
     let mut scan = Scan::new();
     scan.feed(&input[..input.len() - held]);
     let d = Delta { call: "t9".into(), pieces: scan.take(), done: false };
-    crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+    crate::chat::stream_event(ed, g, Event::Writing(d));
     settle(ed, |ed| {
         ed.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.ends_with("a.rs")) && shown(d).is_some())
     });
@@ -193,7 +193,7 @@ fn follow_opens_what_claude_reads_in_its_own_pane() {
     let mut scan = Scan::new();
     scan.feed(&input[..input.len() - 12]);
     let d = Delta { call: "t1".into(), pieces: scan.take(), done: false };
-    crate::chat::stream_event(&mut ed, g, StreamEv::Writing(d));
+    crate::chat::stream_event(&mut ed, g, Event::Writing(d));
     let written = |ed: &Editor| {
         ed.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.ends_with("a.rs")) && shown(d).is_some())
     };
@@ -306,7 +306,7 @@ fn c_f_takes_this_pane_to_the_writing() {
     let mut scan = Scan::new();
     scan.feed(&input[..input.len() - 12]);
     let d = Delta { call: "t1".into(), pieces: scan.take(), done: false };
-    crate::chat::stream_event(&mut ed, g, StreamEv::Writing(d));
+    crate::chat::stream_event(&mut ed, g, Event::Writing(d));
     let written = |ed: &Editor| {
         ed.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.ends_with("a.rs")) && shown(d).is_some())
     };
@@ -397,7 +397,7 @@ fn following_again_shows_the_read_whole() {
     let Scene { mut ed, dir, g, a, .. } = scene("pane-follow-again-whole", true);
     press(&mut ed, "<C-w>h");
     let input = json!({"file_path": dir.join("a.rs"), "offset": 30, "limit": 23});
-    crate::chat::stream_event(&mut ed, g, StreamEv::Tool { id: "r30".into(), name: "Read".into(), input });
+    crate::chat::stream_event(&mut ed, g, Event::Tool { id: "r30".into(), name: "Read".into(), input });
     frame(&mut ed);
     let whole = |ed: &Editor| (29..52).all(|l| drawn(ed, a).contains(&l));
     assert!(whole(&ed), "read whole: {:?}", drawn(&ed, a));

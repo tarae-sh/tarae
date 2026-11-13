@@ -21,9 +21,9 @@ use serde_json::json;
 
 use super::sessions::git;
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::board::Verdict;
 use crate::editor::Editor;
-use crate::llm::StreamEv;
 use crate::reviewer::{Role, State};
 
 /// The seeds every `cargo test` runs, each twice — the first to catch each break the scenario keeps (picked again
@@ -198,7 +198,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &mut Seen
             let Some((i, generation, _)) = reading(ed, c) else { return none(sim) };
             let who = member(ed, i);
             let end = if k == 3 { Ok("Done.".to_string()) } else { Err("claude: it ended".to_string()) };
-            crate::reviewer::on_event(ed, generation, StreamEv::Done(end));
+            crate::reviewer::on_event(ed, generation, Event::Done(end));
             format!("{who} {}", if k == 3 { "ends" } else { "fails" })
         }
         5 => {

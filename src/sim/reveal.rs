@@ -10,9 +10,9 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::codeview::Row;
 use crate::editor::Editor;
-use crate::llm::StreamEv;
 use crate::writing::{Delta, Place, REVEAL_EVERY, Scan};
 
 const SEEDS: &[u64] = &[0, 1, 2, 3, 4];
@@ -103,7 +103,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path) -
             let d = Delta { call: "t1".into(), pieces: scan.take(), done };
             // (as the loop brings it: an event, the reveal moved after it)
             ed.handle_event(crate::event::Event::Job(Box::new(move |ed: &mut Editor| {
-                crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+                crate::chat::stream_event(ed, g, Event::Writing(d));
             })));
             if done {
                 w.whole.get_or_insert(crate::clock::now());
@@ -141,7 +141,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path) -
             if !busy(ed) || w.whole.is_none() {
                 return "(no turn to end)".into();
             }
-            crate::chat::stream_event(ed, g, StreamEv::Done(Ok(String::new())));
+            crate::chat::stream_event(ed, g, Event::Done(Ok(String::new())));
             "the turn ends".into()
         }
     }

@@ -325,7 +325,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             // (through the stream's own end: its reply in, the parent's news made where every turn's end passes)
             ed.with_workspace(child, |ed| {
                 let g = ed.workspace.claude.chat.as_ref().map_or(0, |c| c.generation());
-                crate::chat::stream_event(ed, g, crate::llm::StreamEv::Done(Ok(format!("{token} done"))));
+                crate::chat::stream_event(ed, g, crate::agent::Event::Done(Ok(format!("{token} done"))));
             });
             format!("{name}'s turn ends ({token})")
         }
@@ -429,7 +429,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             drop(w);
             ed.with_workspace(child, |ed| {
                 let g = ed.workspace.claude.chat.as_ref().map_or(0, |c| c.generation());
-                crate::chat::stream_event(ed, g, crate::llm::StreamEv::Exit(token.clone()));
+                crate::chat::stream_event(ed, g, crate::agent::Event::Exit(token.clone()));
             });
             format!("{name}'s claude exits ({token})")
         }

@@ -6315,7 +6315,7 @@ mod tests {
         }
         let mut child = cmd.spawn().expect("claude starts");
         let mut stdin = child.stdin.take().unwrap();
-        writeln!(stdin, "{}", crate::llm::initialize_message(&["tarae"])).unwrap();
+        writeln!(stdin, "{}", crate::agent::claude::initialize_message(&["tarae"])).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let out = std::io::BufReader::new(child.stdout.take().unwrap());
         std::thread::spawn(move || {
@@ -6346,7 +6346,7 @@ mod tests {
             seen.push((method.clone(), named.map(str::to_string)));
             let request_id = v["request_id"].as_str().unwrap_or_default();
             let answer = super::mcp(&mut ed, 0, request_id, msg).expect("answered now");
-            let line = crate::llm::control_response(request_id, json!({ "mcp_response": answer }));
+            let line = crate::agent::claude::control_response(request_id, json!({ "mcp_response": answer }));
             writeln!(stdin, "{line}").unwrap();
             listed = method == "tools/list" && answer["result"]["tools"].is_array();
         }

@@ -1,7 +1,7 @@
 //! The reviewer — a second Claude that reviews a code review's changes (`space v c`, `:review-claude`), apart
 //! from the chat: the conversation that wrote the code never reviews it itself.
 //!
-//! - One process per review, one turn (`llm::pump` with `once`, as `space i`'s ask): started in the review's
+//! - One process per review, one turn (`agent::pump` with `once`, as `space i`'s ask): started in the review's
 //!   checkout, never with `--resume`/`--continue`, nothing kept by claude (`--no-session-persistence`), no
 //!   settings loaded (a user's allow rules would let reads go unasked) — and nothing of the chat's
 //!   conversation in what it's sent: the diff and the ask, that's all.
@@ -26,9 +26,9 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use crate::agent::{Agent, Permission, Prompt, PromptPart};
+use crate::agent::{self, Agent, Event, Permission, Prompt, PromptPart};
 use crate::editor::Editor;
-use crate::llm::{self, StreamEv};
+use crate::llm;
 
 /// Its reading tools, as its stream names them (each call one read).
 const READS: &[&str] = &["mcp__tarae__read", "mcp__tarae__search"];
@@ -147,7 +147,7 @@ impl Member {
 
     fn kill(&mut self) {
         if let Some((pid, _)) = self.proc.take() {
-            llm::kill(pid);
+            agent::kill(pid);
         }
     }
 
@@ -377,7 +377,7 @@ pub fn ask_in_for(
 
 /// Member `role`'s start on `cfg`: tarae's words beside Claude Code's own (its flags, each role's, its wire's —
 /// `agent::claude::flags::reviewer`).
-fn start(cfg: &llm::LlmConfig, role: Role) -> crate::agent::Start<'_> {
+pub(crate) fn start(cfg: &llm::LlmConfig, role: Role) -> crate::agent::Start<'_> {
     crate::agent::Start {
         system: Some(SYSTEM),
         ..crate::agent::Start::new(crate::agent::Role::Reviewer(role), cfg)
@@ -960,14 +960,14 @@ fn launch(ed: &mut Editor, i: usize) {
         Ok(started) => started,
         Err(e) => return failed(ed, e),
     };
-    let Some(stdin) = child.stdin.take().map(llm::Lines::new) else {
+    let Some(stdin) = child.stdin.take().map(agent::Lines::new) else {
         return failed(ed, "claude: no input".into());
     };
     let (own, agent) = (stdin.weak(), Agent::from(stdin));
     // (tarae's MCP server first — its `note`, a skeptic's `judge`)
     let sent = agent.initialize().and_then(|_| agent.prompt(content));
     if let Err(e) = sent {
-        // (not `llm::kill`: no `pump` has it — ended and reaped here, off the main loop)
+        // (not `agent::kill`: no `pump` has it — ended and reaped here, off the main loop)
         crate::event::thread("tarae-reap", move || {
             let _ = child.kill();
             let _ = child.wait();
@@ -975,7 +975,7 @@ fn launch(ed: &mut Editor, i: usize) {
         return failed(ed, format!("claude: {e}"));
     }
     let Some(generation) = began(ed, i, Some((child.id(), agent)), billing) else { return };
-    llm::pump(child, Some(own), true, ed.events.sender(), move |ev| {
+    agent::pump(child, Some(own), true, ed.events.sender(), move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
 }
@@ -1014,7 +1014,7 @@ fn began(
     Some(generation)
 }
 
-pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
+pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
     let log = ed.workspace.log();
     let Some(i) = ed.workspace.reviewer.as_ref().and_then(|r| r.by_generation(generation)) else { return };
     let Some(r) = ed.workspace.reviewer.as_mut() else { return };
@@ -1025,24 +1025,24 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
     };
     let board_id = r.board.as_ref().map(|b| b.id.clone());
     match ev {
-        StreamEv::Mcp { id, message } => {
+        Event::Mcp { id, message } => {
             if !reading(ed, generation, &id, &message) {
                 let response = mcp(ed, generation, &message);
                 answer_mcp(ed, generation, &id, response);
             }
         }
-        StreamEv::Permission { id, tool, .. } => {
+        Event::Permission { id, tool, .. } => {
             let p = permission(ed, generation, &tool);
             answer_permission(ed, generation, &id, p);
         }
-        StreamEv::Tool { name, .. } => {
+        Event::Tool { name, .. } => {
             if READS.contains(&name.as_str()) {
                 r.reads += 1;
                 r.members[i].reads += 1;
             }
         }
         // (its first request answered: the prompt is in the cache — the board's other angles may start)
-        StreamEv::Usage(seen) => {
+        Event::Usage(seen) => {
             let m = &mut r.members[i];
             if m.first.is_none() && seen.id.is_some() {
                 m.first = Some(seen.counts);
@@ -1052,7 +1052,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
         }
         // (a turn of its own beside the chat's conversation — the chat's cache and context aren't touched)
-        StreamEv::Spent(s) => {
+        Event::Spent(s) => {
             let m = &mut r.members[i];
             (m.cost, m.counts, m.turn_ms) = (s.total_cost, s.counts, s.ms.or(m.turn_ms));
             let costs: Vec<f64> = r.members.iter().filter_map(|m| m.cost).collect();
@@ -1070,7 +1070,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         }
         // Not the credential its billing gives: it stops, and its end says why (`billing.rs`) — a board's
         // every member with it (the rest would bill the same way)
-        StreamEv::Conversation { key_source, .. } | StreamEv::Ready { key_source, .. } => {
+        Event::Conversation { key_source, .. } | Event::Ready { key_source, .. } => {
             let keep = ed.config.llm.keep_env_key;
             let role = crate::billing::Role::Reviewer;
             // (once: every member says its credential twice, and the others' lines may be queued behind)
@@ -1091,7 +1091,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 pump(ed);
             }
         }
-        StreamEv::Done(result) => {
+        Event::Done(result) => {
             let m = &mut r.members[i];
             m.proc = None;
             if !m.over() {
@@ -1108,21 +1108,21 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             pump(ed);
         }
         // (the account's limits, whichever claude says them)
-        StreamEv::Limits(report) => crate::limits::seen(ed, report),
+        Event::Limits(report) => crate::limits::seen(ed, report),
         // (its words are its verdict, read whole at the end; the rest is the chat's business)
-        StreamEv::Thinking
-        | StreamEv::Retry(_)
-        | StreamEv::Money(_)
-        | StreamEv::Thought(_)
-        | StreamEv::ThinkingBlock(_)
-        | StreamEv::Text(_)
-        | StreamEv::Writing(_)
-        | StreamEv::ToolResult { .. }
-        | StreamEv::Searched(_)
-        | StreamEv::Requesting(_)
-        | StreamEv::Answered(_)
-        | StreamEv::Compaction(_)
-        | StreamEv::Exit(_) => {}
+        Event::Thinking
+        | Event::Retry(_)
+        | Event::Money(_)
+        | Event::Thought(_)
+        | Event::ThinkingBlock(_)
+        | Event::Text(_)
+        | Event::Writing(_)
+        | Event::ToolResult { .. }
+        | Event::Searched(_)
+        | Event::Requesting(_)
+        | Event::Answered(_)
+        | Event::Compaction(_)
+        | Event::Exit(_) => {}
     }
 }
 
@@ -3314,7 +3314,7 @@ mod tests {
             let generation = angle(&ed, name).unwrap();
             let request = note_on(id, 1, "a.txt", 2, text)["request"].clone();
             on_event(&mut ed, generation, crate::agent::claude::test::control(id, request));
-            on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
+            on_event(&mut ed, generation, Event::Done(Ok("One.".into())));
         }
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         let notes = board_notes(&ed);
@@ -3486,9 +3486,8 @@ mod tests {
                 let request = judged(id, 1, args)["request"].clone();
                 on_event(ed, generation(ed, g), crate::agent::claude::test::control(id, request));
             };
-            let end = |ed: &mut Editor, g: usize| {
-                on_event(ed, generation(ed, g), StreamEv::Done(Ok("Done.".into())))
-            };
+            let end =
+                |ed: &mut Editor, g: usize| on_event(ed, generation(ed, g), Event::Done(Ok("Done.".into())));
             let b = |ed: &Editor| ed.workspace.reviewer.as_ref().unwrap().board.as_deref().unwrap().clone();
             assert_eq!(
                 b(&ed).groups.iter().map(Vec::len).collect::<Vec<_>>(),
@@ -3685,7 +3684,7 @@ mod tests {
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "Line two is wrong")["request"].clone();
         on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
-        on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
+        on_event(&mut ed, generation, Event::Done(Ok("One.".into())));
         let r = ed.workspace.reviewer.as_ref().unwrap();
         assert!(r.queued() && r.members.iter().any(|m| matches!(m.role, Role::Skeptic(_))), "the handover");
         assert!(!waits(&ed, &ed.workspace));
@@ -4127,7 +4126,7 @@ mod tests {
         assert_eq!(board_notes(&ed).len(), 1, "pinned unchecked");
         let (took, generation) = (r.took, r.members[1].generation);
         for key_source in [Some("apiKeyHelper".to_string()), Some("apiKeyHelper".to_string())] {
-            on_event(&mut ed, generation, StreamEv::Ready { models: Vec::new(), key_source, account: None });
+            on_event(&mut ed, generation, Event::Ready { models: Vec::new(), key_source, account: None });
         }
         let stopped = ed.messages.iter().filter(|m| m.2.starts_with("the board stopped:")).count();
         assert_eq!(
@@ -4335,9 +4334,9 @@ mod tests {
                 let request = note_on("c1", 1, "a.txt", 2, "Line two is wrong")["request"].clone();
                 on_event(&mut ed, c, crate::agent::claude::test::control("c1", request));
             }
-            on_event(&mut ed, c, StreamEv::Done(Err("claude: it ended".into())));
+            on_event(&mut ed, c, Event::Done(Err("claude: it ended".into())));
             let tests_end = if tests_fail { Err("claude: it ended".into()) } else { Ok("None.".into()) };
-            on_event(&mut ed, t, StreamEv::Done(tests_end));
+            on_event(&mut ed, t, Event::Done(tests_end));
             settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
             std::fs::remove_dir_all(&dir).ok();
             ed
@@ -4428,7 +4427,7 @@ mod tests {
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "Line two is wrong")["request"].clone();
         on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
-        on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
+        on_event(&mut ed, generation, Event::Done(Ok("One.".into())));
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         let r = ed.workspace.reviewer.as_ref().unwrap();
         let skeptic = r.members.iter().find(|m| matches!(m.role, Role::Skeptic(_))).unwrap();
@@ -4613,7 +4612,7 @@ mod tests {
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| r.placing == 0));
         note(&mut ed, "c1", 3, "three is wrong");
         note(&mut ed, "c3", 2, "two again");
-        on_event(&mut ed, generation, StreamEv::Done(Ok("Three findings.".into())));
+        on_event(&mut ed, generation, Event::Done(Ok("Three findings.".into())));
         // (it ended with two still being placed: their placing holds the snapshot they read — the run's end lets
         // only its own hold go — until they land)
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -4675,7 +4674,7 @@ mod tests {
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
         let request = note_on("c1", 1, "a.txt", 2, "two is new")["request"].clone();
         on_event(&mut ed, generation, crate::agent::claude::test::control("c1", request));
-        on_event(&mut ed, generation, StreamEv::Done(Ok("One.".into())));
+        on_event(&mut ed, generation, Event::Done(Ok("One.".into())));
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         let line = status(&mut ed);
         assert!(line.contains("¶ 1 finding · space v r"), "{line}");
@@ -4697,7 +4696,7 @@ mod tests {
             ed.workspace.reviewer.as_ref().is_some_and(|r| !r.queued() && r.reading())
         });
         let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
-        on_event(&mut ed, generation, StreamEv::Done(Ok("No findings.".into())));
+        on_event(&mut ed, generation, Event::Done(Ok("No findings.".into())));
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         // (what its end asked of the disk landed first: what's written next is the review's to see as it opens)
         for _ in 0..30 {
@@ -4778,7 +4777,7 @@ mod tests {
         let left = r.snap.as_ref().unwrap().found("big.txt");
         assert_eq!(left, Found::Left(Left::Big(FILE_MAX + 1)), "left out of what it reads");
         let generation = r.members[0].generation;
-        on_event(&mut ed, generation, StreamEv::Done(Ok("No findings.".into())));
+        on_event(&mut ed, generation, Event::Done(Ok("No findings.".into())));
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         for _ in 0..30 {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(10)) {
@@ -4865,7 +4864,7 @@ mod tests {
         let ends = |ed: &mut Editor| {
             settle_until(ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.queued() && r.reading()));
             let generation = ed.workspace.reviewer.as_ref().unwrap().members[0].generation;
-            on_event(ed, generation, StreamEv::Done(Ok("No findings.".into())));
+            on_event(ed, generation, Event::Done(Ok("No findings.".into())));
             settle_until(ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading()));
         };
         // In the background, no review: then one opened after it ended isn't its

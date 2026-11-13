@@ -148,7 +148,7 @@ impl Counts {
     }
 }
 
-/// Usage one stream line reports (`llm::usage_line`): its message (None: the one started last), model,
+/// Usage one stream line reports (`claude::usage_line`): its message (None: the one started last), model,
 /// counts, the kind of cache write, when it was read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Seen {
@@ -1323,10 +1323,10 @@ mod tests {
         let mut results = Vec::new();
         for (i, line) in include_str!("usage_stream.jsonl").lines().enumerate() {
             let v: Value = serde_json::from_str(line).unwrap();
-            match crate::llm::usage_line(&v, 1_000 * i as u64) {
-                Some(crate::llm::StreamEv::Requesting(at)) => u.requesting(at),
-                Some(crate::llm::StreamEv::Usage(s)) => u.seen(s),
-                Some(crate::llm::StreamEv::Spent(s)) => {
+            match crate::agent::claude::usage_line(&v, 1_000 * i as u64) {
+                Some(crate::agent::Event::Requesting(at)) => u.requesting(at),
+                Some(crate::agent::Event::Usage(s)) => u.seen(s),
+                Some(crate::agent::Event::Spent(s)) => {
                     results.push(s.clone());
                     u.spent(s);
                 }
@@ -1347,9 +1347,9 @@ mod tests {
             json!({ "input_tokens": 10, "cache_read_input_tokens": 20_000,
                                        "cache_creation_input_tokens": 500, "output_tokens": out })
         };
-        let line = |u: &mut Usage, v: Value| match crate::llm::usage_line(&v, 0) {
-            Some(crate::llm::StreamEv::Usage(s)) => u.seen(s),
-            Some(crate::llm::StreamEv::Spent(s)) => {
+        let line = |u: &mut Usage, v: Value| match crate::agent::claude::usage_line(&v, 0) {
+            Some(crate::agent::Event::Usage(s)) => u.seen(s),
+            Some(crate::agent::Event::Spent(s)) => {
                 u.spent(s);
             }
             _ => {}
@@ -1417,9 +1417,9 @@ mod tests {
         let mut sums = vec![Counts::default()];
         for (i, line) in include_str!("usage_stream.jsonl").lines().enumerate() {
             let v: Value = serde_json::from_str(line).unwrap();
-            match crate::llm::usage_line(&v, i as u64) {
-                Some(crate::llm::StreamEv::Usage(s)) => u2.seen(s),
-                Some(crate::llm::StreamEv::Spent(_)) => {
+            match crate::agent::claude::usage_line(&v, i as u64) {
+                Some(crate::agent::Event::Usage(s)) => u2.seen(s),
+                Some(crate::agent::Event::Spent(_)) => {
                     let mut sum = Counts::default();
                     for r in std::mem::take(&mut u2.requests) {
                         sum.add(r.counts);

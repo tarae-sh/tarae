@@ -1,6 +1,6 @@
 use super::*;
+use crate::agent::Event;
 use crate::agent::claude::REQUEST_ID;
-use crate::llm::StreamEv;
 use std::time::{Duration, Instant};
 
 /// `limits_stream.jsonl`'s line `i` (its `//` lines skipped): written by hand from the fields the user's L2 run
@@ -19,9 +19,9 @@ const BEFORE: u64 = RESETS_MS - 3 * 86_400_000;
 /// The fixture's line `i` read as the stream reader reads it, at `at_ms`.
 fn report_of(i: usize, at_ms: u64) -> Report {
     let v = line(i);
-    let ev = crate::llm::usage_line(&v, at_ms).or_else(|| crate::llm::parse_line(&v));
+    let ev = crate::agent::claude::usage_line(&v, at_ms).or_else(|| crate::agent::claude::parse_line(&v));
     match ev {
-        Some(StreamEv::Limits(r)) => r,
+        Some(Event::Limits(r)) => r,
         // (the answer to `u`: asked by tarae it comes back as `tarae-usage` — read the same)
         _ => of_answer(&v["response"], at_ms),
     }
@@ -121,9 +121,9 @@ fn fields_claude_adds_are_ignored() {
 /// `SDKControlInitializeResponse`), so it's known as claude starts.
 #[test]
 fn the_subscription_says_none_as_its_key_source() {
-    let key = |v: &Value| match crate::llm::parse_line(v) {
-        Some(StreamEv::Conversation { key_source, .. }) => key_source,
-        Some(StreamEv::Ready { key_source, .. }) => key_source,
+    let key = |v: &Value| match crate::agent::claude::parse_line(v) {
+        Some(Event::Conversation { key_source, .. }) => key_source,
+        Some(Event::Ready { key_source, .. }) => key_source,
         _ => panic!("not read as the conversation's start nor the answer to initialize"),
     };
     assert_eq!(key(&line(0)).as_deref(), Some("none"));
@@ -203,7 +203,9 @@ fn a_retry_says_its_attempt_and_why() {
     let v = json!({"type": "system", "subtype": "api_retry", "attempt": 2, "max_retries": 10,
                    "retry_delay_ms": 3500, "error_status": 429, "error": "rate_limit",
                    "uuid": "stand-in", "session_id": "stand-in"});
-    let Some(StreamEv::Retry(r)) = crate::llm::usage_line(&v, 1) else { panic!("not read as a retry") };
+    let Some(Event::Retry(r)) = crate::agent::claude::usage_line(&v, 1) else {
+        panic!("not read as a retry")
+    };
     assert_eq!(r.said(), "API retry 2 of 10 — rate_limit (429), next in 4s");
     let none = json!({"type": "system", "subtype": "api_retry", "attempt": 1, "error_status": null,
                       "error": "overloaded"});

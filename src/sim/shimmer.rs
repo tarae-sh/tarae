@@ -20,9 +20,9 @@ use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::chat::{Msg, Role};
 use crate::editor::Editor;
-use crate::llm::StreamEv;
 use crate::shimmer::{CELLS, Pace, STILL, STILL_AFTER, WAVE, WIDTH, cells, wave};
 use crate::workspace::Doing;
 
@@ -119,7 +119,7 @@ fn run(choices: Choices) -> Vec<String> {
 
 /// `ev` as the stream sends it, the world told before (`World`'s state for it already set): a turn that was still and
 /// breathes again breathes from now.
-fn send(ed: &mut Editor, world: &World, ev: StreamEv) {
+fn send(ed: &mut Editor, world: &World, ev: Event) {
     let before = pace(ed);
     let g = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
     crate::chat::stream_event(ed, g, ev);
@@ -181,7 +181,7 @@ fn call(ed: &mut Editor, world: &World, run: bool) -> String {
     world.begun.set(true);
     world.asked.set(false);
     world.last.set(None);
-    send(ed, world, StreamEv::Tool { id: id.clone(), name: name.into(), input });
+    send(ed, world, Event::Tool { id: id.clone(), name: name.into(), input });
     format!("{id}: {name}")
 }
 
@@ -190,7 +190,7 @@ fn answer(ed: &mut Editor, world: &World, id: &str) {
     world.calls.borrow_mut().retain(|c| c.0 != id);
     world.asked.set(true);
     world.last.set(None);
-    send(ed, world, StreamEv::ToolResult { id: id.into(), text: "ok".into(), error: false });
+    send(ed, world, Event::ToolResult { id: id.into(), text: "ok".into(), error: false });
 }
 
 fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
@@ -208,11 +208,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             frame(ed, world);
             let before = drawn(ed);
             world.delta();
-            send(
-                ed,
-                world,
-                if k == 0 { StreamEv::Text(text.into()) } else { StreamEv::Thought(text.into()) },
-            );
+            send(ed, world, if k == 0 { Event::Text(text.into()) } else { Event::Thought(text.into()) });
             frame(ed, world);
             let now = drawn(ed);
             let floor = ed.moving().then(floor_cells).into_iter().collect::<Vec<_>>();
@@ -240,7 +236,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 world.asked.set(false);
                 world.last.set(None);
             }
-            send(ed, world, StreamEv::ThinkingBlock(open));
+            send(ed, world, Event::ThinkingBlock(open));
             format!("a thinking block {}", if open { "opens" } else { "closes" })
         }
         3 => {
@@ -260,7 +256,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             world.thinking.set(true);
             world.asked.set(false);
             world.last.set(None);
-            send(ed, world, StreamEv::ThinkingBlock(true));
+            send(ed, world, Event::ThinkingBlock(true));
             sim.wait(STILL_AFTER + Duration::from_millis(200));
             if pace(ed) != Some(Pace::Breath) {
                 world.wrong(format!("a thinking block open and silent: {:?}, not breathing", pace(ed)));
@@ -288,13 +284,13 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             let before = drawn(ed);
             let summary = "Checking how the map keeps its keys, then the clone. ".repeat(3);
             world.delta();
-            send(ed, world, StreamEv::Thought(summary));
+            send(ed, world, Event::Thought(summary));
             frame(ed, world);
             if pace(ed) != Some(Pace::Breath) || drawn(ed) != before {
                 world.wrong(format!("its summary landed: {:?}, {before:?} became {:?}", pace(ed), drawn(ed)));
             }
             world.thinking.set(false);
-            send(ed, world, StreamEv::ThinkingBlock(false));
+            send(ed, world, Event::ThinkingBlock(false));
             sim.wait(STILL_AFTER);
             // (a quiet: the cells at the floor, and held there a wave long)
             let floor = ed.moving().then(floor_cells).into_iter().collect::<Vec<_>>();
@@ -308,7 +304,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             // (the stream again: its wave from the floor, frame by frame up to the top — never a jump to where the
             // clock went meanwhile; short of `STILL_AFTER`, past which one delta's stream is still again)
             world.delta();
-            send(ed, world, StreamEv::Text("Then the clone. ".into()));
+            send(ed, world, Event::Text("Then the clone. ".into()));
             let mut up = Vec::new();
             for k in 0..WAVE.as_millis() / tick.as_millis() / 2 {
                 if k > 0 {
@@ -342,7 +338,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             send(
                 ed,
                 world,
-                StreamEv::Writing(crate::writing::Delta {
+                Event::Writing(crate::writing::Delta {
                     call: format!("e{n}"),
                     pieces: vec![piece],
                     done: false,
@@ -356,7 +352,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         9 => {
             world.asked.set(true);
             world.last.set(None);
-            send(ed, world, StreamEv::Requesting(0));
+            send(ed, world, Event::Requesting(0));
             "a request goes out".into()
         }
         10 => {
@@ -367,7 +363,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             }
             // (a few words first: the answer's wait breathes at once, never the words' stall)
             world.delta();
-            send(ed, world, StreamEv::Text("Let me look. ".into()));
+            send(ed, world, Event::Text("Let me look. ".into()));
             let said = call(ed, world, false);
             let id = world.calls.borrow().last().map(|c| c.0.clone()).unwrap_or_default();
             answer(ed, world, &id);
@@ -385,7 +381,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 ));
             }
             world.delta();
-            send(ed, world, StreamEv::Text("So: ".into()));
+            send(ed, world, Event::Text("So: ".into()));
             let first = pace(ed);
             sim.wait(STILL_AFTER);
             if (first, pace(ed)) != (Some(Pace::Breath), Some(Pace::Still)) {
@@ -395,7 +391,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         }
         11 => {
             // (the turn over, the next asked through `submit`: nothing of the last one carried over)
-            send(ed, world, StreamEv::Done(Ok("done".into())));
+            send(ed, world, Event::Done(Ok("done".into())));
             if !crate::chat::submit(ed, "and the third?", None, None) {
                 world.wrong("the next turn wasn't asked".into());
             }

@@ -11,9 +11,9 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
-use crate::llm::StreamEv;
 
 // (3: the walk ends with the ask's review up, its call waiting for you — #381)
 const SEEDS: &[u64] = &[0, 1, 2, 3, 5];
@@ -87,7 +87,7 @@ fn keys(ed: &mut Editor, keys: &str) {
     }
 }
 
-fn chat_event(ed: &mut Editor, ev: StreamEv) {
+fn chat_event(ed: &mut Editor, ev: Event) {
     let g = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
     crate::chat::stream_event(ed, g, ev);
 }
@@ -123,7 +123,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
         }
         1 => {
             let words = c.pick(&["b is", " empty because", " nothing"]).to_string();
-            chat_event(ed, StreamEv::Text(words.clone()));
+            chat_event(ed, Event::Text(words.clone()));
             format!("the chat's stream: {words:?}")
         }
         2 => {
@@ -181,7 +181,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
             };
             match ask_generation(ed).filter(|_| !waits) {
                 Some(g) => {
-                    crate::ask::on_event(ed, g, StreamEv::Done(Ok("done".into())));
+                    crate::ask::on_event(ed, g, Event::Done(Ok("done".into())));
                     "the ask's turn over".into()
                 }
                 None => "(no ask to end)".into(),

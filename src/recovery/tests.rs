@@ -717,14 +717,10 @@ fn the_restored_chat_is_said_only_where_it_isnt_drawn() {
 /// closed, a session added and closed.
 #[test]
 fn every_way_a_conversation_moves_reaches_the_keeper() {
-    use crate::llm::StreamEv;
-    let conversation_is = |id: &str| StreamEv::Conversation {
-        id: id.into(),
-        model: "m".into(),
-        version: None,
-        key_source: None,
-    };
-    let stream = |ed: &mut Editor, ev: StreamEv| {
+    use crate::agent::Event;
+    let conversation_is =
+        |id: &str| Event::Conversation { id: id.into(), model: "m".into(), version: None, key_source: None };
+    let stream = |ed: &mut Editor, ev: Event| {
         let generation = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
         crate::chat::stream_event(ed, generation, ev);
     };
@@ -740,7 +736,7 @@ fn every_way_a_conversation_moves_reaches_the_keeper() {
     };
     assert_eq!(told(&mut ed), ["one"], "claude gave it its id");
     ed.workspace.claude.chat.as_mut().unwrap().resume = Some("one".into());
-    stream(&mut ed, StreamEv::Exit("No conversation found with session ID: one".into()));
+    stream(&mut ed, Event::Exit("No conversation found with session ID: one".into()));
     assert!(told(&mut ed).is_empty(), "gone from claude");
     stream(&mut ed, conversation_is("two"));
     assert_eq!(told(&mut ed), ["two"]);

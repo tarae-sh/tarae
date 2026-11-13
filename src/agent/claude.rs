@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use crate::agent::{Caps, ModelInfo, Permission, Prompt, StreamEv};
+use crate::agent::{Caps, Event, ModelInfo, Permission, Prompt};
 use crate::billing::Credential;
-use crate::event::{Apply, Event};
+use crate::event::Apply;
 use crate::llm::{ClaudeEnv, Env, LlmConfig, judged, process_names, spawn_failed};
 
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
@@ -385,7 +385,7 @@ pub fn pump(
     own: Option<Weak>,
     once: bool,
     tx: crate::event::Tx,
-    route: impl Fn(StreamEv) -> Option<Apply> + Send + 'static,
+    route: impl Fn(Event) -> Option<Apply> + Send + 'static,
 ) {
     UNREAPED.lock().unwrap_or_else(|e| e.into_inner()).push(child.id());
     crate::event::thread("tarae-llm-read", move || {
@@ -402,7 +402,7 @@ pub fn pump(
                 let _ = err_tx.send(last);
             });
         }
-        let send = |ev: StreamEv| route(ev).is_none_or(|apply| tx.send(Event::Job(apply)).is_ok());
+        let send = |ev: Event| route(ev).is_none_or(|apply| tx.send(crate::event::Event::Job(apply)).is_ok());
         // Streamed text not yet sent — answer text or (`pending_thought`) thinking summary — and an edit's
         // input as it's written (`writing`), sent in the same batches
         let mut pending = String::new();
@@ -410,8 +410,8 @@ pub fn pump(
         let writing = std::cell::RefCell::new(crate::writing::Reading::default());
         let flush = |pending: &mut String, thought: bool| {
             let t = std::mem::take(pending);
-            (t.is_empty() || send(if thought { StreamEv::Thought(t) } else { StreamEv::Text(t) }))
-                && writing.borrow_mut().take().into_iter().all(|d| send(StreamEv::Writing(d)))
+            (t.is_empty() || send(if thought { Event::Thought(t) } else { Event::Text(t) }))
+                && writing.borrow_mut().take().into_iter().all(|d| send(Event::Writing(d)))
         };
         let mut last_flush = crate::clock::now();
         let mut thinking_sent = false;
@@ -473,13 +473,13 @@ pub fn pump(
                 break;
             }
             if let Some(m) = crate::billing::refusal(&ev)
-                && !send(StreamEv::Money(m))
+                && !send(Event::Money(m))
             {
                 break;
             }
             if let Some(m) = answered_by(&ev).filter(|m| *m != model) {
                 model = m.to_string();
-                if !send(StreamEv::Answered(model.clone())) {
+                if !send(Event::Answered(model.clone())) {
                     break;
                 }
             }
@@ -508,16 +508,16 @@ pub fn pump(
             }
             // A thinking block's start and end — its summary, held, goes before its end
             if let Some(open) = thinking_edge(&ev, &mut thinking_block) {
-                if !flush(&mut pending, pending_thought) || !send(StreamEv::ThinkingBlock(open)) {
+                if !flush(&mut pending, pending_thought) || !send(Event::ThinkingBlock(open)) {
                     break;
                 }
                 continue;
             }
             match parse_line(&ev) {
-                Some(ev @ (StreamEv::Text(_) | StreamEv::Thought(_))) => {
+                Some(ev @ (Event::Text(_) | Event::Thought(_))) => {
                     let (t, thought) = match ev {
-                        StreamEv::Thought(t) => (t, true),
-                        StreamEv::Text(t) => (t, false),
+                        Event::Thought(t) => (t, true),
+                        Event::Text(t) => (t, false),
                         _ => unreachable!(),
                     };
                     if thought != pending_thought {
@@ -536,21 +536,21 @@ pub fn pump(
                     }
                 }
                 // Answered on the main loop · said where it happened (text streamed before it goes first)
-                Some(c @ (StreamEv::Mcp { .. } | StreamEv::Permission { .. } | StreamEv::Compaction(_))) => {
+                Some(c @ (Event::Mcp { .. } | Event::Permission { .. } | Event::Compaction(_))) => {
                     if !flush(&mut pending, pending_thought) || !send(c) {
                         break;
                     }
                 }
-                Some(e @ (StreamEv::Conversation { .. } | StreamEv::Ready { .. } | StreamEv::Limits(_))) => {
+                Some(e @ (Event::Conversation { .. } | Event::Ready { .. } | Event::Limits(_))) => {
                     if !send(e) {
                         break;
                     }
                 }
-                Some(StreamEv::Thinking) if !thinking_sent => {
+                Some(Event::Thinking) if !thinking_sent => {
                     thinking_sent = true;
-                    send(StreamEv::Thinking);
+                    send(Event::Thinking);
                 }
-                Some(d @ StreamEv::Done(_)) => {
+                Some(d @ Event::Done(_)) => {
                     flush(&mut pending, pending_thought);
                     thinking_sent = false;
                     let ok = send(d);
@@ -570,23 +570,23 @@ pub fn pump(
         let err = err_rx.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
         if once && !done {
             let msg = if err.is_empty() { "exited without a result".to_string() } else { err };
-            send(StreamEv::Done(Err(msg)));
+            send(Event::Done(Err(msg)));
         } else if !once {
-            send(StreamEv::Exit(err));
+            send(Event::Exit(err));
         }
     });
 }
 
 /// `tool_use` blocks of a complete assistant message · `tool_result` blocks of the user message that
 /// answers them.
-fn tool_events(ev: &serde_json::Value) -> Vec<StreamEv> {
+fn tool_events(ev: &serde_json::Value) -> Vec<Event> {
     let Some(content) = ev["message"]["content"].as_array() else { return Vec::new() };
     let id = |b: &serde_json::Value, k: &str| b[k].as_str().unwrap_or_default().to_string();
     match ev["type"].as_str() {
         Some("assistant") => content
             .iter()
             .filter(|b| b["type"] == "tool_use")
-            .map(|b| StreamEv::Tool { id: id(b, "id"), name: id(b, "name"), input: b["input"].clone() })
+            .map(|b| Event::Tool { id: id(b, "id"), name: id(b, "name"), input: b["input"].clone() })
             .collect(),
         Some("user") => (content.iter())
             .filter(|b| b["type"] == "tool_result")
@@ -604,10 +604,10 @@ fn tool_events(ev: &serde_json::Value) -> Vec<StreamEv> {
                     text.truncate(cut);
                 }
                 let error = b["is_error"].as_bool() == Some(true);
-                StreamEv::ToolResult { id: id(b, "tool_use_id"), text, error }
+                Event::ToolResult { id: id(b, "tool_use_id"), text, error }
             })
             // (and a WebSearch's list, whole — its own line's `tool_use_result`)
-            .chain(crate::web::search::found(ev).map(|f| StreamEv::Searched(Box::new(f))))
+            .chain(crate::web::search::found(ev).map(|f| Event::Searched(Box::new(f))))
             .collect(),
         _ => Vec::new(),
     }
@@ -626,10 +626,10 @@ fn answered_by(ev: &serde_json::Value) -> Option<&str> {
 
 /// What a line says about usage (`usage.rs` has what's where), the plan's limits or a retry (`limits.rs`), read
 /// at `at_ms` — None: nothing.
-pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<StreamEv> {
+pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<Event> {
     use crate::usage::{Counts, Seen, Spent, Ttl};
     let seen = |id: Option<&serde_json::Value>, model: &serde_json::Value, u: &serde_json::Value| {
-        Some(StreamEv::Usage(Seen {
+        Some(Event::Usage(Seen {
             id: match id {
                 Some(id) => Some(id.as_str()?.to_string()),
                 None => None,
@@ -642,10 +642,10 @@ pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<StreamEv> {
     };
     match ev["type"].as_str()? {
         "system" if ev["subtype"] == "status" && ev["status"] == "requesting" => {
-            Some(StreamEv::Requesting(at_ms))
+            Some(Event::Requesting(at_ms))
         }
-        "system" if ev["subtype"] == "api_retry" => crate::limits::of_retry(ev).map(StreamEv::Retry),
-        "rate_limit_event" => crate::limits::of_event(ev, at_ms).map(StreamEv::Limits),
+        "system" if ev["subtype"] == "api_retry" => crate::limits::of_retry(ev).map(Event::Retry),
+        "rate_limit_event" => crate::limits::of_event(ev, at_ms).map(Event::Limits),
         "stream_event" => {
             let e = &ev["event"];
             match e["type"].as_str()? {
@@ -668,7 +668,7 @@ pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<StreamEv> {
                 .flatten()
                 .map(|(name, m)| (name.clone(), m["contextWindow"].as_u64()))
                 .collect();
-            Some(StreamEv::Spent(Spent {
+            Some(Event::Spent(Spent {
                 conversation: ev["session_id"].as_str().unwrap_or_default().to_string(),
                 counts: Counts::of(&ev["usage"]),
                 total_cost: ev["total_cost_usd"].as_f64(),
@@ -740,19 +740,19 @@ fn unanswered(ev: &serde_json::Value) -> Option<&str> {
     (ev["type"] == "control_request" && parse_line(ev).is_none()).then(|| ev["request_id"].as_str()).flatten()
 }
 
-pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
+pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<Event> {
     match ev["type"].as_str()? {
         // tarae's MCP server's messages and permission asks — any other is the wire's (`unanswered`)
         "control_request" => {
             let (id, req) = (ev["request_id"].as_str()?.to_string(), &ev["request"]);
             match req["subtype"].as_str()? {
-                "can_use_tool" => Some(StreamEv::Permission {
+                "can_use_tool" => Some(Event::Permission {
                     id,
                     tool: req["tool_name"].as_str().unwrap_or_default().to_string(),
                     input: req["input"].clone(),
                 }),
                 "mcp_message" if req["server_name"] == "tarae" => {
-                    Some(StreamEv::Mcp { id, message: req["message"].clone() })
+                    Some(Event::Mcp { id, message: req["message"].clone() })
                 }
                 _ => None,
             }
@@ -760,20 +760,20 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
         "stream_event" => {
             let delta = &ev["event"]["delta"];
             match delta["type"].as_str()? {
-                "text_delta" => Some(StreamEv::Text(delta["text"].as_str()?.to_string())),
+                "text_delta" => Some(Event::Text(delta["text"].as_str()?.to_string())),
                 "thinking_delta" => Some(match delta["thinking"].as_str().filter(|t| !t.is_empty()) {
-                    Some(t) => StreamEv::Thought(t.to_string()),
-                    None => StreamEv::Thinking,
+                    Some(t) => Event::Thought(t.to_string()),
+                    None => Event::Thinking,
                 }),
                 _ => None,
             }
         }
-        "system" if ev["subtype"] == "thinking_tokens" => Some(StreamEv::Thinking),
+        "system" if ev["subtype"] == "thinking_tokens" => Some(Event::Thinking),
         // (`status: "requesting"` is usage's — `usage_line`)
         "system" if ev["subtype"] == "compact_boundary" || ev["subtype"] == "status" => {
-            crate::compaction::Ev::of(ev, crate::usage::now_ms()).map(StreamEv::Compaction)
+            crate::compaction::Ev::of(ev, crate::usage::now_ms()).map(Event::Compaction)
         }
-        "system" if ev["subtype"] == "init" => Some(StreamEv::Conversation {
+        "system" if ev["subtype"] == "init" => Some(Event::Conversation {
             id: ev["session_id"].as_str()?.to_string(),
             model: ev["model"].as_str().unwrap_or_default().to_string(),
             version: ev["claude_code_version"].as_str().filter(|v| !v.is_empty()).map(String::from),
@@ -781,20 +781,20 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
         }),
         "control_response" if ev["response"]["request_id"] == "tarae-init" => {
             let r = &ev["response"]["response"];
-            Some(StreamEv::Ready {
+            Some(Event::Ready {
                 models: ModelInfo::list(&r["models"]),
                 key_source: r["account"]["apiKeySource"].as_str().map(String::from),
                 account: crate::usage::Account::of(&r["account"]),
             })
         }
         "control_response" if ev["response"]["request_id"] == REQUEST_ID => {
-            Some(StreamEv::Limits(crate::limits::of_answer(&ev["response"], crate::usage::now_ms())))
+            Some(Event::Limits(crate::limits::of_answer(&ev["response"], crate::usage::now_ms())))
         }
         "result" => {
             let text = ev["result"].as_str().unwrap_or_default().to_string();
             let failed = ev["is_error"].as_bool() == Some(true)
                 || ev["subtype"].as_str().is_some_and(|s| s.starts_with("error"));
-            Some(StreamEv::Done(if failed {
+            Some(Event::Done(if failed {
                 Err(if text.is_empty() { "stopped".into() } else { text })
             } else {
                 Ok(text)
@@ -808,7 +808,7 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
 /// it up, decoded from its line as one from claude is.
 #[cfg(test)]
 pub mod test {
-    pub fn control(request_id: &str, request: serde_json::Value) -> crate::agent::StreamEv {
+    pub fn control(request_id: &str, request: serde_json::Value) -> crate::agent::Event {
         let line =
             serde_json::json!({"type": "control_request", "request_id": request_id, "request": request});
         super::parse_line(&line).expect("a control request the wire hands up")
@@ -872,7 +872,7 @@ mod tests {
         let (tx, rx) = channel::<bool>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         pump(child, None, false, ed.events.sender(), move |ev| {
-            let _ = tx.send(matches!(ev, StreamEv::Exit(_)));
+            let _ = tx.send(matches!(ev, Event::Exit(_)));
             None
         });
         assert_eq!(rx.recv_timeout(crate::test_results::PATIENCE), Ok(true), "its end told");
@@ -903,8 +903,8 @@ echo closed > "$1/eof""#;
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         pump(child, Some(lines.weak()), false, ed.events.sender(), move |ev| {
             let said = match ev {
-                StreamEv::Mcp { id, .. } | StreamEv::Permission { id, .. } => format!("up {id}"),
-                StreamEv::Exit(_) => "exit".to_string(),
+                Event::Mcp { id, .. } | Event::Permission { id, .. } => format!("up {id}"),
+                Event::Exit(_) => "exit".to_string(),
                 _ => return None,
             };
             let _ = tx.send(said);
@@ -969,8 +969,8 @@ echo closed > "$1/eof""#;
         let _ = child.stdin.take();
         pump(child, None, false, ed.events.sender(), move |ev| {
             let said = match ev {
-                StreamEv::Text(t) => format!("text {t}"),
-                StreamEv::Writing(d) => d
+                Event::Text(t) => format!("text {t}"),
+                Event::Writing(d) => d
                     .pieces
                     .iter()
                     .map(|p| match p {
@@ -1031,9 +1031,9 @@ echo closed > "$1/eof""#;
         let _ = child.stdin.take();
         pump(child, None, false, ed.events.sender(), move |ev| {
             let said = match ev {
-                StreamEv::ThinkingBlock(open) => format!("block {}", if open { "open" } else { "closed" }),
-                StreamEv::Thought(t) => format!("thought {t}"),
-                StreamEv::Text(t) => format!("text {t}"),
+                Event::ThinkingBlock(open) => format!("block {}", if open { "open" } else { "closed" }),
+                Event::Thought(t) => format!("thought {t}"),
+                Event::Text(t) => format!("text {t}"),
                 _ => return None,
             };
             let _ = tx.send(said);
@@ -1202,7 +1202,7 @@ echo closed > "$1/eof""#;
         let got: Vec<(String, serde_json::Value)> = tool_events(&ev)
             .into_iter()
             .map(|e| match e {
-                StreamEv::Tool { name, input, .. } => (name, input),
+                Event::Tool { name, input, .. } => (name, input),
                 _ => unreachable!(),
             })
             .collect();
@@ -1215,20 +1215,20 @@ echo closed > "$1/eof""#;
         let result = serde_json::json!({"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "a.rs:3:fn a"}]}]}});
         assert!(matches!(&tool_events(&result)[..],
-            [StreamEv::ToolResult { id, text, error: false }] if id == "t1" && text == "a.rs:3:fn a"));
+            [Event::ToolResult { id, text, error: false }] if id == "t1" && text == "a.rs:3:fn a"));
         // (a WebSearch's: its list too, whole — the web search's helper's)
         let searched = serde_json::json!({"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "t2", "content": "Web search results for query: \"q\""}]},
             "tool_use_result": {"query": "q", "results": [{"content": [{"title": "A", "url": "https://a.test/"}]}]}});
         assert!(matches!(&tool_events(&searched)[..],
-            [StreamEv::ToolResult { id, .. }, StreamEv::Searched(f)] if id == "t2" && f.links[0].url == "https://a.test/"));
+            [Event::ToolResult { id, .. }, Event::Searched(f)] if id == "t2" && f.links[0].url == "https://a.test/"));
         // Summarized thinking carries text; the omitted kind is just a signal
         let delta = |t: &str| {
             serde_json::json!({"type": "stream_event", "event": {"type": "content_block_delta",
             "delta": {"type": "thinking_delta", "thinking": t}}})
         };
-        assert!(matches!(parse_line(&delta("hmm")), Some(StreamEv::Thought(t)) if t == "hmm"));
-        assert!(matches!(parse_line(&delta("")), Some(StreamEv::Thinking)));
+        assert!(matches!(parse_line(&delta("hmm")), Some(Event::Thought(t)) if t == "hmm"));
+        assert!(matches!(parse_line(&delta("")), Some(Event::Thinking)));
     }
 
     #[test]

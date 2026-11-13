@@ -1356,7 +1356,7 @@ pub struct Editor {
     pub claude_user_settings: Option<std::path::PathBuf>,
     /// tarae's environment as claude inherits it — None: the process's own; tests give their own (empty unless a
     /// test says), so none depends on where it runs. `claudetrust` reads only it for a held-back name;
-    /// `llm::spawn` lays it over the process's (a stand-in claude still finds `sh`'s programs) and leaves out what
+    /// `agent::spawn` lays it over the process's (a stand-in claude still finds `sh`'s programs) and leaves out what
     /// `llm::claude_env` says of both; what the chat says of it (`llm::env_told`) reads only this.
     pub claude_env: Option<crate::llm::Env>,
     /// What claude's environment leaves out has been said (`llm::env_told`): once since tarae started.
@@ -7312,7 +7312,7 @@ mod tests {
         // (tests make their projects in the temp folder — follow goes only into the project)
         ed.workspace.root = test_root();
         // (a chat opened starts Claude: a stand-in that reads and says nothing, never the real one —
-        // `llm::spawn` refuses it in tests)
+        // `agent::spawn` refuses it in tests)
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         ed
@@ -21770,7 +21770,7 @@ mod tests {
         assert!(ed.workspace.claude.review.is_none() && ed.workspace.claude.ask.is_none());
         assert!(ed.toasts.iter().any(|t| t.text.contains("stopped — nothing changed")));
         let (g, _rx) = stand_in_ask(&mut ed, "upper");
-        crate::ask::on_event(&mut ed, g, crate::llm::StreamEv::Done(Ok("It's upper already.".into())));
+        crate::ask::on_event(&mut ed, g, crate::agent::Event::Done(Ok("It's upper already.".into())));
         assert!(ed.workspace.claude.review.is_none() && ed.workspace.claude.ask.is_none());
         assert_eq!(ed.status.as_ref().map(|s| s.0.as_str()), Some("claude: no changes"));
     }

@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use super::sessions::{World, print};
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::editor::Editor;
 use crate::event::WorkspaceId;
-use crate::llm::StreamEv;
 use crate::offer::{Offer, What};
 
 const SEEDS: &[u64] = &[0, 1, 2, 3];
@@ -107,7 +107,7 @@ fn send(ed: &mut Editor, id: WorkspaceId, text: &str) {
 }
 
 /// An event of session `id`'s stream.
-fn stream(ed: &mut Editor, id: WorkspaceId, ev: StreamEv) {
+fn stream(ed: &mut Editor, id: WorkspaceId, ev: Event) {
     let Some((generation, _)) = chat_of(ed, id) else { return };
     ed.with_workspace(id, |ed| crate::chat::stream_event(ed, generation, ev));
 }
@@ -154,12 +154,12 @@ fn act(sim: &mut Sim, ed: &mut Editor, plain: WorkspaceId, seen: &RefCell<Seen>)
             Some((_, true)) => match c.weighted(&[3, 1]) {
                 0 => {
                     let w = format!("w{} ", seen.borrow().words.len());
-                    stream(ed, plain, StreamEv::Text(w.clone()));
+                    stream(ed, plain, Event::Text(w.clone()));
                     seen.borrow_mut().words.push(w.trim().to_string());
                     format!("plain streams {w}")
                 }
                 _ => {
-                    stream(ed, plain, StreamEv::Done(Ok("done".into())));
+                    stream(ed, plain, Event::Done(Ok("done".into())));
                     seen.borrow_mut().turns += 1;
                     "plain's turn ends".into()
                 }
@@ -172,7 +172,7 @@ fn act(sim: &mut Sim, ed: &mut Editor, plain: WorkspaceId, seen: &RefCell<Seen>)
                 "main's turn begins".into()
             }
             Some((_, true)) => {
-                stream(ed, WorkspaceId::HOME, StreamEv::Done(Ok("done".into())));
+                stream(ed, WorkspaceId::HOME, Event::Done(Ok("done".into())));
                 "main's turn ends".into()
             }
             None => "(main has no chat)".into(),

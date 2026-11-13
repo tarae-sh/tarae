@@ -718,7 +718,7 @@ mod tests {
                     args: vec!["-c".into(), LIST_FDS.into()],
                     ..Default::default()
                 };
-                out(crate::llm::spawn(
+                out(crate::agent::claude::spawn(
                     &cfg,
                     &[],
                     Path::new("/"),

@@ -4,7 +4,7 @@
 //! permission requests.
 //!
 //! - claude runs with `--permission-prompt-tool stdio` and none of Claude Code's tools (`--tools ""`): a
-//!   permission ask it still sends (`StreamEv::Permission`) is denied, its message saying why — but a read's
+//!   permission ask it still sends (`Event::Permission`) is denied, its message saying why — but a read's
 //!   (`reads.rs`).
 
 use std::collections::VecDeque;

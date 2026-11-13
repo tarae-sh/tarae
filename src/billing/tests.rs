@@ -562,7 +562,7 @@ fn dollar_in_the_list_asks_first_on_a_conversation_saying_what_it_costs() {
 fn a_switch_says_what_the_next_message_costs_until_it_goes() {
     let place = Place::new("line");
     let mut ed = talking(&place);
-    let info = |value: &str, resolved: &str| crate::llm::ModelInfo {
+    let info = |value: &str, resolved: &str| crate::agent::ModelInfo {
         value: value.into(),
         name: value.into(),
         about: String::new(),

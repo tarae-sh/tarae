@@ -47,7 +47,7 @@ pub fn command(s: &Start, dir: &Path, given: Option<&Env>, cred: &Credential) ->
 /// The chat's.
 pub mod chat {
     use super::*;
-    use crate::llm;
+    use crate::agent::claude;
 
     /// The tools the chat process gets. Reading and tarae's own (`note`, `run_tests`, `run` — `tools.rs`) are
     /// allowed up front: the tests are the project's own, run the way the user runs them, in view, and any code
@@ -78,7 +78,7 @@ mcp__tarae__web_search,mcp__tarae__code";
     /// The chat's claude: tarae's tools, the conversation kept and maybe continued, tarae's MCP server only, the
     /// project's settings as the chat loads them, tarae's words beside its own, its thinking as text.
     pub fn args(s: &Start) -> Args {
-        let mut args = llm::with_tools(&s.cfg.args, TOOLS, ALLOWED);
+        let mut args = claude::with_tools(&s.cfg.args, TOOLS, ALLOWED);
         // The conversation is kept by claude too, so it can be continued (`chats.rs`)
         args.retain(|a| a != "--no-session-persistence");
         // Only tarae's own MCP server, whatever `llm.args` says: under `-p` a project's `.mcp.json` servers connect
@@ -96,9 +96,9 @@ mcp__tarae__web_search,mcp__tarae__code";
         if let Some((settings, sources)) = s.claude.settings {
             // CLAUDE.md files and settings as `claude` loads them — but hooks don't run, and edits always come
             // here as a review (an `ask` rule and the default mode outrank any allow rule or accept-edits mode)
-            args = llm::with_flag(&args, "--setting-sources", sources);
-            args = llm::with_flag(&args, "--settings", settings);
-            args = llm::with_flag(&args, "--permission-mode", "default");
+            args = claude::with_flag(&args, "--setting-sources", sources);
+            args = claude::with_flag(&args, "--settings", settings);
+            args = claude::with_flag(&args, "--permission-mode", "default");
         }
         let system = s.system.unwrap_or_default();
         let mut extra: Vec<String> =
@@ -113,7 +113,7 @@ mcp__tarae__web_search,mcp__tarae__code";
 
 /// `space i`'s.
 pub mod ask {
-    use crate::llm;
+    use crate::agent::claude;
 
     /// Its tools: tarae's two, none of Claude Code's.
     pub const ALLOWED: &str = "mcp__tarae__read,mcp__tarae__edit";
@@ -136,7 +136,7 @@ pub mod ask {
                 _ => args.push(a.clone()),
             }
         }
-        let mut args = llm::with_tools(&args, "", ALLOWED);
+        let mut args = claude::with_tools(&args, "", ALLOWED);
         if !args.iter().any(|a| a == "--no-session-persistence") {
             args.push("--no-session-persistence".into());
         }
@@ -146,7 +146,7 @@ pub mod ask {
             ("--permission-mode", "default"),
             ("--max-turns", MAX_TURNS),
         ] {
-            args = llm::with_flag(&args, flag, value);
+            args = claude::with_flag(&args, flag, value);
         }
         args
     }
@@ -186,7 +186,7 @@ pub mod ask {
 pub mod reviewer {
     use serde_json::{Value, json};
 
-    use crate::llm;
+    use crate::agent::claude;
     use crate::reviewer::Role;
 
     /// Its tools: none of Claude Code's — tarae's own, allowed up front: its reading of the snapshot and its findings.
@@ -219,14 +219,14 @@ pub mod reviewer {
             }
         }
         let skeptic = matches!(role, Role::Skeptic(_));
-        let mut args = llm::with_tools(&args, TOOLS, if skeptic { JUDGE_ALLOWED } else { ALLOWED });
+        let mut args = claude::with_tools(&args, TOOLS, if skeptic { JUDGE_ALLOWED } else { ALLOWED });
         if !args.iter().any(|a| a == "--no-session-persistence") {
             args.push("--no-session-persistence".into());
         }
-        args = llm::with_flag(&args, "--setting-sources", "");
-        args = llm::with_flag(&args, "--disallowedTools", DISALLOWED);
-        args = llm::with_flag(&args, "--permission-mode", "default");
-        args = llm::with_flag(&args, "--max-turns", if skeptic { SKEPTIC_TURNS } else { MAX_TURNS });
+        args = claude::with_flag(&args, "--setting-sources", "");
+        args = claude::with_flag(&args, "--disallowedTools", DISALLOWED);
+        args = claude::with_flag(&args, "--permission-mode", "default");
+        args = claude::with_flag(&args, "--max-turns", if skeptic { SKEPTIC_TURNS } else { MAX_TURNS });
         if !matches!(role, Role::One) {
             // A board's members cache an hour, on a key too (its default is five minutes): the prefix's block is an
             // hour's (`content`), and Claude Code's own breakpoints must be the same (`member_command`). Laid into a
@@ -238,7 +238,7 @@ pub mod reviewer {
                 Some(_) => return Err(SETTINGS_FILE.into()),
             };
             settings.insert("promptCacheTtl".into(), json!(CACHE_TTL));
-            args = llm::with_flag(&args, "--settings", &Value::Object(settings).to_string());
+            args = claude::with_flag(&args, "--settings", &Value::Object(settings).to_string());
         }
         Ok(args)
     }
@@ -256,7 +256,7 @@ pub mod reviewer {
 
 /// The web search's helper.
 pub mod web_search {
-    use crate::llm;
+    use crate::agent::claude;
 
     /// Its one tool, and Claude Code's others disallowed (tarae's MCP server isn't there: `--strict-mcp-config` and no
     /// `initialize`).
@@ -280,7 +280,7 @@ pub mod web_search {
                 _ => args.push(a.clone()),
             }
         }
-        let mut args = llm::with_tools(&args, TOOLS, TOOLS);
+        let mut args = claude::with_tools(&args, TOOLS, TOOLS);
         for flag in ["--no-session-persistence", "--strict-mcp-config"] {
             if !args.iter().any(|a| a == flag) {
                 args.push(flag.into());
@@ -293,7 +293,7 @@ pub mod web_search {
             ("--max-turns", MAX_TURNS),
             ("--system-prompt", system),
         ] {
-            args = llm::with_flag(&args, flag, value);
+            args = claude::with_flag(&args, flag, value);
         }
         args
     }

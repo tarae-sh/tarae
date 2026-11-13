@@ -67,8 +67,8 @@ fn spent() -> crate::usage::Spent {
 /// The verdict comes: its cost, then its reasons ending in `word`.
 fn verdict(ed: &mut Editor, card: u64, word: &str) {
     let run = run_of(ed, card);
-    on_event(ed, card, run, StreamEv::Spent(spent()));
-    on_event(ed, card, run, StreamEv::Done(Ok(format!("The user asked to run the tests.\n{word}"))));
+    on_event(ed, card, run, Event::Spent(spent()));
+    on_event(ed, card, run, Event::Done(Ok(format!("The user asked to run the tests.\n{word}"))));
 }
 
 fn record(dir: &Scratch) -> Vec<Value> {
@@ -235,7 +235,7 @@ fn past_three_revs_a_card_is_none_by_merges() {
     };
     assert!(prepare(&ed, o).is_some());
     let run = run_of(&ed, id);
-    on_event(&mut ed, id, run, StreamEv::Spent(spent()));
+    on_event(&mut ed, id, run, Event::Spent(spent()));
     for _ in 1..=REVS_MAX {
         again(&mut ed);
     }
@@ -266,10 +266,10 @@ fn the_record_says_the_cards_whole_cost_and_the_last_runs_own_tokens() {
     // (the second rev's own result: its tokens, both revs' cost)
     let id = card(&mut ed);
     let run = run_of(&ed, id);
-    on_event(&mut ed, id, run, StreamEv::Spent(spent()));
+    on_event(&mut ed, id, run, Event::Spent(spent()));
     let run = again(&mut ed, id);
-    on_event(&mut ed, id, run, StreamEv::Spent(second()));
-    on_event(&mut ed, id, run, StreamEv::Done(Ok("ok\napprove".into())));
+    on_event(&mut ed, id, run, Event::Spent(second()));
+    on_event(&mut ed, id, run, Event::Done(Ok("ok\napprove".into())));
     ed.offer_dismiss();
     let r = &record(&dir)[0]["reviewer"];
     assert_eq!((&r["tokens"]["prompt"], &r["revs"]), (&json!(3000), &json!(2)), "{r}");
@@ -277,9 +277,9 @@ fn the_record_says_the_cards_whole_cost_and_the_last_runs_own_tokens() {
     // (the second rev's run failed before its result: no tokens, the first rev's cost)
     let id = card(&mut ed);
     let run = run_of(&ed, id);
-    on_event(&mut ed, id, run, StreamEv::Spent(spent()));
+    on_event(&mut ed, id, run, Event::Spent(spent()));
     let run = again(&mut ed, id);
-    on_event(&mut ed, id, run, StreamEv::Exit("claude stopped".into()));
+    on_event(&mut ed, id, run, Event::Exit("claude stopped".into()));
     ed.offer_dismiss();
     let r = &record(&dir)[1]["reviewer"];
     assert_eq!(
@@ -403,7 +403,7 @@ fn a_card_answered_by_keys_keeps_the_answer_and_its_verdict() {
     let before = shown(&mut ed);
     let run = run_of(&ed, id);
     ed.unchanged = false;
-    on_event(&mut ed, id, run, StreamEv::Spent(spent()));
+    on_event(&mut ed, id, run, Event::Spent(spent()));
     assert!(ed.unchanged);
     assert_eq!(shown(&mut ed), before, "the review's cost changes nothing on screen");
     crate::clock::release();
@@ -412,7 +412,7 @@ fn a_card_answered_by_keys_keeps_the_answer_and_its_verdict() {
     }
     assert!(ed.offers.iter().all(|o| o.id != id), "`y` answered it");
     assert!(written_in(&ed).is_empty(), "held until its verdict");
-    on_event(&mut ed, id, run, StreamEv::Done(Ok("The user named it.\napprove".into())));
+    on_event(&mut ed, id, run, Event::Done(Ok("The user named it.\napprove".into())));
     let all = written_in(&ed);
     assert_eq!(all.len(), 1, "one entry: {all:?}");
     let r = &all[0]["reviewer"];
@@ -485,7 +485,7 @@ fn a_card_replaced_unanswered_leaves_no_review_and_its_cost_is_kept() {
     };
     let first = bring(&mut ed);
     let run = run_of(&ed, first);
-    on_event(&mut ed, first, run, StreamEv::Spent(spent()));
+    on_event(&mut ed, first, run, Event::Spent(spent()));
     let second = bring(&mut ed);
     assert!(first != second && ed.offers.iter().all(|o| o.id != first), "replaced");
     assert!(!ed.auto_cards.contains_key(&first), "its review gone with it");
@@ -493,7 +493,7 @@ fn a_card_replaced_unanswered_leaves_no_review_and_its_cost_is_kept() {
     assert_eq!(told.try_iter().count(), 2, "both reviewed");
     assert_eq!(aside_turns(&ed), 1, "the replaced one's cost on the line");
     let run = run_of(&ed, second);
-    on_event(&mut ed, second, run, StreamEv::Spent(spent()));
+    on_event(&mut ed, second, run, Event::Spent(spent()));
     quit(&mut ed);
     assert!(ed.auto_cards.is_empty());
     assert_eq!(aside_turns(&ed), 2, "the one still up at the end: its cost too");
@@ -512,7 +512,7 @@ fn until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 
 /// R1 fix 8: a review for real — a script as `llm.command` stands in for claude, in the test's own folder: it's
 /// started with `args()`'s flags and the model, in an empty 0700 folder of its own that's gone after, its stdin closed
-/// after the one message (it answers only at its end), and what it writes is read by `llm::pump` into the verdict.
+/// after the one message (it answers only at its end), and what it writes is read by `agent::pump` into the verdict.
 #[test]
 fn a_review_starts_its_claude_and_reads_the_verdict_from_its_stream() {
     use std::os::unix::fs::PermissionsExt;

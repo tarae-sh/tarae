@@ -1,6 +1,6 @@
 //! Landing 4's proof: every claude tarae starts gets the argv it got before Claude's flags moved into its wire.
 
-use crate::agent::{Role, Start};
+use crate::agent::Start;
 use crate::billing::Credential;
 use crate::llm::LlmConfig;
 
@@ -8,7 +8,10 @@ use crate::llm::LlmConfig;
 /// after its flag as `<system>`.
 fn line(cfg: &LlmConfig, extra: &[String]) -> String {
     let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
-    quoted(&crate::llm::command(cfg, &extra, &std::env::temp_dir(), None, &Credential::Subscription).unwrap())
+    quoted(
+        &crate::agent::claude::command(cfg, &extra, &std::env::temp_dir(), None, &Credential::Subscription)
+            .unwrap(),
+    )
 }
 
 /// `line` for a start, as `agent::command` makes its process.
@@ -76,17 +79,15 @@ fn argvs() -> Vec<(String, String)> {
             }
         }
         // `space i`'s
-        let ask = Start { system: Some("S"), ..Start::new(Role::Ask, &base) };
-        out.push((format!("ask · {name}"), line_of(&ask)));
+        out.push((format!("ask · {name}"), line_of(&crate::ask::agent_start(&base))));
         // The reviewer's, each role
         for role in
             [crate::reviewer::Role::One, crate::reviewer::Role::Angle(0), crate::reviewer::Role::Skeptic(0)]
         {
-            let member = Start { system: Some("S"), ..Start::new(Role::Reviewer(role), &base) };
-            out.push((format!("reviewer {role:?} · {name}"), line_of(&member)));
+            out.push((format!("reviewer {role:?} · {name}"), line_of(&crate::reviewer::start(&base, role))));
         }
         // A commit draft's
-        out.push((format!("draft · {name}"), line_of(&Start::new(Role::Draft, &base))));
+        out.push((format!("draft · {name}"), line_of(&crate::llm::draft_start(&base))));
         // The web search's helper
         let web = crate::web::search::config(base.clone(), "");
         out.push((format!("web search · {name}"), line_of(&crate::web::search::helper(&web))));
@@ -104,7 +105,8 @@ fn argvs() -> Vec<(String, String)> {
 }
 
 /// Agents beside Claude, landing 4: Claude's flags moved into its wire, and every process tarae starts gets the argv
-/// it got before — each role's (the chat's as it starts, the others' by `agent::command`), on the default `llm.args` and on one asking for what each start leaves out or sets
+/// it got before — each role's (the chat's as it starts, the others' by `agent::command` on their own sites'
+/// builders, so a site that named the wrong role fails it), on the default `llm.args` and on one asking for what each start leaves out or sets
 /// itself (`argv_golden.txt`, written from main fe0d2a22's code with `TARAE_BLESS=1`; the chat's through
 /// `ensure_proc` as it starts one). Its system prompt is `<system>`: the text is each role's, passed through.
 #[test]

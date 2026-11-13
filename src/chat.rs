@@ -21,11 +21,11 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::agent::{Agent, Permission, Prompt};
+use crate::agent::{self, Agent, Event, Permission, Prompt};
 use crate::document::DocId;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
-use crate::llm::{self, StreamEv};
+use crate::llm;
 use crate::markdown::Span;
 use crate::workspace::Here;
 
@@ -765,7 +765,7 @@ pub struct Chat {
     pub conversation: Option<String>,
     pub resume: Option<String>,
     /// `resume` is another session's conversation this one forks (`fork.rs`): the next claude starts with
-    /// `--fork-session` after it — until claude names the fork's own (`StreamEv::Conversation`).
+    /// `--fork-session` after it — until claude names the fork's own (`Event::Conversation`).
     pub(crate) fork: bool,
     /// When this conversation last had a message or a turn's end (unix seconds, `chats::Saved.updated`) — None: not
     /// yet. What's done to its notes, a close or a restart never moves it: the picker's order and age say the talk.
@@ -776,7 +776,7 @@ pub struct Chat {
     pub plan: Option<crate::plan::Plan>,
     /// The models claude offers (its `initialize` answer) · the one answering: what `init` said this process
     /// runs, then what wrote its latest answer (empty after `:model` until the next answer says).
-    pub models: Vec<crate::llm::ModelInfo>,
+    pub models: Vec<crate::agent::ModelInfo>,
     pub model: String,
     /// Its view mode was asked for before its rows were laid out (closed, minimized): made after the next frame
     /// (`chatdoc::wanted`).
@@ -1516,7 +1516,7 @@ impl Chat {
 
     fn kill(&mut self) {
         if let Some(p) = self.proc.take() {
-            llm::kill(p.pid);
+            agent::kill(p.pid);
         }
     }
 
@@ -1529,7 +1529,7 @@ impl Chat {
     /// the next message starts one again.
     pub fn stop_process(&mut self) {
         if let Some(p) = &self.proc {
-            llm::kill(p.pid);
+            agent::kill(p.pid);
         }
     }
 }
@@ -2493,7 +2493,7 @@ fn settings_again(ed: &mut Editor) -> bool {
 /// A stand-in claude for the chat (no process — a simulation's): the lines sent to it, read from the receiver.
 #[cfg(test)]
 pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
-    let (stdin, rx) = llm::Lines::stand_in();
+    let (stdin, rx) = agent::Lines::stand_in();
     c.proc = Some(Proc { agent: stdin.into(), pid: 0 });
     rx
 }
@@ -2582,7 +2582,7 @@ fn ensure_proc(ed: &mut Editor) {
     if let Some(tx) = ed.claude_lines.clone() {
         // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
         c.generation = crate::tools::generation();
-        c.proc = Some(Proc { agent: llm::Lines::to(tx).into(), pid: 0 });
+        c.proc = Some(Proc { agent: agent::Lines::to(tx).into(), pid: 0 });
         (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
         return;
     }
@@ -2620,7 +2620,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.billing = Some(billing);
     c.runs_on = (cfg.model.clone(), cfg.effort.clone());
     c.launched = Some((llm::LlmConfig { args: launched.args, ..cfg }, launched.extra));
-    let Some(stdin) = child.stdin.take().map(llm::Lines::new) else { return };
+    let Some(stdin) = child.stdin.take().map(agent::Lines::new) else { return };
     let (own, agent) = (stdin.weak(), Agent::from(stdin));
     // tarae's MCP server (its tools) — registered before anything else is said
     let _ = agent.initialize();
@@ -2636,7 +2636,7 @@ fn ensure_proc(ed: &mut Editor) {
     let generation = c.generation;
     c.proc = Some(Proc { agent, pid: child.id() });
     (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
-    llm::pump(child, Some(own), false, tx, move |ev| {
+    agent::pump(child, Some(own), false, tx, move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
     // (a process replaced mid-turn: what the last one was writing is never heard of again — `writing.rs`)
@@ -2653,23 +2653,23 @@ fn ensure_proc(ed: &mut Editor) {
     crate::instructions::follow(ed);
 }
 
-/// `on_event` for other modules' tests: an event of chat process `generation`'s stream, as `llm::pump` sends it.
+/// `on_event` for other modules' tests: an event of chat process `generation`'s stream, as `agent::pump` sends it.
 #[cfg(test)]
-pub(crate) fn stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
+pub(crate) fn stream_event(ed: &mut Editor, generation: u64, ev: Event) {
     on_event(ed, generation, ev)
 }
 
-fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
+fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
     // (the turn's cell, still, breathing again from this event: from the floor — `shimmer::woke`)
     let before = crate::shimmer::pace(&ed.workspace);
     on_stream_event(ed, generation, ev);
     crate::shimmer::woke(&mut ed.workspace, before);
 }
 
-fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
+fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
     // (a failure for want of a login, with a key tarae left out: said with it, and what passes it)
     let login_hint = match &ev {
-        StreamEv::Done(Err(e)) | StreamEv::Exit(e) => llm::login_hint(ed, e),
+        Event::Done(Err(e)) | Event::Exit(e) => llm::login_hint(ed, e),
         _ => None,
     };
     // (the credential claude says it runs on, against who pays for it — `billing.rs`)
@@ -2679,20 +2679,20 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
     };
     let log = ed.workspace.log();
     // (the turn's or the process's end: nothing is being written — `writing.rs`)
-    if matches!(ev, StreamEv::Done(_) | StreamEv::Exit(_))
+    if matches!(ev, Event::Done(_) | Event::Exit(_))
         && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
     {
         crate::writing::over(ed);
     }
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation == generation) else { return };
     match ev {
-        StreamEv::Thinking => {
+        Event::Thinking => {
             if c.state == State::Idle {
                 return;
             }
             c.state = State::Thinking;
         }
-        StreamEv::ThinkingBlock(open) => {
+        Event::ThinkingBlock(open) => {
             if c.state == State::Idle {
                 return;
             }
@@ -2701,7 +2701,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
             c.pace.thinking(open);
         }
-        StreamEv::Thought(t) => {
+        Event::Thought(t) => {
             if c.state == State::Idle {
                 return;
             }
@@ -2716,7 +2716,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
             crate::follow::on_words(ed, false);
         }
-        StreamEv::Tool { id, name, input } => {
+        Event::Tool { id, name, input } => {
             if c.state == State::Idle {
                 return;
             }
@@ -2750,7 +2750,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             crate::follow::on_tool(ed, &id, &name, &input, &look);
         }
         // Kept from the first question on — a tarae closed mid-turn still has it
-        StreamEv::Conversation { id, model, version, key_source } => {
+        Event::Conversation { id, model, version, key_source } => {
             let new = c.conversation.as_deref() != Some(id.as_str());
             // (a fork's first: the copy is a conversation of its own from here — resumed as itself from now on)
             let forked = c.fork && c.generation == generation;
@@ -2799,7 +2799,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 keep(ed);
             }
         }
-        StreamEv::Ready { models, key_source, account } => {
+        Event::Ready { models, key_source, account } => {
             c.models = models;
             // Not the credential its billing gives, as it starts: it stops — said
             if let Some(said) = wrong(c, key_source.as_deref()) {
@@ -2817,7 +2817,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
         }
         // What it costs (`usage.rs`) — a request going out changes nothing on screen yet
-        StreamEv::Requesting(at) => {
+        Event::Requesting(at) => {
             ed.workspace.claude.usage.requesting(at);
             // (the turn's word waves until something of its answer comes — `shimmer.rs`)
             let before = crate::shimmer::pace(&ed.workspace);
@@ -2826,8 +2826,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
             ed.unchanged = crate::shimmer::pace(&ed.workspace) == before;
         }
-        StreamEv::Usage(seen) => ed.workspace.claude.usage.seen(seen),
-        StreamEv::Spent(spent) => {
+        Event::Usage(seen) => ed.workspace.claude.usage.seen(seen),
+        Event::Spent(spent) => {
             ed.workspace.claude.usage.spent(spent);
             // (a wake's turn: its record entry says so — `orchestra::wake_estimate`)
             crate::orchestra::mark_wake(ed);
@@ -2835,11 +2835,11 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             crate::uistate::watch::usage(ed, "turn");
             crate::usage::view_sync(ed);
         }
-        StreamEv::Answered(model) => c.model = model,
-        StreamEv::Compaction(e) => crate::compaction::on_event(ed, e),
+        Event::Answered(model) => c.model = model,
+        Event::Compaction(e) => crate::compaction::on_event(ed, e),
         // (the web search's helper's alone: the chat has no WebSearch)
-        StreamEv::Searched(_) => {}
-        StreamEv::Limits(report) => {
+        Event::Searched(_) => {}
+        Event::Limits(report) => {
             // (its own claude's `rate_limit_event`: sent to plan users only — `limits::on_plan`)
             if report.readings.iter().any(|r| r.from == crate::limits::Source::Event) {
                 ed.workspace.claude.usage.plan_event = true;
@@ -2863,14 +2863,14 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
         }
         // (refused for money: said, and the plan offered, at the turn's end — `billing.rs`)
-        StreamEv::Money(m) => {
+        Event::Money(m) => {
             if c.state != State::Idle {
                 c.money = Some(m);
             }
             ed.unchanged = true;
         }
         // (a retry said in place of the one before it — the turn's, not a row each)
-        StreamEv::Retry(r) => {
+        Event::Retry(r) => {
             let said = r.said();
             let retry = |m: &&mut Msg| m.role == Role::Note && m.text.starts_with(crate::limits::RETRY_SAID);
             match c.msgs.last_mut().filter(retry) {
@@ -2881,14 +2881,14 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 None => c.msgs.push(Msg::new(Role::Note, said, "")),
             }
         }
-        StreamEv::Writing(d) => {
+        Event::Writing(d) => {
             if c.state == State::Idle {
                 return;
             }
             c.pace.delta(d.bytes());
             crate::writing::on_delta(ed, d);
         }
-        StreamEv::ToolResult { id, text, error } => {
+        Event::ToolResult { id, text, error } => {
             crate::writing::answered(ed, &id);
             let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
             c.calls.retain(|k| k.id != id);
@@ -2945,7 +2945,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
         }
         // tarae's MCP server (its tools, `tools.rs`): answered now, or (an edit) once its review ends
-        StreamEv::Mcp { id, message } => {
+        Event::Mcp { id, message } => {
             if let Some(response) = crate::tools::mcp(ed, generation, &id, &message)
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
             {
@@ -2953,7 +2953,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
         }
         // A permission ask: a read's (`reads.rs`, maybe after its card), any other denied (`edits::request`)
-        StreamEv::Permission { id, tool, input } => {
+        Event::Permission { id, tool, input } => {
             ed.workspace.claude.usage.tally.asked(&id, &tool);
             if let Some(p) = crate::edits::request(ed, &id, &tool, input)
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
@@ -2961,7 +2961,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 answer_permission(ed, &id, p);
             }
         }
-        StreamEv::Text(t) => {
+        Event::Text(t) => {
             if c.state == State::Idle {
                 return;
             }
@@ -2981,7 +2981,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
             crate::follow::on_words(ed, false);
         }
-        StreamEv::Done(r) => {
+        Event::Done(r) => {
             // (no turn in flight: claude ending before one — a conversation it can't resume)
             if c.state == State::Idle {
                 return;
@@ -3112,7 +3112,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             // `orchestra::wake` looks)
             crate::orchestra::wake(ed);
         }
-        StreamEv::Exit(err) => {
+        Event::Exit(err) => {
             c.proc = None;
             c.follow.gaze = None;
             c.calls.clear();
@@ -3902,7 +3902,7 @@ fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.busy()) else { return false };
     let Some(p) = &mut c.proc else { return false };
     if p.agent.prompt(Prompt::Text(text.to_string())).is_err() {
-        llm::kill(p.pid);
+        agent::kill(p.pid);
         return false;
     }
     crate::usage::message_sent(&session, text.len(), 0);
@@ -4033,7 +4033,7 @@ fn submit_as(
         Some(a) => format!("{context}\n{a}\n\n{asked}"),
         None => format!("{context}\n\n{asked}"),
     };
-    // A write that fails: the process stopped reading — it ended, and its exit, on the way (`llm::pump`), says
+    // A write that fails: the process stopped reading — it ended, and its exit, on the way (`agent::pump`), says
     // why. Until then the message is the turn's, as one written a moment before that exit is: for a conversation
     // claude no longer has it goes again to the new one; any other end is said once, as an exit mid-turn is
     // (the news's row in the chat once it went — the person sees what its Claude was told, in order)
@@ -4044,7 +4044,7 @@ fn submit_as(
         if let Some((_, _, kept)) = news {
             ed.workspace.claude.news = kept;
         }
-        llm::kill(p.pid);
+        agent::kill(p.pid);
     } else {
         crate::usage::message_sent(&session, content.len(), context.len());
         news_row = news.map(|n| n.1);
@@ -4218,7 +4218,7 @@ pub(crate) fn turn_ended(ed: &mut Editor, generation: u64, stopped: bool) {
         c.stopping = stopped;
     }
     let r = if stopped { Err("stopped".to_string()) } else { Ok(String::new()) };
-    on_event(ed, generation, StreamEv::Done(r));
+    on_event(ed, generation, Event::Done(r));
 }
 
 pub fn stop(ed: &mut Editor) {
@@ -5467,8 +5467,8 @@ mod tests {
             c.msgs.push(Msg::new(Role::User, q, ""));
             (c.state, c.hidden) = (State::Thinking, true);
             ed.workspace.viewer.keys_to_code();
-            on_event(ed, g, StreamEv::Text("The answer names no file, in a few words.".into()));
-            on_event(ed, g, StreamEv::Done(how));
+            on_event(ed, g, Event::Text("The answer names no file, in a few words.".into()));
+            on_event(ed, g, Event::Done(how));
             ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
         };
         // An answer no place holds: the reader opens by itself, the keys staying in the code, `── new ──` over it
@@ -5503,7 +5503,7 @@ mod tests {
         assert!(submit(&mut ed, "never mind", None, None), "sent");
         esc(&mut ed);
         assert!(c(&ed).hidden && !c(&ed).read_wanted, "let go: still out of sight");
-        on_event(&mut ed, g, StreamEv::Done(Ok("ok".into())));
+        on_event(&mut ed, g, Event::Done(Ok("ok".into())));
         // An error said only in the conversation: the same (all before it read first)
         ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
         drawn(&mut ed);
@@ -5629,8 +5629,8 @@ mod tests {
         assert!(ed.screen.thought_card.get().is_some(), "the follow card at the code, the chat out of sight");
         // The answer comes while it's hidden: hidden by you during its turn, it stays so — `◂ new` says it (chatlink
         // Q5), the keys staying in the code
-        on_event(&mut ed, g, StreamEv::Text("The answer, in short.".into()));
-        on_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
+        on_event(&mut ed, g, Event::Text("The answer, in short.".into()));
+        on_event(&mut ed, g, Event::Done(Ok(String::new())));
         crate::uistate::tests::frame(&mut ed);
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(!c.busy() && !shown(&ed), "the turn over, the column as you left it");
@@ -6333,7 +6333,7 @@ mod tests {
         send(&mut ed);
         // The conversation is gone: the next claude gets them, once its turn can start
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
-        on_event(&mut ed, generation, StreamEv::Exit("No conversation found with session ID: s-1".into()));
+        on_event(&mut ed, generation, Event::Exit("No conversation found with session ID: s-1".into()));
         let said = |ed: &Editor, t: &str| {
             ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().filter(|m| m.text.contains(t)).count()
         };
@@ -6584,7 +6584,7 @@ mod tests {
         assert_eq!(users(&first).len(), 1);
         assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().queued.as_deref(), typed);
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
-        on_event(&mut ed, generation, StreamEv::Exit("No conversation found with session ID: s-1".into()));
+        on_event(&mut ed, generation, Event::Exit("No conversation found with session ID: s-1".into()));
         let next = stand_in(ed.workspace.claude.chat.as_mut().unwrap());
         let mut turns = Vec::new();
         for _ in 0..2 {
@@ -6681,7 +6681,7 @@ mod tests {
                     on_event(
                         &mut ed,
                         generation,
-                        StreamEv::Exit("No conversation found with session ID: s-1".into()),
+                        Event::Exit("No conversation found with session ID: s-1".into()),
                     );
                 }
                 _ => {
@@ -7832,16 +7832,16 @@ mod tests {
         ed.workspace.claude.chat = Some(c);
         ed.workspace.set_at(crate::workspace::Here::Chat);
         let text = "exit 101 in 2.0s\n$ cargo test -p tarae\n".to_string();
-        on_event(&mut ed, generation, StreamEv::ToolResult { id: "t1".into(), text, error: false });
+        on_event(&mut ed, generation, Event::ToolResult { id: "t1".into(), text, error: false });
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!(c.msgs[0].look.as_ref().unwrap().range, "exit 101");
     }
 
     /// A request's usage as the stream says it, for message `id`.
-    fn seen(id: &str) -> StreamEv {
+    fn seen(id: &str) -> Event {
         let counts =
             crate::usage::Counts { input: Some(10), write: Some(500), read: Some(20_000), output: Some(90) };
-        StreamEv::Usage(crate::usage::Seen {
+        Event::Usage(crate::usage::Seen {
             id: Some(id.into()),
             model: "claude-opus-5-5".into(),
             counts,
@@ -7864,7 +7864,7 @@ mod tests {
         let generation = c.generation;
         ed.workspaces.iter_mut().find(|l| l.id == behind).unwrap().claude.chat = Some(c);
         // (as its pump sends them: tagged with its session, applied with it swapped in)
-        let send = |ed: &mut Editor, ev: StreamEv| {
+        let send = |ed: &mut Editor, ev: Event| {
             let tag = ed.claude_of(behind);
             ed.handle_event(crate::event::Event::For(
                 behind,
@@ -7874,10 +7874,10 @@ mod tests {
         };
         send(&mut ed, seen("m1"));
         let input = serde_json::json!({ "pattern": "x" });
-        send(&mut ed, StreamEv::Tool { id: "t1".into(), name: "mcp__tarae__search".into(), input });
-        send(&mut ed, StreamEv::ToolResult { id: "t1".into(), text: String::new(), error: false });
+        send(&mut ed, Event::Tool { id: "t1".into(), name: "mcp__tarae__search".into(), input });
+        send(&mut ed, Event::ToolResult { id: "t1".into(), text: String::new(), error: false });
         let spent = crate::usage::Spent { at_ms: crate::usage::now_ms(), ..Default::default() };
-        send(&mut ed, StreamEv::Spent(spent));
+        send(&mut ed, Event::Spent(spent));
         assert_ne!(ed.workspace.id, behind, "it stayed behind");
         assert!(
             ed.workspaces.iter().all(|l| l.claude.usage.to_record.is_empty())
@@ -7906,7 +7906,7 @@ mod tests {
         let called = |ed: &mut Editor, generation: u64, id: &str, tool: &str| {
             on_event(ed, generation, seen(id));
             let input = serde_json::json!({ "file_path": "a.rs" });
-            on_event(ed, generation, StreamEv::Tool { id: format!("{id}-t"), name: tool.into(), input });
+            on_event(ed, generation, Event::Tool { id: format!("{id}-t"), name: tool.into(), input });
         };
         let g = thinking(&mut ed);
         called(&mut ed, g, "m1", "mcp__tarae__search");
@@ -7917,7 +7917,7 @@ mod tests {
         assert!(ed.workspace.claude.chat.is_none());
         let g = thinking(&mut ed);
         called(&mut ed, g, "m3", "mcp__tarae__definition");
-        on_event(&mut ed, g, StreamEv::Spent(crate::usage::Spent { at_ms: 1, ..Default::default() }));
+        on_event(&mut ed, g, Event::Spent(crate::usage::Spent { at_ms: 1, ..Default::default() }));
         let lines = crate::calls::recorded(dir.path(), 3);
         let mut steps: Vec<String> = lines
             .iter()
@@ -7950,11 +7950,11 @@ mod tests {
             ("t3", "mcp__tarae__run", serde_json::json!({ "command": "grep -n x src/a.rs | head" })),
         ];
         for (id, name, input) in calls {
-            on_event(&mut ed, generation, StreamEv::Tool { id: id.into(), name: name.into(), input });
+            on_event(&mut ed, generation, Event::Tool { id: id.into(), name: name.into(), input });
             on_event(
                 &mut ed,
                 generation,
-                StreamEv::ToolResult { id: id.into(), text: String::new(), error: false },
+                Event::ToolResult { id: id.into(), text: String::new(), error: false },
             );
         }
         // A card of Claude's up while the turn is under way: the user is waited for, until it goes
@@ -7972,7 +7972,7 @@ mod tests {
         assert!(!ed.workspace.claude.usage.tally.is_waiting());
         let spent =
             crate::usage::Spent { ms: Some(9_000), at_ms: crate::usage::now_ms(), ..Default::default() };
-        on_event(&mut ed, generation, StreamEv::Spent(spent));
+        on_event(&mut ed, generation, Event::Spent(spent));
         let turn = ed.workspace.claude.usage.last_turn().unwrap();
         let calls = turn.calls.as_ref().expect("counted");
         assert_eq!((calls.sums.calls, calls.sums.reread, calls.sums.read_only), (3, 1, 1));
@@ -8086,7 +8086,7 @@ mod tests {
         let allowed: Vec<&str> = ALLOWED.split(',').collect();
         for t in listed["tools"].as_array().unwrap() {
             let name = format!("mcp__tarae__{}", t["name"].as_str().unwrap());
-            assert!(allowed.contains(&name.as_str()), "{name} isn't in chat::ALLOWED");
+            assert!(allowed.contains(&name.as_str()), "{name} isn't in agent::claude::flags::chat::ALLOWED");
         }
     }
 

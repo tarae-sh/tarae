@@ -1,10 +1,9 @@
 //! #300: a chat's streamed events applied with #214's sessions open and a long conversation in front — what each event
-//! costs the main loop (the job at `llm::pump`'s send, then every per-event sync), measured before anything is changed.
+//! costs the main loop (the job at `agent::pump`'s send, then every per-event sync), measured before anything is changed.
 
 use super::*;
+use crate::agent::Event;
 use crate::chat::{Look, Msg, Role};
-use crate::event::Event;
-use crate::llm::StreamEv;
 use std::time::{Duration, Instant};
 
 /// The front conversation's messages: a question, a read's row, an answer naming places, its time — turn after turn.
@@ -66,7 +65,7 @@ enum Kind {
 
 const KINDS: [Kind; 4] = [Kind::Text, Kind::Tool, Kind::Result, Kind::Behind];
 
-fn event(ed: &Editor, kind: Kind, n: usize) -> Event {
+fn event(ed: &Editor, kind: Kind, n: usize) -> crate::event::Event {
     let (w, chat) = match kind {
         Kind::Behind => (ed.workspaces[0].id, ed.workspaces[0].claude.chat.as_ref()),
         _ => (ed.workspace.id, ed.workspace.claude.chat.as_ref()),
@@ -74,19 +73,19 @@ fn event(ed: &Editor, kind: Kind, n: usize) -> Event {
     let g = chat.map_or(0, crate::chat::Chat::generation);
     let ev = match kind {
         Kind::Text | Kind::Behind => {
-            StreamEv::Text(format!("word{n} and src/m{}.rs:{} ", n % TURN_FILES, n % 30))
+            Event::Text(format!("word{n} and src/m{}.rs:{} ", n % TURN_FILES, n % 30))
         }
-        Kind::Tool => StreamEv::Tool {
+        Kind::Tool => Event::Tool {
             id: format!("call{n}"),
             name: "mcp__tarae__read".into(),
             input: serde_json::json!({ "files": [format!("src/m{}.rs:1-40", n % TURN_FILES)] }),
         },
         Kind::Result => {
-            StreamEv::ToolResult { id: format!("call{n}"), text: "1: fn a() {}".into(), error: false }
+            Event::ToolResult { id: format!("call{n}"), text: "1: fn a() {}".into(), error: false }
         }
     };
     let apply = move |ed: &mut Editor| crate::chat::stream_event(ed, g, ev);
-    Event::For(w, ed.claude_of(w), Box::new(apply))
+    crate::event::Event::For(w, ed.claude_of(w), Box::new(apply))
 }
 
 /// Each kind's event and the frame after it, timed — medians and the worst, said for `cargo perf`. `F300_EVENTS=n`

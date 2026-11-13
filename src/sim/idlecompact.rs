@@ -11,8 +11,8 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use super::{Choices, Sim};
+use crate::agent::Event;
 use crate::editor::Editor;
-use crate::llm::StreamEv;
 
 const SEEDS: &[u64] = &[0, 1, 2];
 
@@ -114,12 +114,8 @@ fn answer(ed: &mut Editor, seen: &mut Seen) {
         at_ms: now,
     };
     let spent = crate::usage::Spent { conversation: "conv-1".into(), at_ms: now, ..Default::default() };
-    for ev in [
-        StreamEv::Requesting(now),
-        StreamEv::Usage(usage),
-        StreamEv::Spent(spent),
-        StreamEv::Done(Ok("ok".into())),
-    ] {
+    for ev in [Event::Requesting(now), Event::Usage(usage), Event::Spent(spent), Event::Done(Ok("ok".into()))]
+    {
         crate::chat::stream_event(ed, generation, ev);
     }
 }
@@ -191,7 +187,7 @@ fn held(ed: &Editor, rx: &Receiver<String>, seen: &mut Seen) -> Result<(), Strin
     let now = crate::usage::now_ms();
     let due = seen.request_ms + 54 * MIN;
     for line in rx.try_iter() {
-        if line == crate::llm::user_message(crate::idlecompact::COMMAND) {
+        if line == crate::agent::claude::user_message(crate::idlecompact::COMMAND) {
             if !ed.offers.is_empty() {
                 return Err("/compact with a card up".into());
             }

@@ -2991,8 +2991,8 @@ mod tests {
         assert_eq!(at(ns[1], Goto::Implementation), None);
     }
 
-    /// 7c: tarae's tools are Claude's without asking (`chat::ALLOWED`), so a file in the project named like a
-    /// key stays out of them until Claude was let read it (`reads::Keys`, the Read card's or the run's panel's
+    /// 7c: tarae's tools are Claude's without asking (`agent::claude::flags::chat::ALLOWED`), so a file in the
+    /// project named like a key stays out of them until Claude was let read it (`reads::Keys`, the Read card's or the run's panel's
     /// grant): the search has neither its lines nor its name, in any output, and doesn't count it — a search
     /// that matches only in it says what one matching nothing does (else a pattern a character longer each
     /// time would read it out); naming it is refused, as the tools that take a file (`file_in`) refuse it.

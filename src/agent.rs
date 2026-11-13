@@ -16,7 +16,7 @@ impl From<claude::Lines> for Agent {
 }
 
 impl Agent {
-    /// tarae's MCP server offered: the first thing it's told (its messages come back as `StreamEv::Mcp`).
+    /// tarae's MCP server offered: the first thing it's told (its messages come back as `Event::Mcp`).
     pub fn initialize(&self) -> std::io::Result<()> {
         let Agent::Claude(l) = self;
         l.initialize()
@@ -58,7 +58,7 @@ impl Agent {
         l.set_effort(effort)
     }
 
-    /// The account's limits asked (`limits.rs`; the answer comes as `StreamEv::Limits`). Whether it was asked.
+    /// The account's limits asked (`limits.rs`; the answer comes as `Event::Limits`). Whether it was asked.
     pub fn ask_limits(&self) -> bool {
         let Agent::Claude(l) = self;
         l.ask_limits()
@@ -232,6 +232,12 @@ pub fn spawn(
     cmd.spawn().map_err(claude::SpawnError::Start)
 }
 
+/// What the code above the wire still takes from the one wire as it is (step 1 has one): a started agent's stdin,
+/// written off the main loop (`Lines`, made into an `Agent`), its stream's reader (`pump`), its end (`kill`), a flag
+/// laid into its arguments (`with_flag`: the billing's `--settings`) and `llm.args`' default. Step 2 gives each
+/// wire its own, asked of the config's agent.
+pub(crate) use claude::{DEFAULT_ARGS, Lines, kill, pump, with_flag};
+
 /// A message to an agent: its text, or its parts — one kept in the cache an hour (a board's shared prefix,
 /// `reviewer::content`).
 pub enum Prompt {
@@ -265,7 +271,7 @@ pub struct ModelInfo {
 }
 
 /// What one stdout line means.
-pub enum StreamEv {
+pub enum Event {
     /// Thinking (thinking fragments·token estimate).
     Thinking,
     /// Summarized thinking text (chat with `--thinking-display summarized` — batched like `Text`).
@@ -360,7 +366,7 @@ mod tests {
 
     /// Agents beside Claude, brief point 2: Claude's control protocol — its requests and answers, a permission
     /// ask, tarae's MCP server's envelope, the server offered at start — is read and written by its wire alone
-    /// (`agent/claude.rs`); everything above it speaks `StreamEv` and the `Agent` handle, so another agent's wire
+    /// (`agent/claude.rs`); everything above it speaks `Event` and the `Agent` handle, so another agent's wire
     /// drops in beside it. Test code (a stand-in claude speaks it) is left out.
     #[test]
     fn only_the_claude_wire_speaks_claudes_control() {
@@ -439,6 +445,45 @@ mod tests {
             .filter(|(_, code)| variant(code) || code.contains("claude::CAPS"))
             .map(|(key, _)| key.clone())
             .collect()
+    }
+
+    /// Paths into Claude's wire outside the agent's own files (`agent.rs`, `agent/`), as `file`: `agent::claude`
+    /// itself, or `claude` taken from an `agent::{…}`.
+    fn reaching_in(sources: &[(String, String)]) -> Vec<String> {
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let reaches = |code: &str| {
+            let path =
+                code.match_indices("agent::claude").any(|(at, w)| !code[at + w.len()..].starts_with(ident));
+            let braced = code.match_indices("agent::{").any(|(at, w)| {
+                let inside = &code[at + w.len()..];
+                let inside = &inside[..inside.find('}').unwrap_or(inside.len())];
+                inside.split(|c: char| !ident(c)).any(|word| word == "claude")
+            });
+            path || braced
+        };
+        let outside = sources.iter().filter(|(key, _)| key != "agent.rs" && !key.starts_with("agent/"));
+        outside.filter(|(_, code)| reaches(code)).map(|(key, _)| key.clone()).collect()
+    }
+
+    /// Agents beside Claude, landing 5: the code above the wire reaches it through `agent` alone (its handle,
+    /// `Start` and the one wire's few items `agent` names), never by `agent::claude::` — so step 2's second wire
+    /// is a change in `agent` and below. Test code is left out on purpose: tests keep their doors into the wire
+    /// (`claude::test::{control, answer}`, the flags' moved constants, `REQUEST_ID`, the line builders), as a
+    /// stand-in claude speaks its protocol.
+    #[test]
+    fn nothing_above_the_wire_names_claudes() {
+        let reaching = reaching_in(&crate::sim::lint::sources());
+        assert!(reaching.is_empty(), "Claude's wire named above it: {reaching:?}");
+        // (and it sees one: a path into the wire, a `claude` taken from `agent`; the agent's own files may)
+        let code = |key: &str, c: &str| (key.to_string(), c.to_string());
+        let made_up = [
+            code("chat.rs", "crate::agent::claude::pump(child, None, true, tx, route);"),
+            code("ask.rs", "use crate::agent::{Agent, claude};"),
+            code("llm.rs", "use crate::agent::claude as wire;"),
+            code("usage.rs", "crate::agent::pump(child, None, true, tx, route);"),
+            code("agent/acp.rs", "use crate::agent::claude::Lines;"),
+        ];
+        assert_eq!(reaching_in(&made_up), ["chat.rs", "ask.rs", "llm.rs"]);
     }
 
     /// Agents beside Claude, condition 5: nothing above the wire matches on which agent it has — what one can do

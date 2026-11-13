@@ -21,7 +21,7 @@ fn query(words: &str) -> Query {
 
 /// The helper's arguments and config: WebSearch its one tool and Claude Code's others disallowed, no MCP, no settings,
 /// no conversation (a `--resume` in `llm.args` gone), one request, tarae's system prompt in Claude Code's place, the
-/// model from the setting (empty: haiku) and the chat's effort cleared; its command `llm::command`'s — the login kept,
+/// model from the setting (empty: haiku) and the chat's effort cleared; its command `agent::command`'s — the login kept,
 /// the parent session's names gone — in the folder it's given.
 #[test]
 fn its_args_are_websearch_alone_on_the_settings_model() {
@@ -268,7 +268,7 @@ fn last(ed: &Editor) -> u64 {
 
 fn lands(ed: &mut Editor, links: &[(&str, &str)]) {
     let id = last(ed);
-    on_event(ed, id, StreamEv::Searched(Box::new(found(&line(links, "its words")).unwrap())));
+    on_event(ed, id, Event::Searched(Box::new(found(&line(links, "its words")).unwrap())));
 }
 
 /// A key-shaped query is refused before anything starts: no card, no helper told anything.
@@ -532,8 +532,8 @@ fn the_turns_end_stops_it_and_its_cost_is_an_entry_of_its_own() {
         ed.workspace.claude.usage.turns.iter().filter(|t| t.conversation != "web-search").count()
     };
     let before = chat_turns(&ed);
-    on_event(&mut ed, landed, StreamEv::Spent(spent));
-    on_event(&mut ed, landed, StreamEv::Done(Err("error_max_turns".into())));
+    on_event(&mut ed, landed, Event::Spent(spent));
+    on_event(&mut ed, landed, Event::Done(Err("error_max_turns".into())));
     let t = ed.workspace.claude.usage.turns.last().unwrap();
     assert_eq!((t.conversation.as_str(), t.cost), ("web-search", Some(0.0119)));
     assert_eq!(chat_turns(&ed), before, "no chat turn's cost");
@@ -564,15 +564,15 @@ fn three_helpers_run_at_most_and_the_rest_wait_in_order() {
     on_event(
         &mut ed,
         first,
-        StreamEv::Searched(Box::new(found(&line(&[("A", "https://a.test/")], "")).unwrap())),
+        Event::Searched(Box::new(found(&line(&[("A", "https://a.test/")], "")).unwrap())),
     );
     assert_eq!(words(&ed), ["q1", "q2", "q3"], "its list came, its process runs on to its cost");
-    on_event(&mut ed, first, StreamEv::Done(Err("error_max_turns".into())));
+    on_event(&mut ed, first, Event::Done(Err("error_max_turns".into())));
     assert_eq!(words(&ed), ["q2", "q3", "q4"], "the next in order");
     let said = told(&rx);
     assert!(said.len() == 1 && said[0].contains("q4"), "{said:?}");
     let second = ed.workspace.claude.searches[0].id;
-    on_event(&mut ed, second, StreamEv::Exit(String::new()));
+    on_event(&mut ed, second, Event::Exit(String::new()));
     assert_eq!(words(&ed), ["q3", "q4", "q5"]);
     crate::tools::turn_over(&mut ed);
     assert!(ed.workspace.claude.searches.is_empty() && ed.workspace.claude.searches_queued.is_empty());
@@ -591,12 +591,12 @@ fn error_max_turns_after_its_list_is_the_normal_end() {
     on_event(
         &mut ed,
         id,
-        StreamEv::ToolResult { id: "t".into(), text: "Web search results".into(), error: false },
+        Event::ToolResult { id: "t".into(), text: "Web search results".into(), error: false },
     );
     lands(&mut ed, &[("Tokio", "https://tokio.test/")]);
     let spent = crate::usage::Spent { total_cost: Some(0.0119), at_ms: 1, ..Default::default() };
-    on_event(&mut ed, id, StreamEv::Spent(spent));
-    on_event(&mut ed, id, StreamEv::Done(Err("stopped".into())));
+    on_event(&mut ed, id, Event::Spent(spent));
+    on_event(&mut ed, id, Event::Done(Err("stopped".into())));
     let said = crate::tools::ANSWERED.with(|a| a.borrow().iter().filter(|(k, _)| *k == json!(41)).count());
     assert_eq!(said, 1, "answered once");
     assert!(answered(41).unwrap().unwrap().contains("1. Tokio — https://tokio.test/"));
@@ -617,33 +617,33 @@ fn a_search_with_no_list_says_why() {
     on_event(
         &mut ed,
         id,
-        StreamEv::ToolResult { id: "t".into(), text: "search unavailable".into(), error: true },
+        Event::ToolResult { id: "t".into(), text: "search unavailable".into(), error: true },
     );
-    on_event(&mut ed, id, StreamEv::Done(Err("error_max_turns".into())));
+    on_event(&mut ed, id, Event::Done(Err("error_max_turns".into())));
     assert_eq!(answered(31), Some(Err("the web search failed: search unavailable".into())));
     search(&mut ed, generation, 32, json!({ "query": "b" })).unwrap();
     let id = last(&ed);
-    on_event(&mut ed, id, StreamEv::Exit(String::new()));
+    on_event(&mut ed, id, Event::Exit(String::new()));
     assert_eq!(answered(32), Some(Err("the web search didn't run: claude stopped".into())));
     search(&mut ed, generation, 33, json!({ "query": "c" })).unwrap();
     let id = last(&ed);
-    on_event(&mut ed, id, StreamEv::Done(Ok("I know this one.".into())));
+    on_event(&mut ed, id, Event::Done(Ok("I know this one.".into())));
     assert_eq!(
         answered(33),
         Some(Err("the web search didn't run: its model answered without searching".into()))
     );
     search(&mut ed, generation, 34, json!({ "query": "d" })).unwrap();
     let id = last(&ed);
-    on_event(&mut ed, id, StreamEv::Done(Err("stopped".into())));
+    on_event(&mut ed, id, Event::Done(Err("stopped".into())));
     assert_eq!(answered(34), Some(Err("the web search didn't run: stopped".into())), "max turns, no tool");
     search(&mut ed, generation, 35, json!({ "query": "e" })).unwrap();
     let id = last(&ed);
     on_event(
         &mut ed,
         id,
-        StreamEv::ToolResult { id: "t".into(), text: "Web search results".into(), error: false },
+        Event::ToolResult { id: "t".into(), text: "Web search results".into(), error: false },
     );
-    on_event(&mut ed, id, StreamEv::Done(Err("stopped".into())));
+    on_event(&mut ed, id, Event::Done(Err("stopped".into())));
     assert!(answered(35).unwrap().unwrap().contains("no pages found"), "it ran: nothing found");
     assert!(ed.workspace.claude.searches.is_empty());
 }

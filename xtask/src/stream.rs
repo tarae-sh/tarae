@@ -8,7 +8,7 @@
 //! again instead. The report names the model that answered (claude's `init` line).
 //!
 //! Says, for the text, thinking and input deltas: their sizes and the gaps between them (bursts = runs closer
-//! than `BURST_GAP`), and what tarae's reader (`llm::pump`) makes of them — it batches deltas and sends them
+//! than `BURST_GAP`), and what tarae's reader (`agent::pump`) makes of them — it batches deltas and sends them
 //! `FLUSH` after its last send. Both rules are printed: the old one, where a delta that came sooner waited for the
 //! next delta that didn't (or a tool call, the end) however long that was, and today's, where it goes when its
 //! time is up — to tell bursts in claude's stream from ones tarae adds. Then what the main loop gets: the batches'
@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use crate::Result;
 
-/// tarae's text batching (`llm::pump`).
+/// tarae's text batching (`agent::pump`).
 const FLUSH: f64 = 25.0;
 /// Deltas closer than this are one burst.
 const BURST_GAP: f64 = 100.0;
