@@ -185,6 +185,7 @@ pub const CAPS: Caps = Caps {
     compaction: true,
     own_tools_off: true,
     billing: true,
+    asks: true,
 };
 
 /// Whether a claude that ended saying `err` is started again, and how: one whose last words refuse

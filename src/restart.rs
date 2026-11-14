@@ -2325,6 +2325,8 @@ mod tests {
             ("Outbox", "plugin/io.rs"),
             ("Place", "billing/tests.rs"),
             ("Proc", "plugin/io.rs"),
+            // (an ACP agent's handle, in `Chat.proc`: never in a document, a turn, an output or a transcript)
+            ("Proc", "agent/acp.rs"),
             ("PtyGuard", "sandbox/refused.rs"),
             ("Run", "task.rs"),
             ("RunCleanupGuard", "sandbox/refused.rs"),

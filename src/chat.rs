@@ -225,6 +225,9 @@ pub fn slash_refused(c: &Chat, act: SlashAct) -> bool {
 /// What a refusal mid-turn says (`continue_from`, `slash_refused`).
 const STILL_ANSWERING: &str = "Claude is still answering — stop it (C-c) first";
 
+/// The answer to an ask of an agent whose asks tarae can't read by name (`Caps::asks`): its own tools don't run.
+const OWN_TOOLS_REFUSED: &str = "tarae refuses this agent's own tools — read, change and run through tarae's";
+
 /// The slash name's act (`send`, the line cleared first) — the same as its key's.
 fn slash_do(ed: &mut Editor, act: SlashAct) {
     match act {
@@ -2982,10 +2985,17 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 answer_mcp(ed, &id, response);
             }
         }
-        // A permission ask: a read's (`reads.rs`, maybe after its card), any other denied (`edits::request`)
+        // A permission ask: a read's (`reads.rs`, maybe after its card), any other denied (`edits::request`) — and
+        // every one of an agent whose asks tarae can't read by name, before anything reads it (`Caps::asks`: an ACP
+        // agent's own tools, step 2's condition 1; no chat to say whose: refused too)
         Event::Permission { id, tool, input } => {
             ed.workspace.claude.usage.tally.asked(&id, &tool);
-            if let Some(p) = crate::edits::request(ed, &id, &tool, input)
+            let asks = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.agent.caps.asks);
+            let p = match asks {
+                true => crate::edits::request(ed, &id, &tool, input),
+                false => Some(Permission::Deny { message: OWN_TOOLS_REFUSED.into() }),
+            };
+            if let Some(p) = p
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
             {
                 answer_permission(ed, &id, p);
@@ -6227,6 +6237,60 @@ mod tests {
                 ed.workspace.claude.chat.iter().flat_map(|c| c.msgs.iter().map(|m| &m.text)).collect();
             format!("the chat: {rows:?}")
         });
+    }
+
+    /// Agents beside Claude, step 2's condition 1: on a row whose asks tarae can't read by name (the stand-in's, an
+    /// ACP agent's), every permission ask is refused before `edits::request` sees it — an ask the stand-in names and
+    /// titles `Read`, of a file inside the project, which `reads.rs` would let through at once, is refused, and
+    /// reads.rs never runs (no read pending, none answered allowed). The stand-in started by the chat's own start,
+    /// on its conversation's row.
+    #[test]
+    fn an_ask_on_a_row_whose_asks_arent_read_is_refused_before_reads() {
+        use crate::agent::acp::standin::{HEARD, SCRIPT};
+        let dir = crate::scratch::Scratch::new("chat-acp-ask");
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
+        let file = ed.workspace.root.join("a.rs").to_string_lossy().into_owned();
+        let call = serde_json::json!({"toolCallId": "t1", "name": "Read", "title": "Read", "kind": "read",
+            "status": "pending", "rawInput": {"file_path": file}});
+        let script = serde_json::json!([
+            {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
+            {"expect": "session/new", "result": {"sessionId": "s-1"}},
+            {"ask": call, "id": 1},
+            {"await": 1},
+            {"eof": true},
+        ]);
+        let (script_at, heard_at) = (dir.join("script.json"), dir.join("heard"));
+        std::fs::write(&script_at, script.to_string()).unwrap();
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        ed.claude_env =
+            Some(llm::Env::from([(SCRIPT.into(), path(&script_at)), (HEARD.into(), path(&heard_at))]));
+        let mut c = Chat::new();
+        c.agent = &crate::agent::STAND_IN;
+        ed.workspace.claude.chat = Some(c);
+        ensure_proc(&mut ed);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let said: Vec<&str> = c.msgs.iter().map(|m| m.text.as_str()).collect();
+        assert!(c.proc.is_some(), "the stand-in started: {said:?} held {}", c.held);
+        let answered = |heard: &str| {
+            let mut lines = heard.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+            lines.find(|v| v["id"] == 1 && v.get("method").is_none())
+        };
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        let answer = loop {
+            if let Some(a) = answered(&std::fs::read_to_string(&heard_at).unwrap_or_default()) {
+                break a;
+            }
+            assert!(std::time::Instant::now() < end, "the ask never answered");
+            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(10)) {
+                ed.handle_event(ev);
+            }
+        };
+        let deny = serde_json::json!({"outcome": {"outcome": "selected", "optionId": "deny"}});
+        assert_eq!(answer["result"], deny, "refused: {answer}");
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.reads.is_empty(), "reads.rs never ran");
+        ed.workspace.claude.chat = None;
     }
 
     /// A message whose write fails because its claude already ended — the writer met the ended process on an

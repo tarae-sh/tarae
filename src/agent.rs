@@ -1,3 +1,6 @@
+/// The Agent Client Protocol's wire (step 2): test-only until step 4 makes it reachable (the design session's §9.4).
+#[cfg(test)]
+pub mod acp;
 pub mod claude;
 mod process;
 
@@ -8,6 +11,8 @@ mod argv_tests;
 /// wire asks this handle, and none of it names the kind.
 pub enum Agent {
     Claude(claude::Lines),
+    #[cfg(test)]
+    Acp(acp::Proc),
 }
 
 impl Agent {
@@ -18,64 +23,97 @@ impl Agent {
     }
 
     /// tarae's MCP server offered: the first thing it's told (its messages come back as `Event::Mcp`).
+    /// (ACP: the bridge is offered in `session/new`, landing 4 — nothing to say here.)
     pub fn initialize(&self) -> std::io::Result<()> {
-        let Agent::Claude(l) = self;
-        l.initialize()
+        match self {
+            Agent::Claude(l) => l.initialize(),
+            #[cfg(test)]
+            Agent::Acp(_) => Ok(()),
+        }
     }
 
     /// A message to it. Err: it doesn't read anymore.
     pub fn prompt(&self, p: Prompt) -> std::io::Result<()> {
-        let Agent::Claude(l) = self;
-        l.prompt(p)
+        match self {
+            Agent::Claude(l) => l.prompt(p),
+            #[cfg(test)]
+            Agent::Acp(a) => a.prompt(p),
+        }
     }
 
     /// Its turn stopped — the process and its conversation stay. Whether it was told.
     pub fn stop_turn(&self) -> bool {
-        let Agent::Claude(l) = self;
-        l.stop_turn()
+        match self {
+            Agent::Claude(l) => l.stop_turn(),
+            #[cfg(test)]
+            Agent::Acp(a) => a.stop_turn(),
+        }
     }
 
-    /// tarae's MCP server's answer (`response` its JSON-RPC message) to ask `id`.
+    /// tarae's MCP server's answer (`response` its JSON-RPC message) to ask `id`. (ACP: through the bridge,
+    /// landing 4 — none is asked before it.)
     pub fn answer_mcp(&self, id: &str, response: serde_json::Value) {
-        let Agent::Claude(l) = self;
-        l.answer_mcp(id, response);
+        match self {
+            Agent::Claude(l) => l.answer_mcp(id, response),
+            #[cfg(test)]
+            Agent::Acp(_) => {}
+        }
     }
 
     /// The answer to its permission ask `id`.
     pub fn answer_permission(&self, id: &str, p: Permission) {
-        let Agent::Claude(l) = self;
-        l.answer_permission(id, p);
+        match self {
+            Agent::Claude(l) => l.answer_permission(id, p),
+            #[cfg(test)]
+            Agent::Acp(a) => a.answer_permission(id, p),
+        }
     }
 
-    /// The conversation goes on on `model` (an alias or id, `default` its own). Whether it was told.
+    /// The conversation goes on on `model` (an alias or id, `default` its own). Whether it was told — never where
+    /// its capabilities say no (`Caps::models`).
     pub fn set_model(&self, model: &str) -> bool {
-        let Agent::Claude(l) = self;
-        l.set_model(model)
+        match self {
+            Agent::Claude(l) => l.set_model(model),
+            #[cfg(test)]
+            Agent::Acp(_) => false,
+        }
     }
 
-    /// The conversation goes on at `effort` (None: the model's own). Whether it was told.
+    /// The conversation goes on at `effort` (None: the model's own). Whether it was told (`Caps::effort`).
     pub fn set_effort(&self, effort: Option<&str>) -> bool {
-        let Agent::Claude(l) = self;
-        l.set_effort(effort)
+        match self {
+            Agent::Claude(l) => l.set_effort(effort),
+            #[cfg(test)]
+            Agent::Acp(_) => false,
+        }
     }
 
-    /// The account's limits asked (`limits.rs`; the answer comes as `Event::Limits`). Whether it was asked.
+    /// The account's limits asked (`limits.rs`; the answer comes as `Event::Limits`). Whether it was asked
+    /// (`Caps::limits`).
     pub fn ask_limits(&self) -> bool {
-        let Agent::Claude(l) = self;
-        l.ask_limits()
+        match self {
+            Agent::Claude(l) => l.ask_limits(),
+            #[cfg(test)]
+            Agent::Acp(_) => false,
+        }
     }
 
     /// What it can do.
     pub fn caps(&self) -> &'static Caps {
-        let Agent::Claude(_) = self;
-        &CLAUDE.caps
+        match self {
+            Agent::Claude(_) => &CLAUDE.caps,
+            #[cfg(test)]
+            Agent::Acp(_) => &acp::CAPS,
+        }
     }
 
-    /// Tests: its stdin as it is, for a line of the test's own.
+    /// Tests: its stdin as it is, for a line of the test's own (a stand-in's: Claude's lines).
     #[cfg(test)]
     pub fn lines(&self) -> &claude::Lines {
-        let Agent::Claude(l) = self;
-        l
+        match self {
+            Agent::Claude(l) => l,
+            Agent::Acp(_) => panic!("an ACP agent's stdin is its wire's"),
+        }
     }
 }
 
@@ -109,6 +147,11 @@ pub struct Caps {
     /// tarae chooses who pays for it (`billing.rs`: a plan's login or an API key) and checks the credential it says it
     /// runs on. One that can't: no credential is asked for it, nor its word checked.
     pub billing: bool,
+    /// Its permission asks name its tools in words tarae answers by (Claude Code's: a `Read` goes through `reads.rs`,
+    /// `edits::request`). One whose don't: the chat refuses every ask it makes before anything reads its name —
+    /// the user's rule for own tools, early and fail-closed (step 2's condition 1: an ACP ask's name is the agent's
+    /// own, its title the model's text).
+    pub asks: bool,
 }
 
 /// An agent tarae can start: data, as a language pack is a row ("agents are rows of data", 2026-11-13).
@@ -129,6 +172,9 @@ pub struct Row {
 pub enum Wire {
     /// Claude Code's stream-json (`agent/claude.rs`).
     Claude,
+    /// The Agent Client Protocol (`agent/acp.rs`): test-only in step 2, no config reaches it.
+    #[cfg(test)]
+    Acp,
 }
 
 /// Claude Code's row.
@@ -139,6 +185,12 @@ pub static CLAUDE: Row = Row {
     args: claude::DEFAULT_ARGS,
     caps: claude::CAPS,
 };
+
+/// The stand-in ACP agent's row (`acp::standin`): the test binary re-run on its one test, speaking ACP on
+/// descriptor 3. Tests' only: no config reaches it, nor is a kept conversation's name looked up in it.
+#[cfg(test)]
+pub static STAND_IN: Row =
+    Row { name: "stand-in", wire: Wire::Acp, command: "sh", args: acp::standin::ARGS, caps: acp::CAPS };
 
 /// Every row tarae has: what a kept conversation's name is looked up in (`row_named`).
 static ROWS: &[&Row] = &[&CLAUDE];
@@ -236,6 +288,8 @@ pub struct Again {
 pub fn again(row: &Row, err: &str, now: Option<Again>) -> Option<Again> {
     match row.wire {
         Wire::Claude => claude::again(err, now.unwrap_or_default()),
+        #[cfg(test)]
+        Wire::Acp => None,
     }
 }
 
@@ -268,6 +322,8 @@ pub struct Args {
 pub fn args(s: &Start) -> Result<Args, String> {
     match s.row.wire {
         Wire::Claude => claude::flags::of(s),
+        #[cfg(test)]
+        Wire::Acp => Ok(acp::args(s)),
     }
 }
 
@@ -281,6 +337,8 @@ pub fn command(
 ) -> Result<std::process::Command, SpawnError> {
     match s.row.wire {
         Wire::Claude => claude::flags::command(s, dir, given, cred),
+        #[cfg(test)]
+        Wire::Acp => acp::command(s, dir, given),
     }
 }
 
@@ -333,6 +391,8 @@ pub fn start(
     let child = spawn(s, at.dir, at.given, at.cred)?;
     match s.row.wire {
         Wire::Claude => claude::begin(child, first, once, tx, route),
+        #[cfg(test)]
+        Wire::Acp => acp::begin(child, s, at.dir, first, once, tx, route),
     }
 }
 
@@ -459,6 +519,11 @@ mod tests {
         key.starts_with("agent/claude")
     }
 
+    /// A file of any wire's (Claude's, ACP's): what may tell an agent's kind.
+    fn in_a_wire(key: &str) -> bool {
+        in_the_wire(key) || key.starts_with("agent/acp")
+    }
+
     /// How often `needle` is in `code` as a name of its own: not the end of a longer one, nor a definition.
     fn named(code: &str, needle: &str) -> usize {
         let ident = |c: char| c.is_alphanumeric() || c == '_';
@@ -560,7 +625,7 @@ mod tests {
     /// `Agent::` variants (or the wire's own `CAPS`, an agent told apart by its capabilities) named outside the
     /// wire, as `file`.
     fn matching(sources: &[(String, String)]) -> Vec<String> {
-        let outside = sources.iter().filter(|(key, _)| key != "agent.rs" && !in_the_wire(key));
+        let outside = sources.iter().filter(|(key, _)| key != "agent.rs" && !in_a_wire(key));
         let variant = |code: &str| {
             code.match_indices("Agent::").any(|(at, w)| {
                 !code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
@@ -573,17 +638,18 @@ mod tests {
             .collect()
     }
 
-    /// Paths into Claude's wire outside the agent's own files (`agent.rs`, `agent/`), as `file`: `agent::claude`
-    /// itself, or `claude` taken from an `agent::{…}`.
+    /// Paths into a wire outside the agent's own files (`agent.rs`, `agent/`), as `file`: `agent::claude` or
+    /// `agent::acp` itself, or either taken from an `agent::{…}`.
     fn reaching_in(sources: &[(String, String)]) -> Vec<String> {
         let ident = |c: char| c.is_alphanumeric() || c == '_';
         let reaches = |code: &str| {
-            let path =
-                code.match_indices("agent::claude").any(|(at, w)| !code[at + w.len()..].starts_with(ident));
+            let path = ["agent::claude", "agent::acp"]
+                .iter()
+                .any(|wire| code.match_indices(wire).any(|(at, w)| !code[at + w.len()..].starts_with(ident)));
             let braced = code.match_indices("agent::{").any(|(at, w)| {
                 let inside = &code[at + w.len()..];
                 let inside = &inside[..inside.find('}').unwrap_or(inside.len())];
-                inside.split(|c: char| !ident(c)).any(|word| word == "claude")
+                inside.split(|c: char| !ident(c)).any(|word| word == "claude" || word == "acp")
             });
             path || braced
         };
@@ -635,8 +701,12 @@ mod tests {
             code("llm.rs", "use crate::agent::claude as wire;"),
             code("usage.rs", "crate::agent::pump(child, None, true, tx, route);"),
             code("agent/acp.rs", "use crate::agent::claude::Lines;"),
+            // (step 2, L3: ACP's wire alike — never named above it, not even once the gate is lifted)
+            code("term.rs", "crate::agent::acp::begin(child, s, dir, first, false, tx, route);"),
+            code("reviewer.rs", "use crate::agent::{acp, Agent};"),
+            code("models.rs", "let caps = &crate::agent::acpx::CAPS;"),
         ];
-        assert_eq!(reaching_in(&made_up), ["chat.rs", "ask.rs", "llm.rs"]);
+        assert_eq!(reaching_in(&made_up), ["chat.rs", "ask.rs", "llm.rs", "term.rs", "reviewer.rs"]);
     }
 
     /// Agents beside Claude, step 2 (L2): no config chooses an agent — no setting names one or a wire, and the row
@@ -644,7 +714,7 @@ mod tests {
     /// there: a config can't start it).
     #[test]
     fn no_config_chooses_another_row() {
-        use super::{CLAUDE, Role, Start, row_named, row_of};
+        use super::{CLAUDE, Role, STAND_IN, Start, Wire, row_named, row_of};
         let words = ["agent", "wire", "acp", "backend", "row"];
         let naming: Vec<&str> = (crate::settings::SETTINGS.iter().map(|s| s.path))
             .filter(|p| p.split(['.', '-']).any(|w| words.contains(&w)))
@@ -656,16 +726,25 @@ mod tests {
             args: args.iter().map(|a| a.to_string()).collect(),
             ..crate::llm::LlmConfig::default()
         };
-        for cfg in
-            [default.clone(), other("agy", &["--acp"]), other("/usr/bin/gemini", &["--experimental-acp"])]
-        {
+        // (L3: a config can't start the ACP wire — not one naming an ACP agent, nor the stand-in's own program and
+        // arguments, the one row on that wire there is to miss)
+        assert_eq!(STAND_IN.wire, Wire::Acp);
+        for cfg in [
+            default.clone(),
+            other("agy", &["--acp"]),
+            other("/usr/bin/gemini", &["--experimental-acp"]),
+            other(STAND_IN.command, STAND_IN.args),
+        ] {
             assert!(std::ptr::eq(row_of(&cfg), &CLAUDE), "{} {:?}", cfg.command, cfg.args);
+            assert_eq!(row_of(&cfg).wire, Wire::Claude);
             assert!(std::ptr::eq(Start::new(Role::Chat, &cfg).row, &CLAUDE));
         }
-        // (`llm.command` and `llm.args` default to the row's own; a row is found by its kept name alone)
+        // (`llm.command` and `llm.args` default to the row's own; a row is found by its kept name alone, and a kept
+        // conversation never names the stand-in's)
         assert_eq!((default.command.as_str(), default.args.len()), (CLAUDE.command, CLAUDE.args.len()));
         assert!(row_named("claude").is_some_and(|r| std::ptr::eq(r, &CLAUDE)));
         assert!(row_named("acp").is_none() && row_named("").is_none());
+        assert!(row_named(STAND_IN.name).is_none());
     }
 
     /// Agents beside Claude, condition 5: nothing above the wire matches on which agent it has — what one can do
@@ -677,7 +756,11 @@ mod tests {
         // (and it sees one; a stand-in's handle made is no match)
         let code = |c: &str| [("chat.rs".to_string(), c.to_string())];
         assert_eq!(matching(&code("let Agent::Claude(l) = a;")), ["chat.rs"]);
+        assert_eq!(matching(&code("if let Agent::Acp(p) = a {}")), ["chat.rs"]);
         assert!(matching(&code("let a = Agent::stand_in(tx);")).is_empty());
+        // (the ACP wire's own files may: they make its handle)
+        let acp = [("agent/acp.rs".to_string(), "Agent::Acp(Proc(in_tx))".to_string())];
+        assert!(matching(&acp).is_empty());
         assert_eq!(matching(&code("std::ptr::eq(a.caps(), &crate::agent::claude::CAPS)")), ["chat.rs"]);
     }
 }

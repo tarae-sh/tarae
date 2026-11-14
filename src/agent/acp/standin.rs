@@ -1,0 +1,196 @@
+//! The stand-in ACP agent (step 2's plan §5): the test binary re-run on one `#[ignore]`d test (`run`), started by
+//! the stand-in's row (`agent::STAND_IN`) as `sh -c 'exec "$@" 3>&1 >/dev/null' sh <test binary> --exact
+//! agent::acp::standin::run --ignored --nocapture`: libtest's own lines go to /dev/null, and it speaks ACP on
+//! descriptor 3, tarae's pipe. It reads its script from `SCRIPT` (a file in the test's scratch folder) and writes
+//! what it heard to `HEARD`, a JSON line each, for the test to read. It waits only on what it reads: no network,
+//! no real agent, no wait on time.
+//!
+//! A script is a JSON array of steps, each an object:
+//! - `{"expect": method}` waits for that request or notification (what came before it is heard, kept for a later
+//!   step); a request is answered with the step's `result`, or its `error` (a code) and `message` — one with neither
+//!   is held as the turn, for `end_turn`.
+//! - `{"say": update}` a `session/update`; `{"ask": toolCall, "id": id, "options": [...]}` a permission ask (agy's
+//!   two options unless given); `{"await": id}` waits for the answer to it.
+//! - `{"end_turn": stopReason, "usage": {...}}` answers the turn held; `{"answer": result}` any request held.
+//!   ("Held": the last request an `expect` didn't answer.)
+//! - `{"send": message}` any message as it is (a request of the agent's own).
+//! - `{"stderr": line}`, `{"exit": code}`, `{"junk": text}` (a line that isn't JSON), `{"eof": true}` (reads until
+//!   stdin closes, heard as `{"eof": true}`).
+//!
+//! What it heard: first `{"env": [its environment's names], "nofile": its soft descriptor limit}`, then each line
+//! tarae wrote, as it came.
+
+use std::collections::VecDeque;
+use std::io::{BufRead, Write};
+
+use serde_json::{Value, json};
+
+/// The stand-in's row's word for the test binary's path (`acp::command` puts it there).
+pub const SELF: &str = "@self";
+
+/// The stand-in's row's arguments to `sh`.
+pub const ARGS: &[&str] = &[
+    "-c",
+    "exec \"$@\" 3>&1 >/dev/null",
+    "sh",
+    SELF,
+    "--exact",
+    "agent::acp::standin::run",
+    "--ignored",
+    "--nocapture",
+];
+
+/// The variable naming its script.
+pub const SCRIPT: &str = "TARAE_ACP_SCRIPT";
+/// The variable naming the file it writes what it heard to.
+pub const HEARD: &str = "TARAE_ACP_HEARD";
+
+/// agy's two options for a permission ask, as the probe saw them.
+pub fn agy_options() -> Value {
+    json!([
+        {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+        {"optionId": "deny", "name": "Deny", "kind": "reject_once"},
+    ])
+}
+
+struct Agent {
+    out: std::fs::File,
+    heard: std::fs::File,
+    lines: std::io::Lines<std::io::StdinLock<'static>>,
+    /// Heard and not yet taken by a step.
+    unread: VecDeque<Value>,
+    session: String,
+    turn: Option<Value>,
+}
+
+impl Agent {
+    fn say(&mut self, v: Value) {
+        let _ = writeln!(self.out, "{v}").and_then(|_| self.out.flush());
+    }
+
+    fn heard(&mut self, v: &Value) {
+        let _ = writeln!(self.heard, "{v}").and_then(|_| self.heard.flush());
+    }
+
+    /// The next line from tarae, heard. None: stdin closed.
+    fn hear(&mut self) -> Option<Value> {
+        loop {
+            let line = self.lines.next()?.ok()?;
+            match serde_json::from_str::<Value>(&line) {
+                Ok(v) => {
+                    self.heard(&v);
+                    return Some(v);
+                }
+                Err(_) => self.heard(&json!({"junk": line})),
+            }
+        }
+    }
+
+    /// The first message heard that `f` takes, waiting for it. None: stdin closed first.
+    fn wait(&mut self, f: impl Fn(&Value) -> bool) -> Option<Value> {
+        if let Some(at) = self.unread.iter().position(&f) {
+            return self.unread.remove(at);
+        }
+        loop {
+            let v = self.hear()?;
+            if f(&v) {
+                return Some(v);
+            }
+            self.unread.push_back(v);
+        }
+    }
+
+    fn missed(&mut self, what: &str) -> ! {
+        self.heard(&json!({"missed": what}));
+        eprintln!("stand-in: stdin closed before {what}");
+        std::process::exit(3);
+    }
+
+    fn step(&mut self, step: &Value) {
+        if let Some(method) = step["expect"].as_str() {
+            let Some(v) = self.wait(|v| v["method"] == method) else { self.missed(method) };
+            if let Some(id) = v.get("id").filter(|i| !i.is_null()) {
+                if let Some(s) = v["params"]["sessionId"].as_str() {
+                    self.session = s.to_string();
+                }
+                if let Some(code) = step["error"].as_i64() {
+                    let message = step["message"].as_str().unwrap_or("refused");
+                    let error = json!({"code": code, "message": message});
+                    self.say(json!({"jsonrpc": "2.0", "id": id, "error": error}));
+                } else if let Some(result) = step.get("result") {
+                    if let Some(s) = result["sessionId"].as_str() {
+                        self.session = s.to_string();
+                    }
+                    self.say(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+                } else {
+                    self.turn = Some(id.clone());
+                }
+            }
+        } else if let Some(update) = step.get("say") {
+            let params = json!({"sessionId": self.session, "update": update});
+            self.say(json!({"jsonrpc": "2.0", "method": "session/update", "params": params}));
+        } else if let Some(call) = step.get("ask") {
+            let options = step.get("options").cloned().unwrap_or_else(agy_options);
+            let params = json!({"sessionId": self.session, "toolCall": call, "options": options});
+            let id = &step["id"];
+            self.say(
+                json!({"jsonrpc": "2.0", "id": id, "method": "session/request_permission", "params": params}),
+            );
+        } else if let Some(id) = step.get("await") {
+            let answered = |v: &Value| v["id"] == *id && v.get("method").is_none();
+            if self.wait(answered).is_none() {
+                self.missed(&format!("the answer to {id}"));
+            }
+        } else if let Some(reason) = step.get("end_turn") {
+            let Some(id) = self.turn.take() else { self.missed("a turn to end") };
+            let mut result = json!({"stopReason": reason});
+            if let Some(usage) = step.get("usage") {
+                result["usage"] = usage.clone();
+            }
+            self.say(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+        } else if let Some(result) = step.get("answer") {
+            let Some(id) = self.turn.take() else { self.missed("a request to answer") };
+            self.say(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+        } else if let Some(v) = step.get("send") {
+            self.say(v.clone());
+        } else if let Some(line) = step["stderr"].as_str() {
+            eprintln!("{line}");
+        } else if let Some(code) = step["exit"].as_i64() {
+            std::process::exit(code as i32);
+        } else if let Some(text) = step["junk"].as_str() {
+            let _ = writeln!(self.out, "{text}").and_then(|_| self.out.flush());
+        } else if step["eof"] == true {
+            while self.hear().is_some() {}
+            self.heard(&json!({"eof": true}));
+        }
+    }
+}
+
+/// The stand-in agent itself: run only as a test's child (`SCRIPT` set), its steps in order, then its end.
+#[test]
+#[ignore = "the ACP stand-in agent: a test's child, never run alone"]
+fn run() {
+    use std::os::fd::FromRawFd;
+    let (Ok(script), Ok(heard)) = (std::env::var(SCRIPT), std::env::var(HEARD)) else { return };
+    let script: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(script).unwrap()).unwrap();
+    let heard = std::fs::OpenOptions::new().create(true).append(true).open(heard).unwrap();
+    // SAFETY: descriptor 3 is tarae's pipe, as the stand-in's row's `3>&1` gave it; nothing else here owns it.
+    let out = unsafe { std::fs::File::from_raw_fd(3) };
+    let mut a = Agent {
+        out,
+        heard,
+        lines: std::io::stdin().lock().lines(),
+        unread: VecDeque::new(),
+        session: String::new(),
+        turn: None,
+    };
+    let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: a plain call filling a struct of ours.
+    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) };
+    let mut names: Vec<String> = std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).collect();
+    names.sort();
+    a.heard(&json!({"env": names, "nofile": l.rlim_cur}));
+    for step in &script {
+        a.step(step);
+    }
+}
