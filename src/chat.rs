@@ -2706,7 +2706,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
 fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
     // (a failure for want of a login, with a key tarae left out: said with it, and what passes it)
     let login_hint = match &ev {
-        Event::Done(Err(e)) | Event::Exit(e) => llm::login_hint(ed, e),
+        Event::Done(Err(e)) | Event::Exit(crate::agent::Exit { said: e, .. }) => llm::login_hint(ed, e),
         _ => None,
     };
     // (the credential claude says it runs on, against who pays for it — `billing.rs`)
@@ -3158,7 +3158,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             // `orchestra::wake` looks)
             crate::orchestra::wake(ed);
         }
-        Event::Exit(err) => {
+        Event::Exit(crate::agent::Exit { said: err, kind }) => {
             c.proc = None;
             c.follow.gaze = None;
             c.calls.clear();
@@ -3168,8 +3168,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             c.money = None;
             // The conversation is gone from claude (its own cleanup took it, or you deleted it): a fresh one, the
             // rows still shown, said once — and a message sent to the process that couldn't resume goes again, to
-            // the new one
-            if err.contains("No conversation found") && c.resume.is_some() {
+            // the new one (its wire's word for it, never read from its words here)
+            if kind == crate::agent::Ended::Gone && c.resume.is_some() {
                 c.resume = None;
                 c.fork = false;
                 c.conversation = None;
@@ -6546,7 +6546,14 @@ mod tests {
         send(&mut ed);
         // The conversation is gone: the next claude gets them, once its turn can start
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
-        on_event(&mut ed, generation, Event::Exit("No conversation found with session ID: s-1".into()));
+        on_event(
+            &mut ed,
+            generation,
+            Event::Exit(crate::agent::Exit {
+                said: "No conversation found with session ID: s-1".into(),
+                kind: crate::agent::Ended::Gone,
+            }),
+        );
         let said = |ed: &Editor, t: &str| {
             ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().filter(|m| m.text.contains(t)).count()
         };
@@ -6578,6 +6585,47 @@ mod tests {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(c.queued_quotes.is_empty() && c.queued.is_none());
         assert_eq!(c.with_chips(), ["since 7"], "the one past the limits waits over the input");
+    }
+
+    /// Agents beside Claude, step 3, L1: a conversation gone is its exit's kind, the wire's reading — an end that
+    /// only says Claude's words for one isn't taken as gone (the conversation kept, the exit said), and a `Gone`
+    /// that says anything, nothing included, is (a new conversation, said, the message sent again).
+    #[test]
+    fn a_gone_conversation_is_told_by_its_kind_not_its_words() {
+        use crate::agent::{Ended, Exit};
+        let ended = |exit: Exit| {
+            let mut ed = editor("");
+            // (the claude started after the exit can't start: the stand-in takes its place, deterministically)
+            ed.config.llm.command = "tarae-no-such-claude".into();
+            let mut c = Chat::new();
+            let first = stand_in(&mut c);
+            c.resume = Some("s-1".into());
+            ed.workspace.claude.chat = Some(c);
+            ed.workspace.set_at(crate::workspace::Here::Chat);
+            ed.workspace.claude.chat.as_mut().unwrap().input = "hello".into();
+            send(&mut ed);
+            assert_eq!(first.try_iter().count(), 1, "it went");
+            let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
+            on_event(&mut ed, generation, Event::Exit(exit));
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            let notes: Vec<String> =
+                c.msgs.iter().filter(|m| m.role == Role::Note).map(|m| m.text.clone()).collect();
+            (c.resume.clone(), notes)
+        };
+        let words = "No conversation found with session ID: s-1";
+        let (resume, notes) = ended(Exit { said: words.into(), kind: Ended::Exited });
+        assert_eq!(resume.as_deref(), Some("s-1"), "its words alone: the conversation kept");
+        assert!(notes.iter().any(|n| n == &format!("claude exited: {words}")), "the exit said: {notes:?}");
+        assert!(!notes.iter().any(|n| n.contains("no longer has this conversation")), "{notes:?}");
+        for said in ["", "stand-in has no conversation s-1"] {
+            let (resume, notes) = ended(Exit { said: said.into(), kind: Ended::Gone });
+            assert_eq!(resume, None, "gone by its kind, saying {said:?}");
+            assert!(
+                notes.iter().any(|n| n.starts_with("Claude no longer has this conversation")),
+                "{notes:?}"
+            );
+            assert!(!notes.iter().any(|n| n.starts_with("claude exited")), "{notes:?}");
+        }
     }
 
     /// The copies a tarae now gone left are pruned at start: folders named as `sent_dir` names them, this user's
@@ -6797,7 +6845,14 @@ mod tests {
         assert_eq!(users(&first).len(), 1);
         assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().queued.as_deref(), typed);
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
-        on_event(&mut ed, generation, Event::Exit("No conversation found with session ID: s-1".into()));
+        on_event(
+            &mut ed,
+            generation,
+            Event::Exit(crate::agent::Exit {
+                said: "No conversation found with session ID: s-1".into(),
+                kind: crate::agent::Ended::Gone,
+            }),
+        );
         let next = stand_in(ed.workspace.claude.chat.as_mut().unwrap());
         let mut turns = Vec::new();
         for _ in 0..2 {
@@ -6894,7 +6949,10 @@ mod tests {
                     on_event(
                         &mut ed,
                         generation,
-                        Event::Exit("No conversation found with session ID: s-1".into()),
+                        Event::Exit(crate::agent::Exit {
+                            said: "No conversation found with session ID: s-1".into(),
+                            kind: crate::agent::Ended::Gone,
+                        }),
                     );
                 }
                 _ => {

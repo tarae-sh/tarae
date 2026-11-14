@@ -737,7 +737,8 @@ fn every_way_a_conversation_moves_reaches_the_keeper() {
     };
     assert_eq!(told(&mut ed), ["one"], "claude gave it its id");
     ed.workspace.claude.chat.as_mut().unwrap().resume = Some("one".into());
-    stream(&mut ed, Event::Exit("No conversation found with session ID: one".into()));
+    let said = "No conversation found with session ID: one".into();
+    stream(&mut ed, Event::Exit(crate::agent::Exit { said, kind: crate::agent::Ended::Gone }));
     assert!(told(&mut ed).is_empty(), "gone from claude");
     stream(&mut ed, conversation_is("two"));
     assert_eq!(told(&mut ed), ["two"]);

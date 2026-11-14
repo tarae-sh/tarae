@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use crate::agent::{Agent, Caps, Event, First, ModelInfo, Permission, Prompt, SpawnError, Started};
+use crate::agent::{
+    Agent, Caps, Ended, Event, Exit, First, ModelInfo, Permission, Prompt, SpawnError, Started,
+};
 use crate::billing::Credential;
 use crate::event::Apply;
 #[cfg(test)]
@@ -276,11 +278,13 @@ impl Lines {
 
 /// A claude started: its first lines written (tarae's MCP server offered when `first.tools`, then the prompt if
 /// there is one) — off the main loop, through its `Lines` — and its stream read by `pump` into `route`. Err: those
-/// lines couldn't go (no stdin, or it stopped reading), the child ended and reaped off the main loop.
+/// lines couldn't go (no stdin, or it stopped reading), the child ended and reaped off the main loop. `resumed`: it
+/// was started to continue a conversation (`--resume`) — its end may say that one is gone (`exit`).
 pub(super) fn begin(
     mut child: Child,
     first: First,
     once: bool,
+    resumed: bool,
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<Apply> + Send + 'static,
 ) -> Result<Started, SpawnError> {
@@ -302,7 +306,7 @@ pub(super) fn begin(
             return Err(SpawnError::Write(e));
         }
     };
-    pump(child, own, once, tx, route);
+    pump(child, own, once, resumed, tx, route);
     Ok(Started { agent: Agent::Claude(lines), pid })
 }
 
@@ -361,11 +365,13 @@ pub const FLUSH: Duration = Duration::from_millis(25);
 /// stderr is drained separately (so a full pipe doesn't stall the child) — its last line is the error text.
 /// stdout is read on a thread of its own (`tarae-llm-lines`), its lines handed over through a channel this one
 /// waits on no longer than what it holds may wait (`FLUSH`). `own`: its stdin, where a control request no one
-/// above the wire answers gets its `{}` (None: it asks none — a claude without tarae's tools).
+/// above the wire answers gets its `{}` (None: it asks none — a claude without tarae's tools). `resumed`: as
+/// `begin`'s.
 pub fn pump(
     mut child: Child,
     own: Option<Weak>,
     once: bool,
+    resumed: bool,
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<Apply> + Send + 'static,
 ) {
@@ -554,9 +560,19 @@ pub fn pump(
             let msg = if err.is_empty() { "exited without a result".to_string() } else { err };
             send(Event::Done(Err(msg)));
         } else if !once {
-            send(Event::Exit(err));
+            send(Event::Exit(exit(err, resumed)));
         }
     });
+}
+
+/// A claude's end, from stderr's last line: claude's own words for a conversation it can't find, on a start that
+/// asked to continue one, are its `Gone` — the one place they're read.
+fn exit(err: String, resumed: bool) -> Exit {
+    let kind = match resumed && err.contains("No conversation found") {
+        true => Ended::Gone,
+        false => Ended::Exited,
+    };
+    Exit { said: err, kind }
 }
 
 /// `tool_use` blocks of a complete assistant message · `tool_result` blocks of the user message that
@@ -823,7 +839,9 @@ mod tests {
         let pid = child.id();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let first = First { tools: true, prompt: Some(Prompt::Text("hi".into())) };
-        let Err(e) = begin(child, first, true, ed.events.sender(), |_| None) else { panic!("it started") };
+        let Err(e) = begin(child, first, true, false, ed.events.sender(), |_| None) else {
+            panic!("it started")
+        };
         assert_eq!(e.said("claude", false), "claude: no stdin");
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         // (signal 0: whether the pid is still in the process table — a zombie is, a reaped child isn't)
@@ -848,7 +866,7 @@ mod tests {
         let pid = child.id();
         let (tx, rx) = channel::<bool>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
-        pump(child, None, false, ed.events.sender(), move |ev| {
+        pump(child, None, false, false, ed.events.sender(), move |ev| {
             let _ = tx.send(matches!(ev, Event::Exit(_)));
             None
         });
@@ -878,7 +896,7 @@ echo closed > "$1/eof""#;
         let lines = Lines::new(child.stdin.take().unwrap());
         let (tx, rx) = channel::<String>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
-        pump(child, Some(lines.weak()), false, ed.events.sender(), move |ev| {
+        pump(child, Some(lines.weak()), false, false, ed.events.sender(), move |ev| {
             let said = match ev {
                 Event::Mcp { id, .. } | Event::Permission { id, .. } => format!("up {id}"),
                 Event::Exit(_) => "exit".to_string(),
@@ -944,7 +962,7 @@ echo closed > "$1/eof""#;
         let (tx, rx) = channel::<(std::time::Instant, String)>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let _ = child.stdin.take();
-        pump(child, None, false, ed.events.sender(), move |ev| {
+        pump(child, None, false, false, ed.events.sender(), move |ev| {
             let said = match ev {
                 Event::Text(t) => format!("text {t}"),
                 Event::Writing(d) => d
@@ -1006,7 +1024,7 @@ echo closed > "$1/eof""#;
         let (tx, rx) = channel::<String>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let _ = child.stdin.take();
-        pump(child, None, false, ed.events.sender(), move |ev| {
+        pump(child, None, false, false, ed.events.sender(), move |ev| {
             let said = match ev {
                 Event::ThinkingBlock(open) => format!("block {}", if open { "open" } else { "closed" }),
                 Event::Thought(t) => format!("thought {t}"),

@@ -44,6 +44,14 @@ pub const NAME: &str = "tarae";
 /// The sockets bound by this tarae so far: each start's its own name.
 static BOUND: AtomicU64 = AtomicU64::new(0);
 
+/// The most a connection's first line, the token, is read to, its newline in it: 64 hex digits, the newline and
+/// slack. Past it the connection is refused — a peer that never sends a newline holds nothing of the bridge's.
+pub const FIRST_MAX: usize = 128;
+
+/// The most a message of the live connection's is read to, its newline in it. Past it the connection ends: the peer
+/// passed the checks, so this is the agent's relay, but one line never takes all the memory there is.
+pub const LINE_MAX: usize = 16 << 20;
+
 /// Why a connection was refused (logged once a bridge and kind).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Refused {
@@ -56,8 +64,12 @@ pub enum Refused {
     Unreadable,
     /// Its first line isn't the token.
     Token,
+    /// Its first line is past `FIRST_MAX`.
+    FirstLong,
     /// Another connection is live.
     Second,
+    /// The live connection sent a line past `LINE_MAX`: ended.
+    LineLong,
 }
 
 impl Refused {
@@ -68,7 +80,9 @@ impl Refused {
             Refused::NotUnder => "a connection refused: not a process of the agent's",
             Refused::Unreadable => "a connection refused: whose process it is can't be read",
             Refused::Token => "a connection refused: not the token",
+            Refused::FirstLong => "a connection refused: a first line past 128 bytes",
             Refused::Second => "a connection refused: another is live",
+            Refused::LineLong => "a connection ended: a line past 16 MB",
         }
     }
 }
@@ -285,13 +299,38 @@ fn accept(listener: UnixListener, s: Arc<Shared>) {
     }
 }
 
-/// Connection `n`: its token, then — the one live — its messages to the wire's thread until it ends.
+/// What `line` read.
+enum Line {
+    /// A line, its newline taken off (the last, unended, as it is).
+    Got(Vec<u8>),
+    /// `max` bytes and no newline among them.
+    Long,
+    /// Nothing more: the input's end, or a read that failed.
+    End,
+}
+
+/// `r`'s next line, read to `max` bytes, its newline in them, and never past.
+fn line(r: &mut impl BufRead, max: usize) -> Line {
+    let mut buf = Vec::new();
+    match r.take(max as u64).read_until(b'\n', &mut buf) {
+        Ok(0) | Err(_) => Line::End,
+        Ok(_) if buf.last() == Some(&b'\n') => {
+            buf.pop();
+            Line::Got(buf)
+        }
+        Ok(n) if n == max => Line::Long,
+        Ok(_) => Line::Got(buf),
+    }
+}
+
+/// Connection `n`: its token, then — the one live — its messages to the wire's thread until it ends. Each line read
+/// to its bound (`FIRST_MAX`, `LINE_MAX`), never past.
 fn connection(n: u64, stream: &UnixStream, s: &Shared) {
     let mut lines = BufReader::new(stream);
-    let mut first = String::new();
-    if lines.read_line(&mut first).is_err() || !same(first.trim_end().as_bytes(), s.token.as_bytes()) {
-        s.refused(Refused::Token);
-        return;
+    match line(&mut lines, FIRST_MAX) {
+        Line::Got(first) if same(first.trim_ascii_end(), s.token.as_bytes()) => {}
+        Line::Long => return s.refused(Refused::FirstLong),
+        Line::Got(_) | Line::End => return s.refused(Refused::Token),
     }
     {
         let mut live = s.live.lock().unwrap_or_else(|e| e.into_inner());
@@ -305,9 +344,14 @@ fn connection(n: u64, stream: &UnixStream, s: &Shared) {
     if let Ok(out) = stream.try_clone() {
         s.send(In::Linked(n, writer(out)));
     }
-    for line in lines.lines().map_while(Result::ok) {
+    loop {
+        let got = match line(&mut lines, LINE_MAX) {
+            Line::Got(got) => got,
+            Line::Long => break s.refused(Refused::LineLong),
+            Line::End => break,
+        };
         // (a line that isn't JSON: no message — the relay passes on what the agent's client wrote)
-        if let Ok(v) = serde_json::from_str::<Value>(&line)
+        if let Ok(v) = serde_json::from_slice::<Value>(&got)
             && !s.send(In::Bridged(v))
         {
             break;

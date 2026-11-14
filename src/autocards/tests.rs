@@ -279,7 +279,7 @@ fn the_record_says_the_cards_whole_cost_and_the_last_runs_own_tokens() {
     let run = run_of(&ed, id);
     on_event(&mut ed, id, run, Event::Spent(spent()));
     let run = again(&mut ed, id);
-    on_event(&mut ed, id, run, Event::Exit("claude stopped".into()));
+    on_event(&mut ed, id, run, Event::Exit(crate::agent::Exit::exited("claude stopped")));
     ed.offer_dismiss();
     let r = &record(&dir)[1]["reviewer"];
     assert_eq!(

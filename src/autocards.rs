@@ -398,7 +398,9 @@ pub(crate) fn on_event(ed: &mut Editor, card: u64, run: u64, ev: Event) {
             finish(ed, card, run, Ok(text));
         }
         Event::Done(Err(e)) => finish(ed, card, run, Err(e)),
-        Event::Exit(e) => finish(ed, card, run, Err(if e.is_empty() { "claude stopped".into() } else { e })),
+        Event::Exit(e) => {
+            finish(ed, card, run, Err(if e.said.is_empty() { "claude stopped".into() } else { e.said }))
+        }
         _ => {}
     }
 }

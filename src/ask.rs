@@ -329,7 +329,9 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
             }
         }
         Event::Done(r) => ended(ed, generation, r),
-        Event::Exit(e) => ended(ed, generation, Err(if e.is_empty() { "claude stopped".into() } else { e })),
+        Event::Exit(e) => {
+            ended(ed, generation, Err(if e.said.is_empty() { "claude stopped".into() } else { e.said }))
+        }
         Event::Requesting(_)
         | Event::Retry(_)
         | Event::Money(_)

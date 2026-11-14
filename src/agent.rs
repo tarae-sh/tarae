@@ -391,11 +391,13 @@ pub fn start(
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<crate::event::Apply> + Send + 'static,
 ) -> Result<Started, SpawnError> {
-    let child = spawn(s, at.dir, at.given, at.cred)?;
     match s.row.wire {
-        Wire::Claude => claude::begin(child, first, once, tx, route),
+        Wire::Claude => {
+            let child = spawn(s, at.dir, at.given, at.cred)?;
+            claude::begin(child, first, once, s.resume.is_some(), tx, route)
+        }
         #[cfg(test)]
-        Wire::Acp => acp::begin(child, s, &at, first, once, tx, route),
+        Wire::Acp => acp::begin(acp::spawn(s, at.dir, at.given)?, s, &at, first, once, tx, route),
     }
 }
 
@@ -518,8 +520,34 @@ pub enum Event {
     Money(crate::billing::Money),
     /// End of a turn — final text or error (not logged in·stopped etc.).
     Done(Result<String, String>),
-    /// The process exited (for the chat panel — last stderr line).
-    Exit(String),
+    /// The process exited: what it said and how it ended, its wire's reading.
+    Exit(Exit),
+}
+
+/// An agent's process's end (`Event::Exit`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Exit {
+    /// What its end says in the chat (stderr's last line, or its wire's words); empty: nothing.
+    pub said: String,
+    pub kind: Ended,
+}
+
+/// How an agent's process ended, as its wire tells it — never read from its words above the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// It exited, or was ended.
+    Exited,
+    /// The conversation it was started to continue is gone from the agent (Claude's own cleanup took it, it was
+    /// deleted, the agent can't continue one): the chat starts a new one and sends again what it cut off.
+    Gone,
+}
+
+#[cfg(test)]
+impl Exit {
+    /// An end that says `said` (ACP's wire and tests: Claude's reads its kind from its words, `claude::exit`).
+    pub fn exited(said: impl Into<String>) -> Exit {
+        Exit { said: said.into(), kind: Ended::Exited }
+    }
 }
 
 #[cfg(test)]

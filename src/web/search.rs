@@ -474,7 +474,9 @@ pub(crate) fn on_event(ed: &mut Editor, id: u64, ev: Event) {
             }
         }
         Event::Done(r) => ended(ed, id, r),
-        Event::Exit(e) => ended(ed, id, Err(if e.is_empty() { "claude stopped".into() } else { e })),
+        Event::Exit(e) => {
+            ended(ed, id, Err(if e.said.is_empty() { "claude stopped".into() } else { e.said }))
+        }
         _ => {}
     }
 }

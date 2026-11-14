@@ -85,7 +85,8 @@ fn said(ev: Event) -> Option<String> {
         Event::Compaction(c) => format!("compaction {c:?}"),
         Event::Done(Ok(t)) => format!("done {t}"),
         Event::Done(Err(e)) => format!("failed {e}"),
-        Event::Exit(e) => format!("exit {e}"),
+        Event::Exit(Exit { said, kind: Ended::Exited }) => format!("exit {said}"),
+        Event::Exit(Exit { said, kind: Ended::Gone }) => format!("exit gone: {said}"),
         Event::Mcp { id, message } => format!("mcp {id} {message}"),
         _ => return None,
     })
@@ -631,7 +632,8 @@ fn a_conversation_is_loaded_its_replay_dropped() {
 }
 
 /// A conversation that can't be continued — none offered, or the agent doesn't have it (`-32002`) — ends the
-/// process in the chat's own words for one gone, so its existing path starts a new conversation and says it.
+/// process, its end's kind `Gone`, so the chat's path for one starts a new conversation and says it; its words are
+/// the row's own, never Claude's.
 #[test]
 fn a_conversation_that_cant_be_continued_is_said_gone() {
     let none = json!({"protocolVersion": 1, "agentCapabilities": {}});
@@ -641,9 +643,23 @@ fn a_conversation_that_cant_be_continued_is_said_gone() {
         json!([expect("initialize", agy_initialize()), unknown, {"eof": true}]),
     ] {
         let run = start(script, Opts { resume: Some("s-old"), prompt: Some("more"), ..Opts::default() });
-        assert_eq!(run.until("exit").last().unwrap(), "exit No conversation found with session ID: s-old");
+        assert_eq!(run.until("exit").last().unwrap(), "exit gone: stand-in has no conversation s-old");
         assert!(run.of("session/new").is_empty() && run.of("session/prompt").is_empty());
     }
+}
+
+/// Step 3, L1: the agent has a session of its own (`spawn::setsid_fed_as`) — its session and group its own pid, the
+/// pid tarae started — and so no controlling terminal: it can't open `/dev/tty`. The session is what's checked first:
+/// a run with no terminal can't open `/dev/tty` whatever the agent's start, so that alone would hold on a runner
+/// without one.
+#[test]
+fn the_agent_has_a_session_of_its_own_and_no_terminal() {
+    let run = start(json!([{"tty": true}, {"eof": true}]), Opts::default());
+    let heard = run.heard_until(|v| v.get("sid").is_some());
+    let me = heard.iter().find(|v| v.get("sid").is_some()).unwrap();
+    let pid = run.started.as_ref().unwrap().pid;
+    assert_eq!((&me["pid"], &me["pgid"], &me["sid"]), (&json!(pid), &json!(pid), &json!(pid)), "{me}");
+    assert_ne!(me["tty"], "opened", "no terminal: {me}");
 }
 
 /// Condition 2: an agent that isn't Claude gets none of Claude's keys or settings from tarae's environment

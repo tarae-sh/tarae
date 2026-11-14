@@ -573,7 +573,7 @@ fn three_helpers_run_at_most_and_the_rest_wait_in_order() {
     let said = told(&rx);
     assert!(said.len() == 1 && said[0].contains("q4"), "{said:?}");
     let second = ed.workspace.claude.searches[0].id;
-    on_event(&mut ed, second, Event::Exit(String::new()));
+    on_event(&mut ed, second, Event::Exit(crate::agent::Exit::exited("")));
     assert_eq!(words(&ed), ["q3", "q4", "q5"]);
     crate::tools::turn_over(&mut ed);
     assert!(ed.workspace.claude.searches.is_empty() && ed.workspace.claude.searches_queued.is_empty());
@@ -624,7 +624,7 @@ fn a_search_with_no_list_says_why() {
     assert_eq!(answered(31), Some(Err("the web search failed: search unavailable".into())));
     search(&mut ed, generation, 32, json!({ "query": "b" })).unwrap();
     let id = last(&ed);
-    on_event(&mut ed, id, Event::Exit(String::new()));
+    on_event(&mut ed, id, Event::Exit(crate::agent::Exit::exited("")));
     assert_eq!(answered(32), Some(Err("the web search didn't run: claude stopped".into())));
     search(&mut ed, generation, 33, json!({ "query": "c" })).unwrap();
     let id = last(&ed);

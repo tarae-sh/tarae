@@ -25,22 +25,25 @@ pub(super) fn reap(child: &mut Child) {
     reaped(child);
 }
 
-/// `reap`, for an agent that leads a process group of its own (an ACP agent's, step 2's condition 4): once it has
-/// ended, what it started and left in its group (the bridge's relay, a server of its own) is ended too — the group
-/// signalled while its leader, ended and not yet reaped, still holds the group's id — then it's reaped.
+/// `reap`, for an agent that leads a session and so a process group of its own (an ACP agent's, `spawn::setsid`:
+/// step 2's condition 4), by its pid: once it has ended, what it started and left in its group (the bridge's relay,
+/// a server of its own) is ended too — the group signalled while its leader, ended and not yet reaped, still holds
+/// the group's id — then it's taken out of `UNREAPED` and reaped under its lock.
 #[cfg(test)]
-pub(super) fn reap_group(child: &mut Child) {
-    ended(child.id());
-    end_group(child);
-    reaped(child);
+pub(super) fn reap_group(pid: u32) {
+    ended(pid);
+    end_group(pid);
+    let mut unreaped = UNREAPED.lock().unwrap_or_else(|e| e.into_inner());
+    unreaped.retain(|&p| p != pid);
+    let _ = crate::spawn::wait(pid);
 }
 
-/// Ends the process group `child` leads, itself first among it — while it's unreaped (its reader holds it): the id is
-/// still its group's.
+/// Ends the process group our child `pid` leads, itself first among it — while it's unreaped (its reader holds it):
+/// the id is still its group's.
 #[cfg(test)]
-pub(super) fn end_group(child: &Child) {
+pub(super) fn end_group(pid: u32) {
     // SAFETY: a group our own child leads, not reaped yet (its reader reaps it, after this): its id is still the group's.
-    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+    unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
 }
 
 /// Waits for `pid`, a child of ours, to end, without reaping it (`WNOWAIT`).
@@ -102,7 +105,7 @@ mod tests {
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let mut ours = stand_in();
         let (pid, stdin) = (ours.id(), ours.stdin.take());
-        pump(ours, None, false, ed.events.sender(), |_| None);
+        pump(ours, None, false, false, ed.events.sender(), |_| None);
         kill(pid);
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         while UNREAPED.lock().unwrap().contains(&pid) {

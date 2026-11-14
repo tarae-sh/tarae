@@ -429,7 +429,11 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             drop(w);
             ed.with_workspace(child, |ed| {
                 let g = ed.workspace.claude.chat.as_ref().map_or(0, |c| c.generation());
-                crate::chat::stream_event(ed, g, crate::agent::Event::Exit(token.clone()));
+                crate::chat::stream_event(
+                    ed,
+                    g,
+                    crate::agent::Event::Exit(crate::agent::Exit::exited(token.clone())),
+                );
             });
             format!("{name}'s claude exits ({token})")
         }

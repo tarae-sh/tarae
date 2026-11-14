@@ -10,7 +10,8 @@
 //!
 //! tarae's tools reach it through the bridge (`bridge.rs`): an MCP server offered in `session/new`, a relay whose
 //! messages come up the same thread as stdout's, so a tool's call is told once and in order (finding C). Its process
-//! leads a group of its own, and the group ends with it — the relay and whatever else it started (condition 4).
+//! leads a session of its own, with no terminal, and so a group of its own, which ends with it — the relay and
+//! whatever else it started (condition 4).
 //! Test-only in step 2 (the design session's answer, §9.4): no config reaches it, and a release build carries none
 //! of it.
 
@@ -18,16 +19,19 @@ pub mod bridge;
 pub mod standin;
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, PipeWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 
 use serde_json::{Value, json};
 
-use super::{Agent, Args, Caps, Event, First, Permission, Place, Prompt, SpawnError, Start, Started};
+use super::{
+    Agent, Args, Caps, Ended, Event, Exit, First, Permission, Place, Prompt, SpawnError, Start, Started,
+};
 use crate::event::Apply;
 use crate::llm::Env;
+use crate::spawn::Spawned;
 
 /// The protocol version tarae speaks.
 pub const VERSION: u64 = 1;
@@ -84,9 +88,8 @@ pub fn args(s: &Start) -> Args {
 }
 
 /// `s`'s process, not started: its row's program on its row's arguments, run in `dir`, with tarae's environment
-/// less what `left_out` says (`given`: a test's stand-in for it, laid over the process's). It gets the descriptor
-/// limit tarae started with, as every program of the user's does (`nofile::command`: the shim where tarae raised
-/// it) — not Claude's raised one, which was measured for claude alone.
+/// less what `left_out` says (`given`: a test's stand-in for it, laid over the process's). A plain `Command`: `spawn`
+/// starts it, and the shim for the descriptor limit is that start's.
 pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, SpawnError> {
     let program = s.row.command;
     // (tests never start a real agent — the stand-in answers for one; nor its help)
@@ -98,9 +101,8 @@ pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, Sp
             "a test started a real agent ({program}) — give it the stand-in's row (`agent::STAND_IN`)"
         );
     }
-    let mut cmd = crate::nofile::command(program, Some(dir));
-    // (a group of its own: it ends with it — `run`, condition 4)
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut cmd = Command::new(program);
+    cmd.current_dir(dir);
     for a in s.row.args {
         // (the stand-in's: the test binary itself, re-run on its one test)
         #[cfg(test)]
@@ -119,6 +121,19 @@ pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, Sp
         cmd.env_remove(name);
     }
     Ok(cmd)
+}
+
+/// `s`'s process started (`command`) in a session of its own (`spawn::setsid_fed_as`): its own process group, which
+/// `run` ends with it (step 2's condition 4: the session leader's pgid is its pid), and no controlling terminal — it
+/// and what it starts can't open `/dev/tty`, nor are reached by a signal to tarae's group. Its stdin a pipe, stdout
+/// and stderr pipes. It gets the descriptor limit tarae started with, as every program of the user's does (the
+/// shim, `spawn::Limit::Original`) — not Claude's raised one, which was measured for claude alone. `Acts::User`:
+/// what acts for Claude or a plugin gets the filter that keeps it from new user namespaces, for runs; the agent's
+/// own process isn't a run (it runs as you, unsandboxed: the user's decision) — as Claude's own process, which
+/// std starts with no filter, isn't.
+pub fn spawn(s: &Start, dir: &Path, given: Option<&Env>) -> Result<(Spawned, PipeWriter), SpawnError> {
+    let cmd = command(s, dir, given)?;
+    crate::spawn::setsid_fed_as(&cmd, crate::spawn::Acts::User).map_err(SpawnError::Start)
 }
 
 // ── The handle ──────────────────────────────────────────────────────────
@@ -196,12 +211,11 @@ fn state(given: Option<&Env>) -> Option<PathBuf> {
     }
 }
 
-/// An ACP agent started: its stdin taken (none: the child ended and reaped off the main loop, `Err`), its stdout
-/// and stderr read, and its conversation's thread begun — `initialize` its first line, written there. `first`'s
-/// prompt goes once the session is known; its `tools`, the bridge, is bound at the handshake and offered in the
-/// session's `mcpServers`.
+/// An ACP agent started (`spawn`: the process and its stdin's writing end): its stdout and stderr read, and its
+/// conversation's thread begun — `initialize` its first line, written there. `first`'s prompt goes once the session
+/// is known; its `tools`, the bridge, is bound at the handshake and offered in the session's `mcpServers`.
 pub(super) fn begin(
-    mut child: Child,
+    (mut child, stdin): (Spawned, PipeWriter),
     s: &Start,
     at: &Place,
     first: First,
@@ -209,12 +223,7 @@ pub(super) fn begin(
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<Apply> + Send + 'static,
 ) -> Result<Started, SpawnError> {
-    let pid = child.id();
-    let Some(stdin) = child.stdin.take() else {
-        super::process::end(child);
-        let none = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "no stdin");
-        return Err(SpawnError::Write(none));
-    };
+    let pid = child.pid;
     let (in_tx, in_rx) = channel::<In>();
     if let Some(p) = first.prompt {
         let _ = in_tx.send(In::Prompt(p));
@@ -254,7 +263,7 @@ pub(super) fn begin(
 
 /// The agent's stdin, written on a thread of its own, lines in the order sent (a pipe takes 64 KB before a write
 /// waits, and a prompt can carry more). The sender dropped: what's queued goes, then stdin closes.
-fn writer(mut stdin: std::process::ChildStdin) -> Sender<String> {
+fn writer(mut stdin: PipeWriter) -> Sender<String> {
     let (tx, rx) = channel::<String>();
     crate::event::thread("tarae-acp-write", move || {
         while let Ok(line) = rx.recv() {
@@ -322,8 +331,9 @@ struct Wire {
     thinking: bool,
     /// The process is to end: signed out, another version, an error at its start, a conversation gone.
     end: bool,
-    /// What its end says in place of stderr's last line (a conversation gone: the chat's own words for it).
-    exit_said: Option<String>,
+    /// The conversation it was to continue is gone: what its end says (in the log only) in place of stderr's last
+    /// line, its kind `Ended::Gone`.
+    gone: Option<String>,
     junk_logged: bool,
     /// tarae's tools' bridge, once bound (dropped: its socket and folder go).
     bridge: Option<bridge::Bridge>,
@@ -358,7 +368,7 @@ impl Wire {
             last_flush: crate::clock::now(),
             thinking: false,
             end: false,
-            exit_said: None,
+            gone: None,
             junk_logged: false,
             bridge: None,
             link: None,
@@ -435,10 +445,10 @@ impl Wire {
         }
     }
 
-    /// A conversation that can't be continued: the process ends saying so in the chat's own words for one gone
-    /// (its `No conversation found` path: a new conversation started, said, the message sent again).
+    /// A conversation that can't be continued: the process ends, its end's kind `Gone` (the chat's path for one: a
+    /// new conversation started, said, the message sent again).
     fn gone(&mut self, id: &str) {
-        self.exit_said = Some(format!("No conversation found with session ID: {id}"));
+        self.gone = Some(format!("{} has no conversation {id}", self.begin.name));
         self.end = true;
     }
 
@@ -747,7 +757,7 @@ impl Wire {
 /// batched as Claude's is (`claude::FLUSH`). Ends when stdout does: the bridge let go, the process reaped and its
 /// group ended with it (`process::reap_group`), then its end told (stderr's last line) — `once`: after its first
 /// turn, the process ended.
-fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn Fn(Event) -> bool) {
+fn run(mut child: Spawned, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn Fn(Event) -> bool) {
     let (err_tx, err_rx) = channel::<String>();
     if let Some(err) = child.stderr.take() {
         crate::event::thread("tarae-acp-err", move || {
@@ -766,7 +776,7 @@ fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn F
     loop {
         if w.end && !ended {
             ended = true;
-            super::process::end_group(&child);
+            super::process::end_group(child.pid);
         }
         let held = !w.pending.is_empty();
         let left = super::claude::FLUSH.saturating_sub(crate::clock::since(w.last_flush));
@@ -798,11 +808,11 @@ fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn F
         }
     }
     if once || !ended && w.end {
-        super::process::end_group(&child);
+        super::process::end_group(child.pid);
     }
     drop(w.out.take());
     drop(w.bridge.take());
-    super::process::reap_group(&mut child);
+    super::process::reap_group(child.pid);
     let err = err_rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap_or_default();
     match once {
         true if !done => {
@@ -810,7 +820,10 @@ fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn F
         }
         true => {}
         false => {
-            send(Event::Exit(w.exit_said.take().unwrap_or(err)));
+            send(Event::Exit(match w.gone.take() {
+                Some(said) => Exit { said, kind: Ended::Gone },
+                None => Exit::exited(err),
+            }));
         }
     }
 }

@@ -22,6 +22,8 @@
 //!   the server said meanwhile as `{"mcp_other": message}`).
 //! - `{"linger": true}` leaves a process of its own in its group that outlives it (a stand-in for an agent's child
 //!   that never ends by itself), heard as `{"linger_pid": pid}`.
+//! - `{"tty": true}` reads its session and group and tries to open `/dev/tty`, heard as `{"pid": pid, "pgid":
+//!   pgid, "sid": sid, "tty": "opened" or why not}`.
 //!
 //! What it heard: first `{"env": [its environment's names], "nofile": its soft descriptor limit}`, then each line
 //! tarae wrote, as it came.
@@ -186,6 +188,14 @@ impl Agent {
                 .expect("a lingering child");
             self.heard(&json!({"linger_pid": child.id()}));
             self.children.push(child);
+        } else if step["tty"] == true {
+            // SAFETY: plain calls about this process.
+            let (pid, pgid, sid) = unsafe { (libc::getpid(), libc::getpgid(0), libc::getsid(0)) };
+            let tty = match std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") {
+                Ok(_) => "opened".to_string(),
+                Err(e) => e.to_string(),
+            };
+            self.heard(&json!({"pid": pid, "pgid": pgid, "sid": sid, "tty": tty}));
         }
     }
 

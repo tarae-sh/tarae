@@ -169,6 +169,44 @@ fn a_refused_connection_holds_whichever_way_its_close_lands() {
     assert!(rx.try_recv().is_err(), "nothing reached the wire");
 }
 
+/// Step 3, L1: a first line read to `FIRST_MAX` and no further — a peer under the agent sending 1 MB with no newline
+/// is closed once the bound is read, nothing of it reaches the wire, and the bridge isn't held up by it: a right
+/// connection after it is linked.
+#[test]
+fn a_first_line_past_its_bound_is_refused_and_holds_nothing_up() {
+    let dir = crate::scratch::Scratch::new("acp-bridge-first-bound");
+    let (tx, rx) = channel();
+    let b = Bridge::listen(dir.path(), std::process::id(), tx).unwrap();
+    let mut long = connect(&b);
+    // (closed once its bound is read: the rest of the write may fail, EPIPE — what's held is the close)
+    let _ = long.write_all(&vec![b'a'; 1 << 20]);
+    assert!(closed(&mut long), "a first line past its bound: closed");
+    let mut live = connect(&b);
+    writeln!(live, "{}", b.token()).unwrap();
+    let In::Linked(..) = rx.recv_timeout(PATIENCE).expect("linked") else {
+        panic!("linked first: nothing of the long one")
+    };
+}
+
+/// Step 3, L1: the live connection's lines read to `LINE_MAX` and no further — one past it ends the connection,
+/// unlinked, nothing of it handed on; the next right connection is the live one.
+#[test]
+fn a_live_line_past_its_bound_ends_the_connection() {
+    let dir = crate::scratch::Scratch::new("acp-bridge-line-bound");
+    let (tx, rx) = channel();
+    let b = Bridge::listen(dir.path(), std::process::id(), tx).unwrap();
+    let mut live = connect(&b);
+    writeln!(live, "{}", b.token()).unwrap();
+    let In::Linked(n, _) = rx.recv_timeout(PATIENCE).expect("linked") else { panic!("linked first") };
+    writeln!(live, r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}"#).unwrap();
+    assert_eq!(next(&rx), r#"bridged {"id":1,"jsonrpc":"2.0","method":"tools/list"}"#);
+    let _ = live.write_all(&vec![b' '; LINE_MAX]);
+    assert_eq!(next(&rx), format!("unlinked {n}"), "a line past its bound: ended, nothing handed on");
+    let mut again = connect(&b);
+    writeln!(again, "{}", b.token()).unwrap();
+    assert_eq!(next(&rx), format!("linked {}", n + 1), "the next is the live one");
+}
+
 /// The relay: the token first, then the agent's side to the socket and the socket to the agent's side; it ends when
 /// either side does.
 #[test]
