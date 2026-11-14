@@ -175,6 +175,7 @@ fn a_continue_finds_moved_lines_and_says_what_it_lost() {
         places: places_json(&ed.workspace.claude.flags, &c.msgs),
         seq: crate::chats::seq(),
         signed_read: false,
+        agent: crate::agent::CLAUDE.name.into(),
     };
     let dir = s.join("chats");
     crate::chats::save(&dir, &root, saved);

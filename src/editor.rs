@@ -1579,10 +1579,11 @@ impl Editor {
         let events = Queue::default();
         let saver = crate::saver::Saver::new(events.shared_sender());
         let turns_dir = if cfg!(test) { None } else { crate::checkpoint::default_dir() };
+        let row = crate::agent::row_of(&config.editor.llm);
         let mut ed = Self {
             docs: Default::default(),
             current: 0,
-            workspace: crate::workspace::Workspace::new(crate::event::WorkspaceId::HOME, root, 1),
+            workspace: crate::workspace::Workspace::new(crate::event::WorkspaceId::HOME, root, 1, row),
             workspaces: Vec::new(),
             next_workspace: crate::event::WorkspaceId::HOME,
             presence: Default::default(),
@@ -14699,6 +14700,7 @@ mod tests {
             at_end: Some(dir.clone()),
             lazy: true,
             signed_read: false,
+            agent: crate::agent::CLAUDE.name.into(),
         };
         crate::chat::restore(&mut ed, back);
         assert!(!crate::edits::at_end(&ed), "a restored chat follows the config");

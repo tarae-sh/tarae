@@ -1168,9 +1168,14 @@ fn session_json(
         .as_ref()
         .and_then(|s| Some(json!({ "mode": mode_name(s.mode)?, "focus": l.is_at(Here::Side) })));
     let chat = l.claude.chat.as_ref().map(|c| {
-        json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(Here::Chat),
+        let mut chat = json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(Here::Chat),
                 "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end.as_deref().and_then(Path::to_str),
-                "signed_read": c.signed_read })
+                "signed_read": c.signed_read });
+        // (its agent: Claude's is the field left out, as a kept conversation's — `chats::Saved.agent`)
+        if c.agent.name != crate::agent::CLAUDE.name {
+            chat["agent"] = c.agent.name.into();
+        }
+        chat
     });
     let on = docs.iter().find(|d| d.id == current).and_then(|d| d.path.as_deref());
     let turns = l.claude.checkpoints.list.len();
@@ -1438,6 +1443,7 @@ fn restore_session(ed: &mut Editor, v: &Value, behind: bool, back: &mut Back) {
                 at_end: chat["at_end"].as_str().map(PathBuf::from),
                 lazy: behind,
                 signed_read: chat["signed_read"].as_bool().unwrap_or(false),
+                agent: crate::chats::agent_of(chat["agent"].as_str()),
             },
         );
     }
@@ -1876,6 +1882,7 @@ mod tests {
                 places: None,
                 seq: crate::chats::seq(),
                 signed_read: false,
+                agent: crate::agent::CLAUDE.name.into(),
             };
             crate::chats::save(&store, &cwd, saved);
         };
@@ -1936,6 +1943,7 @@ mod tests {
             places: None,
             seq: crate::chats::seq(),
             signed_read: false,
+            agent: crate::agent::CLAUDE.name.into(),
         };
         crate::chats::save(store, root, saved);
     }

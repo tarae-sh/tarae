@@ -949,7 +949,7 @@ fn launch(ed: &mut Editor, i: usize) {
     let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tx = ed.events.sender();
     let started = cred.and_then(|cred| {
-        let at = agent::Place { dir: &root, given: ed.claude_env.as_ref(), cred: &cred };
+        let at = agent::Place { dir: &root, given: ed.claude_env.as_ref(), cred: Some(&cred) };
         // (tarae's MCP server first — its `note`, a skeptic's `judge`)
         let first = agent::First { tools: true, prompt: Some(content) };
         let route = move |ev| -> Option<crate::event::Apply> {
@@ -975,7 +975,9 @@ fn launch(ed: &mut Editor, i: usize) {
         ed.workspace.reviewer = None;
         GONE_AT_START.with(|g| g.set(Some(pid)));
     }
-    // (a reviewer gone meanwhile: its member's process ended — its reader reaps it, and its events find no member)
+    // (a reviewer gone meanwhile: its member's process ended — its reader reaps it, and its events find no member.
+    // Nothing takes the reviewer away here while a start is one call on the main loop; this holds for when the
+    // exec moves off it, #571)
     if began(ed, i, generation, Some((pid, agent)), billing).is_none() {
         agent::kill(pid);
     }
@@ -4227,7 +4229,8 @@ mod tests {
         let env: llm::Env = CACHE_TTL_ENV.iter().map(|n| (n.to_string(), "5m".to_string())).collect();
         let cred = ed.credential(Billing::Api, crate::billing::Role::Reviewer).unwrap();
         let kept = |role| {
-            let cmd = crate::agent::command(&start(&ed.config.llm, role), &repo, Some(&env), &cred).unwrap();
+            let cmd =
+                crate::agent::command(&start(&ed.config.llm, role), &repo, Some(&env), Some(&cred)).unwrap();
             let mut kept: Vec<_> = cmd
                 .get_envs()
                 .filter(|(k, _)| CACHE_TTL_ENV.iter().any(|n| k == n))

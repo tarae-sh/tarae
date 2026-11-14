@@ -965,6 +965,7 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
                         places: None,
                         seq: 0,
                         signed_read: false,
+                        agent: crate::agent::CLAUDE.name.into(),
                     };
                     crate::chat::continue_with(ed, saved);
                 }
@@ -2691,6 +2692,7 @@ fn a_conversation_left_takes_its_answers_with_it() {
                     places: None,
                     seq: 0,
                     signed_read: false,
+                    agent: crate::agent::CLAUDE.name.into(),
                 };
                 crate::chat::continue_with(&mut ed, saved);
             }

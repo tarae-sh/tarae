@@ -44,6 +44,14 @@ pub struct Saved {
     pub seq: u64,
     /// It read a page with your wiki's token (`Chat.signed_read`): continued, its web searches still ask each time.
     pub signed_read: bool,
+    /// The agent it was with: its row's name (`agent::row_named`). Written only when it isn't Claude's — the field
+    /// absent is the format's way of saying Claude's (`agent_of`).
+    pub agent: String,
+}
+
+/// A kept conversation's agent, `agent` its field: Claude's when there's none.
+pub(crate) fn agent_of(agent: Option<&str>) -> String {
+    agent.unwrap_or(crate::agent::CLAUDE.name).to_string()
 }
 
 /// An earlier conversation as the chat lists it: the empty chat's first row, `C-p`'s picker, a continued one's top line.
@@ -55,6 +63,15 @@ pub struct Past {
     pub updated: u64,
     /// What its last request carried, as `usage` last saw it (`Usage::kept_context`) — None: not reported.
     pub context: Option<u64>,
+    /// Its agent's row's name (`Saved.agent`).
+    pub agent: String,
+}
+
+impl Past {
+    /// Its agent's row — None: this tarae has none by that name, and the conversation isn't continued.
+    pub fn row(&self) -> Option<&'static crate::agent::Row> {
+        crate::agent::row_named(&self.agent)
+    }
 }
 
 impl Saved {
@@ -64,6 +81,7 @@ impl Saved {
             title: self.title.clone(),
             updated: self.updated,
             context: self.usage.as_ref().and_then(crate::usage::Usage::kept_context),
+            agent: self.agent.clone(),
         }
     }
 }
@@ -113,6 +131,7 @@ fn stored(dir: &Path, root: &Path) -> Vec<Saved> {
                         places: c.get("places").filter(|p| !p.is_null()).cloned(),
                         seq: c["seq"].as_u64().unwrap_or(0),
                         signed_read: c["signed_read"].as_bool().unwrap_or(false),
+                        agent: agent_of(c["agent"].as_str()),
                     })
                 })
                 .collect()
@@ -211,8 +230,13 @@ pub fn save_in(dir: &Path, roots: &[PathBuf], mut chat: Saved) {
     let chats: Vec<Value> = all
         .into_iter()
         .map(|c| {
-            json!({ "id": c.id, "title": c.title, "updated": c.updated, "rows": c.rows, "plan": c.plan,
-                    "usage": c.usage, "places": c.places, "seq": c.seq, "signed_read": c.signed_read })
+            let mut v = json!({ "id": c.id, "title": c.title, "updated": c.updated, "rows": c.rows, "plan": c.plan,
+                    "usage": c.usage, "places": c.places, "seq": c.seq, "signed_read": c.signed_read });
+            // (Claude's is the field left out)
+            if c.agent != crate::agent::CLAUDE.name {
+                v["agent"] = c.agent.into();
+            }
+            v
         })
         .collect();
     let times: Vec<Value> = chats.iter().map(|c| json!([c["id"], c["updated"]])).collect();
@@ -451,6 +475,7 @@ mod tests {
                     places: None,
                     seq: seq(),
                     signed_read: false,
+                    agent: crate::agent::CLAUDE.name.into(),
                 };
                 save(&dir, root, chat);
             }
@@ -535,6 +560,7 @@ mod tests {
             places: None,
             seq: t,
             signed_read: false,
+            agent: crate::agent::CLAUDE.name.into(),
         };
         save(&dir, root, saved("s1", 10));
         save(&dir, root, saved("s2", 20));
@@ -638,6 +664,27 @@ mod tests {
         assert!(read("wiki") && !read("plain"));
     }
 
+    /// Agents beside Claude, step 2 (L2): a kept conversation records its agent — Claude's as the field left out, the
+    /// format's own word for it — and its list row says the agent's row, None where this tarae has none by that name.
+    #[test]
+    fn a_kept_conversation_records_its_agent() {
+        let scratch = crate::scratch::Scratch::new("chats-agent");
+        let root = Path::new("/p/project");
+        save(&scratch, root, Saved { agent: "elsewhere".into(), ..with_places("other", Vec::new()) });
+        save(&scratch, root, Saved { updated: 2, ..with_places("plain", Vec::new()) });
+        let body: Value =
+            serde_json::from_str(&std::fs::read_to_string(file(&scratch, root)).unwrap()).unwrap();
+        let field = |id: &str| {
+            body["chats"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap()["agent"].clone()
+        };
+        assert_eq!(field("other"), "elsewhere");
+        assert!(field("plain").is_null(), "Claude's is the field left out");
+        let past = |id: &str| load(&scratch, root).into_iter().find(|c| c.id == id).unwrap().past();
+        assert_eq!((past("other").agent, past("plain").agent), ("elsewhere".into(), "claude".to_string()));
+        assert!(past("plain").row().is_some_and(|r| std::ptr::eq(r, &crate::agent::CLAUDE)));
+        assert!(past("other").row().is_none(), "no such row here: not continued");
+    }
+
     /// A conversation `id` kept with `places`, one answer's.
     fn with_places(id: &str, places: Vec<Value>) -> Saved {
         let places = json!([{ "back": 0, "asked": "why?", "at": 1, "places": places, "flow": null }]);
@@ -651,6 +698,7 @@ mod tests {
             places: Some(places),
             seq: seq(),
             signed_read: false,
+            agent: crate::agent::CLAUDE.name.into(),
         }
     }
 

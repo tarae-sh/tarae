@@ -3202,6 +3202,7 @@ fn the_empty_chat_offers_the_latest_conversation_on_its_first_row() {
         title: title.into(),
         updated: now - ago,
         context,
+        agent: "claude".into(),
     };
     let kept = || {
         vec![
@@ -3245,6 +3246,56 @@ fn the_empty_chat_offers_the_latest_conversation_on_its_first_row() {
     assert!(!rows.iter().any(|r| r.contains("C-p")), "{rows:#?}");
 }
 
+/// Agents beside Claude, step 2 (L2): the continue row asks the kept conversation's own agent — one whose row this
+/// tarae hasn't isn't offered, and `C-p`'s continue of it refuses, saying why, the chat as it was.
+#[test]
+fn a_conversation_whose_agent_isnt_here_isnt_offered() {
+    let now = crate::chats::now();
+    let past = |agent: &str| crate::chats::Past {
+        id: "a".into(),
+        title: "why does adds() fail?".into(),
+        updated: now - 60,
+        context: None,
+        agent: agent.into(),
+    };
+    let shot = |agent: &str| {
+        let mut s = Shot::new(160, 30);
+        s.file("src/demo.rs", DEMO_RS);
+        let mut chat = crate::chat::Chat::new();
+        chat.hidden = false;
+        chat.past = vec![past(agent)];
+        s.ed.workspace.claude.chat = Some(chat);
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
+        let mut parser = vt100::Parser::new(s.h, s.w, 0);
+        parser.process(&s.frame());
+        let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
+        (s, rows)
+    };
+    let (_, rows) = shot("claude");
+    assert!(rows.iter().any(|r| r.contains("C-p continue \"why")), "{rows:#?}");
+    let (mut s, rows) = shot("elsewhere");
+    assert!(!rows.iter().any(|r| r.contains("C-p continue")), "{rows:#?}");
+    // (continued all the same — the picker's Enter: refused, nothing of it taken; a stand-in program, were it not)
+    s.ed.config.llm.command = "true".into();
+    let saved = crate::chats::Saved {
+        id: "a".into(),
+        title: "why does adds() fail?".into(),
+        updated: now - 60,
+        rows: vec![json!({"role": "user", "text": "why does adds() fail?"})],
+        plan: None,
+        usage: None,
+        places: None,
+        seq: crate::chats::seq(),
+        signed_read: false,
+        agent: "elsewhere".into(),
+    };
+    crate::chat::continue_with(&mut s.ed, saved);
+    let c = s.ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.conversation.is_none() && c.msgs.is_empty() && std::ptr::eq(c.agent, &crate::agent::CLAUDE));
+    let said = s.ed.status.as_ref().map(|s| s.0.as_str());
+    assert_eq!(said, Some("that conversation was with elsewhere, which this tarae can't start"));
+}
+
 /// A top line's piece folds by its own parts before any piece goes (the user, 2026-10-29): `continued · 2h ago · 120k`
 /// before `follow` loses its size, then its age, then `follow` goes, `continued` alone the last.
 #[test]
@@ -3282,6 +3333,7 @@ fn a_press_on_the_top_line_lands_after_a_part_folded() {
             title: "t".into(),
             updated: now - 7_300,
             context: Some(120_400),
+            agent: "claude".into(),
         });
         s.ed.workspace.claude.chat = Some(chat);
         s.ed.workspace.claude.hosts.push(("crates.io".into(), 443));
@@ -3376,6 +3428,7 @@ fn projects2_frames() {
             places: None,
             seq: crate::chats::seq() - ago,
             signed_read: false,
+            agent: crate::agent::CLAUDE.name.into(),
         };
         crate::chats::save(&chats, root, saved);
     };

@@ -326,7 +326,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
                 let started = (|| -> Result<(u32, Folder), String> {
                     let folder = Folder::made()?;
                     let policy = POLICY.text();
-                    let at = agent::Place { dir: &folder.0, given: env.as_ref(), cred: &cred };
+                    let at = agent::Place { dir: &folder.0, given: env.as_ref(), cred: Some(&cred) };
                     let first = agent::First { tools: false, prompt: Some(message) };
                     let route = move |ev| -> Option<crate::event::Apply> {
                         Some(Box::new(move |ed: &mut Editor| on_event(ed, card, run, ev)))

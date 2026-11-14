@@ -163,8 +163,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// A Claude not started yet: no chat, nothing answered for it, `llm.billing`'s default until its workspace says.
-    pub fn new(id: SessionId) -> Session {
+    /// A Claude not started yet: no chat, nothing answered for it, `llm.billing`'s default until its workspace says,
+    /// its usage read with what `row`'s agent reports.
+    pub fn new(id: SessionId, row: &'static crate::agent::Row) -> Session {
         Session {
             id,
             colour: 0,
@@ -182,7 +183,7 @@ impl Session {
             env_key: None,
             answered: Vec::new(),
             asking: Vec::new(),
-            usage: Default::default(),
+            usage: crate::usage::Usage::of(&row.caps),
             idle: Default::default(),
             choice: None,
             billing: Default::default(),

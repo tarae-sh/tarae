@@ -7,11 +7,11 @@ use std::process::Command;
 
 use crate::agent::{Args, Role, SpawnError, Start};
 use crate::billing::Credential;
-use crate::llm::{Env, LlmConfig};
+use crate::llm::Env;
 
 /// `s`'s arguments: in place of `llm.args`, and after them. Err: `llm.args` can't take what it must add.
 pub fn of(s: &Start) -> Result<Args, String> {
-    let base = &s.cfg.args;
+    let base = s.claude.args;
     let system = s.system.unwrap_or_default();
     // (tarae's words beside Claude Code's own, and its permission asks on stdin — answered by tarae)
     let beside =
@@ -20,19 +20,24 @@ pub fn of(s: &Start) -> Result<Args, String> {
         Role::Chat => chat::args(s),
         Role::Ask => Args { args: ask::args(base), extra: beside() },
         Role::Reviewer(role) => Args { args: reviewer::args_for(base, role)?, extra: beside() },
-        Role::Draft => Args { args: base.clone(), extra: Vec::new() },
+        Role::Draft => Args { args: base.to_vec(), extra: Vec::new() },
         Role::WebSearch => Args { args: web_search::args(base, system), extra: Vec::new() },
         Role::CardReview { max_usd } => Args { args: card_review::args(system, max_usd), extra: Vec::new() },
     })
 }
 
 /// `s`'s process, not started: Claude's `command` on its arguments — a board's member without what would set its
-/// cache's time over its own (`reviewer::CACHE_TTL_ENV`).
-pub fn command(s: &Start, dir: &Path, given: Option<&Env>, cred: &Credential) -> Result<Command, SpawnError> {
+/// cache's time over its own (`reviewer::CACHE_TTL_ENV`). Err: no `cred` — tarae always chooses who pays for a claude.
+pub fn command(
+    s: &Start,
+    dir: &Path,
+    given: Option<&Env>,
+    cred: Option<&Credential>,
+) -> Result<Command, SpawnError> {
+    let cred = cred.ok_or_else(|| SpawnError::Billing("claude: no credential chosen for it".into()))?;
     let Args { args, extra } = of(s).map_err(SpawnError::Args)?;
-    let cfg = LlmConfig { args, ..s.cfg.clone() };
     let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
-    let mut cmd = super::command(&cfg, &extra, dir, given, cred)?;
+    let mut cmd = super::command(s, &args, &extra, dir, given, cred)?;
     if let Role::Reviewer(role) = s.role
         && !matches!(role, crate::reviewer::Role::One)
     {
@@ -77,7 +82,7 @@ mcp__tarae__web_search,mcp__tarae__code";
     /// The chat's claude: tarae's tools, the conversation kept and maybe continued, tarae's MCP server only, the
     /// project's settings as the chat loads them, tarae's words beside its own, its thinking as text.
     pub fn args(s: &Start) -> Args {
-        let mut args = claude::with_tools(&s.cfg.args, TOOLS, ALLOWED);
+        let mut args = claude::with_tools(s.claude.args, TOOLS, ALLOWED);
         // The conversation is kept by claude too, so it can be continued (`chats.rs`)
         args.retain(|a| a != "--no-session-persistence");
         // Only tarae's own MCP server, whatever `llm.args` says: under `-p` a project's `.mcp.json` servers connect

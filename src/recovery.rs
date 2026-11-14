@@ -1018,6 +1018,7 @@ fn lefts_of(sessions: &[(&str, &Path)]) -> Vec<Left> {
             title: "t".repeat(99),
             updated: 0,
             context: Some(41_000),
+            agent: "claude".into(),
         },
         cold: false,
         at: UNIX_EPOCH,

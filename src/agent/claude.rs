@@ -12,7 +12,9 @@ use std::time::Duration;
 use crate::agent::{Agent, Caps, Event, First, ModelInfo, Permission, Prompt, SpawnError, Started};
 use crate::billing::Credential;
 use crate::event::Apply;
-use crate::llm::{ClaudeEnv, Env, LlmConfig, judged, process_names};
+#[cfg(test)]
+use crate::llm::LlmConfig;
+use crate::llm::{ClaudeEnv, Env, judged, process_names};
 
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
 pub(crate) const DEFAULT_ARGS: &[&str] = &[
@@ -60,7 +62,7 @@ impl ModelInfo {
 /// over the process's as if inherited (None: the process's own); what's left out is judged on it alone, and the
 /// process's names those rules judge aren't inherited (`judged`). As you, as every other tool runs claude: no
 /// sandbox of its own (user decision 2026-10-17) — what it does through its tools goes through tarae. Tests'
-/// (a start is `agent::start`, on its role's flags).
+/// (a start is `agent::start`, on its role's flags): `cfg`'s program on its own `llm.args`, `extra` after.
 #[cfg(test)]
 pub fn spawn(
     cfg: &LlmConfig,
@@ -69,28 +71,32 @@ pub fn spawn(
     given: Option<&Env>,
     cred: &Credential,
 ) -> Result<Child, SpawnError> {
-    let mut cmd = command(cfg, extra, dir, given, cred)?;
+    let s = crate::agent::Start::new(crate::agent::Role::Draft, cfg);
+    let mut cmd = command(&s, &cfg.args, extra, dir, given, cred)?;
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.spawn().map_err(SpawnError::Start)
 }
 
-/// `spawn`'s command, not started: its program (`llm.command`, itself), arguments and environment.
+/// `s`'s command, not started: its program (`llm.command`, itself) on `args` (its role's, in place of `llm.args`)
+/// and `extra`, and its environment.
 pub fn command(
-    cfg: &LlmConfig,
+    s: &crate::agent::Start,
+    args: &[String],
     extra: &[&str],
     dir: &Path,
     given: Option<&Env>,
     cred: &Credential,
 ) -> Result<Command, SpawnError> {
+    let program = s.claude.command;
     // (tests never start the real claude — a stand-in in `sh` answers for it; card model P2 found a test
     // whose claude read ~/.claude.json and the keychain)
     #[cfg(test)]
     assert!(
-        Path::new(&cfg.command).file_name().is_none_or(|n| n != "claude"),
+        Path::new(program).file_name().is_none_or(|n| n != "claude"),
         "a test started the real claude — give llm.command a stand-in (`sh -c 'cat > /dev/null'`)"
     );
-    let args = flags::billing::args(&cfg.args, cred).map_err(SpawnError::Billing)?;
-    let mut cmd = Command::new(&cfg.command);
+    let args = flags::billing::args(args, cred).map_err(SpawnError::Billing)?;
+    let mut cmd = Command::new(program);
     cmd.current_dir(dir).args(&args).args(extra);
     if let Some(given) = given {
         // (a stand-in is the whole of what the rules judge — `ClaudeEnv::of`: the process's own such names stay out)
@@ -116,20 +122,20 @@ pub fn command(
     cmd.env_remove("SSH_AUTH_SOCK");
     // Nor your wiki's token (`web.signed-in`): it can write the wiki, and only tarae's own GET sends it — never a
     // claude's, its children's, or what they print
-    for w in &cfg.signed_in {
+    for w in s.signed_in {
         cmd.env_remove(&w.token_env);
     }
     // (removed by name, never `env_clear`: the rest of tarae's environment is claude's as it always was. An API
     // session never keeps a key from it: one there outranks its helper — Claude Code's credential order)
-    let keep_keys = cfg.keep_env_key && *cred == Credential::Subscription;
+    let keep_keys = s.claude.keep_env_key && *cred == Credential::Subscription;
     for name in ClaudeEnv::of(given, keep_keys).removed {
         cmd.env_remove(name);
     }
-    if let Some(m) = &cfg.model {
+    if let Some(m) = s.model {
         cmd.args(["--model", m]);
     }
-    if !cfg.effort.is_empty() {
-        cmd.args(["--effort", &cfg.effort]);
+    if !s.effort.is_empty() {
+        cmd.args(["--effort", s.effort]);
     }
     Ok(cmd)
 }
@@ -178,6 +184,7 @@ pub const CAPS: Caps = Caps {
     effort: true,
     compaction: true,
     own_tools_off: true,
+    billing: true,
 };
 
 /// Whether a claude that ended saying `err` is started again, and how: one whose last words refuse
@@ -1130,7 +1137,8 @@ echo closed > "$1/eof""#;
     fn every_claude_starts_as_its_own_program() {
         let dir = std::env::temp_dir();
         let cfg = LlmConfig { command: "tarae-stand-in-claude".into(), ..Default::default() };
-        let cmd = command(&cfg, &[], &dir, None, &Credential::Subscription).unwrap();
+        let s = crate::agent::Start::new(crate::agent::Role::Draft, &cfg);
+        let cmd = command(&s, &cfg.args, &[], &dir, None, &Credential::Subscription).unwrap();
         assert_eq!(cmd.get_program(), "tarae-stand-in-claude");
         let args: Vec<_> = cmd.get_args().collect();
         assert!(!args.iter().any(|a| *a == "tarae-stand-in-claude"), "nothing before it: {args:?}");

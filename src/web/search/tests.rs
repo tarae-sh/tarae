@@ -63,7 +63,7 @@ fn its_args_are_websearch_alone_on_the_settings_model() {
     let env_of = |names: &[(&str, &str)]| {
         let given: crate::llm::Env = names.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let cred = crate::billing::Credential::Subscription;
-        let cmd = crate::agent::command(&helper(&cfg), dir, Some(&given), &cred).unwrap();
+        let cmd = crate::agent::command(&helper(&cfg), dir, Some(&given), Some(&cred)).unwrap();
         let env: std::collections::HashMap<String, Option<String>> = (cmd.get_envs())
             .map(|(k, v)| (k.to_string_lossy().into(), v.map(|v| v.to_string_lossy().into())))
             .collect();
@@ -405,6 +405,7 @@ fn a_token_read_is_kept_with_its_conversation() {
         at_end: None,
         lazy: true,
         signed_read: true,
+        agent: crate::agent::CLAUDE.name.into(),
     };
     crate::chat::restore(&mut ed, r);
     assert!(ed.workspace.claude.chat.as_ref().unwrap().signed_read, "restarted, still marked");

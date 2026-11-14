@@ -692,6 +692,9 @@ pub struct Chat {
     /// This conversation read a page with your wiki's token (`web::tool::landed`): each of its web searches asks from
     /// then on, whatever `searches` holds but a no (W3 — internal words could leave in a public query).
     pub signed_read: bool,
+    /// The agent its conversation is with: the config's row as the chat is made (`agent::row_of`), a continued
+    /// conversation's own (`chats::Saved.agent`). Its starts run it, and its capabilities say what it's asked.
+    pub agent: &'static crate::agent::Row,
     /// The user said yes to the terminals on an `also` card this turn: asked again, they take none of its
     /// `ALSO_MAX` (frictions29 23: each e2e or scenes run asked, and the turn ran out of cards).
     pub also_yes: bool,
@@ -1244,6 +1247,8 @@ impl Chat {
             web_signed: Vec::new(),
             searches: None,
             signed_read: false,
+            // (`made` and `restore` set it from the config, a continue from its conversation)
+            agent: &crate::agent::CLAUDE,
             also_yes: false,
             run_scripts: Vec::new(),
             queued: None,
@@ -1729,6 +1734,7 @@ fn made(ed: &mut Editor) {
     crate::chatnotes::kept_sync(ed);
     crate::flags::forget(ed);
     let mut c = Chat::new();
+    c.agent = crate::agent::row_of(&ed.config.llm);
     // (the stops the closed chat left: the turn's map stays until the next turn starts)
     if let Some(left) = ed.workspace.claude.stops_left.take() {
         c.follow.replay = left;
@@ -1832,6 +1838,11 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
     if c.busy() {
         return ed.set_status(STILL_ANSWERING);
     }
+    // (its agent's, which this tarae may not have: then it isn't continued — nor offered, `chats::Past::row`)
+    let Some(row) = crate::agent::row_named(&saved.agent) else {
+        return ed
+            .set_status(format!("that conversation was with {}, which this tarae can't start", saved.agent));
+    };
     // (another conversation: the last one's answers go with it, as a new one's do — `reset`; a chat with none yet
     // — `:restart`'s, one just opened — leaves only answers it holds)
     let other = match c.conversation.as_deref() {
@@ -1848,6 +1859,7 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
         c.conversation_left();
     }
     c.kill();
+    c.agent = row;
     c.msgs = crate::chats::msgs_of(&saved.rows);
     // (an earlier "continued" row says nothing now — one, at the end, says it)
     c.msgs.retain(|m| !(m.role == Role::Note && m.text.starts_with("continued from ")));
@@ -1866,7 +1878,8 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
     c.said_at = Some(saved.updated);
     c.scroll = 0;
     c.follow.new_turn();
-    // (its turns, cost so far and cache, as far as they were kept)
+    // (its turns, cost so far and cache, as far as they were kept — read with what its agent reports)
+    ed.workspace.claude.usage.caps = &row.caps;
     match &saved.usage {
         Some(u) => ed.workspace.claude.usage.restore(&saved.id, u),
         None => ed.workspace.claude.usage.resumed(&saved.id),
@@ -1946,6 +1959,8 @@ pub struct Restored {
     pub lazy: bool,
     /// Its conversation read a page with your wiki's token (`Chat.signed_read`).
     pub signed_read: bool,
+    /// Its agent's row (`Chat.agent`'s name).
+    pub agent: String,
 }
 
 /// The note a conversation carried over a restart ends with (one — earlier ones go).
@@ -1959,6 +1974,8 @@ pub fn restore(ed: &mut Editor, r: Restored) {
         keeper.back(id.clone());
     }
     let mut c = Chat::new();
+    // (a row this tarae hasn't: the config's — its conversation, if any, then isn't continued)
+    c.agent = crate::agent::row_named(&r.agent).unwrap_or_else(|| crate::agent::row_of(&ed.config.llm));
     c.follow.on = r.follow;
     c.signed_read = r.signed_read;
     c.input.set_at(&r.input, r.cursor);
@@ -2037,6 +2054,7 @@ pub(crate) fn saved_of(l: &crate::workspace::Workspace) -> Option<crate::chats::
         plan,
         seq: crate::chats::seq(),
         signed_read: c.signed_read,
+        agent: c.agent.name.into(),
     })
 }
 
@@ -2336,8 +2354,11 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
         // (by its time, as the store has it: leaving it isn't talking in it)
         let updated = c.said_at.unwrap_or_else(crate::chats::now);
         let at = c.past.iter().position(|p| p.updated <= updated).unwrap_or(c.past.len());
-        c.past.insert(at, crate::chats::Past { id, title, updated, context });
+        let agent = c.agent.name.into();
+        c.past.insert(at, crate::chats::Past { id, title, updated, context, agent });
     }
+    // (a new conversation: on the config's agent, as a chat made is)
+    c.agent = crate::agent::row_of(&ed.config.llm);
     c.continued = None;
     c.msgs.clear();
     c.plan = None;
@@ -2517,8 +2538,10 @@ pub(crate) fn launched_as(
     no_thought: bool,
 ) -> Option<(llm::LlmConfig, Vec<String>)> {
     let mut c = Chat::new();
+    c.agent = crate::agent::row_of(&ed.config.llm);
     // (its thinking flag refused as an older claude refuses it: the wire's own word for it)
-    let again = no_thought.then(|| crate::agent::again("error: unknown option '--thinking-display'", None));
+    let refused = "error: unknown option '--thinking-display'";
+    let again = no_thought.then(|| crate::agent::again(c.agent, refused, None));
     (c.resume, c.fork, c.again) = (resume.map(String::from), fork, again.flatten());
     ed.workspace.claude.chat = Some(c);
     ensure_proc(ed);
@@ -2556,7 +2579,7 @@ fn ensure_proc(ed: &mut Editor) {
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
     let (web_search, code) = (ed.config.llm.web_search, ed.config.llm.code);
-    let (held, caps) = (llm::held(ed).is_some(), crate::agent::caps(&cfg));
+    let held = llm::held(ed).is_some();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
@@ -2586,34 +2609,39 @@ fn ensure_proc(ed: &mut Editor) {
         (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
         return;
     }
+    // (its conversation's agent, and what it can do)
+    let row = c.agent;
+    let caps = &row.caps;
     // (where its agent can: else it begins a conversation — a fork's too, never the source's own)
     let resume = c.resume.clone().filter(|_| caps.resume && (!c.fork || caps.fork));
     let (fork, thinking_text, again) = (c.fork, caps.thinking_text, c.again);
     // (your wikis' one line, only while `web.signed-in` names one — fixed for this process: the cache holds)
     let system = system() + &crate::web::signed::prompt(&cfg.signed_in);
-    let start = crate::agent::Start {
+    let mut start = crate::agent::Start {
         system: Some(&system),
         resume: resume.as_deref().map(|conversation| crate::agent::Resume { conversation, fork }),
         thinking_text,
         again,
-        claude: crate::agent::ClaudeStart {
-            settings: settings.as_ref().map(|(s, sources)| (s.as_str(), sources.as_str())),
-        },
-        ..crate::agent::Start::new(crate::agent::Role::Chat, &cfg)
+        ..crate::agent::Start::on(row, crate::agent::Role::Chat, &cfg)
     };
+    start.claude.settings = settings.as_ref().map(|(s, sources)| (s.as_str(), sources.as_str()));
     // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
     let generation = crate::tools::generation();
-    // Who pays (`billing.rs`): an API session's key helper goes into its `--settings`, merged
+    // Who pays (`billing.rs`), where its agent lets tarae choose: an API session's key helper goes into its
+    // `--settings`, merged
     let started = crate::agent::args(&start).and_then(|launched| {
-        let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Chat)?;
-        let at = agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: &cred };
+        let cred = match caps.billing {
+            true => Some(ed.credential(ed.workspace.claude.billing, crate::billing::Role::Chat)?),
+            false => None,
+        };
+        let at = agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: cred.as_ref() };
         // tarae's MCP server (its tools) — registered before anything else is said
         let first = agent::First { tools: true, prompt: None };
         let route = move |ev| -> Option<crate::event::Apply> {
             Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
         };
         let started = agent::start(&start, at, first, false, tx, route);
-        started.map(|s| (s, cred.billing(), launched)).map_err(|e| e.said(&cfg.command, true))
+        started.map(|s| (s, cred.map(|c| c.billing()), launched)).map_err(|e| e.said(&cfg.command, true))
     });
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     let (started, billing, launched) = match started {
@@ -2625,7 +2653,7 @@ fn ensure_proc(ed: &mut Editor) {
             return said_here(ed, at);
         }
     };
-    c.billing = Some(billing);
+    c.billing = billing;
     c.runs_on = (cfg.model.clone(), cfg.effort.clone());
     c.launched = Some((llm::LlmConfig { args: launched.args, ..cfg }, launched.extra));
     let agent::Started { agent, pid } = started;
@@ -2674,8 +2702,10 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
     };
     // (the credential claude says it runs on, against who pays for it — `billing.rs`)
     let keep_key = llm::keeps_key(ed);
+    // (only where its agent lets tarae choose who pays: another's word on it is its own)
     let wrong = |c: &Chat, said: Option<&str>| {
-        c.billing.and_then(|b| crate::billing::checked(b, keep_key, crate::billing::Role::Chat, said))
+        let billing = c.billing.filter(|_| c.agent.caps.billing);
+        billing.and_then(|b| crate::billing::checked(b, keep_key, crate::billing::Role::Chat, said))
     };
     let log = ed.workspace.log();
     // (the turn's or the process's end: nothing is being written — `writing.rs`)
@@ -3191,7 +3221,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 return send_queued(ed);
             }
             // An older claude without the flag: quietly again without it
-            if let Some(again) = crate::agent::again(&err, c.again) {
+            if let Some(again) = crate::agent::again(c.agent, &err, c.again) {
                 c.again = Some(again);
                 if c.state != State::Idle {
                     c.state = State::Idle;
@@ -5789,8 +5819,13 @@ mod tests {
         ed.config.llm.command = "/nonexistent/no-claude-here".into();
         let mut c = Chat::new();
         (c.conversation, c.said_at) = (Some("older".into()), Some(1000));
-        let newer =
-            crate::chats::Past { id: "newer".into(), title: "t".into(), updated: 2000, context: None };
+        let newer = crate::chats::Past {
+            id: "newer".into(),
+            title: "t".into(),
+            updated: 2000,
+            context: None,
+            agent: "claude".into(),
+        };
         c.past = vec![newer];
         ed.workspace.claude.chat = Some(c);
         reset(&mut ed);

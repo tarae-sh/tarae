@@ -513,9 +513,24 @@ mod tests {
         let (main, nested) =
             (base.join(format!("{tag}-main")), base.join(format!("{tag}-main/wt/{tag}-fix")));
         let other = base.join(format!("{tag}-other"));
-        let front = crate::workspace::Workspace::new(crate::event::WorkspaceId::here(1), main.clone(), 1);
-        let inner = crate::workspace::Workspace::new(crate::event::WorkspaceId::here(2), nested.clone(), 2);
-        let behind = crate::workspace::Workspace::new(crate::event::WorkspaceId::here(3), other.clone(), 3);
+        let front = crate::workspace::Workspace::new(
+            crate::event::WorkspaceId::here(1),
+            main.clone(),
+            1,
+            &crate::agent::CLAUDE,
+        );
+        let inner = crate::workspace::Workspace::new(
+            crate::event::WorkspaceId::here(2),
+            nested.clone(),
+            2,
+            &crate::agent::CLAUDE,
+        );
+        let behind = crate::workspace::Workspace::new(
+            crate::event::WorkspaceId::here(3),
+            other.clone(),
+            3,
+            &crate::agent::CLAUDE,
+        );
         let (m, f, o) = (format!("{tag}-main"), format!("{tag}-fix"), format!("{tag}-other"));
         let captured = capture();
         let mine = || -> Vec<String> { captured.lines().into_iter().filter(|l| l.contains(&tag)).collect() };
@@ -578,7 +593,12 @@ mod tests {
 
         // The checkout tarae started in, as the list calls it: by its branch once known — in hand and from a path
         let started = base.join(format!("{tag}-started"));
-        let mut first = crate::workspace::Workspace::new(crate::event::WorkspaceId::HOME, started.clone(), 4);
+        let mut first = crate::workspace::Workspace::new(
+            crate::event::WorkspaceId::HOME,
+            started.clone(),
+            4,
+            &crate::agent::CLAUDE,
+        );
         let branch = format!("{tag}-feature");
         first.git_branch = Some(branch.clone());
         first.in_log.named(first.label());

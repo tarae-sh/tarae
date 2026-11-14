@@ -69,7 +69,7 @@ fn offered(ed: &Editor) -> Vec<ModelInfo> {
     match ed.workspace.claude.chat.as_ref().map(|c| &c.models).filter(|m| !m.is_empty()) {
         Some(m) => m.clone(),
         // (Claude's own list until its claude says — none for an agent that lists none)
-        None if crate::agent::caps(&ed.config.llm).models => fallback(),
+        None if crate::agent::row_of(&ed.config.llm).caps.models => fallback(),
         None => Vec::new(),
     }
 }

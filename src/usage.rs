@@ -449,9 +449,10 @@ pub fn account_seen(ed: &mut Editor, a: Account) {
 }
 
 /// A session's Claude usage.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Usage {
-    /// What its chat's agent can report (`chat::ensure_proc`; the one wire's until one starts).
+    /// What its chat's agent can report: its session's row's, a continued conversation's (`chat::continue_from`), its
+    /// running agent's (`chat::ensure_proc`).
     pub caps: &'static crate::agent::Caps,
     /// The account its chat's claude runs on (`Account`) — None: not said yet.
     pub account: Option<Account>,
@@ -483,6 +484,26 @@ pub struct Usage {
 }
 
 impl Usage {
+    /// Nothing seen yet, read with `caps` (its agent's).
+    pub fn of(caps: &'static crate::agent::Caps) -> Usage {
+        Usage {
+            caps,
+            account: None,
+            turns: Vec::new(),
+            requests: Vec::new(),
+            conv: None,
+            windows: Vec::new(),
+            requesting: None,
+            watch: None,
+            cli: None,
+            key_source: None,
+            plan_event: false,
+            compacting: None,
+            tally: Default::default(),
+            to_record: Vec::new(),
+        }
+    }
+
     /// A conversation this process began (no `--resume`): it has cost nothing before, its first request is
     /// what every request starts with.
     pub fn fresh(&mut self, id: &str) {
@@ -1318,7 +1339,7 @@ mod tests {
     /// The recorded stream (`usage_stream.jsonl`: two turns in one process, then a third after `--resume`)
     /// read as the chat reads it.
     fn recorded() -> (Usage, Vec<Spent>) {
-        let mut u = Usage::default();
+        let mut u = Usage::of(&crate::agent::CLAUDE.caps);
         u.fresh("cda055cc-67c1-4da7-9120-68435b027d4f");
         let mut results = Vec::new();
         for (i, line) in include_str!("usage_stream.jsonl").lines().enumerate() {
@@ -1341,7 +1362,7 @@ mod tests {
     /// with none; never a call's input. An aside's entry has no steps.
     #[test]
     fn a_turn_is_recorded_as_its_requests_tool_names_in_order() {
-        let mut u = Usage::default();
+        let mut u = Usage::of(&crate::agent::CLAUDE.caps);
         u.fresh("c1");
         let usage = |out: u64| {
             json!({ "input_tokens": 10, "cache_read_input_tokens": 20_000,
@@ -1413,7 +1434,7 @@ mod tests {
         assert_eq!(u.turns.len(), 3);
         assert_eq!(u.turns.iter().map(|t| t.requests).collect::<Vec<_>>(), [2, 1, 1]);
         // Each turn's requests, summed as they streamed, are what its result says
-        let mut u2 = Usage::default();
+        let mut u2 = Usage::of(&crate::agent::CLAUDE.caps);
         let mut sums = vec![Counts::default()];
         for (i, line) in include_str!("usage_stream.jsonl").lines().enumerate() {
             let v: Value = serde_json::from_str(line).unwrap();
@@ -1461,7 +1482,7 @@ mod tests {
     /// whole conversation's) — said as not reported; the next one's is.
     #[test]
     fn a_resumed_conversations_earlier_cost_isnt_guessed() {
-        let mut u = Usage::default();
+        let mut u = Usage::of(&crate::agent::CLAUDE.caps);
         u.resumed("c");
         let spent = |total: f64, at_ms: u64| Spent {
             conversation: "c".into(),
@@ -1475,7 +1496,7 @@ mod tests {
         assert_eq!(u.totals().cost_said(), "$0.50 + 1 not reported");
         // Kept and continued: the cost so far comes back with it
         let kept = u.conv_json("c").unwrap();
-        let mut back = Usage::default();
+        let mut back = Usage::of(&crate::agent::CLAUDE.caps);
         back.restore("c", &kept);
         assert_eq!(back.turns.len(), 2);
         assert_eq!(back.spent(spent(6.0, 3)).cost, Some(0.5));
@@ -1483,7 +1504,7 @@ mod tests {
 
     #[test]
     fn the_cache_goes_cold_at_its_ttl() {
-        let mut u = Usage::default();
+        let mut u = Usage::of(&crate::agent::CLAUDE.caps);
         u.fresh("c");
         let usage = |w5: u64, w1: u64, read: u64| {
             json!({ "input_tokens": 3, "cache_creation_input_tokens": w5 + w1, "cache_read_input_tokens": read,
@@ -1520,7 +1541,7 @@ mod tests {
     /// Another CLI's stream with no usage in it: nothing made up.
     #[test]
     fn what_isnt_reported_stays_so() {
-        let mut u = Usage::default();
+        let mut u = Usage::of(&crate::agent::CLAUDE.caps);
         u.fresh("c");
         let t = u.spent(Spent { conversation: "c".into(), at_ms: 1, ..Spent::default() });
         assert_eq!((t.counts, t.cost), (Counts::default(), None));

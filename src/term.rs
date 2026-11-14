@@ -20805,9 +20805,7 @@ fn draw_ask_line(
         y += 1;
     }
     // An empty chat: the project's latest conversation a key away, under the line — as the docked chat's first keys
-    else if let Some(p) =
-        ask_past(c).filter(|_| y < top + rows && crate::agent::caps(&editor.config.llm).resume)
-    {
+    else if let Some(p) = ask_past(c).filter(|p| y < top + rows && p.row().is_some_and(|r| r.caps.resume)) {
         chat_row_start(out, x0, y, edge, card)?;
         let row = continue_row(editor, ui, p, w, crate::chats::now(), (key, faint));
         let used = chat_spans_at(out, &row, card, w, (crate::whole::On::Chat, text_x, y, (x0, x0 + cw)))?;
@@ -20994,8 +20992,9 @@ fn draw_chat(
         let tab_end = intro.len();
         // A start begins a new conversation: the latest, a key away among the first keys — its age and size said
         // before a cold one is paid for (`continue_row`)
-        let resumes = crate::agent::caps(&editor.config.llm).resume;
-        if let Some(p) = c.past.iter().find(|p| Some(&p.id) != c.conversation.as_ref()).filter(|_| resumes) {
+        // (one its agent can continue: a row this tarae has, that resumes)
+        let resumes = |p: &&crate::chats::Past| p.row().is_some_and(|r| r.caps.resume);
+        if let Some(p) = c.past.iter().find(|p| Some(&p.id) != c.conversation.as_ref()).filter(resumes) {
             intro.push(continue_row(
                 editor,
                 ui,
@@ -28078,7 +28077,8 @@ mod tests {
     #[test]
     fn an_api_sessions_row_says_so_and_a_plans_says_nothing_new() {
         use crate::billing::Billing;
-        let (u, limits) = (crate::usage::Usage::default(), crate::limits::Limits::default());
+        let (u, limits) =
+            (crate::usage::Usage::of(&crate::agent::CLAUDE.caps), crate::limits::Limits::default());
         let text = |b, w| {
             let spans = usage_spans(
                 &u,
@@ -28103,7 +28103,7 @@ mod tests {
     fn the_usage_row_says_the_weekly_window_only_while_it_presses() {
         use crate::limits::{Limits, Reading, Report, Source, Status, WEEKLY};
         let now = crate::usage::now_ms();
-        let mut u = crate::usage::Usage::default();
+        let mut u = crate::usage::Usage::of(&crate::agent::CLAUDE.caps);
         u.key_source = Some("none".into());
         u.account =
             Some(crate::usage::Account { organization: None, plan: Some("Claude Max".into()), login: 1 });

@@ -249,6 +249,7 @@ fn the_conversation_is_forked_once_then_its_own_across_a_restart() {
             at_end: None,
             lazy: false,
             signed_read: false,
+            agent: crate::agent::CLAUDE.name.into(),
         },
     );
     one_more(&mut back);

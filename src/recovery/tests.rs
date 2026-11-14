@@ -573,6 +573,7 @@ fn stored(dir: &Path, root: &Path, id: &str, ago: Duration) {
         places: None,
         seq: crate::chats::seq(),
         signed_read: false,
+        agent: crate::agent::CLAUDE.name.into(),
     };
     crate::chats::save(&dir.join("chats"), root, saved);
 }
@@ -933,6 +934,7 @@ fn a_conversation_restart_brought_back_is_not_offered_and_a_failed_exec_keeps_it
         at_end: None,
         lazy: true,
         signed_read: false,
+        agent: crate::agent::CLAUDE.name.into(),
     };
     crate::chat::restore(&mut ed, restored);
     ed.recovery_scan();
@@ -1098,7 +1100,13 @@ fn what_can_be_continued_is_offered_and_another_projects_is_left() {
 #[test]
 fn a_conversations_row_says_what_is_known() {
     let row = |context, cold, named| {
-        let past = crate::chats::Past { id: "c".into(), title: "why?\nand more".into(), updated: 0, context };
+        let past = crate::chats::Past {
+            id: "c".into(),
+            title: "why?\nand more".into(),
+            updated: 0,
+            context,
+            agent: "claude".into(),
+        };
         let name = "main".to_string();
         let (file, dir) = (PathBuf::new(), PathBuf::new());
         let left = Left { root: PathBuf::new(), name, past, cold, at: UNIX_EPOCH, file, dir };

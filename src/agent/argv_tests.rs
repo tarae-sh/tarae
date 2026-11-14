@@ -8,15 +8,16 @@ use crate::llm::LlmConfig;
 /// after its flag as `<system>`.
 fn line(cfg: &LlmConfig, extra: &[String]) -> String {
     let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+    let s = Start::new(crate::agent::Role::Draft, cfg);
+    let dir = std::env::temp_dir();
     quoted(
-        &crate::agent::claude::command(cfg, &extra, &std::env::temp_dir(), None, &Credential::Subscription)
-            .unwrap(),
+        &crate::agent::claude::command(&s, &cfg.args, &extra, &dir, None, &Credential::Subscription).unwrap(),
     )
 }
 
 /// `line` for a start, as `agent::command` makes its process.
 fn line_of(s: &Start) -> String {
-    quoted(&crate::agent::command(s, &std::env::temp_dir(), None, &Credential::Subscription).unwrap())
+    quoted(&crate::agent::command(s, &std::env::temp_dir(), None, Some(&Credential::Subscription)).unwrap())
 }
 
 fn quoted(cmd: &std::process::Command) -> String {

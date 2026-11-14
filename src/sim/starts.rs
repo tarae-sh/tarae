@@ -89,7 +89,7 @@ fn restore(choices: Choices) -> Vec<String> {
     ed.chats_dir = Some(dir.to_path_buf());
     // (the conversation as `:restart` left it: its last request wrote to the 1h cache just now — warm; under
     // `idlecompact::FLOOR`, so its wake at 54 minutes lets compaction go and sleeps on until the cache is cold)
-    let mut u = crate::usage::Usage::default();
+    let mut u = crate::usage::Usage::of(&crate::agent::CLAUDE.caps);
     u.fresh("conv-1");
     let now = crate::usage::now_ms();
     let counts = crate::usage::Counts { input: Some(2), write: Some(20_000), ..Default::default() };
@@ -112,6 +112,7 @@ fn restore(choices: Choices) -> Vec<String> {
         places: None,
         seq: crate::chats::seq(),
         signed_read: false,
+        agent: crate::agent::CLAUDE.name.into(),
     };
     crate::chats::save(&dir, &ed.workspace.root, saved);
     // (the start: the panel as it was — lazy, no claude until a message — then the first frame)
@@ -126,6 +127,7 @@ fn restore(choices: Choices) -> Vec<String> {
         at_end: None,
         lazy: true,
         signed_read: false,
+        agent: crate::agent::CLAUDE.name.into(),
     };
     crate::chat::restore(&mut ed, r);
     ed.events.started();
@@ -160,6 +162,7 @@ fn kept(dir: &std::path::Path, root: &std::path::Path, id: &str, title: &str) {
         places: None,
         seq: crate::chats::seq(),
         signed_read: false,
+        agent: crate::agent::CLAUDE.name.into(),
     };
     crate::chats::save(dir, root, saved);
 }

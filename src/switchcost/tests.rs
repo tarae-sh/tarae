@@ -7,7 +7,7 @@ use crate::usage::{Counts, Seen, Ttl};
 /// A conversation whose last request carried `tokens` on `model`, its cache written `ago_ms` before `now`
 /// (an hour-long write).
 pub(crate) fn conversation(model: &str, tokens: u64, now: u64, ago_ms: u64) -> Usage {
-    let mut u = Usage::default();
+    let mut u = Usage::of(&crate::agent::CLAUDE.caps);
     u.resumed("conv-1");
     u.requesting(now - ago_ms);
     let counts = Counts { input: Some(10), write: Some(tokens - 10), read: Some(0), output: Some(5) };
@@ -58,7 +58,10 @@ fn a_warm_cache_onto_the_key_costs_its_context_at_the_hour_long_write() {
             .said(Billing::Api, here)
             .starts_with("no extra cost — the cache went cold at ")
     );
-    assert_eq!(cost(&Usage::default(), NOW, Billing::Api, "claude-opus-5-5", prices), Cost::Nothing);
+    assert_eq!(
+        cost(&Usage::of(&crate::agent::CLAUDE.caps), NOW, Billing::Api, "claude-opus-5-5", prices),
+        Cost::Nothing
+    );
 }
 
 /// A model's row is found by its id whole — a date or a `[1m]` suffix aside — never by a prefix: `claude-opus-5`

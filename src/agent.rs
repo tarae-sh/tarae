@@ -68,7 +68,7 @@ impl Agent {
     /// What it can do.
     pub fn caps(&self) -> &'static Caps {
         let Agent::Claude(_) = self;
-        &claude::CAPS
+        &CLAUDE.caps
     }
 
     /// Tests: its stdin as it is, for a line of the test's own.
@@ -106,18 +106,51 @@ pub struct Caps {
     /// It runs with none of its own tools: every read, edit and run is tarae's. None that keeps its own starts
     /// (`llm::held`).
     pub own_tools_off: bool,
+    /// tarae chooses who pays for it (`billing.rs`: a plan's login or an API key) and checks the credential it says it
+    /// runs on. One that can't: no credential is asked for it, nor its word checked.
+    pub billing: bool,
 }
 
-/// What the agent `cfg` starts can do — read before one runs. Step 1 has one wire, Claude's.
-pub fn caps(_cfg: &crate::llm::LlmConfig) -> &'static Caps {
-    &claude::CAPS
+/// An agent tarae can start: data, as a language pack is a row ("agents are rows of data", 2026-11-13).
+#[derive(Debug)]
+pub struct Row {
+    /// What a kept conversation records (`chats::Saved.agent`): `claude`.
+    pub name: &'static str,
+    pub wire: Wire,
+    /// Its program and arguments. Claude's are `llm.command`/`llm.args`' defaults (the user's own override them).
+    pub command: &'static str,
+    pub args: &'static [&'static str],
+    /// What it can do, before it runs too.
+    pub caps: Caps,
 }
 
-/// The capabilities a session's usage is read with until its agent starts: the one wire's.
-impl Default for &'static Caps {
-    fn default() -> Self {
-        &claude::CAPS
-    }
+/// The protocol an agent speaks, its wire's: each its own module below `agent`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Wire {
+    /// Claude Code's stream-json (`agent/claude.rs`).
+    Claude,
+}
+
+/// Claude Code's row.
+pub static CLAUDE: Row = Row {
+    name: "claude",
+    wire: Wire::Claude,
+    command: "claude",
+    args: claude::DEFAULT_ARGS,
+    caps: claude::CAPS,
+};
+
+/// Every row tarae has: what a kept conversation's name is looked up in (`row_named`).
+static ROWS: &[&Row] = &[&CLAUDE];
+
+/// The row a start from `cfg` runs: Claude's, whatever `cfg` says — no setting names another (step 2).
+pub fn row_of(_cfg: &crate::llm::LlmConfig) -> &'static Row {
+    &CLAUDE
+}
+
+/// The row named `name` (a kept conversation's), or None: no such row here.
+pub fn row_named(name: &str) -> Option<&'static Row> {
+    ROWS.iter().copied().find(|r| r.name == name)
 }
 
 /// Which start it is — its wire turns it, with the rest of its `Start`, into its own arguments.
@@ -139,9 +172,15 @@ pub enum Role {
 
 /// What a start asks for; its wire says it in its own arguments (`args`).
 pub struct Start<'a> {
+    /// The agent started.
+    pub row: &'static Row,
     pub role: Role,
-    /// Its program, model, effort and `llm.args`.
-    pub cfg: &'a crate::llm::LlmConfig,
+    /// Its model (`--model`; None: its own).
+    pub model: Option<&'a str>,
+    /// Its effort ("": the model's own).
+    pub effort: &'a str,
+    /// The wikis whose tokens no agent's environment keeps (`web.signed-in`).
+    pub signed_in: &'a [crate::web::signed::Wiki],
     /// tarae's words before any message: beside the agent's own (the chat's, the ask's, the reviewer's), or in
     /// their place (the web search's, a card review's).
     pub system: Option<&'a str>,
@@ -156,16 +195,30 @@ pub struct Start<'a> {
 }
 
 impl<'a> Start<'a> {
-    /// `role`'s start on `cfg`: no words of tarae's, no conversation continued, no thinking text, no settings.
+    /// `role`'s start on `cfg`, on its row (`row_of`): no words of tarae's, no conversation continued, no thinking
+    /// text, no settings.
     pub fn new(role: Role, cfg: &'a crate::llm::LlmConfig) -> Start<'a> {
+        Start::on(row_of(cfg), role, cfg)
+    }
+
+    /// `new` on `row` (a chat's: its conversation's).
+    pub fn on(row: &'static Row, role: Role, cfg: &'a crate::llm::LlmConfig) -> Start<'a> {
         Start {
+            row,
             role,
-            cfg,
+            model: cfg.model.as_deref(),
+            effort: &cfg.effort,
+            signed_in: &cfg.signed_in,
             system: None,
             resume: None,
             thinking_text: false,
             again: None,
-            claude: ClaudeStart::default(),
+            claude: ClaudeStart {
+                command: &cfg.command,
+                args: &cfg.args,
+                keep_env_key: cfg.keep_env_key,
+                settings: None,
+            },
         }
     }
 }
@@ -180,8 +233,10 @@ pub struct Again {
 
 /// Whether a process that ended saying `err` is to be started again, and how — `now` how the last start already
 /// differed. None: nothing to try again (its end is said as any end is).
-pub fn again(err: &str, now: Option<Again>) -> Option<Again> {
-    claude::again(err, now.unwrap_or_default())
+pub fn again(row: &Row, err: &str, now: Option<Again>) -> Option<Again> {
+    match row.wire {
+        Wire::Claude => claude::again(err, now.unwrap_or_default()),
+    }
 }
 
 /// A conversation continued: its id, and whether as a fork (copied under a new id, the source's left as it was).
@@ -191,8 +246,13 @@ pub struct Resume<'a> {
 }
 
 /// Claude's own part of a start.
-#[derive(Default)]
 pub struct ClaudeStart<'a> {
+    /// Its program (`llm.command`).
+    pub command: &'a str,
+    /// What it's given in place of its row's arguments (`llm.args`).
+    pub args: &'a [String],
+    /// An API key in tarae's environment goes on to it (`llm.environment-key`, `llm::keeps_key`).
+    pub keep_env_key: bool,
     /// The chat's `--settings` and the sources it loads (`claudetrust::ready`).
     pub settings: Option<(&'a str, &'a str)>,
 }
@@ -206,18 +266,22 @@ pub struct Args {
 
 /// `s`'s arguments, its wire's. Err: `llm.args` can't take what it must add (a board's `--settings` given as a file).
 pub fn args(s: &Start) -> Result<Args, String> {
-    claude::flags::of(s)
+    match s.row.wire {
+        Wire::Claude => claude::flags::of(s),
+    }
 }
 
 /// `s`'s process, not started: its program, arguments and environment — run in `dir`, `given` a test's stand-in for
-/// tarae's environment, paid for by `cred`.
+/// tarae's environment, paid for by `cred` (given where its row says `Caps::billing`).
 pub fn command(
     s: &Start,
     dir: &std::path::Path,
     given: Option<&crate::llm::Env>,
-    cred: &crate::billing::Credential,
+    cred: Option<&crate::billing::Credential>,
 ) -> Result<std::process::Command, SpawnError> {
-    claude::flags::command(s, dir, given, cred)
+    match s.row.wire {
+        Wire::Claude => claude::flags::command(s, dir, given, cred),
+    }
 }
 
 /// `command`, started, its stdin, stdout and stderr piped.
@@ -225,7 +289,7 @@ fn spawn(
     s: &Start,
     dir: &std::path::Path,
     given: Option<&crate::llm::Env>,
-    cred: &crate::billing::Credential,
+    cred: Option<&crate::billing::Credential>,
 ) -> Result<std::process::Child, SpawnError> {
     use std::process::Stdio;
     let mut cmd = command(s, dir, given, cred)?;
@@ -234,11 +298,11 @@ fn spawn(
 }
 
 /// Where an agent runs and on whose account: its folder (the project's root, a helper's own), `given` a test's
-/// stand-in for tarae's environment, `cred` who pays.
+/// stand-in for tarae's environment, `cred` who pays (asked only where its row says `Caps::billing`).
 pub struct Place<'a> {
     pub dir: &'a std::path::Path,
     pub given: Option<&'a crate::llm::Env>,
-    pub cred: &'a crate::billing::Credential,
+    pub cred: Option<&'a crate::billing::Credential>,
 }
 
 /// What an agent is told first: tarae's tools offered (its MCP server — their messages come back as `Event::Mcp`),
@@ -267,16 +331,14 @@ pub fn start(
     route: impl Fn(Event) -> Option<crate::event::Apply> + Send + 'static,
 ) -> Result<Started, SpawnError> {
     let child = spawn(s, at.dir, at.given, at.cred)?;
-    claude::begin(child, first, once, tx, route)
+    match s.row.wire {
+        Wire::Claude => claude::begin(child, first, once, tx, route),
+    }
 }
 
 /// An agent's process ended by its pid, while its reader still holds it (else nothing is sent: the pid may be
 /// anyone's by then).
 pub use process::kill;
-
-/// What the code above the wire still takes from the one wire as it is: `llm.args`' default (the Claude row's
-/// arguments from L2).
-pub(crate) use claude::DEFAULT_ARGS;
 
 /// Why an agent didn't start.
 #[derive(Debug)]
@@ -292,12 +354,12 @@ pub enum SpawnError {
 }
 
 impl SpawnError {
-    /// What the chat (`whole`: every line) or a toast says of it.
+    /// What the chat (`whole`: every line) or a toast says of a start of `command` (its program).
     pub fn said(&self, command: &str, whole: bool) -> String {
         match self {
             SpawnError::Start(e) => crate::llm::spawn_failed(command, e, whole),
             SpawnError::Billing(why) | SpawnError::Args(why) => why.clone(),
-            SpawnError::Write(e) => format!("claude: {e}"),
+            SpawnError::Write(e) => format!("{command}: {e}"),
         }
     }
 }
@@ -529,9 +591,9 @@ mod tests {
         outside.filter(|(_, code)| reaches(code)).map(|(key, _)| key.clone()).collect()
     }
 
-    /// What `agent.rs` takes from the one wire for the code above it: the only names it may (step 2, L1: every
-    /// other went behind `agent::start`, or is `agent`'s own). L2 empties it.
-    const REEXPORTED: &[&str] = &["DEFAULT_ARGS"];
+    /// What `agent.rs` takes from the one wire for the code above it: nothing (step 2, L1: every name but one went
+    /// behind `agent::start`, or is `agent`'s own; L2: `llm.args`' default is the Claude row's arguments).
+    const REEXPORTED: &[&str] = &[];
 
     /// The names `code` takes from `claude` by a `use` (one, or a `{…}` of them).
     fn reexported(code: &str) -> Vec<String> {
@@ -561,7 +623,7 @@ mod tests {
         let agent = sources.iter().find(|(key, _)| key == "agent.rs").map(|(_, code)| code.as_str());
         let named = reexported(agent.expect("agent.rs read"));
         assert!(named.iter().all(|n| REEXPORTED.contains(&n.as_str())), "named through `agent`: {named:?}");
-        assert!(REEXPORTED.len() <= 1, "this list only shrinks");
+        assert!(REEXPORTED.is_empty(), "this list only shrinks");
         // (and it sees one: a reader put back above the wire)
         assert_eq!(reexported("pub(crate) use claude::pump;"), ["pump"]);
         assert_eq!(reexported("pub use claude::{DEFAULT_ARGS, Lines};"), ["DEFAULT_ARGS", "Lines"]);
@@ -575,6 +637,35 @@ mod tests {
             code("agent/acp.rs", "use crate::agent::claude::Lines;"),
         ];
         assert_eq!(reaching_in(&made_up), ["chat.rs", "ask.rs", "llm.rs"]);
+    }
+
+    /// Agents beside Claude, step 2 (L2): no config chooses an agent — no setting names one or a wire, and the row
+    /// of any config is Claude's, whatever its program and arguments say (completed by L3 once the second wire is
+    /// there: a config can't start it).
+    #[test]
+    fn no_config_chooses_another_row() {
+        use super::{CLAUDE, Role, Start, row_named, row_of};
+        let words = ["agent", "wire", "acp", "backend", "row"];
+        let naming: Vec<&str> = (crate::settings::SETTINGS.iter().map(|s| s.path))
+            .filter(|p| p.split(['.', '-']).any(|w| words.contains(&w)))
+            .collect();
+        assert!(naming.is_empty(), "a setting names an agent: {naming:?}");
+        let default = crate::llm::LlmConfig::default();
+        let other = |command: &str, args: &[&str]| crate::llm::LlmConfig {
+            command: command.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            ..crate::llm::LlmConfig::default()
+        };
+        for cfg in
+            [default.clone(), other("agy", &["--acp"]), other("/usr/bin/gemini", &["--experimental-acp"])]
+        {
+            assert!(std::ptr::eq(row_of(&cfg), &CLAUDE), "{} {:?}", cfg.command, cfg.args);
+            assert!(std::ptr::eq(Start::new(Role::Chat, &cfg).row, &CLAUDE));
+        }
+        // (`llm.command` and `llm.args` default to the row's own; a row is found by its kept name alone)
+        assert_eq!((default.command.as_str(), default.args.len()), (CLAUDE.command, CLAUDE.args.len()));
+        assert!(row_named("claude").is_some_and(|r| std::ptr::eq(r, &CLAUDE)));
+        assert!(row_named("acp").is_none() && row_named("").is_none());
     }
 
     /// Agents beside Claude, condition 5: nothing above the wire matches on which agent it has — what one can do

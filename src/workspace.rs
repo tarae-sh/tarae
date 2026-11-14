@@ -424,8 +424,14 @@ impl ToolWait {
 
 impl Workspace {
     /// A session for the checkout in `root` (a real path) — nothing open in it yet, its first code pane `view`, its
-    /// surfaces' the `pane::IDS` after it, laid out as today's screen (`pane::default_layout`).
-    pub fn new(id: WorkspaceId, root: PathBuf, view: crate::split::PaneId) -> Self {
+    /// surfaces' the `pane::IDS` after it, laid out as today's screen (`pane::default_layout`) — its Claude on `row`
+    /// until its chat says another (`Chat.agent`).
+    pub fn new(
+        id: WorkspaceId,
+        root: PathBuf,
+        view: crate::split::PaneId,
+        row: &'static crate::agent::Row,
+    ) -> Self {
         let (panes, split) = crate::pane::default_layout(view);
         let name =
             root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into());
@@ -434,7 +440,7 @@ impl Workspace {
         Self {
             id,
             // (its Claude is born with it, with the same number)
-            claude: crate::session::Session::new(crate::session::born_with(id)),
+            claude: crate::session::Session::new(crate::session::born_with(id), row),
             viewer: Viewer::new(view),
             in_log: crate::log::Checkout::new(&root, &name),
             start_in: PathBuf::new(),
@@ -1537,7 +1543,7 @@ impl Editor {
         let mut scratch = Document::from_str(doc, "");
         scratch.scratch = true;
         self.docs.push(scratch);
-        let mut ws = Workspace::new(id, root.clone(), view);
+        let mut ws = Workspace::new(id, root.clone(), view, crate::agent::row_of(&self.config.llm));
         ws.claude.billing = self.new_session_billing();
         // (its Claude's colour: the lowest no open session has — they repeat only past `COLOURS` at once)
         let taken: Vec<u8> =

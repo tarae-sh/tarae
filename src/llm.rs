@@ -175,8 +175,8 @@ pub struct LlmConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            command: "claude".into(),
-            args: crate::agent::DEFAULT_ARGS.iter().map(|s| s.to_string()).collect(),
+            command: crate::agent::CLAUDE.command.into(),
+            args: crate::agent::CLAUDE.args.iter().map(|s| s.to_string()).collect(),
             model: None,
             effort: String::new(),
             follow: true,
@@ -264,7 +264,7 @@ pub fn held(ed: &Editor) -> Option<String> {
         ));
     }
     // (nor one that keeps tools of its own: its reads, edits and runs would go around tarae's — never Claude's)
-    (!crate::agent::caps(&ed.config.llm).own_tools_off)
+    (!crate::agent::row_of(&ed.config.llm).caps.own_tools_off)
         .then(|| format!("no agent that keeps its own tools starts — choose another: {HELD_WAY}"))
 }
 
@@ -788,7 +788,8 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
     // main loop: a commit draft's prompt can be 80 KB, and claude still starting reads nothing yet).
     // Before anything is installed: a process without stdin leaves no review waiting forever.
     let generation = ed.llm_generation + 1;
-    let at = crate::agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: &cred };
+    let at =
+        crate::agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: Some(&cred) };
     let first =
         crate::agent::First { tools: false, prompt: Some(crate::agent::Prompt::Text(prompt.to_string())) };
     let started = crate::agent::start(&draft_start(&cfg), at, first, true, ed.events.sender(), move |ev| {

@@ -406,7 +406,7 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
         }
         None => {
             let folder = Folder::made()?;
-            let at = agent::Place { dir: &folder.0, given: ed.claude_env.as_ref(), cred: &cred };
+            let at = agent::Place { dir: &folder.0, given: ed.claude_env.as_ref(), cred: Some(&cred) };
             let first = agent::First { tools: false, prompt: Some(message) };
             let route = move |ev| -> Option<crate::event::Apply> {
                 Some(Box::new(move |ed: &mut Editor| on_event(ed, id, ev)))

@@ -1,6 +1,6 @@
 //! `space i` (audit 2.B, B′ — decided on Q1's A/B, 2026-10-26: the chat's large context cost 6.4× its small one):
 //! one turn of `claude -p` beside the chat, never queued behind its turn and never part of its conversation — on
-//! the one-shot footprint (`agent::DEFAULT_ARGS`: no settings, no conversation kept), with tarae's `read` and `edit`
+//! the one-shot footprint (`agent::CLAUDE.args`: no settings, no conversation kept), with tarae's `read` and `edit`
 //! alone. Its message is the selections quoted as `space >` quotes them, whole, then the instruction; its change
 //! comes through `edit` and is reviewed in the buffer, as every edit is — its own `space u` step, named by what you
 //! asked. The chat is told nothing.
@@ -184,7 +184,8 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
             (agent, None)
         }
         None => {
-            let at = agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: &cred };
+            let at =
+                agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: Some(&cred) };
             let route = move |ev| -> Option<crate::event::Apply> {
                 Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
             };

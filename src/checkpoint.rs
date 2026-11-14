@@ -2314,6 +2314,7 @@ mod tests {
                 places: None,
                 seq: crate::chats::seq(),
                 signed_read: false,
+                agent: crate::agent::CLAUDE.name.into(),
             };
             crate::chats::save(&chats, &root, c);
         };
@@ -2477,6 +2478,7 @@ mod tests {
                     places: None,
                     seq: crate::chats::seq(),
                     signed_read: false,
+                    agent: crate::agent::CLAUDE.name.into(),
                 };
                 crate::chats::save(&store, &root, c);
             }

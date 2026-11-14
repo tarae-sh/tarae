@@ -8174,7 +8174,7 @@ mod tests {
     #[test]
     fn the_list_says_each_sessions_cache_and_cost() {
         use crate::usage::{Counts, Seen, Spent, Ttl, Usage};
-        let mut u = Usage::default();
+        let mut u = Usage::of(&crate::agent::CLAUDE.caps);
         let here = crate::log::Zone::Here;
         assert_eq!(Shown::claude_of(&u, None, 0, here), None);
         u.fresh("c");
@@ -9677,6 +9677,7 @@ mod tests {
                 places: None,
                 seq: crate::chats::seq(),
                 signed_read: false,
+                agent: crate::agent::CLAUDE.name.into(),
             };
             crate::chats::save(&chats, root, saved);
         };
