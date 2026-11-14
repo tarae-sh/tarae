@@ -400,28 +400,21 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
     let id = crate::tools::generation();
     let message = Prompt::Text(query.message());
     let (pid, folder) = match stand_in(ed) {
-        Some(lines) => {
-            let _ = Agent::from(lines).prompt(message);
+        Some(agent) => {
+            let _ = agent.prompt(message);
             (None, None)
         }
         None => {
             let folder = Folder::made()?;
-            let mut child = crate::agent::spawn(&helper(&cfg), &folder.0, ed.claude_env.as_ref(), &cred)
-                .map_err(|e| e.said(&cfg.command, false))?;
-            let Some(stdin) = child.stdin.take().map(agent::Lines::new) else {
-                reap(child);
-                return Err("claude: no stdin".into());
-            };
-            // (dropped once sent: its stdin closes after the message, and `-p` answers it)
-            if let Err(e) = Agent::from(stdin).prompt(message) {
-                reap(child);
-                return Err(format!("claude: {e}"));
-            }
-            let pid = child.id();
-            agent::pump(child, None, true, ed.events.sender(), move |ev| {
+            let at = agent::Place { dir: &folder.0, given: ed.claude_env.as_ref(), cred: &cred };
+            let first = agent::First { tools: false, prompt: Some(message) };
+            let route = move |ev| -> Option<crate::event::Apply> {
                 Some(Box::new(move |ed: &mut Editor| on_event(ed, id, ev)))
-            });
-            (Some(pid), Some(folder))
+            };
+            let started = agent::start(&helper(&cfg), at, first, true, ed.events.sender(), route)
+                .map_err(|e| e.said(&cfg.command, false))?;
+            // (its handle dropped once sent: its stdin closes after the message, and `-p` answers it)
+            (Some(started.pid), Some(folder))
         }
     };
     let summary = std::env::var_os(SUMMARY_VAR).is_some_and(|v| v == "1");
@@ -442,21 +435,13 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
     Ok(())
 }
 
-/// A child that took no message ended and reaped, off the main thread.
-fn reap(mut child: std::process::Child) {
-    crate::event::thread("tarae-reap", move || {
-        let _ = child.kill();
-        let _ = child.wait();
-    });
-}
-
 /// A test's stand-in helper (`Editor.search_lines`): no process, what it's told kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<agent::Lines> {
-    ed.search_lines.clone().map(agent::Lines::to)
+fn stand_in(ed: &Editor) -> Option<Agent> {
+    ed.search_lines.clone().map(Agent::stand_in)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<agent::Lines> {
+fn stand_in(_: &Editor) -> Option<Agent> {
     None
 }
 

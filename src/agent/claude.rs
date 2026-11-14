@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use crate::agent::{Caps, Event, ModelInfo, Permission, Prompt};
+use crate::agent::{Agent, Caps, Event, First, ModelInfo, Permission, Prompt, SpawnError, Started};
 use crate::billing::Credential;
 use crate::event::Apply;
-use crate::llm::{ClaudeEnv, Env, LlmConfig, judged, process_names, spawn_failed};
+use crate::llm::{ClaudeEnv, Env, LlmConfig, judged, process_names};
 
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
 pub(crate) const DEFAULT_ARGS: &[&str] = &[
@@ -60,7 +60,7 @@ impl ModelInfo {
 /// over the process's as if inherited (None: the process's own); what's left out is judged on it alone, and the
 /// process's names those rules judge aren't inherited (`judged`). As you, as every other tool runs claude: no
 /// sandbox of its own (user decision 2026-10-17) — what it does through its tools goes through tarae. Tests'
-/// (a start is `agent::spawn`, on its role's flags).
+/// (a start is `agent::start`, on its role's flags).
 #[cfg(test)]
 pub fn spawn(
     cfg: &LlmConfig,
@@ -89,7 +89,7 @@ pub fn command(
         Path::new(&cfg.command).file_name().is_none_or(|n| n != "claude"),
         "a test started the real claude — give llm.command a stand-in (`sh -c 'cat > /dev/null'`)"
     );
-    let args = crate::billing::args(&cfg.args, cred).map_err(SpawnError::Billing)?;
+    let args = flags::billing::args(&cfg.args, cred).map_err(SpawnError::Billing)?;
     let mut cmd = Command::new(&cfg.command);
     cmd.current_dir(dir).args(&args).args(extra);
     if let Some(given) = given {
@@ -132,27 +132,6 @@ pub fn command(
         cmd.args(["--effort", &cfg.effort]);
     }
     Ok(cmd)
-}
-
-/// Why a claude didn't start.
-#[derive(Debug)]
-pub enum SpawnError {
-    /// Its program didn't start (`spawn_failed` says it).
-    Start(std::io::Error),
-    /// Its billing can't be laid into its arguments (`billing::args`).
-    Billing(String),
-    /// Its arguments can't be made (`agent::args`).
-    Args(String),
-}
-
-impl SpawnError {
-    /// What the chat (`whole`: every line) or a toast says of it.
-    pub fn said(&self, command: &str, whole: bool) -> String {
-        match self {
-            SpawnError::Start(e) => spawn_failed(command, e, whole),
-            SpawnError::Billing(why) | SpawnError::Args(why) => why.clone(),
-        }
-    }
 }
 
 /// One user message line (stream-json input).
@@ -286,35 +265,36 @@ impl Lines {
     }
 }
 
-/// The claude processes `pump` reads that aren't reaped yet — the only pids `kill` signals. A reaped one's pid
-/// is the system's to give anyone: `pump` reaped it, then waited for stderr before its exit's event cleared the
-/// pid where it's kept, and a kill meanwhile (a chat reset, an editor dropped) went to whoever had it by then
-/// (frictions28 T1: an e2e test's `tarae state` got a SIGKILL from nowhere in it).
-static UNREAPED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
-
-/// Force-kills the process (cancel) — the reader thread ends on EOF. Only one `pump` hasn't reaped.
-pub fn kill(pid: u32) {
-    let unreaped = UNREAPED.lock().unwrap_or_else(|e| e.into_inner());
-    if unreaped.contains(&pid) {
-        // SAFETY: a child of tarae's not reaped yet — `pump` reaps it only under this lock: the pid is still its.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-    }
-}
-
-/// `child` reaped once it has ended: waited for without reaping (`WNOWAIT`), then taken out of `UNREAPED` and
-/// reaped under its lock — so a `kill` either reaches it or sends nothing.
-fn reap(child: &mut Child) {
+/// A claude started: its first lines written (tarae's MCP server offered when `first.tools`, then the prompt if
+/// there is one) — off the main loop, through its `Lines` — and its stream read by `pump` into `route`. Err: those
+/// lines couldn't go (no stdin, or it stopped reading), the child ended and reaped off the main loop.
+pub(super) fn begin(
+    mut child: Child,
+    first: First,
+    once: bool,
+    tx: crate::event::Tx,
+    route: impl Fn(Event) -> Option<Apply> + Send + 'static,
+) -> Result<Started, SpawnError> {
     let pid = child.id();
-    // SAFETY: a zeroed siginfo_t is a valid one to fill; waitid only waits for our own child here.
-    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let flags = libc::WEXITED | libc::WNOWAIT;
-    // SAFETY: as above.
-    while unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) } != 0
-        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
-    {}
-    let mut unreaped = UNREAPED.lock().unwrap_or_else(|e| e.into_inner());
-    unreaped.retain(|&p| p != pid);
-    let _ = child.wait();
+    let sent = match child.stdin.take() {
+        Some(stdin) => {
+            let lines = Lines::new(stdin);
+            let own = first.tools.then(|| lines.weak());
+            let offered = if first.tools { lines.initialize() } else { Ok(()) };
+            let sent = offered.and_then(|_| first.prompt.map_or(Ok(()), |p| lines.prompt(p)));
+            sent.map(|_| (lines, own))
+        }
+        None => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "no stdin")),
+    };
+    let (lines, own) = match sent {
+        Ok(sent) => sent,
+        Err(e) => {
+            super::process::end(child);
+            return Err(SpawnError::Write(e));
+        }
+    };
+    pump(child, own, once, tx, route);
+    Ok(Started { agent: Agent::Claude(lines), pid })
 }
 
 // ── Writing to it ───────────────────────────────────────────────────────
@@ -358,13 +338,6 @@ impl Lines {
     pub fn send(&self, line: String) -> std::io::Result<()> {
         self.0.send(line).map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
     }
-
-    /// A stand-in claude's stdin (no process, no thread — a simulation's): what's sent, read from the receiver.
-    #[cfg(test)]
-    pub fn stand_in() -> (Lines, std::sync::mpsc::Receiver<String>) {
-        let (tx, rx) = channel::<String>();
-        (Lines(Arc::new(tx)), rx)
-    }
 }
 
 // ── Reading the streamed answer ─────────────────────────────────────────
@@ -387,7 +360,7 @@ pub fn pump(
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<Apply> + Send + 'static,
 ) {
-    UNREAPED.lock().unwrap_or_else(|e| e.into_inner()).push(child.id());
+    super::process::UNREAPED.lock().unwrap_or_else(|e| e.into_inner()).push(child.id());
     crate::event::thread("tarae-llm-read", move || {
         // stderr's last line arrives when the pipe closes
         let (err_tx, err_rx) = channel::<String>();
@@ -565,7 +538,7 @@ pub fn pump(
         if once {
             let _ = child.kill();
         }
-        reap(&mut child);
+        super::process::reap(&mut child);
         // Let stderr drain after exit (else the real error is lost) — bounded, in case a grandchild holds it
         let err = err_rx.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
         if once && !done {
@@ -682,7 +655,7 @@ pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<Event> {
 }
 
 /// `args` with `flag`'s value replaced (the flag appended if it wasn't there).
-pub fn with_flag(args: &[String], flag: &str, value: &str) -> Vec<String> {
+fn with_flag(args: &[String], flag: &str, value: &str) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len() + 2);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -823,38 +796,33 @@ pub mod test {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::spawn_failed;
 
-    /// frictions28 T1: `kill` signals only a claude `pump` still holds unreaped — a stand-in of the test's own
-    /// that no `pump` has is left running; one `pump` reads is ended, and once reaped its pid is out of the list
-    /// (a kill then sends nothing: the pid may be anyone's).
+    /// Agents beside Claude, step 2's finding A: a start whose first lines can't be written (here: no stdin to write
+    /// them to) comes back as its error, said, and its child — which no reader took — is ended and reaped, never left
+    /// a zombie. The stand-in would write on and on; once its stdout is dropped unread it dies of it, but only a
+    /// reap takes it out of the process table.
     #[test]
-    fn kill_reaches_only_a_child_pump_has_not_reaped() {
-        let stand_in = || {
-            Command::new("/bin/sh")
-                .args(["-c", "read x"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap()
-        };
-        let mut theirs = stand_in();
-        kill(theirs.id());
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(matches!(theirs.try_wait(), Ok(None)), "no pump has it: not signalled");
-        let _ = theirs.kill();
-        let _ = theirs.wait();
+    fn a_start_whose_first_write_fails_reaps_its_child_and_says_why() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "exec yes"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
-        let mut ours = stand_in();
-        let (pid, stdin) = (ours.id(), ours.stdin.take());
-        pump(ours, None, false, ed.events.sender(), |_| None);
-        kill(pid);
+        let first = First { tools: true, prompt: Some(Prompt::Text("hi".into())) };
+        let Err(e) = begin(child, first, true, ed.events.sender(), |_| None) else { panic!("it started") };
+        assert_eq!(e.said("claude", false), "claude: no stdin");
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while UNREAPED.lock().unwrap().contains(&pid) {
-            assert!(std::time::Instant::now() < end, "killed and reaped");
+        // (signal 0: whether the pid is still in the process table — a zombie is, a reaped child isn't)
+        // SAFETY: signal 0 sends nothing, it only asks.
+        while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+            assert!(std::time::Instant::now() < end, "ended and reaped");
             std::thread::sleep(Duration::from_millis(10));
         }
-        drop(stdin);
     }
 
     /// A claude with no stdout to read: the reader ends at once — the process reaped, its end told — never waits
@@ -876,7 +844,7 @@ mod tests {
             None
         });
         assert_eq!(rx.recv_timeout(crate::test_results::PATIENCE), Ok(true), "its end told");
-        assert!(!UNREAPED.lock().unwrap().contains(&pid), "reaped");
+        assert!(!super::super::process::UNREAPED.lock().unwrap().contains(&pid), "reaped");
     }
 
     /// Agents beside Claude, condition 3: a control request no one above the wire answers (another subtype, another

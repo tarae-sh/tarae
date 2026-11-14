@@ -7,7 +7,7 @@
 //!   tarae composes, another session's Claude's never), the steered words as `steer_take`'s note keeps them — the latest `USER_LATEST` and the first, each cut at
 //!   `USER_CUT`; a parent's proposal by the parent's chat. Words not sent yet (a waiting steer, a queued message)
 //!   stay out, said in the entry (`unsent`). Never a stream's `user` event, a tool's output or Claude's prose.
-//! - **Its run** (`review`): on a worker through `agent::spawn`, in an empty folder of its own, `cardreview::args`'
+//! - **Its run** (`review`): on a worker through `agent::start`, in an empty folder of its own, `cardreview::args`'
 //!   flags (no tools, no MCP, no settings, `POLICY`), billed to the card's session (`billing::Role::AutoCards`).
 //!   `CALL_LIMIT` at most; an error, a timeout or no answer is `none`. A merge (`Offer.rev`) asks again, `REVS_MAX`
 //!   revs at most a card.
@@ -243,7 +243,7 @@ pub fn prepare(ed: &Editor, o: &Offer) -> Option<Prepared> {
 }
 
 /// The reviewer's start on `cfg`, `policy` its system prompt (`POLICY`'s text): its flags its wire's —
-/// `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `agent::pump`, the model said by
+/// `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `claude::pump`, the model said by
 /// its config (`agent::command` adds it).
 fn start<'a>(cfg: &'a llm::LlmConfig, policy: &'a str) -> crate::agent::Start<'a> {
     let role = crate::agent::Role::CardReview { max_usd: MAX_USD };
@@ -311,8 +311,8 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
     let message = Prompt::Text(crate::cardreview::prompt(&pending.input, Stage::Two, &nonce));
     ed.auto_cards.insert(card, pending);
     match stand_in(ed) {
-        Some(lines) => {
-            let _ = Agent::from(lines).prompt(message);
+        Some(agent) => {
+            let _ = agent.prompt(message);
         }
         None => {
             let cfg = llm::LlmConfig {
@@ -326,23 +326,15 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
                 let started = (|| -> Result<(u32, Folder), String> {
                     let folder = Folder::made()?;
                     let policy = POLICY.text();
-                    let mut child =
-                        crate::agent::spawn(&start(&cfg, &policy), &folder.0, env.as_ref(), &cred)
-                            .map_err(|e| e.said(&cfg.command, false))?;
-                    let pid = child.id();
-                    let sent = match child.stdin.take().map(agent::Lines::new) {
-                        Some(stdin) => Agent::from(stdin).prompt(message).map_err(|e| e.to_string()),
-                        None => Err("no stdin".into()),
-                    };
-                    if let Err(e) = sent {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(e);
-                    }
-                    agent::pump(child, None, true, tx, move |ev| {
+                    let at = agent::Place { dir: &folder.0, given: env.as_ref(), cred: &cred };
+                    let first = agent::First { tools: false, prompt: Some(message) };
+                    let route = move |ev| -> Option<crate::event::Apply> {
                         Some(Box::new(move |ed: &mut Editor| on_event(ed, card, run, ev)))
-                    });
-                    Ok((pid, folder))
+                    };
+                    // (its handle dropped once sent: its stdin closes after the message)
+                    let started = agent::start(&start(&cfg, &policy), at, first, true, tx, route)
+                        .map_err(|e| e.said(&cfg.command, false))?;
+                    Ok((started.pid, folder))
                 })();
                 move |ed: &mut Editor| began(ed, card, run, started)
             });
@@ -356,11 +348,11 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
 
 /// A test's stand-in reviewer (`Editor.auto_cards_told`): no process, the message it's told kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<agent::Lines> {
-    ed.auto_cards_told.clone().map(agent::Lines::to)
+fn stand_in(ed: &Editor) -> Option<Agent> {
+    ed.auto_cards_told.clone().map(Agent::stand_in)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<agent::Lines> {
+fn stand_in(_: &Editor) -> Option<Agent> {
     None
 }
 
@@ -607,7 +599,7 @@ pub fn quit(ed: &mut Editor) {
     ed.cards_record(entries);
 }
 
-/// A review's claude stopped (`agent::pump` reaps it).
+/// A review's claude stopped (`claude::pump` reaps it).
 fn stop(pid: Option<u32>) {
     if let Some(pid) = pid {
         agent::kill(pid);

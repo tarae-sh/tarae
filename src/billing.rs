@@ -11,7 +11,8 @@
 //!   can reach its state, log or cards. `--settings` outranks the user's and the project's settings files
 //!   (Claude Code's settings docs), so this helper is the one that runs — over `claudetrust`'s held-back `""`, and
 //!   over a helper of yours. Merged into the one `--settings` object the chat already passes, never beside it:
-//!   `agent::with_flag` replaces a flag, so a second would drop the first (`chat::CHAT_SETTINGS`' `ask` rules).
+//!   Claude's wire replaces a flag (`agent/claude/flags.rs`, `billing::args`), so a second would drop the first
+//!   (`chat::CHAT_SETTINGS`' `ask` rules).
 //! - **The chat's cache lives an hour** (`promptCacheTtl: "1h"`, your decision 2026-10-10): an API key's default is
 //!   five minutes (Claude Code's env reference, `ENABLE_PROMPT_CACHING_1H`), and a chat's turns are often further
 //!   apart — each such turn would write the whole context again. The settings reference, `promptCacheTtl`: "Choose
@@ -33,7 +34,7 @@
 //! - **macOS only for now**: the key is in the login Keychain. Elsewhere an API session is refused, said why (the
 //!   Secret Service's `secret-tool` helper is a later change).
 
-use serde_json::{Map, Value as Json};
+use serde_json::Value as Json;
 
 use crate::editor::Editor;
 
@@ -187,27 +188,6 @@ fn account() -> Result<String, String> {
             name.to_str().map(String::from).map_err(|_| "your login name isn't UTF-8".to_string())
         })
         .clone()
-}
-
-/// `args` with the credential laid into their `--settings` object (one made if there's none) — merged, never
-/// replacing what's there. Err: a `--settings` that names a file (tarae can't add to it unread).
-pub fn args(args: &[String], cred: &Credential) -> Result<Vec<String>, String> {
-    let Credential::Api { helper, hour_cache } = cred else { return Ok(args.to_vec()) };
-    let given = args.iter().rposition(|a| a == "--settings").and_then(|i| args.get(i + 1));
-    let mut json = match given.map(|v| serde_json::from_str::<Json>(v)) {
-        None => Map::new(),
-        Some(Ok(Json::Object(m))) => m,
-        Some(_) => {
-            return Err(
-                "llm.args passes --settings as a file — tarae can't add the API key's helper to it".into()
-            );
-        }
-    };
-    json.insert("apiKeyHelper".into(), Json::String(helper.clone()));
-    if *hour_cache {
-        json.insert("promptCacheTtl".into(), Json::String("1h".into()));
-    }
-    Ok(crate::agent::with_flag(args, "--settings", &Json::Object(json).to_string()))
 }
 
 /// What claude reported (`apiKeySource`) against what `billing` needs — None: as it should be (or not said);

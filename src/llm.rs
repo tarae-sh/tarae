@@ -23,7 +23,7 @@ use crate::key::{Code, Key};
 use crate::transaction::{Change, Transaction};
 use crate::workspace::Here;
 
-use crate::agent::{Event, Lines, kill, pump};
+use crate::agent::{Event, kill};
 
 /// `llm.sandbox-hosts`: with the network on, the hosts Claude's commands reach without asking (piece C1b).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -782,31 +782,16 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
     let what = "draft";
     let cfg = ed.config.llm.clone();
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
-    // (its own process, started now: posix_spawn returns at once, claude's start is the child's)
-    let start = draft_start(&cfg);
-    let mut child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
-        .map_err(|e| e.said(&cfg.command, false))?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
+    // (its own process, started now: posix_spawn returns at once, claude's start is the child's)
     // Write the message and close stdin — the process exits on its own after this one turn (written off the
     // main loop: a commit draft's prompt can be 80 KB, and claude still starting reads nothing yet).
     // Before anything is installed: a process without stdin leaves no review waiting forever.
-    let sent = child.stdin.take().ok_or_else(|| "claude: no stdin".to_string()).and_then(|stdin| {
-        let agent = crate::agent::Agent::from(Lines::new(stdin));
-        agent.prompt(crate::agent::Prompt::Text(prompt.to_string())).map_err(|e| format!("claude: {e}"))
-    });
-    if let Err(e) = sent {
-        // Reaped off the main thread
-        crate::event::thread("tarae-reap", move || {
-            let _ = child.kill();
-            let _ = child.wait();
-        });
-        return Err(e);
-    }
-    ed.llm_generation += 1;
-    let generation = ed.llm_generation;
-    ed.workspace.claude.review = Some(Review::new(generation, doc_id, instruction, vec![hunk]));
-    ed.llm_pid = Some(child.id());
-    pump(child, None, true, ed.events.sender(), move |ev| {
+    let generation = ed.llm_generation + 1;
+    let at = crate::agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: &cred };
+    let first =
+        crate::agent::First { tools: false, prompt: Some(crate::agent::Prompt::Text(prompt.to_string())) };
+    let started = crate::agent::start(&draft_start(&cfg), at, first, true, ed.events.sender(), move |ev| {
         Some(match ev {
             Event::Thinking | Event::Thought(_) => Box::new(move |ed: &mut Editor| {
                 if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
@@ -861,7 +846,12 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
                 return None;
             }
         })
-    });
+    })
+    .map_err(|e| e.said(&cfg.command, false))?;
+    // (its handle dropped: its stdin closes after the message)
+    ed.llm_generation = generation;
+    ed.workspace.claude.review = Some(Review::new(generation, doc_id, instruction, vec![hunk]));
+    ed.llm_pid = Some(started.pid);
     Ok(())
 }
 

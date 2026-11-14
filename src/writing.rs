@@ -50,7 +50,7 @@ impl Delta {
     }
 }
 
-/// The reader thread's (`agent::pump`): the tool calls whose input is streaming, by content block, and what
+/// The reader thread's (`claude::pump`): the tool calls whose input is streaming, by content block, and what
 /// came of them that the next batch sends.
 #[derive(Default)]
 pub struct Reading {

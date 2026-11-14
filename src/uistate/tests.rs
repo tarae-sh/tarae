@@ -3616,7 +3616,7 @@ fn perf_ui_state_busy_scene() {
 /// A session behind streaming its answer while someone watches (watchlate: watchers are told after a batch that
 /// draws nothing too, the whole state built and diffed): what one quiet batch costs — a word of the answer, as
 /// the main loop takes it (`Event::For` → the chat's stream → `term::batch_done`), ~40 a second at
-/// `agent::pump`'s 25 ms — with no watcher, with one of every kind, and a frame of the same scene beside them.
+/// `claude::pump`'s 25 ms — with no watcher, with one of every kind, and a frame of the same scene beside them.
 /// The busy scene, median of 200. For `cargo perf`. (2026-10-19, M-series, perf profile: 1.8 µs alone, 10.1
 /// watched, a frame 85.6.) Its budget is a frame's worth: past it, build only what the watchers' kinds need.
 #[test]

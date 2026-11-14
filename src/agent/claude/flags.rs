@@ -5,8 +5,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use super::SpawnError;
-use crate::agent::{Args, Role, Start};
+use crate::agent::{Args, Role, SpawnError, Start};
 use crate::billing::Credential;
 use crate::llm::{Env, LlmConfig};
 
@@ -296,6 +295,80 @@ pub mod web_search {
             args = claude::with_flag(&args, flag, value);
         }
         args
+    }
+}
+
+/// Who pays (`billing.rs`): an API session's key helper, laid into every start's `--settings` (`claude::command`).
+pub mod billing {
+    use serde_json::{Map, Value as Json};
+
+    use crate::agent::claude;
+    use crate::billing::Credential;
+
+    /// `args` with the credential laid into their `--settings` object (one made if there's none) — merged, never
+    /// replacing what's there. Err: a `--settings` that names a file (tarae can't add to it unread).
+    pub fn args(args: &[String], cred: &Credential) -> Result<Vec<String>, String> {
+        let Credential::Api { helper, hour_cache } = cred else { return Ok(args.to_vec()) };
+        let given = args.iter().rposition(|a| a == "--settings").and_then(|i| args.get(i + 1));
+        let mut json = match given.map(|v| serde_json::from_str::<Json>(v)) {
+            None => Map::new(),
+            Some(Ok(Json::Object(m))) => m,
+            Some(_) => {
+                return Err(
+                    "llm.args passes --settings as a file — tarae can't add the API key's helper to it"
+                        .into(),
+                );
+            }
+        };
+        json.insert("apiKeyHelper".into(), Json::String(helper.clone()));
+        if *hour_cache {
+            json.insert("promptCacheTtl".into(), Json::String("1h".into()));
+        }
+        Ok(claude::with_flag(args, "--settings", &Json::Object(json).to_string()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::path::PathBuf;
+
+        use serde_json::Value;
+
+        use super::*;
+
+        /// The helper joins the one `--settings` object the chat passes: `claudetrust` holds every command key up front
+        /// as `""` — an API session's helper takes `apiKeyHelper`'s place, the rest stays as held; a subscription's
+        /// arguments are untouched. No `--settings` yet: one made. One naming a file: refused (tarae can't add to it
+        /// unread).
+        #[test]
+        fn the_helper_is_merged_into_the_chats_settings_never_beside_them() {
+            let seen = crate::claudetrust::Seen {
+                scan: None,
+                state: crate::trust::State::Trusted,
+                file: PathBuf::new(),
+                base: Default::default(),
+            };
+            let (held, _) = crate::claudetrust::settings(crate::chat::CHAT_SETTINGS, &seen);
+            let held_json: Value = serde_json::from_str(&held).unwrap();
+            assert_eq!(held_json["apiKeyHelper"], "", "held up front");
+            let given: Vec<String> = vec!["-p".into(), "--settings".into(), held.clone()];
+            let api = |hour_cache| Credential::Api { helper: "the-helper".into(), hour_cache };
+            let out = args(&given, &api(true)).unwrap();
+            assert_eq!(out.iter().filter(|a| *a == "--settings").count(), 1, "one --settings: {out:?}");
+            let got: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+            assert_eq!(got["apiKeyHelper"], "the-helper");
+            assert_eq!(got["promptCacheTtl"], "1h");
+            for (k, v) in held_json.as_object().unwrap().iter().filter(|(k, _)| *k != "apiKeyHelper") {
+                assert_eq!(&got[k], v, "{k} as held");
+            }
+            let one_turn: Value =
+                serde_json::from_str(args(&given, &api(false)).unwrap().last().unwrap()).unwrap();
+            assert!(one_turn.get("promptCacheTtl").is_none());
+            assert_eq!(args(&given, &Credential::Subscription).unwrap(), given, "the plan: untouched");
+            let made = args(&["-p".into()], &api(false)).unwrap();
+            assert_eq!(made[1..], ["--settings".to_string(), r#"{"apiKeyHelper":"the-helper"}"#.to_string()]);
+            let file: Vec<String> = vec!["--settings".into(), "/some/settings.json".into()];
+            assert!(args(&file, &api(true)).unwrap_err().contains("as a file"));
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 //! #300: a chat's streamed events applied with #214's sessions open and a long conversation in front — what each event
-//! costs the main loop (the job at `agent::pump`'s send, then every per-event sync), measured before anything is changed.
+//! costs the main loop (the job at `claude::pump`'s send, then every per-event sync), measured before anything is changed.
 
 use super::*;
 use crate::agent::Event;

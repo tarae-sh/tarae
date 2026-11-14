@@ -512,7 +512,7 @@ fn until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 
 /// R1 fix 8: a review for real — a script as `llm.command` stands in for claude, in the test's own folder: it's
 /// started with `args()`'s flags and the model, in an empty 0700 folder of its own that's gone after, its stdin closed
-/// after the one message (it answers only at its end), and what it writes is read by `agent::pump` into the verdict.
+/// after the one message (it answers only at its end), and what it writes is read by `claude::pump` into the verdict.
 #[test]
 fn a_review_starts_its_claude_and_reads_the_verdict_from_its_stream() {
     use std::os::unix::fs::PermissionsExt;

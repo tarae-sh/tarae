@@ -173,35 +173,29 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     let cfg = crate::models::config(ed);
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
-    let (stdin, child) = match stand_in(ed) {
-        Some(lines) => (lines, None),
-        None => {
-            let start = agent_start(&cfg);
-            let mut child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
-                .map_err(|e| e.said(&cfg.command, false))?;
-            let Some(stdin) = child.stdin.take().map(agent::Lines::new) else {
-                reap(child);
-                return Err("claude: no stdin".into());
-            };
-            (stdin, Some(child))
-        }
-    };
     // (tarae's MCP server first, then the one message — written off the main loop: a selection can be 200 KB, and a
     // claude still starting reads nothing yet)
-    let own = stdin.weak();
-    let agent = Agent::from(stdin);
-    let sent = agent.initialize().and_then(|_| agent.prompt(Prompt::Text(message)));
-    if let Err(e) = sent {
-        if let Some(child) = child {
-            reap(child);
+    let first = agent::First { tools: true, prompt: Some(Prompt::Text(message)) };
+    let generation = crate::tools::generation();
+    let (agent, pid) = match stand_in(ed) {
+        Some(agent) => {
+            let sent = agent.initialize().and_then(|_| first.prompt.map_or(Ok(()), |p| agent.prompt(p)));
+            sent.map_err(|e| format!("claude: {e}"))?;
+            (agent, None)
         }
-        return Err(format!("claude: {e}"));
-    }
+        None => {
+            let at = agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: &cred };
+            let route = move |ev| -> Option<crate::event::Apply> {
+                Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
+            };
+            let started = agent::start(&agent_start(&cfg), at, first, true, ed.events.sender(), route)
+                .map_err(|e| e.said(&cfg.command, false))?;
+            (started.agent, Some(started.pid))
+        }
+    };
     ed.llm_generation += 1;
     let waiting = ed.llm_generation;
     ed.workspace.claude.review = Some(llm::Review::new(waiting, doc_id, instruction, hunks));
-    let generation = crate::tools::generation();
-    let pid = child.as_ref().map(std::process::Child::id);
     ed.llm_pid = pid;
     ed.workspace.claude.ask = Some(Ask {
         generation,
@@ -221,11 +215,6 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
         taken,
         asked_by: ed.events.asked(),
     });
-    if let Some(child) = child {
-        agent::pump(child, Some(own), true, ed.events.sender(), move |ev| {
-            Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
-        });
-    }
     Ok(())
 }
 
@@ -237,21 +226,13 @@ pub fn target(ed: &Editor) -> (u64, String) {
     (a.generation, a.buffer.clone().unwrap_or_else(|| path().display().to_string()))
 }
 
-/// A child that took no message ended and reaped, off the main thread.
-fn reap(mut child: std::process::Child) {
-    crate::event::thread("tarae-reap", move || {
-        let _ = child.kill();
-        let _ = child.wait();
-    });
-}
-
 /// A test's stand-in claude (`Editor.ask_lines`): no process, its lines kept.
 #[cfg(test)]
-fn stand_in(ed: &Editor) -> Option<agent::Lines> {
-    ed.ask_lines.clone().map(agent::Lines::to)
+fn stand_in(ed: &Editor) -> Option<Agent> {
+    ed.ask_lines.clone().map(Agent::stand_in)
 }
 #[cfg(not(test))]
-fn stand_in(_: &Editor) -> Option<agent::Lines> {
+fn stand_in(_: &Editor) -> Option<Agent> {
     None
 }
 

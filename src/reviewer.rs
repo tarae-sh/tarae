@@ -1,7 +1,7 @@
 //! The reviewer — a second Claude that reviews a code review's changes (`space v c`, `:review-claude`), apart
 //! from the chat: the conversation that wrote the code never reviews it itself.
 //!
-//! - One process per review, one turn (`agent::pump` with `once`, as `space i`'s ask): started in the review's
+//! - One process per review, one turn (`claude::pump` with `once`, as `space i`'s ask): started in the review's
 //!   checkout, never with `--resume`/`--continue`, nothing kept by claude (`--no-session-persistence`), no
 //!   settings loaded (a user's allow rules would let reads go unasked) — and nothing of the chat's
 //!   conversation in what it's sent: the diff and the ask, that's all.
@@ -930,7 +930,8 @@ fn launch(ed: &mut Editor, i: usize) {
     // (a simulation's stand-in member: no process — its events are the scenario's, `sim/board.rs`)
     #[cfg(test)]
     if ed.reviewer_stand_in {
-        began(ed, i, None, Default::default());
+        let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        began(ed, i, generation, None, Default::default());
         return;
     }
     let (role, root, content) = (m.role, r.root.clone(), content(r, m));
@@ -944,9 +945,18 @@ fn launch(ed: &mut Editor, i: usize) {
         Some(why) => Err(why),
         None => cred,
     };
+    // (its generation drawn first: its reader routes by it from the start — step 2's finding A)
+    let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tx = ed.events.sender();
     let started = cred.and_then(|cred| {
-        let child = crate::agent::spawn(&start, &root, ed.claude_env.as_ref(), &cred);
-        child.map(|child| (child, cred.billing())).map_err(|e| e.said(&cfg.command, false))
+        let at = agent::Place { dir: &root, given: ed.claude_env.as_ref(), cred: &cred };
+        // (tarae's MCP server first — its `note`, a skeptic's `judge`)
+        let first = agent::First { tools: true, prompt: Some(content) };
+        let route = move |ev| -> Option<crate::event::Apply> {
+            Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
+        };
+        let started = agent::start(&start, at, first, true, tx, route);
+        started.map(|s| (s, cred.billing())).map_err(|e| e.said(&cfg.command, false))
     });
     // (what keeps one from starting — its credential, its command — keeps those waiting too: they end with it,
     // said once — by the reviewer's end, or now while others read on)
@@ -956,40 +966,38 @@ fn launch(ed: &mut Editor, i: usize) {
             ed.set_error(format!("the reviewer: {e}"));
         }
     };
-    let (mut child, billing) = match started {
+    let (agent::Started { agent, pid }, billing) = match started {
         Ok(started) => started,
         Err(e) => return failed(ed, e),
     };
-    let Some(stdin) = child.stdin.take().map(agent::Lines::new) else {
-        return failed(ed, "claude: no input".into());
-    };
-    let (own, agent) = (stdin.weak(), Agent::from(stdin));
-    // (tarae's MCP server first — its `note`, a skeptic's `judge`)
-    let sent = agent.initialize().and_then(|_| agent.prompt(content));
-    if let Err(e) = sent {
-        // (not `agent::kill`: no `pump` has it — ended and reaped here, off the main loop)
-        crate::event::thread("tarae-reap", move || {
-            let _ = child.kill();
-            let _ = child.wait();
-        });
-        return failed(ed, format!("claude: {e}"));
+    #[cfg(test)]
+    if GONE_AT_START.with(std::cell::Cell::get).is_some() {
+        ed.workspace.reviewer = None;
+        GONE_AT_START.with(|g| g.set(Some(pid)));
     }
-    let Some(generation) = began(ed, i, Some((child.id(), agent)), billing) else { return };
-    agent::pump(child, Some(own), true, ed.events.sender(), move |ev| {
-        Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
-    });
+    // (a reviewer gone meanwhile: its member's process ended — its reader reaps it, and its events find no member)
+    if began(ed, i, generation, Some((pid, agent)), billing).is_none() {
+        agent::kill(pid);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the reviewer taken away between a member's start and its `began` (step 2's finding A) while it's
+    /// Some — then the started member's pid.
+    static GONE_AT_START: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 /// Member `i` reads from now on: its process (None: a simulation's stand-in), the generation its events carry,
-/// its time from here — and, a board's first angle, the others' turn at the latest after the stagger. Its
-/// generation.
+/// its time from here — and, a board's first angle, the others' turn at the latest after the stagger. None: the
+/// reviewer is gone.
 fn began(
     ed: &mut Editor,
     i: usize,
+    generation: u64,
     proc: Option<(u32, Agent)>,
     billing: crate::billing::Billing,
-) -> Option<u64> {
-    let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+) -> Option<()> {
     let r = ed.workspace.reviewer.as_mut()?;
     let now = crate::clock::now();
     // (its first member: its time runs from here, not from its wait in the line)
@@ -1011,7 +1019,7 @@ fn began(
             }
         });
     }
-    Some(generation)
+    Some(())
 }
 
 pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
@@ -2280,6 +2288,32 @@ mod tests {
     /// The status line (the screen's last row).
     fn status(ed: &mut Editor) -> String {
         rows(ed).pop().unwrap()
+    }
+
+    /// Agents beside Claude, step 2's finding A: a member whose reviewer is gone between its start and `began` is
+    /// ended and reaped — its reader took it from the start, so it's never left unread and a zombie. Its stand-in
+    /// lives on once its input closes; only a kill ends it.
+    #[test]
+    fn a_member_gone_before_its_start_is_reaped() {
+        let (_s, _, repo) = place("gone-at-start");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "while read -r l; do :; done; exec sleep 600".into()];
+        ed.workspace.root = repo.clone();
+        GONE_AT_START.with(|g| g.set(Some(0)));
+        ask_in(&mut ed, repo, None, false);
+        let started = || GONE_AT_START.with(std::cell::Cell::get).filter(|&pid| pid != 0);
+        settle_until(&mut ed, |_| started().is_some());
+        let pid = started().unwrap() as libc::pid_t;
+        GONE_AT_START.with(|g| g.set(None));
+        assert!(ed.workspace.reviewer.is_none(), "gone at its start");
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        // (signal 0: whether the pid is still in the process table — a zombie is, a reaped child isn't)
+        // SAFETY: signal 0 sends nothing, it only asks.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < end, "its member's process ended and reaped");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// #195: while the reviewer reads, its session says so wherever a working chat would — in the state (a

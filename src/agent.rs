@@ -1,4 +1,5 @@
 pub mod claude;
+mod process;
 
 #[cfg(test)]
 mod argv_tests;
@@ -9,13 +10,13 @@ pub enum Agent {
     Claude(claude::Lines),
 }
 
-impl From<claude::Lines> for Agent {
-    fn from(lines: claude::Lines) -> Agent {
-        Agent::Claude(lines)
-    }
-}
-
 impl Agent {
+    /// Tests: an agent with no process — what it's told goes to `tx` (a stand-in's lines).
+    #[cfg(test)]
+    pub fn stand_in(tx: std::sync::mpsc::Sender<String>) -> Agent {
+        Agent::Claude(claude::Lines::to(tx))
+    }
+
     /// tarae's MCP server offered: the first thing it's told (its messages come back as `Event::Mcp`).
     pub fn initialize(&self) -> std::io::Result<()> {
         let Agent::Claude(l) = self;
@@ -215,28 +216,91 @@ pub fn command(
     dir: &std::path::Path,
     given: Option<&crate::llm::Env>,
     cred: &crate::billing::Credential,
-) -> Result<std::process::Command, claude::SpawnError> {
+) -> Result<std::process::Command, SpawnError> {
     claude::flags::command(s, dir, given, cred)
 }
 
 /// `command`, started, its stdin, stdout and stderr piped.
-pub fn spawn(
+fn spawn(
     s: &Start,
     dir: &std::path::Path,
     given: Option<&crate::llm::Env>,
     cred: &crate::billing::Credential,
-) -> Result<std::process::Child, claude::SpawnError> {
+) -> Result<std::process::Child, SpawnError> {
     use std::process::Stdio;
     let mut cmd = command(s, dir, given, cred)?;
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.spawn().map_err(claude::SpawnError::Start)
+    cmd.spawn().map_err(SpawnError::Start)
 }
 
-/// What the code above the wire still takes from the one wire as it is (step 1 has one): a started agent's stdin,
-/// written off the main loop (`Lines`, made into an `Agent`), its stream's reader (`pump`), its end (`kill`), a flag
-/// laid into its arguments (`with_flag`: the billing's `--settings`) and `llm.args`' default. Step 2 gives each
-/// wire its own, asked of the config's agent.
-pub(crate) use claude::{DEFAULT_ARGS, Lines, kill, pump, with_flag};
+/// Where an agent runs and on whose account: its folder (the project's root, a helper's own), `given` a test's
+/// stand-in for tarae's environment, `cred` who pays.
+pub struct Place<'a> {
+    pub dir: &'a std::path::Path,
+    pub given: Option<&'a crate::llm::Env>,
+    pub cred: &'a crate::billing::Credential,
+}
+
+/// What an agent is told first: tarae's tools offered (its MCP server — their messages come back as `Event::Mcp`),
+/// then a prompt.
+pub struct First {
+    pub tools: bool,
+    pub prompt: Option<Prompt>,
+}
+
+/// An agent started: its handle (dropped, its input closes) and its process's pid (`kill`).
+pub struct Started {
+    pub agent: Agent,
+    pub pid: u32,
+}
+
+/// `s` started at `at`: its process spawned, its first lines written (`first`, off the main loop) and its stream
+/// read on a thread of its own, each event handed to `route` and what it makes applied on the main loop. `once`:
+/// one turn, the process ended and reaped after it. Err: it didn't start, or its first lines couldn't be written —
+/// its child then ended and reaped off the main loop; `SpawnError::said` says it.
+pub fn start(
+    s: &Start,
+    at: Place,
+    first: First,
+    once: bool,
+    tx: crate::event::Tx,
+    route: impl Fn(Event) -> Option<crate::event::Apply> + Send + 'static,
+) -> Result<Started, SpawnError> {
+    let child = spawn(s, at.dir, at.given, at.cred)?;
+    claude::begin(child, first, once, tx, route)
+}
+
+/// An agent's process ended by its pid, while its reader still holds it (else nothing is sent: the pid may be
+/// anyone's by then).
+pub use process::kill;
+
+/// What the code above the wire still takes from the one wire as it is: `llm.args`' default (the Claude row's
+/// arguments from L2).
+pub(crate) use claude::DEFAULT_ARGS;
+
+/// Why an agent didn't start.
+#[derive(Debug)]
+pub enum SpawnError {
+    /// Its program didn't start (`spawn_failed` says it).
+    Start(std::io::Error),
+    /// Its billing can't be laid into its arguments (Claude's: `flags::billing::args`).
+    Billing(String),
+    /// Its arguments can't be made (`agent::args`).
+    Args(String),
+    /// Its first lines couldn't be written: it has no input, or stopped reading it.
+    Write(std::io::Error),
+}
+
+impl SpawnError {
+    /// What the chat (`whole`: every line) or a toast says of it.
+    pub fn said(&self, command: &str, whole: bool) -> String {
+        match self {
+            SpawnError::Start(e) => crate::llm::spawn_failed(command, e, whole),
+            SpawnError::Billing(why) | SpawnError::Args(why) => why.clone(),
+            SpawnError::Write(e) => format!("claude: {e}"),
+        }
+    }
+}
 
 /// A message to an agent: its text, or its parts — one kept in the cache an hour (a board's shared prefix,
 /// `reviewer::content`).
@@ -465,6 +529,24 @@ mod tests {
         outside.filter(|(_, code)| reaches(code)).map(|(key, _)| key.clone()).collect()
     }
 
+    /// What `agent.rs` takes from the one wire for the code above it: the only names it may (step 2, L1: every
+    /// other went behind `agent::start`, or is `agent`'s own). L2 empties it.
+    const REEXPORTED: &[&str] = &["DEFAULT_ARGS"];
+
+    /// The names `code` takes from `claude` by a `use` (one, or a `{…}` of them).
+    fn reexported(code: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for (at, w) in code.match_indices("use claude::") {
+            let rest = &code[at + w.len()..];
+            let items = match rest.strip_prefix('{') {
+                Some(inside) => &inside[..inside.find('}').unwrap_or(inside.len())],
+                None => &rest[..rest.find(';').unwrap_or(rest.len())],
+            };
+            out.extend(items.split(',').map(str::trim).filter(|n| !n.is_empty()).map(String::from));
+        }
+        out
+    }
+
     /// Agents beside Claude, landing 5: the code above the wire reaches it through `agent` alone (its handle,
     /// `Start` and the one wire's few items `agent` names), never by `agent::claude::` — so step 2's second wire
     /// is a change in `agent` and below. Test code is left out on purpose: tests keep their doors into the wire
@@ -472,8 +554,17 @@ mod tests {
     /// stand-in claude speaks its protocol.
     #[test]
     fn nothing_above_the_wire_names_claudes() {
-        let reaching = reaching_in(&crate::sim::lint::sources());
+        let sources = crate::sim::lint::sources();
+        let reaching = reaching_in(&sources);
         assert!(reaching.is_empty(), "Claude's wire named above it: {reaching:?}");
+        // (nor through `agent`: what it names of the one wire is a list that only shrinks — step 2, L1)
+        let agent = sources.iter().find(|(key, _)| key == "agent.rs").map(|(_, code)| code.as_str());
+        let named = reexported(agent.expect("agent.rs read"));
+        assert!(named.iter().all(|n| REEXPORTED.contains(&n.as_str())), "named through `agent`: {named:?}");
+        assert!(REEXPORTED.len() <= 1, "this list only shrinks");
+        // (and it sees one: a reader put back above the wire)
+        assert_eq!(reexported("pub(crate) use claude::pump;"), ["pump"]);
+        assert_eq!(reexported("pub use claude::{DEFAULT_ARGS, Lines};"), ["DEFAULT_ARGS", "Lines"]);
         // (and it sees one: a path into the wire, a `claude` taken from `agent`; the agent's own files may)
         let code = |key: &str, c: &str| (key.to_string(), c.to_string());
         let made_up = [
@@ -492,10 +583,10 @@ mod tests {
     fn no_match_on_the_agent_outside_the_wire() {
         let named = matching(&crate::sim::lint::sources());
         assert!(named.is_empty(), "an agent's kind named outside its wire: {named:?}");
-        // (and it sees one; a handle made from a claude's lines is no match)
+        // (and it sees one; a stand-in's handle made is no match)
         let code = |c: &str| [("chat.rs".to_string(), c.to_string())];
         assert_eq!(matching(&code("let Agent::Claude(l) = a;")), ["chat.rs"]);
-        assert!(matching(&code("let a = Agent::from(lines);")).is_empty());
+        assert!(matching(&code("let a = Agent::stand_in(tx);")).is_empty());
         assert_eq!(matching(&code("std::ptr::eq(a.caps(), &crate::agent::claude::CAPS)")), ["chat.rs"]);
     }
 }

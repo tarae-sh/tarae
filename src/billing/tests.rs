@@ -394,40 +394,6 @@ fn the_helper_reads_the_keychain_item_and_only_on_macos() {
     assert!(helper_for(false, "wq").unwrap_err().contains("macOS Keychain"));
 }
 
-/// The helper joins the one `--settings` object the chat passes: `claudetrust` holds every command key up front
-/// as `""` — an API session's helper takes `apiKeyHelper`'s place, the rest stays as held; a subscription's
-/// arguments are untouched. No `--settings` yet: one made. One naming a file: refused (tarae can't add to it
-/// unread).
-#[test]
-fn the_helper_is_merged_into_the_chats_settings_never_beside_them() {
-    let seen = crate::claudetrust::Seen {
-        scan: None,
-        state: crate::trust::State::Trusted,
-        file: PathBuf::new(),
-        base: Default::default(),
-    };
-    let (held, _) = crate::claudetrust::settings(crate::chat::CHAT_SETTINGS, &seen);
-    let held_json: Value = serde_json::from_str(&held).unwrap();
-    assert_eq!(held_json["apiKeyHelper"], "", "held up front");
-    let given: Vec<String> = vec!["-p".into(), "--settings".into(), held.clone()];
-    let api = |hour_cache| Credential::Api { helper: "the-helper".into(), hour_cache };
-    let out = args(&given, &api(true)).unwrap();
-    assert_eq!(out.iter().filter(|a| *a == "--settings").count(), 1, "one --settings: {out:?}");
-    let got: Value = serde_json::from_str(out.last().unwrap()).unwrap();
-    assert_eq!(got["apiKeyHelper"], "the-helper");
-    assert_eq!(got["promptCacheTtl"], "1h");
-    for (k, v) in held_json.as_object().unwrap().iter().filter(|(k, _)| *k != "apiKeyHelper") {
-        assert_eq!(&got[k], v, "{k} as held");
-    }
-    let one_turn: Value = serde_json::from_str(args(&given, &api(false)).unwrap().last().unwrap()).unwrap();
-    assert!(one_turn.get("promptCacheTtl").is_none());
-    assert_eq!(args(&given, &Credential::Subscription).unwrap(), given, "the plan: untouched");
-    let made = args(&["-p".into()], &api(false)).unwrap();
-    assert_eq!(made[1..], ["--settings".to_string(), r#"{"apiKeyHelper":"the-helper"}"#.to_string()]);
-    let file: Vec<String> = vec!["--settings".into(), "/some/settings.json".into()];
-    assert!(args(&file, &api(true)).unwrap_err().contains("as a file"));
-}
-
 /// What's checked: an API session's claude must say `apiKeyHelper`, a subscription's `none` — or, with your key
 /// kept (`llm.environment-key = "keep"`), that key. Nothing said: nothing to check.
 #[test]

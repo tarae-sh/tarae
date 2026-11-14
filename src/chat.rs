@@ -2493,8 +2493,8 @@ fn settings_again(ed: &mut Editor) -> bool {
 /// A stand-in claude for the chat (no process — a simulation's): the lines sent to it, read from the receiver.
 #[cfg(test)]
 pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
-    let (stdin, rx) = agent::Lines::stand_in();
-    c.proc = Some(Proc { agent: stdin.into(), pid: 0 });
+    let (tx, rx) = std::sync::mpsc::channel();
+    c.proc = Some(Proc { agent: Agent::stand_in(tx), pid: 0 });
     rx
 }
 
@@ -2582,7 +2582,7 @@ fn ensure_proc(ed: &mut Editor) {
     if let Some(tx) = ed.claude_lines.clone() {
         // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
         c.generation = crate::tools::generation();
-        c.proc = Some(Proc { agent: agent::Lines::to(tx).into(), pid: 0 });
+        c.proc = Some(Proc { agent: Agent::stand_in(tx), pid: 0 });
         (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
         return;
     }
@@ -2601,14 +2601,22 @@ fn ensure_proc(ed: &mut Editor) {
         },
         ..crate::agent::Start::new(crate::agent::Role::Chat, &cfg)
     };
+    // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
+    let generation = crate::tools::generation();
     // Who pays (`billing.rs`): an API session's key helper goes into its `--settings`, merged
     let started = crate::agent::args(&start).and_then(|launched| {
         let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Chat)?;
-        let child = crate::agent::spawn(&start, &ed.workspace.root, ed.claude_env.as_ref(), &cred);
-        child.map(|child| (child, cred.billing(), launched)).map_err(|e| e.said(&cfg.command, true))
+        let at = agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: &cred };
+        // tarae's MCP server (its tools) — registered before anything else is said
+        let first = agent::First { tools: true, prompt: None };
+        let route = move |ev| -> Option<crate::event::Apply> {
+            Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
+        };
+        let started = agent::start(&start, at, first, false, tx, route);
+        started.map(|s| (s, cred.billing(), launched)).map_err(|e| e.said(&cfg.command, true))
     });
     let Some(c) = &mut ed.workspace.claude.chat else { return };
-    let (mut child, billing, launched) = match started {
+    let (started, billing, launched) = match started {
         Ok(started) => started,
         Err(said) => {
             // (once: opening the chat tries, and so does sending — the ask line gone with its message, said here only)
@@ -2620,10 +2628,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.billing = Some(billing);
     c.runs_on = (cfg.model.clone(), cfg.effort.clone());
     c.launched = Some((llm::LlmConfig { args: launched.args, ..cfg }, launched.extra));
-    let Some(stdin) = child.stdin.take().map(agent::Lines::new) else { return };
-    let (own, agent) = (stdin.weak(), Agent::from(stdin));
-    // tarae's MCP server (its tools) — registered before anything else is said
-    let _ = agent.initialize();
+    let agent::Started { agent, pid } = started;
     // A fresh process has seen no file yet — and said no credential yet: the last one's may not be its
     c.sent.clear();
     (ed.workspace.claude.usage.key_source, ed.workspace.claude.usage.plan_event) = (None, false);
@@ -2631,14 +2636,9 @@ fn ensure_proc(ed: &mut Editor) {
     ed.workspace.claude.usage.account = None;
     // (what it reports is read with what it can do — `usage::report`)
     ed.workspace.claude.usage.caps = agent.caps();
-    // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
-    c.generation = crate::tools::generation();
-    let generation = c.generation;
-    c.proc = Some(Proc { agent, pid: child.id() });
+    c.generation = generation;
+    c.proc = Some(Proc { agent, pid });
     (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
-    agent::pump(child, Some(own), false, tx, move |ev| {
-        Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
-    });
     // (a process replaced mid-turn: what the last one was writing is never heard of again — `writing.rs`)
     crate::writing::over(ed);
     // What claude's environment leaves out, once since tarae started (names only)
@@ -2653,7 +2653,7 @@ fn ensure_proc(ed: &mut Editor) {
     crate::instructions::follow(ed);
 }
 
-/// `on_event` for other modules' tests: an event of chat process `generation`'s stream, as `agent::pump` sends it.
+/// `on_event` for other modules' tests: an event of chat process `generation`'s stream, as `claude::pump` sends it.
 #[cfg(test)]
 pub(crate) fn stream_event(ed: &mut Editor, generation: u64, ev: Event) {
     on_event(ed, generation, ev)
@@ -4033,7 +4033,7 @@ fn submit_as(
         Some(a) => format!("{context}\n{a}\n\n{asked}"),
         None => format!("{context}\n\n{asked}"),
     };
-    // A write that fails: the process stopped reading — it ended, and its exit, on the way (`agent::pump`), says
+    // A write that fails: the process stopped reading — it ended, and its exit, on the way (`claude::pump`), says
     // why. Until then the message is the turn's, as one written a moment before that exit is: for a conversation
     // claude no longer has it goes again to the new one; any other end is said once, as an exit mid-turn is
     // (the news's row in the chat once it went — the person sees what its Claude was told, in order)
