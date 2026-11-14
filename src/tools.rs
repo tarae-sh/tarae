@@ -288,6 +288,14 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     })
 }
 
+/// Which of the tools a setting or the session turns on a chat on `row` gets, as its process starts (`Chat`'s
+/// `session_tools`, `web_search`, `code`: `list_with`'s three, and what a call is let do) — the one place that says
+/// it. `web_search` only where the row's helpers are its own (`Caps::helpers`): its search runs on Claude's Haiku,
+/// and a session's every model is its agent's (agents beside Claude, step 2's condition 3).
+pub fn chat_gets(row: &crate::agent::Row, parent: bool, web: bool, code: bool) -> (bool, bool, bool) {
+    (parent, web && row.caps.helpers, code)
+}
+
 /// `tools/list`'s answer — the same to the byte every time (the tools come first in the cache's prefix): a chat
 /// that may start sessions (`orchestra::may_parent`) has the session tools after the rest, a second fixed list;
 /// one with `llm.web-search` on as it started has `web_search` after those (`web`) — each off, today's list to

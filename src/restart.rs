@@ -2291,6 +2291,9 @@ mod tests {
         // (none of `Memory`'s types holds one: dropped with the rest before the exec, or never in the editor)
         const ELSEWHERE: &[(&str, &str)] = &[
             ("BareTarget", "sandbox/refused.rs"),
+            // (an ACP agent's bridge, on its wire's thread, never in the editor: a socket an exec leaves is in the same pid's
+            // folder, one of its number replaced at its next bind)
+            ("Bridge", "agent/acp/bridge.rs"),
             ("Chat", "chat.rs"),
             ("Checkout", "log.rs"),
             ("Claim", "basetree.rs"),

@@ -21,7 +21,30 @@ pub fn kill(pid: u32) {
 /// `child` reaped once it has ended: waited for without reaping (`WNOWAIT`), then taken out of `UNREAPED` and
 /// reaped under its lock — so a `kill` either reaches it or sends nothing.
 pub(super) fn reap(child: &mut Child) {
-    let pid = child.id();
+    ended(child.id());
+    reaped(child);
+}
+
+/// `reap`, for an agent that leads a process group of its own (an ACP agent's, step 2's condition 4): once it has
+/// ended, what it started and left in its group (the bridge's relay, a server of its own) is ended too — the group
+/// signalled while its leader, ended and not yet reaped, still holds the group's id — then it's reaped.
+#[cfg(test)]
+pub(super) fn reap_group(child: &mut Child) {
+    ended(child.id());
+    end_group(child);
+    reaped(child);
+}
+
+/// Ends the process group `child` leads, itself first among it — while it's unreaped (its reader holds it): the id is
+/// still its group's.
+#[cfg(test)]
+pub(super) fn end_group(child: &Child) {
+    // SAFETY: a group our own child leads, not reaped yet (its reader reaps it, after this): its id is still the group's.
+    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+}
+
+/// Waits for `pid`, a child of ours, to end, without reaping it (`WNOWAIT`).
+fn ended(pid: u32) {
     // SAFETY: a zeroed siginfo_t is a valid one to fill; waitid only waits for our own child here.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let flags = libc::WEXITED | libc::WNOWAIT;
@@ -29,6 +52,11 @@ pub(super) fn reap(child: &mut Child) {
     while unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) } != 0
         && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
     {}
+}
+
+/// `child`, ended, taken out of `UNREAPED` and reaped under its lock — so a `kill` either reaches it or sends nothing.
+fn reaped(child: &mut Child) {
+    let pid = child.id();
     let mut unreaped = UNREAPED.lock().unwrap_or_else(|e| e.into_inner());
     unreaped.retain(|&p| p != pid);
     let _ = child.wait();

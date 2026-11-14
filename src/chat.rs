@@ -2522,6 +2522,12 @@ pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
     rx
 }
 
+/// `stand_in` with `agent` for its handle (a simulation's ACP wire with no process: `sim/acp.rs`).
+#[cfg(test)]
+pub(crate) fn stand_in_agent(c: &mut Chat, agent: Agent) {
+    c.proc = Some(Proc { agent, pid: 0 });
+}
+
 /// `stand_in`, its process a generation of its own as a real one's is — a tool call's answer reaches this chat alone
 /// where several chats have stand-ins (orchestra's simulation).
 #[cfg(test)]
@@ -2609,7 +2615,7 @@ fn ensure_proc(ed: &mut Editor) {
         // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
         c.generation = crate::tools::generation();
         c.proc = Some(Proc { agent: Agent::stand_in(tx), pid: 0 });
-        (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
+        (c.session_tools, c.web_search, c.code) = crate::tools::chat_gets(c.agent, parent, web_search, code);
         return;
     }
     // (its conversation's agent, and what it can do)
@@ -2669,7 +2675,7 @@ fn ensure_proc(ed: &mut Editor) {
     ed.workspace.claude.usage.caps = agent.caps();
     c.generation = generation;
     c.proc = Some(Proc { agent, pid });
-    (c.session_tools, c.web_search, c.code) = (parent, web_search, code);
+    (c.session_tools, c.web_search, c.code) = crate::tools::chat_gets(c.agent, parent, web_search, code);
     // (a process replaced mid-turn: what the last one was writing is never heard of again — `writing.rs`)
     crate::writing::over(ed);
     // What claude's environment leaves out, once since tarae started (names only)
@@ -6230,6 +6236,117 @@ mod tests {
         assert_eq!(input(&ed), ("next".into(), 4));
     }
 
+    /// The stand-in ACP agent's environment for a chat's start: its script, where it writes what it heard, and the
+    /// state folder its bridge binds in (the scratch's own).
+    fn stand_in_env(
+        dir: &crate::scratch::Scratch,
+        script: &std::path::Path,
+        heard: &std::path::Path,
+    ) -> llm::Env {
+        use crate::agent::acp::standin::{HEARD, SCRIPT};
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let state = path(&dir.join("state"));
+        llm::Env::from([
+            (SCRIPT.into(), path(script)),
+            (HEARD.into(), path(heard)),
+            ("XDG_STATE_HOME".into(), state),
+        ])
+    }
+
+    /// Agents beside Claude, step 2's key-sequence test: a chat turn on the stand-in ACP agent. `space l` opens the
+    /// chat (its conversation's row the stand-in's) and starts it, the message typed and sent; the agent streams its
+    /// words, calls `search` through the bridge — tarae's own tool, its answer tarae's — and ends. The transcript shows
+    /// the call's row, what it found, and the answer; `web_search` isn't among the tools the agent is offered (its
+    /// helper is Claude's: condition 3). The chat closed, the agent's process group goes with it, the bridge's relay
+    /// included, and the bridge's socket (condition 4).
+    #[test]
+    fn a_chat_turn_on_an_acp_agent_calls_a_tool_through_the_bridge() {
+        let dir = crate::scratch::Scratch::new("chat-acp-turn");
+        std::fs::write(dir.join("a.rs"), "fn alpha() {}\nfn beta() {}\n").unwrap();
+        let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
+        let text = |t: &str| serde_json::json!({"say": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": t}}});
+        let mcp = |m: serde_json::Value| serde_json::json!({"mcp": m});
+        let script = serde_json::json!([
+            {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
+            {"expect": "session/new", "result": {"sessionId": "s-1"}},
+            {"expect": "session/prompt"},
+            text("Looking for it. "),
+            mcp(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})),
+            mcp(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
+            mcp(serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})),
+            mcp(serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "search", "arguments": {"pattern": "fn beta"}}})),
+            text("It's in a.rs."),
+            {"end_turn": "end_turn"},
+            {"eof": true},
+        ]);
+        let (script_at, heard_at) = (dir.join("script.json"), dir.join("heard"));
+        std::fs::write(&script_at, script.to_string()).unwrap();
+        ed.claude_env = Some(stand_in_env(&dir, &script_at, &heard_at));
+        ed.config.llm.web_search = true;
+        let mut c = Chat::new();
+        c.agent = &crate::agent::STAND_IN;
+        c.hidden = true;
+        ed.workspace.claude.chat = Some(c);
+        let feed = |ed: &mut Editor, keys: &str| {
+            let mut chars = keys.chars();
+            while let Some(ch) = chars.next() {
+                let key: Key = match ch {
+                    '<' => chars.by_ref().take_while(|&c| c != '>').collect::<String>().parse().unwrap(),
+                    ch => Key::plain(crate::key::Code::Char(ch)),
+                };
+                ed.handle_key(key);
+            }
+        };
+        feed(&mut ed, " l");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().proc.is_some(), "space l started the stand-in");
+        feed(&mut ed, "where is beta?<ret>");
+        let answered = |ed: &Editor| {
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            c.state == State::Idle
+                && c.msgs.iter().any(|m| m.role == Role::Assistant && m.text.contains("a.rs."))
+        };
+        settle_until(&mut ed, answered);
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 140, 30).unwrap();
+        let mut p = vt100::Parser::new(30, 140, 0);
+        p.process(&bytes);
+        let s = p.screen().contents();
+        let row = s.lines().find(|l| l.contains("fn beta")).unwrap_or_else(|| panic!("the call's row: {s}"));
+        assert!(
+            row.contains("search") && row.contains("matching line"),
+            "what it found, on its row: {row:?}\n{s}"
+        );
+        assert!(s.contains("Looking for it.") && s.contains("It's in a.rs."), "the answer: {s}");
+        let heard = std::fs::read_to_string(&heard_at).unwrap();
+        let heard: Vec<serde_json::Value> =
+            heard.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let answer =
+            |id: u64| heard.iter().find_map(|v| v.get("mcp_answer").filter(|a| a["id"] == id)).cloned();
+        let listed = answer(2).expect("tools/list answered");
+        let names: Vec<&str> =
+            listed["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"search") && !names.contains(&"web_search"), "{names:?}");
+        let found = answer(3).expect("the call answered");
+        assert!(
+            found["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("a.rs"),
+            "tarae's: {found}"
+        );
+        let pid = heard.iter().find_map(|v| v["mcp_pid"].as_u64()).expect("the relay started");
+        let new = heard.iter().find(|v| v["method"] == "session/new").unwrap();
+        let socket = std::path::PathBuf::from(
+            new["params"]["mcpServers"][0]["args"].as_array().unwrap().last().unwrap().as_str().unwrap(),
+        );
+        ed.workspace.claude.chat = None;
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        // SAFETY: signal 0 only asks whether the process is there.
+        while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 || socket.exists() {
+            assert!(std::time::Instant::now() < end, "the bridge outlived the chat");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[track_caller]
     fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
         crate::test_results::settle_saying(ed, done, |ed| {
@@ -6246,7 +6363,6 @@ mod tests {
     /// on its conversation's row.
     #[test]
     fn an_ask_on_a_row_whose_asks_arent_read_is_refused_before_reads() {
-        use crate::agent::acp::standin::{HEARD, SCRIPT};
         let dir = crate::scratch::Scratch::new("chat-acp-ask");
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
         let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
@@ -6262,9 +6378,7 @@ mod tests {
         ]);
         let (script_at, heard_at) = (dir.join("script.json"), dir.join("heard"));
         std::fs::write(&script_at, script.to_string()).unwrap();
-        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        ed.claude_env =
-            Some(llm::Env::from([(SCRIPT.into(), path(&script_at)), (HEARD.into(), path(&heard_at))]));
+        ed.claude_env = Some(stand_in_env(&dir, &script_at, &heard_at));
         let mut c = Chat::new();
         c.agent = &crate::agent::STAND_IN;
         ed.workspace.claude.chat = Some(c);

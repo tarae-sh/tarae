@@ -23,7 +23,7 @@ impl Agent {
     }
 
     /// tarae's MCP server offered: the first thing it's told (its messages come back as `Event::Mcp`).
-    /// (ACP: the bridge is offered in `session/new`, landing 4 — nothing to say here.)
+    /// (ACP: the bridge is offered in `session/new` — nothing to say here.)
     pub fn initialize(&self) -> std::io::Result<()> {
         match self {
             Agent::Claude(l) => l.initialize(),
@@ -50,13 +50,12 @@ impl Agent {
         }
     }
 
-    /// tarae's MCP server's answer (`response` its JSON-RPC message) to ask `id`. (ACP: through the bridge,
-    /// landing 4 — none is asked before it.)
+    /// tarae's MCP server's answer (`response` its JSON-RPC message) to ask `id` (ACP: back through the bridge).
     pub fn answer_mcp(&self, id: &str, response: serde_json::Value) {
         match self {
             Agent::Claude(l) => l.answer_mcp(id, response),
             #[cfg(test)]
-            Agent::Acp(_) => {}
+            Agent::Acp(a) => a.answer_mcp(id, response),
         }
     }
 
@@ -152,6 +151,10 @@ pub struct Caps {
     /// the user's rule for own tools, early and fail-closed (step 2's condition 1: an ACP ask's name is the agent's
     /// own, its title the model's text).
     pub asks: bool,
+    /// The helpers tarae starts for its chat's tools are of its own models (`web_search`'s search runs on Claude's
+    /// Haiku). One whose aren't: its chat doesn't list such a tool — a session's every model is its agent's (the
+    /// user's rule; step 2's condition 3, `tools::chat_gets`).
+    pub helpers: bool,
 }
 
 /// An agent tarae can start: data, as a language pack is a row ("agents are rows of data", 2026-11-13).
@@ -392,8 +395,15 @@ pub fn start(
     match s.row.wire {
         Wire::Claude => claude::begin(child, first, once, tx, route),
         #[cfg(test)]
-        Wire::Acp => acp::begin(child, s, at.dir, first, once, tx, route),
+        Wire::Acp => acp::begin(child, s, &at, first, once, tx, route),
     }
+}
+
+/// `tarae agent-tools <socket>`: the bridge's relay an ACP agent starts as tarae's MCP server (`acp::bridge`) —
+/// under the gate with the rest of the wire until step 4.
+#[cfg(test)]
+pub fn tools_relay(args: &[String]) -> anyhow::Result<()> {
+    acp::bridge::cli(args)
 }
 
 /// An agent's process ended by its pid, while its reader still holds it (else nothing is sent: the pid may be

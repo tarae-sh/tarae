@@ -8,10 +8,13 @@
 //! cancel. The handle (`Proc`) only hands it what the main loop says; stdin is written on a thread of its own and
 //! stdout read on another, so nothing here waits on the main loop.
 //!
-//! No tools yet (step 2, landing 3): `session/new` offers no MCP server — tarae's tools reach an ACP agent through
-//! the bridge, landing 4. Test-only in step 2 (the design session's answer, §9.4): no config reaches it, and a
-//! release build carries none of it.
+//! tarae's tools reach it through the bridge (`bridge.rs`): an MCP server offered in `session/new`, a relay whose
+//! messages come up the same thread as stdout's, so a tool's call is told once and in order (finding C). Its process
+//! leads a group of its own, and the group ends with it — the relay and whatever else it started (condition 4).
+//! Test-only in step 2 (the design session's answer, §9.4): no config reaches it, and a release build carries none
+//! of it.
 
+pub mod bridge;
 pub mod standin;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -22,7 +25,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 
 use serde_json::{Value, json};
 
-use super::{Agent, Args, Caps, Event, First, Permission, Prompt, SpawnError, Start, Started};
+use super::{Agent, Args, Caps, Event, First, Permission, Place, Prompt, SpawnError, Start, Started};
 use crate::event::Apply;
 use crate::llm::Env;
 
@@ -33,7 +36,8 @@ pub const VERSION: u64 = 1;
 /// else `session/load` — the wire starts a new one where neither is there, said), its thinking as text. Not asked
 /// of it: a fork, per-request usage (a turn's `usage` only), a cost, the plan's limits, models and effort (step
 /// 4), a compaction on demand, who pays (ACP has no word for it), its permission asks read by tool name (an ask's
-/// name is the agent's own, its title the model's text: every ask refused, condition 1). Its own tools off: the
+/// name is the agent's own, its title the model's text: every ask refused, condition 1), a helper of Claude's for
+/// its chat's tools (`web_search`'s: a session's every model is its agent's, condition 3). Its own tools off: the
 /// stand-in has none but what its script asks for (a real agent's are step 3's).
 pub const CAPS: Caps = Caps {
     interrupt: true,
@@ -49,6 +53,7 @@ pub const CAPS: Caps = Caps {
     own_tools_off: true,
     billing: false,
     asks: false,
+    helpers: false,
 };
 
 /// The prefix of tarae's own tools as agy names them in its `tool_call`s (`mcp_<server>_<tool>`): the bridge tells
@@ -94,6 +99,8 @@ pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, Sp
         );
     }
     let mut cmd = crate::nofile::command(program, Some(dir));
+    // (a group of its own: it ends with it — `run`, condition 4)
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     for a in s.row.args {
         // (the stand-in's: the test binary itself, re-run on its one test)
         #[cfg(test)]
@@ -125,6 +132,14 @@ enum In {
     Answer(String, Permission),
     /// The handle dropped: what's queued for stdin still goes, then it closes.
     Closed,
+    /// The bridge's connection `n` is the live one: its writes.
+    Linked(u64, Sender<String>),
+    /// Connection `n` ended.
+    Unlinked(u64),
+    /// A message of the live connection's: an MCP request or notification.
+    Bridged(Value),
+    /// tarae's MCP server's answer to bridged message `key` (`Agent::answer_mcp`).
+    Mcp(String, Value),
 }
 
 /// A running ACP agent, as `Agent::Acp` holds it: each call a message to its conversation's thread, never a wait.
@@ -144,6 +159,11 @@ impl Proc {
     pub(super) fn answer_permission(&self, id: &str, p: Permission) {
         let _ = self.0.send(In::Answer(id.to_string(), p));
     }
+
+    /// Back through the bridge, and — a call's — its `ToolResult`.
+    pub(super) fn answer_mcp(&self, key: &str, response: Value) {
+        let _ = self.0.send(In::Mcp(key.to_string(), response));
+    }
 }
 
 impl Drop for Proc {
@@ -162,15 +182,28 @@ struct Begin {
     cwd: PathBuf,
     resume: Option<String>,
     system: Option<String>,
+    /// tarae's tools offered (`First.tools`): where its bridge binds (`$state`; None: nowhere — the start ends
+    /// saying so), its agent's pid, and the way back to this thread its connections take.
+    tools: Option<(Option<PathBuf>, u32, Sender<In>)>,
+}
+
+/// Where a bridge binds: `$state` (`config::state_dir`) — a test's own, its `given` `XDG_STATE_HOME` (a folder of its
+/// scratch's, as the real one is outside the sandbox).
+fn state(given: Option<&Env>) -> Option<PathBuf> {
+    match cfg!(test) {
+        true => given.and_then(|g| g.get("XDG_STATE_HOME")).map(|s| PathBuf::from(s).join("tarae")),
+        false => crate::config::state_dir(),
+    }
 }
 
 /// An ACP agent started: its stdin taken (none: the child ended and reaped off the main loop, `Err`), its stdout
 /// and stderr read, and its conversation's thread begun — `initialize` its first line, written there. `first`'s
-/// prompt goes once the session is known; its `tools` wait for the bridge (landing 4).
+/// prompt goes once the session is known; its `tools`, the bridge, is bound at the handshake and offered in the
+/// session's `mcpServers`.
 pub(super) fn begin(
     mut child: Child,
     s: &Start,
-    dir: &Path,
+    at: &Place,
     first: First,
     once: bool,
     tx: crate::event::Tx,
@@ -189,9 +222,10 @@ pub(super) fn begin(
     let begin = Begin {
         name: s.row.name,
         command: s.row.command,
-        cwd: dir.to_path_buf(),
+        cwd: at.dir.to_path_buf(),
         resume: s.resume.as_ref().map(|r| r.conversation.to_string()),
         system: s.system.map(String::from),
+        tools: first.tools.then(|| (state(at.given), pid, in_tx.clone())),
     };
     match child.stdout.take() {
         Some(out) => {
@@ -244,6 +278,16 @@ enum Asked {
     Prompt,
 }
 
+/// What a bridged message is, for its answer.
+#[derive(Clone, Copy, PartialEq)]
+enum Bridged {
+    /// A `tools/call`: its answer is its `ToolResult` too.
+    Call,
+    Request,
+    /// No answer goes back (`tools::mcp` gives one, as Claude's SDK wants).
+    Notification,
+}
+
 /// What the conversation's thread keeps.
 struct Wire {
     begin: Begin,
@@ -281,6 +325,13 @@ struct Wire {
     /// What its end says in place of stderr's last line (a conversation gone: the chat's own words for it).
     exit_said: Option<String>,
     junk_logged: bool,
+    /// tarae's tools' bridge, once bound (dropped: its socket and folder go).
+    bridge: Option<bridge::Bridge>,
+    /// Its live connection: its number and its writes.
+    link: Option<(u64, Sender<String>)>,
+    /// Its messages the chat hasn't answered: each by its key (`Event::Mcp`'s id), with its connection and kind.
+    bridged: HashMap<String, (u64, Bridged)>,
+    bridged_n: u64,
 }
 
 impl Wire {
@@ -309,7 +360,24 @@ impl Wire {
             end: false,
             exit_said: None,
             junk_logged: false,
+            bridge: None,
+            link: None,
+            bridged: HashMap::new(),
+            bridged_n: 0,
         }
+    }
+
+    /// The session's `mcpServers`: the bridge, where tarae's tools are offered.
+    fn servers(&self) -> Value {
+        Value::Array(self.bridge.iter().map(bridge::Bridge::server).collect())
+    }
+
+    /// The bridge bound, where tarae's tools are offered. Err: why it can't be.
+    fn bind(&mut self) -> Result<(), String> {
+        let Some((state, agent, to)) = self.begin.tools.take() else { return Ok(()) };
+        let state = state.ok_or("no state folder (neither XDG_STATE_HOME nor HOME)")?;
+        self.bridge = Some(bridge::Bridge::listen(&state, agent, to)?);
+        Ok(())
     }
 
     fn write(&self, v: Value) {
@@ -342,19 +410,20 @@ impl Wire {
     fn open(&mut self) {
         let cwd = self.begin.cwd.to_string_lossy().into_owned();
         let system = self.begin.system.take();
+        let servers = self.servers();
         match self.begin.resume.clone() {
             Some(id) if self.resume => {
-                let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": []});
+                let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": servers});
                 self.request("session/resume", params, Asked::Resume(id));
             }
             Some(id) if self.load => {
                 self.replaying = true;
-                let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": []});
+                let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": servers});
                 self.request("session/load", params, Asked::Load(id));
             }
             Some(id) => self.gone(&id),
             None => {
-                let mut params = json!({"cwd": cwd, "mcpServers": []});
+                let mut params = json!({"cwd": cwd, "mcpServers": servers});
                 match (system, self.system_prompt) {
                     (Some(text), true) => {
                         params["systemPrompt"] = json!({"mode": "append", "content": [text_block(text)]});
@@ -412,6 +481,92 @@ impl Wire {
     fn answer(&mut self, key: &str, p: Permission) {
         let Some((id, options)) = self.asks.remove(key) else { return };
         self.write(response(&id, outcome(&options, &p)));
+    }
+
+    /// A message of the bridge's: a `tools/call` comes up as its call (`Tool`, named as Claude's MCP client names
+    /// tarae's tools) right before its `Mcp` — the bridge, not the agent's own report, tells a tarae tool's call
+    /// (finding C); anything else is its `Mcp` alone. Each its key, `bridge-N`.
+    fn bridged(&mut self, msg: Value, send: &dyn Fn(Event) -> bool) -> bool {
+        let Some((link, _)) = self.link else { return true };
+        if !(self.thought_over(send) && self.flush(send)) {
+            return false;
+        }
+        self.bridged_n += 1;
+        let key = format!("bridge-{}", self.bridged_n);
+        let kind = match (msg.get("id").filter(|i| !i.is_null()), msg["method"].as_str()) {
+            (None, _) => Bridged::Notification,
+            (Some(_), Some("tools/call")) => Bridged::Call,
+            (Some(_), _) => Bridged::Request,
+        };
+        self.bridged.insert(key.clone(), (link, kind));
+        if kind == Bridged::Call {
+            let name =
+                format!("mcp__{}__{}", bridge::NAME, msg["params"]["name"].as_str().unwrap_or_default());
+            let input = msg["params"]["arguments"].clone();
+            if !send(Event::Tool { id: key.clone(), name, input }) {
+                return false;
+            }
+        }
+        send(Event::Mcp { id: key, message: msg })
+    }
+
+    /// tarae's MCP server's answer to bridged message `key`: back through the connection that asked, if it's still
+    /// the live one (a notification's: nowhere); a call's is its `ToolResult` too, wherever the answer went.
+    fn mcp_answered(&mut self, key: &str, answer: Value, send: &dyn Fn(Event) -> bool) -> bool {
+        let Some((link, kind)) = self.bridged.remove(key) else { return true };
+        if let Some((_, out)) =
+            self.link.as_ref().filter(|(now, _)| *now == link && kind != Bridged::Notification)
+        {
+            let _ = out.send(answer.to_string());
+        }
+        if kind != Bridged::Call {
+            return true;
+        }
+        let (text, error) = match answer.get("error") {
+            Some(e) => (e["message"].as_str().unwrap_or("an error").to_string(), true),
+            None => {
+                let content = answer["result"]["content"].as_array().into_iter().flatten();
+                let text = content.filter_map(text_of).collect::<Vec<_>>().join("\n");
+                (text, answer["result"]["isError"] == true)
+            }
+        };
+        send(Event::ToolResult { id: key.to_string(), text: cut(text), error })
+    }
+
+    /// One message the handle or the bridge handed the conversation's thread, but stdout's end (`run`; the
+    /// simulation's driver, `sim/acp.rs`). False: the editor's gone.
+    fn take(&mut self, m: In, send: &dyn Fn(Event) -> bool) -> bool {
+        match m {
+            In::Line(line) => self.line(&line, send),
+            In::Eof => true,
+            In::Prompt(p) => {
+                self.queue.push_back(p);
+                self.next();
+                true
+            }
+            In::Cancel => {
+                self.cancel();
+                true
+            }
+            In::Answer(id, p) => {
+                self.answer(&id, p);
+                true
+            }
+            In::Closed => {
+                self.out = None;
+                true
+            }
+            In::Linked(n, out) => {
+                self.link = Some((n, out));
+                true
+            }
+            In::Unlinked(n) => {
+                self.link = self.link.take().filter(|(now, _)| *now != n);
+                true
+            }
+            In::Bridged(msg) => self.bridged(msg, send),
+            In::Mcp(key, answer) => self.mcp_answered(&key, answer, send),
+        }
     }
 
     /// What streamed and wasn't sent yet, sent. False: the editor's gone.
@@ -525,6 +680,12 @@ impl Wire {
                 self.resume = has(&caps["sessionCapabilities"]["resume"]);
                 self.system_prompt = has(&caps["sessionCapabilities"]["systemPrompt"]);
                 self.version = r["agentInfo"]["version"].as_str().filter(|v| !v.is_empty()).map(String::from);
+                // (tarae's tools: the bridge bound here, on this thread, before the session that offers it)
+                if let Err(e) = self.bind() {
+                    send(Event::Done(Err(format!("{name}: tarae's tools can't be offered: {e}"))));
+                    self.end = true;
+                    return true;
+                }
                 self.open();
             }
             (Asked::Resume(id) | Asked::Load(id), Err((UNKNOWN_SESSION, _))) => self.gone(&id),
@@ -582,9 +743,10 @@ impl Wire {
     }
 }
 
-/// The conversation's thread: what stdout says and what the handle hands it, in their order; text batched as
-/// Claude's is (`claude::FLUSH`). Ends when stdout does: the process reaped, then its end told (stderr's last line)
-/// — `once`: after its first turn, the process ended.
+/// The conversation's thread: what stdout says and what the handle and the bridge hand it, in their order; text
+/// batched as Claude's is (`claude::FLUSH`). Ends when stdout does: the bridge let go, the process reaped and its
+/// group ended with it (`process::reap_group`), then its end told (stderr's last line) — `once`: after its first
+/// turn, the process ended.
 fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn Fn(Event) -> bool) {
     let (err_tx, err_rx) = channel::<String>();
     if let Some(err) = child.stderr.take() {
@@ -604,7 +766,7 @@ fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn F
     loop {
         if w.end && !ended {
             ended = true;
-            let _ = child.kill();
+            super::process::end_group(&child);
         }
         let held = !w.pending.is_empty();
         let left = super::claude::FLUSH.saturating_sub(crate::clock::since(w.last_flush));
@@ -624,28 +786,11 @@ fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn F
                 let _ = w.thought_over(send) && w.flush(send);
                 break;
             }
-            Ok(In::Line(line)) => {
+            Ok(m) => {
                 let turns = w.turn;
-                let ok = w.line(&line, send);
+                let ok = w.take(m, send);
                 done |= turns && !w.turn;
                 ok
-            }
-            Ok(In::Prompt(p)) => {
-                w.queue.push_back(p);
-                w.next();
-                true
-            }
-            Ok(In::Cancel) => {
-                w.cancel();
-                true
-            }
-            Ok(In::Answer(id, p)) => {
-                w.answer(&id, p);
-                true
-            }
-            Ok(In::Closed) => {
-                w.out = None;
-                true
             }
         };
         if !ok || (once && done) {
@@ -653,10 +798,11 @@ fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn F
         }
     }
     if once || !ended && w.end {
-        let _ = child.kill();
+        super::process::end_group(&child);
     }
     drop(w.out.take());
-    super::process::reap(&mut child);
+    drop(w.bridge.take());
+    super::process::reap_group(&mut child);
     let err = err_rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap_or_default();
     match once {
         true if !done => {
@@ -666,6 +812,92 @@ fn run(mut child: Child, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn F
         false => {
             send(Event::Exit(w.exit_said.take().unwrap_or(err)));
         }
+    }
+}
+
+// ── The simulation's door ─────────────────────────────────────────────
+
+/// The conversation's thread's work with no process and no thread (`sim/acp.rs`): the agent's lines and the bridge's
+/// messages handed in by the scenario, what the chat handed the handle taken a message at a time when it says, what
+/// went to the agent read back, and every event given back for the scenario to land — as `run` does, its order the
+/// scenario's choice.
+pub struct Staged {
+    w: Wire,
+    rx: Receiver<In>,
+    written: Receiver<String>,
+}
+
+impl Staged {
+    /// A wire begun in `dir` (its `initialize` written), and the handle the chat holds.
+    pub fn new(dir: &Path) -> (Staged, Agent) {
+        let (in_tx, rx) = channel();
+        let (out, written) = channel();
+        let row = &super::STAND_IN;
+        let begin = Begin {
+            name: row.name,
+            command: row.command,
+            cwd: dir.into(),
+            resume: None,
+            system: None,
+            tools: None,
+        };
+        let mut w = Wire::new(begin, out);
+        w.initialize();
+        (Staged { w, rx, written }, Agent::Acp(Proc(in_tx)))
+    }
+
+    /// `f`'s work, its events kept — and what streamed sent at once (the scenario's own clock has no `FLUSH` wait).
+    fn run(&mut self, f: impl FnOnce(&mut Wire, &dyn Fn(Event) -> bool)) -> Vec<Event> {
+        let events = std::cell::RefCell::new(Vec::new());
+        let send = |ev| {
+            events.borrow_mut().push(ev);
+            true
+        };
+        f(&mut self.w, &send);
+        self.w.flush(&send);
+        events.into_inner()
+    }
+
+    /// A line from the agent's stdout.
+    pub fn line(&mut self, v: &Value) -> Vec<Event> {
+        self.run(|w, send| {
+            w.line(&v.to_string(), send);
+        })
+    }
+
+    /// The bridge's connection linked: what goes back through it comes out of the receiver.
+    pub fn link(&mut self) -> Receiver<String> {
+        let (tx, rx) = channel();
+        self.run(|w, send| {
+            w.take(In::Linked(1, tx), send);
+        });
+        rx
+    }
+
+    /// A message of the bridge's.
+    pub fn bridged(&mut self, msg: Value) -> Vec<Event> {
+        self.run(|w, send| {
+            w.bridged(msg, send);
+        })
+    }
+
+    /// The next message the chat handed the handle, taken: what it was, and its events. None: none waits.
+    pub fn take(&mut self) -> Option<(String, Vec<Event>)> {
+        let m = self.rx.try_recv().ok()?;
+        let said = match &m {
+            In::Prompt(_) => "a prompt".to_string(),
+            In::Cancel => "a stop".into(),
+            In::Answer(id, _) => format!("the answer to ask {id}"),
+            In::Mcp(key, _) => format!("the answer to {key}"),
+            In::Closed => "the handle dropped".into(),
+            _ => "another".into(),
+        };
+        Some((said, self.run(|w, send| _ = w.take(m, send))))
+    }
+
+    /// What was written to the agent since the last look.
+    pub fn written(&self) -> Vec<Value> {
+        self.written.try_iter().filter_map(|l| serde_json::from_str(&l).ok()).collect()
     }
 }
 
@@ -777,7 +1009,11 @@ fn text_of(content: &Value) -> Option<String> {
 /// A finished call's text content, its first 4 KB — a write's `diff` and a read's null content are none.
 fn result_text(content: &Value) -> String {
     let texts = content.as_array().into_iter().flatten().filter(|c| c["type"] == "content");
-    let mut text = texts.filter_map(|c| text_of(&c["content"])).collect::<Vec<_>>().join("\n");
+    cut(texts.filter_map(|c| text_of(&c["content"])).collect::<Vec<_>>().join("\n"))
+}
+
+/// A result's text as `Event::ToolResult` carries it: its first 4 KB.
+fn cut(mut text: String) -> String {
     if text.len() > 4096 {
         let cut = (0..=4096).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
         text.truncate(cut);

@@ -16,6 +16,12 @@
 //! - `{"send": message}` any message as it is (a request of the agent's own).
 //! - `{"stderr": line}`, `{"exit": code}`, `{"junk": text}` (a line that isn't JSON), `{"eof": true}` (reads until
 //!   stdin closes, heard as `{"eof": true}`).
+//! - `{"mcp": message}` sends an MCP message to tarae's server — the first of the `mcpServers` its session was opened
+//!   with, started at the first such step as an agent starts one (its command, arguments and `env`), heard as
+//!   `{"mcp_pid": pid}` — and, a request, waits for its answer, heard as `{"mcp_answer": answer}` (anything else
+//!   the server said meanwhile as `{"mcp_other": message}`).
+//! - `{"linger": true}` leaves a process of its own in its group that outlives it (a stand-in for an agent's child
+//!   that never ends by itself), heard as `{"linger_pid": pid}`.
 //!
 //! What it heard: first `{"env": [its environment's names], "nofile": its soft descriptor limit}`, then each line
 //! tarae wrote, as it came.
@@ -28,17 +34,12 @@ use serde_json::{Value, json};
 /// The stand-in's row's word for the test binary's path (`acp::command` puts it there).
 pub const SELF: &str = "@self";
 
+/// The test the stand-in is (`run`).
+pub const TEST: &str = "agent::acp::standin::run";
+
 /// The stand-in's row's arguments to `sh`.
-pub const ARGS: &[&str] = &[
-    "-c",
-    "exec \"$@\" 3>&1 >/dev/null",
-    "sh",
-    SELF,
-    "--exact",
-    "agent::acp::standin::run",
-    "--ignored",
-    "--nocapture",
-];
+pub const ARGS: &[&str] =
+    &["-c", "exec \"$@\" 3>&1 >/dev/null", "sh", SELF, "--exact", TEST, "--ignored", "--nocapture"];
 
 /// The variable naming its script.
 pub const SCRIPT: &str = "TARAE_ACP_SCRIPT";
@@ -61,6 +62,12 @@ struct Agent {
     unread: VecDeque<Value>,
     session: String,
     turn: Option<Value>,
+    /// The `mcpServers` its session was opened with.
+    servers: Value,
+    /// tarae's server once started: its stdin and its stdout's lines.
+    server: Option<(std::process::ChildStdin, std::io::Lines<std::io::BufReader<std::process::ChildStdout>>)>,
+    /// What it started, never waited for: its group's end is tarae's to make (condition 4).
+    children: Vec<std::process::Child>,
 }
 
 impl Agent {
@@ -109,6 +116,9 @@ impl Agent {
     fn step(&mut self, step: &Value) {
         if let Some(method) = step["expect"].as_str() {
             let Some(v) = self.wait(|v| v["method"] == method) else { self.missed(method) };
+            if v["params"]["mcpServers"].is_array() {
+                self.servers = v["params"]["mcpServers"].clone();
+            }
             if let Some(id) = v.get("id").filter(|i| !i.is_null()) {
                 if let Some(s) = v["params"]["sessionId"].as_str() {
                     self.session = s.to_string();
@@ -162,6 +172,62 @@ impl Agent {
         } else if step["eof"] == true {
             while self.hear().is_some() {}
             self.heard(&json!({"eof": true}));
+        } else if let Some(message) = step.get("mcp") {
+            self.mcp(message);
+        } else if step["linger"] == true {
+            // (a child of its own that outlives it: `sh` waits to open a FIFO nobody writes to)
+            let child = std::process::Command::new("/bin/sh")
+                .args(["-c", "exec 0<&-; mkfifo \"$1\" && read x < \"$1\"", "sh"])
+                .arg(format!("{}.fifo", std::env::var(HEARD).unwrap_or_default()))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("a lingering child");
+            self.heard(&json!({"linger_pid": child.id()}));
+            self.children.push(child);
+        }
+    }
+
+    /// `message` to tarae's server, started first if it isn't; a request's answer waited for and heard.
+    fn mcp(&mut self, message: &Value) {
+        if self.server.is_none() {
+            let s = &self.servers[0];
+            let mut cmd = std::process::Command::new(s["command"].as_str().expect("a server's command"));
+            cmd.args(s["args"].as_array().into_iter().flatten().filter_map(Value::as_str));
+            for e in s["env"].as_array().into_iter().flatten() {
+                cmd.env(e["name"].as_str().unwrap_or_default(), e["value"].as_str().unwrap_or_default());
+            }
+            // (its stderr isn't tarae's: the stand-in's end is told by its own)
+            cmd.stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            let mut child = cmd.spawn().expect("tarae's server started");
+            self.heard(&json!({"mcp_pid": child.id()}));
+            let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+            self.server = Some((stdin, std::io::BufReader::new(stdout).lines()));
+            self.children.push(child);
+        }
+        let Some((stdin, lines)) = self.server.as_mut() else { return };
+        let _ = writeln!(stdin, "{message}").and_then(|_| stdin.flush());
+        let Some(id) = message.get("id") else { return };
+        let mut others = Vec::new();
+        let answer =
+            lines.map_while(Result::ok).filter_map(|l| serde_json::from_str::<Value>(&l).ok()).find(|v| {
+                match v["id"] == *id && v.get("method").is_none() {
+                    true => true,
+                    false => {
+                        others.push(v.clone());
+                        false
+                    }
+                }
+            });
+        for v in others {
+            self.heard(&json!({"mcp_other": v}));
+        }
+        match answer {
+            Some(a) => self.heard(&json!({"mcp_answer": a})),
+            None => self.missed(&format!("tarae's server's answer to {id}")),
         }
     }
 }
@@ -174,8 +240,12 @@ fn run() {
     let (Ok(script), Ok(heard)) = (std::env::var(SCRIPT), std::env::var(HEARD)) else { return };
     let script: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(script).unwrap()).unwrap();
     let heard = std::fs::OpenOptions::new().create(true).append(true).open(heard).unwrap();
-    // SAFETY: descriptor 3 is tarae's pipe, as the stand-in's row's `3>&1` gave it; nothing else here owns it.
-    let out = unsafe { std::fs::File::from_raw_fd(3) };
+    // SAFETY: descriptor 3 is tarae's pipe, as the stand-in's row's `3>&1` gave it; nothing else here owns it. Closed
+    // on exec, so no child of the stand-in's holds tarae's pipe open past it (its `server`'s `3>&1` makes its own).
+    let out = unsafe {
+        libc::fcntl(3, libc::F_SETFD, libc::FD_CLOEXEC);
+        std::fs::File::from_raw_fd(3)
+    };
     let mut a = Agent {
         out,
         heard,
@@ -183,6 +253,9 @@ fn run() {
         unread: VecDeque::new(),
         session: String::new(),
         turn: None,
+        servers: Value::Null,
+        server: None,
+        children: Vec::new(),
     };
     let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: a plain call filling a struct of ours.

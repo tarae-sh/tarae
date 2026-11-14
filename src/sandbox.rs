@@ -17671,6 +17671,57 @@ mod tests {
         std::fs::remove_dir_all(&t).ok();
     }
 
+    /// An ACP agent's bridge (`agent::acp::bridge`: `$state/agent/<pid>/<n>.sock`, bound as the UI socket is) can't be
+    /// reached from Claude's runs, the network closed or open — not even with its token — while the same knock from
+    /// outside the sandbox can: each knock names itself after the token, and the first line the bridge takes in is the
+    /// outside one's, on the first connection it links (agents beside Claude, step 2's condition 5d). Harmless: the
+    /// socket is this test's own, the token a stand-in's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claudes_runs_cant_reach_an_agents_bridge() {
+        if skipped_inside("sandbox::tests::claudes_runs_cant_reach_an_agents_bridge") {
+            return;
+        }
+        let scratch = crate::scratch::Scratch::new("sb-bridge");
+        let t = profile_path(&scratch);
+        let root = t.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        // (a short state folder: `nc` names the socket by its path, which must fit `sun_path`)
+        let (bridge, heard) = crate::agent::acp::bridge::bound(&t.join("s"));
+        let at = bridge.path().display().to_string();
+        // (each knock the token, then a line naming it — whether `nc` connected, and what it said)
+        let knock = |name: &str, p: Option<&Policy>| {
+            let line = format!(r#"{{"knock":"{name}"}}"#);
+            let script =
+                format!("printf '%s\\n%s\\n' '{}' '{line}' | /usr/bin/nc -U -w 2 '{at}'", bridge.token());
+            let mut c = command(p, "/bin/sh", &["-c".into(), script]);
+            let out = c.current_dir(&root).stdin(Stdio::null()).output().unwrap();
+            (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
+        };
+        let env = Env { root: root.clone(), ..Env::default() };
+        let closed = knock("closed", Some(&Policy::for_project(&env)));
+        let open = knock("open", Some(&Policy { network: true, ..Policy::for_project(&env) }));
+        let outside = knock("outside", None);
+        assert!(outside.0, "from outside the sandbox: connected (the knock works): {}", outside.1);
+        // What the bridge took in, up to the first line a connection sent. A knock is accepted in the order it
+        // connected, and one that got through is linked and read before it ends, so its lines come first on the one
+        // channel — or, still live, the outside one is refused as a second. Either way the first line isn't the
+        // outside's, nor the first connection linked.
+        let mut seen = Vec::new();
+        while !seen.last().is_some_and(|m: &String| m.starts_with("bridged")) {
+            match heard(crate::test_results::PATIENCE) {
+                Some(m) => seen.push(m),
+                None => panic!("no line reached {at}: {seen:?}"),
+            }
+        }
+        assert_eq!(
+            seen,
+            ["linked 1", r#"bridged {"knock":"outside"}"#],
+            "a run of Claude's knock got through to {at} (nc, closed: {closed:?}, open: {open:?})"
+        );
+        drop(bridge);
+    }
+
     /// For real, on macOS (card model P1) — what runs later outside the sandbox stays as it is: every name
     /// `protected_names` gives, anywhere in the project and in any case, can't be made (a file, a folder),
     /// written, appended to, moved onto, moved or removed, nor given a second name to write through; the

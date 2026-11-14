@@ -349,6 +349,13 @@ fn main() -> Result<()> {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 return plugin::cli(&rest);
             }
+            // (the bridge's relay an ACP agent starts as tarae's tools — `agent::tools_relay`; under the gate with the rest
+            // of that wire until step 4, so not in the usage either)
+            #[cfg(test)]
+            "agent-tools" if files.is_empty() => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                return agent::tools_relay(&rest);
+            }
             "state" if files.is_empty() => {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 return uisocket::cli(&rest);

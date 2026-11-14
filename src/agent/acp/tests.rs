@@ -86,6 +86,7 @@ fn said(ev: Event) -> Option<String> {
         Event::Done(Ok(t)) => format!("done {t}"),
         Event::Done(Err(e)) => format!("failed {e}"),
         Event::Exit(e) => format!("exit {e}"),
+        Event::Mcp { id, message } => format!("mcp {id} {message}"),
         _ => return None,
     })
 }
@@ -304,6 +305,8 @@ struct Opts<'a> {
     prompt: Option<&'a str>,
     env: Env,
     cfg: LlmConfig,
+    /// tarae's tools offered (the bridge).
+    tools: bool,
 }
 
 fn start(script: Value, o: Opts) -> Run {
@@ -312,13 +315,15 @@ fn start(script: Value, o: Opts) -> Run {
     let mut env = o.env;
     env.insert(SCRIPT.into(), dir.join("script.json").to_string_lossy().into_owned());
     env.insert(HEARD.into(), dir.join("heard").to_string_lossy().into_owned());
+    // (where a test's bridge binds: its own state folder)
+    env.insert("XDG_STATE_HOME".into(), dir.join("state").to_string_lossy().into_owned());
     let s = Start {
         system: o.system,
         resume: o.resume.map(|conversation| Resume { conversation, fork: false }),
         ..Start::on(&STAND_IN, Role::Chat, &o.cfg)
     };
     let at = crate::agent::Place { dir: dir.path(), given: Some(&env), cred: None };
-    let first = First { tools: true, prompt: o.prompt.map(|p| Prompt::Text(p.into())) };
+    let first = First { tools: o.tools, prompt: o.prompt.map(|p| Prompt::Text(p.into())) };
     let ed = crate::editor::Editor::new(crate::config::Config::default());
     let (tx, rx) = channel();
     let route = move |ev| {
@@ -385,7 +390,7 @@ fn handshake() -> Vec<Value> {
 }
 
 /// The handshake on the stand-in: `initialize` says version 1, no file system nor terminal, compaction; agy's
-/// answer starts a new session with no MCP server (the bridge is landing 4) and, as agy takes no system prompt,
+/// answer starts a new session with no MCP server (tarae's tools not asked) and, as agy takes no system prompt,
 /// tarae's words go as the first message's first block — once: the second message has none. A turn's thought,
 /// text, usage and end come up in order, a line that isn't JSON is passed over, and the handle dropped closes
 /// stdin.
@@ -705,4 +710,118 @@ fn a_test_never_starts_a_real_agent() {
     }
     // (and the stand-in's own isn't refused)
     assert!(command(&Start::on(&STAND_IN, Role::Chat, &cfg), &std::env::temp_dir(), None).is_ok());
+}
+
+// ── The bridge ───────────────────────────────────────────────────────────────────────
+
+/// An MCP message of the stand-in's to tarae's server, through the bridge.
+fn mcp(message: Value) -> Value {
+    json!({"mcp": message})
+}
+
+/// Whether process `pid` is gone, once it is (an orphan's reaper may take a moment).
+fn gone(pid: u64) -> bool {
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    loop {
+        // SAFETY: signal 0 only asks whether the process is there.
+        if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+            return true;
+        }
+        if std::time::Instant::now() > end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// tarae's tools asked: the session opens with the bridge as its one MCP server — the relay on the socket, the token
+/// only in its `env` — and the stand-in's server, started as an agent starts one, reaches the wire. A `tools/call` comes
+/// up once, from the bridge (finding C): its `Tool`, named as Claude's client names tarae's tools, right before its
+/// `Mcp`, and its answer goes back to the agent and comes up as its `ToolResult`; the agent's own report of the call
+/// (`mcp_tarae_read`, agy's name) and its update are dropped. `initialize` and a notification are `Mcp` alone, and
+/// no answer to a notification goes back.
+#[test]
+fn a_call_through_the_bridge_comes_up_once_from_the_bridge() {
+    let reported = json!({"say": {"sessionUpdate": "tool_call", "toolCallId": "agy-1", "name": "mcp_tarae_read",
+        "title": "Run mcp_tarae_read", "kind": "other", "status": "pending", "locations": null, "rawInput": {}}});
+    let finished = json!({"say": {"sessionUpdate": "tool_call_update", "toolCallId": "agy-1",
+        "status": "completed", "content": null}});
+    let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "read", "arguments": {"files": ["a.rs"]}}});
+    let mut script = handshake();
+    script.extend([
+        json!({"expect": "session/prompt"}),
+        reported,
+        mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})),
+        mcp(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
+        mcp(call),
+        finished,
+        json!({"end_turn": "end_turn"}),
+        json!({"eof": true}),
+    ]);
+    let run = start(json!(script), Opts { prompt: Some("read a.rs"), tools: true, ..Opts::default() });
+    let got = run.until("mcp");
+    assert_eq!(
+        got.last().unwrap(),
+        r#"mcp bridge-1 {"id":1,"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#
+    );
+    let server = &run.of("session/new")[0]["params"]["mcpServers"][0];
+    assert_eq!((&server["name"], &server["env"][0]["name"]), (&json!("tarae"), &json!(bridge::TOKEN)));
+    let token = server["env"][0]["value"].as_str().unwrap();
+    assert!(token.len() == 64 && !server["args"].to_string().contains(token), "the token in its env only");
+    run.agent().answer_mcp(
+        "bridge-1",
+        json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}),
+    );
+    assert!(run.until("mcp").last().unwrap().starts_with("mcp bridge-2 "));
+    // (as `tools::mcp` answers a notification — kept from the agent)
+    run.agent().answer_mcp("bridge-2", json!({"jsonrpc": "2.0", "result": {}, "id": 0}));
+    let got = run.until("mcp");
+    let n = got.len();
+    assert_eq!(
+        got[n - 2],
+        r#"tool bridge-3 mcp__tarae__read {"files":["a.rs"]}"#,
+        "its call right before it"
+    );
+    assert!(got[n - 1].starts_with("mcp bridge-3 "), "{got:?}");
+    let text = json!({"content": [{"type": "text", "text": "1: fn a() {}"}]});
+    run.agent().answer_mcp("bridge-3", json!({"jsonrpc": "2.0", "id": 2, "result": text}));
+    let got = run.until("done");
+    assert!(got.contains(&"result bridge-3 false 1: fn a() {}".to_string()), "{got:?}");
+    let all = run.heard();
+    let answers: Vec<&Value> = all.iter().filter_map(|v| v.get("mcp_answer")).collect();
+    assert_eq!(answers.len(), 2, "initialize's and the call's: {answers:?}");
+    assert!(
+        !all.iter().any(|v| v.get("mcp_other").is_some()),
+        "nothing else, the notification's none: {all:?}"
+    );
+    assert_eq!(answers[1]["result"], text, "the answer back to the agent");
+}
+
+/// Condition 4: an agent's process group ends with it — the bridge's relay, and a process of its own that would
+/// outlive it — and the bridge's socket goes with it.
+#[test]
+fn the_agents_group_and_its_bridge_end_with_it() {
+    let mut script = handshake();
+    script.extend([
+        mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})),
+        json!({"linger": true}),
+        json!({"eof": true}),
+    ]);
+    let mut run = start(json!(script), Opts { tools: true, ..Opts::default() });
+    run.until("mcp bridge-1");
+    run.agent().answer_mcp("bridge-1", json!({"jsonrpc": "2.0", "id": 1, "result": {}}));
+    let heard = run.heard_until(|v| v.get("linger_pid").is_some());
+    let pid = |k: &str| heard.iter().find_map(|v| v[k].as_u64()).unwrap();
+    let (relay, linger) = (pid("mcp_pid"), pid("linger_pid"));
+    let args = &run.of("session/new")[0]["params"]["mcpServers"][0]["args"];
+    let socket = std::path::PathBuf::from(args.as_array().unwrap().last().unwrap().as_str().unwrap());
+    // SAFETY: signal 0 only asks whether the process is there.
+    let alive = |pid: u64| unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+    assert!(socket.exists() && alive(relay) && alive(linger), "all there while it runs");
+    run.started = None;
+    assert!(run.until("exit").last().unwrap().starts_with("exit"));
+    assert!(gone(relay), "the bridge's relay outlived its agent");
+    assert!(gone(linger), "a process of the agent's group outlived it");
+    assert!(!socket.exists(), "the bridge's socket outlived its agent");
 }
