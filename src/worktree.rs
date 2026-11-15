@@ -1645,9 +1645,9 @@ fn facts(root: &Path, base: Option<String>, start: &Path) -> Option<Facts> {
 pub struct Shown {
     pub id: WorkspaceId,
     pub name: String,
-    /// A session another session's Claude started (orchestra): listed right after its parent, a faint `›` before
-    /// its name.
-    pub child: bool,
+    /// The session whose Claude started it (orchestra), when it's listed: it follows it, on an arm
+    /// (`sessionpane::arms`) — None: nobody's.
+    pub parent: Option<WorkspaceId>,
     /// The branch checked out there (said when it isn't the name).
     pub branch: Option<String>,
     pub facts: Option<Facts>,
@@ -1674,8 +1674,11 @@ pub struct Shown {
     /// Marked to bring (`bring 2nd`), or where it is in the bring queue going (`bring queue · preflight`) —
     /// `bringqueue.rs`.
     pub queue: Option<String>,
-    /// Where its Claude is in its turn: `src/term.rs:3614 · editing` (`presence::at`) — empty between turns.
-    pub at: String,
+    /// The step its turn is at, as the now line says it without its time (`now::words`): `▸ asks to run cargo test`
+    /// — empty between turns.
+    pub step: String,
+    /// Its model and effort, `opus · high` (`models::row_label`) — empty before it's known.
+    pub model: String,
     /// Its participant colour (`Session.colour`): its name on its row, always.
     pub colour: u8,
     /// Whom its changes would conflict with (`overlap::others`): each one's name and colour — `≈ main`.
@@ -1944,15 +1947,27 @@ impl Editor {
     }
 
     /// Every session as the list and the chat's top line show them: in their order, but a child right after its
-    /// parent (orchestra N6) — its parent's place, then its own among its siblings.
+    /// parent (orchestra N6), its own children right after it — the tree's order, siblings in theirs.
     pub fn sessions_by_parent(&self) -> Vec<&crate::workspace::Workspace> {
         let all = self.sessions_in_order();
-        let place = |l: &&crate::workspace::Workspace| {
-            let parent = l.claude.parent.and_then(|p| all.iter().find(|x| x.claude.id == p));
-            parent.map_or((l.id, None), |p| (p.id, Some(l.id)))
+        let parent = |l: &crate::workspace::Workspace| {
+            l.claude.parent.and_then(|p| all.iter().position(|x| x.claude.id == p && x.id != l.id))
         };
-        let mut v = all.clone();
-        crate::sorting::by_key(&mut v, place);
+        let parents: Vec<Option<usize>> = all.iter().map(|l| parent(l)).collect();
+        let mut v = Vec::with_capacity(all.len());
+        let mut put = vec![false; all.len()];
+        // (a root, then what hangs from it, depth first; a loop of parents — never made — still lists each once)
+        let mut stack: Vec<usize> = Vec::new();
+        for root in (0..all.len()).filter(|&i| parents[i].is_none()).chain(0..all.len()) {
+            stack.push(root);
+            while let Some(i) = stack.pop() {
+                if std::mem::replace(&mut put[i], true) {
+                    continue;
+                }
+                v.push(all[i]);
+                stack.extend((0..all.len()).rev().filter(|&k| parents[k] == Some(i) && !put[k]));
+            }
+        }
         v
     }
 
@@ -2949,12 +2964,12 @@ impl Editor {
             Some((n, Some(w))) if w > 0 => Some(n * 100 / w),
             _ => None,
         };
-        self.sessions_by_parent()
-            .into_iter()
+        let all = self.sessions_by_parent();
+        all.iter()
             .map(|l| Shown {
                 id: l.id,
                 name: l.label().to_string(),
-                child: l.claude.parent.is_some(),
+                parent: l.claude.parent.and_then(|p| all.iter().find(|w| w.claude.id == p)).map(|w| w.id),
                 branch: l.git_branch.clone().or_else(|| l.branch.clone()),
                 facts: self.workspace_store.facts.get(&l.id).cloned(),
                 doing: self.doing(l),
@@ -2975,7 +2990,8 @@ impl Editor {
                 billing: l.claude.billing,
                 build: self.workspace_store.build_dirs.get(&l.id).map(|(_, size)| *size),
                 queue: self.bring_said(l.id),
-                at: crate::presence::at(self, l.id).unwrap_or_default(),
+                step: crate::now::step(self, l).map(|s| crate::now::words(&s)).unwrap_or_default(),
+                model: crate::models::row_label(&self.config.llm, l),
                 colour: l.claude.colour,
                 overlap: crate::overlap::others(self, l.id),
                 report: crate::sessionpane::report(l.claude.chat.as_ref()),

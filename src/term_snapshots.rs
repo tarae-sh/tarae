@@ -3664,7 +3664,8 @@ fn snapshot_sessions_with_the_reviewer_reading() {
     let row = |name: &str| {
         rows.iter().find(|r| r.contains(name) && !r.contains(" · +")).cloned().unwrap_or_default()
     };
-    assert!(row("fix-login").contains("working") && row("fix-login").contains("¶ reviewing"), "{rows:#?}");
+    // (its state the step its turn is at — the one list L1)
+    assert!(row("fix-login").contains("thinking") && row("fix-login").contains("¶ reviewing"), "{rows:#?}");
     assert!(row("docs").contains("¶ reviewer done"), "{rows:#?}");
     s.check("sessions_reviewing_list");
 }

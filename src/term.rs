@@ -6814,9 +6814,9 @@ fn draw_sessions_pane(
     let strong =
         card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let warn = Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..card };
-    // Its top line: its name, how many work, its keys while it has them (who waits is each row's `▲ waits`, what
-    // waits the card stack's — never a count here too: polish landing 1)
-    let working = rows.iter().filter(|r| r.text(Col::State) == "working").count();
+    // Its top line: its name, how many work, its keys while it has them (who waits is each row's `▲`, what waits the
+    // card stack's — never a count here too: polish landing 1)
+    let working = rows.iter().filter(|r| r.working).count();
     // (the details fold from the last)
     let mut details = vec![(crate::nav::count(rows.len(), "session"), dim)];
     if working > 0 {
@@ -6886,11 +6886,12 @@ fn draw_sessions_pane(
         queue!(out, Print(if on { "▎ " } else { "  " }))?;
         let mut used = 2;
         let name = Style { fg: ui.participant(row.colour, true), bold: row.front || on, ..base };
-        // (a child after its parent: `› ` faint before its name — orchestra N6)
-        let pre = if row.child { crate::sessionpane::CHILD } else { "" };
-        if row.child {
+        // (a child under its parent: its arm faint before its name — `├─── `, the one list L1; cut to the name's
+        // column when that's narrower: a drawing, no `…`, each of its glyphs one cell)
+        let pre: String = row.arm.chars().take(name_w).collect();
+        if !pre.is_empty() {
             apply(out, Style { fg: ui.linenr.fg, ..base })?;
-            queue!(out, Print(pre))?;
+            queue!(out, Print(&pre))?;
         }
         let name_w = name_w.saturating_sub(pre.width());
         let shown = crate::whole::fit(&row.name, name_w);

@@ -60,6 +60,21 @@ impl Step {
     }
 }
 
+/// Step `s` in the session list's words: its mark, its verb, what it acts on — `▸ asks to run cargo test` · `● editing
+/// src/a.rs 12-15` · `thinking` (the working sign moves with the turn's pace, so the list leaves it out) — never its
+/// time, which would tick in a list that's idle (the one list L1; the status line keeps it).
+pub fn words(s: &Step) -> String {
+    let mut out = match s.sign {
+        Sign::Mark(m) => format!("{} {}", m.glyph(), s.verb),
+        Sign::Working => s.verb.to_string(),
+    };
+    if !s.what.is_empty() {
+        out.push(' ');
+        out.push_str(&s.what);
+    }
+    out
+}
+
 /// The step session `l`'s turn is at — None: no turn under way.
 pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
     let c = l.claude.chat.as_ref().filter(|c| c.busy())?;

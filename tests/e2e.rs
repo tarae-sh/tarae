@@ -1352,6 +1352,12 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
     idle(&mut t, "the terminal");
     t.send("\x1c\x1c");
     t.wait_state("the code has the keys", |s| s["keys"]["region"] == "code");
+    // The session list up with the keys (the one list L1: its step says no time, so a list in sight ticks nothing)
+    t.send(" W");
+    t.wait_state("the session list has the keys", |s| s["keys"]["region"] == "list:sessions");
+    idle(&mut t, "the session list");
+    t.send("q");
+    t.wait_state("the code has the keys", |s| s["keys"]["region"] == "code");
     // A plugin's overlay shown, held, faded and gone (`plugin/overlay.rs`): its clock ends with it — the demo plugin let
     // in (its permissions' card answered), its `:overlay` held 300 ms
     let plugins = sb.home().join(".config/tarae/plugins");

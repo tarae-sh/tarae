@@ -5,14 +5,17 @@
 //! once used (`floatlist.rs`, user 2026-10-23): what takes you to a session from it — `enter`, a digit, a double
 //! click, `o`, `f`, `v` — closes it.
 //!
-//! It's the manager's overview: one row a session, its name in its colour, then what a person watching several
-//! sessions work needs — its state (`working` · `▲ waits` · `◦ stuck?` · `done` · `queued 2nd`), what waits for you
-//! (cards, an edit to review — counted), `≈` whom it overlaps, `↓N` behind its base, its context, its last report line
-//! (its Claude's last sentence), then the rest the list always said (its branch, what's changed, where its Claude is,
-//! its reviewer, who pays, its cache and cost, its build folder, its processes). Each a column as wide as its widest,
-//! row under row; narrow, whole columns fold (`lay`): the rest first, then the report, the cost, the context,
-//! behind — what waits for you and the state last, the name never. Built from the sessions every frame it's drawn (`rows`), nothing
-//! slow: git's part is read on a worker as it opens (`Editor::session_list`).
+//! It's the manager's overview: one row a session, a child under its parent on an arm (`├─── `, the one list L1 —
+//! `.sb/one-list-plan.md`), its name in its colour, then what a person watching several sessions work needs — `▲` in a
+//! column of its own while it waits on you, its state with the step its turn is at, in the now line's words without
+//! its time (`▸ asks to run cargo test` · `● editing src/a.rs 12-15` · `◦ stuck? symbols 42s` · `done` · `queued
+//! 2nd`), `≈` whom it overlaps, `↓N` behind its base, its context, its model where the rows' differ, its last report
+//! line (its Claude's last sentence), then the rest the list always said (its branch, what's changed, its reviewer,
+//! who pays, its cache and cost, its build folder, its processes). Each a column as wide as its widest, row under row;
+//! narrow, they give way in `LADDER`'s order (`lay`): the rest first, then the report (cut, then gone), the model, the
+//! step cut to its floor, the context, the cost, behind, the overlaps, `▲`, the state last, the name never. Built from
+//! the sessions every frame it's drawn (`rows`), nothing slow: git's part is read on a worker as it opens
+//! (`Editor::session_list`).
 //!
 //! Its keys are a floating list's (`floatlist.rs`: the moves, its own search, `esc code`, `q`), `enter` switches to
 //! the row's session, and its letters as the picker's were (`Editor::session_list_key`: `o` new, `d` end, `b` bring,
@@ -37,17 +40,20 @@ pub enum Ink {
 /// A row's columns, in their order on the row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Col {
+    /// What waits on you: `▲`, in warning.
+    Waits,
     State,
     Overlap,
     Behind,
     Context,
+    /// Its model and effort (`opus · high`), only where the rows' differ (`models_where_they_differ`).
+    Model,
     Report,
     Branch,
     Ahead,
     Changed,
     Reloaded,
     Compacted,
-    At,
     Reviewer,
     Billing,
     Cache,
@@ -57,18 +63,19 @@ pub enum Col {
 }
 
 /// Every column, in the row's order.
-pub const COLS: [Col; 17] = [
+pub const COLS: [Col; 18] = [
+    Col::Waits,
     Col::State,
     Col::Overlap,
     Col::Behind,
     Col::Context,
+    Col::Model,
     Col::Report,
     Col::Branch,
     Col::Ahead,
     Col::Changed,
     Col::Reloaded,
     Col::Compacted,
-    Col::At,
     Col::Reviewer,
     Col::Billing,
     Col::Cache,
@@ -77,32 +84,52 @@ pub const COLS: [Col; 17] = [
     Col::Usage,
 ];
 
-/// The order whole columns fold in when the pane is narrow, the first to go first: the rest from the last, then the
-/// report line, the cost, the context, behind, the overlaps — the state last (user, 2026-10-23; the cost after the
-/// longer report, so a parent's children's total stays in sight longer: user, 2026-10-29).
-pub const FOLDS: [Col; 17] = [
-    Col::Usage,
-    Col::Build,
-    Col::Cache,
-    Col::Billing,
-    Col::Reviewer,
-    Col::At,
-    Col::Compacted,
-    Col::Reloaded,
-    Col::Changed,
-    Col::Ahead,
-    Col::Branch,
-    Col::Report,
-    Col::Cost,
-    Col::Context,
-    Col::Behind,
-    Col::Overlap,
-    Col::State,
-];
+/// One step of what gives way when a row is too wide: a column gone, or cut to the room the others leave while
+/// that's at least its floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Give {
+    Gone(Col),
+    Cut(Col, usize),
+}
 
-/// The report line is cut to this at most, and folds before it would be cut shorter than `REPORT_MIN`.
+/// What gives way when the pane is narrow, the first first: the rest from the last, then the report (cut to
+/// `REPORT_MIN`, then gone), the model, the step cut to its floor before the context or the cost go (the one list,
+/// 2026-11-15: "the step gives way to its floor before ctx or the cost go"), the context, the cost, behind, the
+/// overlaps, `▲`, the state last — the name never.
+pub const LADDER: [Give; 20] = {
+    use Col::*;
+    use Give::{Cut, Gone};
+    [
+        Gone(Usage),
+        Gone(Build),
+        Gone(Cache),
+        Gone(Billing),
+        Gone(Reviewer),
+        Gone(Compacted),
+        Gone(Reloaded),
+        Gone(Changed),
+        Gone(Ahead),
+        Gone(Branch),
+        Cut(Report, REPORT_MIN),
+        Gone(Report),
+        Gone(Model),
+        Cut(State, STATE_MIN),
+        Gone(Context),
+        Gone(Cost),
+        Gone(Behind),
+        Gone(Overlap),
+        Gone(Waits),
+        Gone(State),
+    ]
+};
+
+/// The report line is cut to this at most, and goes before it would be cut shorter than `REPORT_MIN`.
 pub const REPORT_MAX: usize = 56;
 pub const REPORT_MIN: usize = 16;
+
+/// The state with its step is cut to this at most, and to no less than `STATE_MIN` before the context goes.
+pub const STATE_MAX: usize = 32;
+pub const STATE_MIN: usize = 12;
 
 /// Two cells between columns, as between key hints.
 pub const GAP: usize = 2;
@@ -118,8 +145,10 @@ pub struct Row {
     pub colour: u8,
     /// The session in front — its name bold, as the strip's.
     pub front: bool,
-    /// Started by another session's Claude: right after its parent, `CHILD` before its name, faint.
-    pub child: bool,
+    /// Before its name, faint: a child's arm (`arms`) — empty for a session nobody started.
+    pub arm: String,
+    /// Its Claude works (`Doing::Working`): the top line's count.
+    pub working: bool,
     pub cells: Vec<(Col, Vec<Part>)>,
 }
 
@@ -151,14 +180,21 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
         }
     };
     let one = |s: String, ink: Ink| vec![(s, ink)];
-    // The state as the strip says it (collab C1): what needs you in warning, done in the accent, the calm states
-    // faint — a rebase under way and its place in the bring queue before it
+    // What waits on you, in a column of its own: who waits, not what (what waits is the card stack's and its peeks',
+    // polish landing 1)
+    if l.doing == Doing::Waiting {
+        put(Col::Waits, one("▲".into(), Ink::Warn));
+    }
+    // The state with the step its turn is at, as the now line says it without its time (the one list L1): what needs
+    // you in warning, done in the accent, the calm states faint — a rebase under way and its place in the bring queue
+    // before it
+    let step = |or: String| if l.step.is_empty() { or } else { l.step.clone() };
     let (said, ink) = match l.doing {
-        Doing::Waiting => ("▲ waits".to_string(), Ink::Warn),
+        Doing::Waiting => (step("waits".into()), Ink::Warn),
         Doing::Done => ("done".into(), Ink::Accent),
         d @ Doing::Stuck { .. } => (format!("◦ stuck? {}", d.said()), Ink::Warn),
-        d @ Doing::Queued { .. } => (d.said(), Ink::Faint),
-        Doing::Working => ("working".into(), Ink::Faint),
+        d @ Doing::Queued { .. } => (step(d.said()), Ink::Faint),
+        Doing::Working => (step("working".into()), Ink::Faint),
         Doing::Idle => (String::new(), Ink::Faint),
     };
     let mut state: Vec<Part> = Vec::new();
@@ -174,7 +210,6 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
         let sep = if state.iter().all(|p| p.0.is_empty()) { "" } else { " · " };
         state.push((format!("{sep}wakes {parent}"), Ink::Faint));
     }
-    // (who waits, not what: its `▲ waits` — what waits is the card stack's and its peeks', polish landing 1)
     put(Col::State, state);
     // Whom its changes would conflict with: `≈` in warning, each name in its colour
     if !l.overlap.is_empty() {
@@ -193,6 +228,7 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
         let ink = if pct >= 80 { Ink::Warn } else { Ink::Text };
         put(Col::Context, vec![("ctx ".into(), Ink::Faint), (format!("{pct}%"), ink)]);
     }
+    put(Col::Model, one(l.model.clone(), Ink::Faint));
     put(Col::Report, one(l.report.clone(), Ink::Faint));
     // The rest the list always said
     put(Col::Branch, one(l.branch.clone().filter(|b| *b != l.name).unwrap_or_default(), Ink::Faint));
@@ -206,7 +242,6 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
         one(if l.reloaded > 0 { format!("• {} reloaded", l.reloaded) } else { String::new() }, Ink::Text),
     );
     put(Col::Compacted, one(if l.compacted { "≈ compacted".into() } else { String::new() }, Ink::Text));
-    put(Col::At, one(l.at.clone(), Ink::Faint));
     put(Col::Reviewer, one(l.reviewer.clone(), Ink::Text));
     // (who pays: `api` — the plan, the calm default, says nothing — D5)
     let api = if l.billing == crate::billing::Billing::Api { "api" } else { "" };
@@ -232,47 +267,107 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
     );
     let usage = l.usage.map(|(cpu, bytes)| format!("{cpu:>3.0}%  {:>6}", crate::procs::mem(bytes)));
     put(Col::Usage, one(usage.unwrap_or_default(), Ink::Faint));
-    Row { id: l.id, name: l.name.clone(), colour: l.colour, front: l.front, child: l.child, cells }
+    Row {
+        id: l.id,
+        name: l.name.clone(),
+        colour: l.colour,
+        front: l.front,
+        arm: String::new(),
+        working: l.doing == Doing::Working,
+        cells,
+    }
 }
 
-/// Before a child's name, faint, in the list (orchestra N6): it follows its parent. The chat's top line joins a child to
-/// its parent or a sibling by `›` instead (`term::MEMBERS_SEP`), and writes this only before one whose parent went into
-/// `+N`.
+/// Before a child's name in the chat's top line, faint, when its parent went into `+N` (elsewhere there a child joins
+/// its parent or a sibling by `›`, `term::MEMBERS_SEP`). The list draws a child's arm instead (`arms`).
 pub const CHILD: &str = "› ";
 
+/// A child's arm's cells in the list: `├───` and a blank.
+pub const ARM: usize = 5;
+
 impl Row {
-    /// Its name's cells, a child's `CHILD` with it.
+    /// Its name's cells, its arm's with it.
     pub fn name_width(&self) -> usize {
-        self.name.width() + if self.child { CHILD.width() } else { 0 }
+        self.arm.width() + self.name.width()
+    }
+}
+
+/// Each row's arm (2026-11-04's, the one list L1), the rows in their tree's order (a parent before its own) and
+/// `parents[i]` the row row `i` hangs from: for each ancestor below a root, `│` where that ancestor has a sibling after
+/// it, else a blank, as wide as an arm; then its own — `├`, or `└` for the last of its siblings, its line and a blank
+/// (`├─── `). A root's is empty.
+pub fn arms(parents: &[Option<usize>]) -> Vec<String> {
+    let last = |k: usize| !parents[k + 1..].iter().any(|&p| p == parents[k]);
+    (0..parents.len())
+        .map(|i| {
+            if parents[i].is_none() {
+                return String::new();
+            }
+            // (its ancestors below a root, the nearest first — each before it in the list, so the walk ends)
+            let mut chain = Vec::new();
+            let mut at = parents[i];
+            while let Some(a) = at.filter(|&a| a < i && parents[a].is_some() && chain.len() < parents.len()) {
+                chain.push(a);
+                at = parents[a];
+            }
+            let mut s = String::new();
+            for &a in chain.iter().rev() {
+                s.push(if last(a) { ' ' } else { '│' });
+                s.push_str(&" ".repeat(ARM - 1));
+            }
+            s.push(if last(i) { '└' } else { '├' });
+            s.push_str(&"─".repeat(ARM - 2));
+            s.push(' ');
+            s
+        })
+        .collect()
+}
+
+/// A model every row says alike says nothing: the model's column stays only where the rows' differ (a session switched
+/// with `C-t`), else it's taken off every row.
+pub fn models_where_they_differ(rows: &mut [Row]) {
+    let mut models: Vec<String> = rows.iter().map(|r| r.text(Col::Model)).filter(|m| !m.is_empty()).collect();
+    crate::sorting::sort(&mut models);
+    models.dedup();
+    if models.len() < 2 {
+        for r in rows {
+            r.cells.retain(|c| c.0 != Col::Model);
+        }
     }
 }
 
 /// The columns shown in a pane whose rows are `room` cells wide (the name's column first, then each shown column
-/// `GAP` after the one before), and each one's width: every column as wide as its widest; too wide, whole columns fold
-/// in `FOLDS`' order — the report cut to `REPORT_MIN` first once only it and what folds after it are left.
+/// `GAP` after the one before), and each one's width: every column as wide as its widest (the report to `REPORT_MAX`,
+/// the state to `STATE_MAX`); too wide, they give way in `LADDER`'s order, the first step that fits kept — a cut
+/// column takes the room the others leave, while that's at least its floor.
 pub fn lay(rows: &[Row], room: usize) -> (usize, Vec<(Col, usize)>) {
     let width = |c: Col| rows.iter().map(|r| r.text(c).width()).max().unwrap_or(0);
     let name_w = rows.iter().map(Row::name_width).max().unwrap_or(0).min(room);
-    let all: Vec<(Col, usize)> = (COLS.iter().map(|&c| (c, width(c))))
-        .map(|(c, w)| (c, if c == Col::Report { w.min(REPORT_MAX) } else { w }))
-        .filter(|c| c.1 > 0)
-        .collect();
-    let report_at = FOLDS.iter().position(|&c| c == Col::Report).unwrap_or(0);
-    for k in 0..=FOLDS.len() {
-        let shown: Vec<(Col, usize)> = all.iter().filter(|c| !FOLDS[..k].contains(&c.0)).copied().collect();
+    let cap = |c: Col, w: usize| match c {
+        Col::Report => w.min(REPORT_MAX),
+        Col::State => w.min(STATE_MAX),
+        _ => w,
+    };
+    let all: Vec<(Col, usize)> = COLS.iter().map(|&c| (c, cap(c, width(c)))).filter(|c| c.1 > 0).collect();
+    for k in 0..=LADDER.len() {
+        let steps = &LADDER[..k];
+        let gone = |c: Col| steps.contains(&Give::Gone(c));
+        let shown: Vec<(Col, usize)> = all.iter().filter(|c| !gone(c.0)).copied().collect();
         let total = name_w + shown.iter().map(|c| GAP + c.1).sum::<usize>();
         if total <= room {
             return (name_w, shown);
         }
-        // (only the report and what outranks it left: the report cut to what's there, while that's enough to read)
-        let rest_gone = FOLDS[..report_at].iter().all(|f| !shown.iter().any(|c| c.0 == *f));
-        if let Some(r) = shown.iter().find(|c| c.0 == Col::Report).filter(|_| rest_gone)
-            && total - r.1 + REPORT_MIN <= room
+        // (a column cut and not gone since: the room the others leave, while that's its floor — one at a time, as the
+        // report goes before the state is cut)
+        let cut = steps.iter().find_map(|g| match *g {
+            Give::Cut(c, floor) if !gone(c) => shown.iter().find(|x| x.0 == c).map(|x| (c, x.1, floor)),
+            _ => None,
+        });
+        if let Some((c, w, floor)) = cut
+            && total - w + floor.min(w) <= room
         {
-            let cut = room - (total - r.1);
-            let shown =
-                shown.iter().map(|&(c, w)| if c == Col::Report { (c, cut) } else { (c, w) }).collect();
-            return (name_w, shown);
+            let left = room - (total - w);
+            return (name_w, shown.iter().map(|&(x, v)| (x, if x == c { left.min(v) } else { v })).collect());
         }
     }
     (name_w, Vec::new())
@@ -302,9 +397,18 @@ impl Editor {
         self.session_facts();
     }
 
-    /// The session list's rows as things are now.
+    /// The session list's rows as things are now: each session's, a child's arm before its name, the model's column
+    /// where the rows' differ.
     pub fn sessions_rows(&self) -> Vec<Row> {
-        self.session_shown().iter().map(row).collect()
+        let shown = self.session_shown();
+        let parents: Vec<Option<usize>> =
+            shown.iter().map(|l| l.parent.and_then(|p| shown.iter().position(|s| s.id == p))).collect();
+        let mut rows: Vec<Row> = shown.iter().map(row).collect();
+        for (r, arm) in rows.iter_mut().zip(arms(&parents)) {
+            r.arm = arm;
+        }
+        models_where_they_differ(&mut rows);
+        rows
     }
 
     /// The session list has the keys.

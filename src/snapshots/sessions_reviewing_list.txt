@@ -5,9 +5,9 @@
 02                                                                                                 │
 03                                                                                                 │  It reads the whole project,
 04                                 ╭─ sessions ── 3 sessions · 1 working ──── enter switch  / search  o new  $ billing  esc code ─╮
-05                                 │▎ main                ¶ reviewing                                                             │
-06                                 │  fix-login  working  ¶ reviewing                                                             │
-07                                 │  docs                ¶ reviewer done                                                         │
+05                                 │▎ main                 ¶ reviewing                                                            │
+06                                 │  fix-login  thinking  ¶ reviewing                                                            │
+07                                 │  docs                 ¶ reviewer done                                                        │
 08                                 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯he project?
 09                                                                                                 │  › Why is this diagnostic happening?
 10                                                                                                 │
@@ -39,9 +39,9 @@
 02                                                                                                 f
 03                                                                                                 f  dd ddddd ddd ddddd dddddddd
 04                                 aa TTTTTTTT aa d dddddddd f f fffffff aaaa DDDDD ffffff  D ffffff  D fff  D fffffff  DDD ffff aa
-05                                 aa BBBB                d ddddddddd                                                             a
-06                                 a             fffffff  d ddddddddd                                                             a
-07                                 a                      d dddddddd dddd                                                         a
+05                                 aa BBBB                 d ddddddddd                                                            a
+06                                 a             ffffffff  d ddddddddd                                                            a
+07                                 a                       d dddddddd dddd                                                        a
 08                                 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd dddddddd
 09                                                                                                 f  f ddd dd dddd dddddddddd dddddddddd
 10                                                                                                 f

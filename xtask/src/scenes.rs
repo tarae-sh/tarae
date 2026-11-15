@@ -2426,8 +2426,8 @@ const ORCHESTRA_END: &[&str] = &[
 ];
 /// orchestra P1b (`orchestra-list`): a session of yours (fix) opened, then main's Claude starts three — knot-count's turn
 /// ends (done), thread-docs asks for a run (▲ waits), spool-clones writes (working) — and main's chat open with the
-/// session list over it: the children right after main, each with a faint `›`, fix after them; the chat's top line
-/// the same order.
+/// session list over it: the children right after main, each on its faint arm (`├─── `, `└─── ` the last), fix after
+/// them; the chat's top line the same order.
 const ORCHESTRA_LIST: &[&str] = &[
     "@1",
     ":",
@@ -6011,7 +6011,7 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: ORCHESTRA_PROPOSE_BOARD,
     },
-    // (orchestra P1b: three children of main's after it in the list and on the chat's top line, a faint `›` each; fix,
+    // (orchestra P1b: three children of main's after it in the list, each on its arm, and on the chat's top line; fix,
     // a session of yours, after them)
     Scene {
         name: "orchestra-list",

@@ -8,7 +8,7 @@ fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
     Shown {
         id,
         name: name.into(),
-        child: false,
+        parent: None,
         branch: Some(format!("{name}-branch")),
         facts: Some(Facts { ahead: 2, behind: 3, changed: 4 }),
         doing,
@@ -22,7 +22,8 @@ fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
         billing: crate::billing::Billing::Api,
         build: Some((2 << 20, true)),
         queue: None,
-        at: "src/a.rs:12 · editing".into(),
+        step: String::new(),
+        model: "opus · high".into(),
         colour: id.n as u8,
         overlap: vec![("main".into(), Some(0))],
         report: "I will switch it to the entry API so a repeat keeps the first strand".into(),
@@ -41,13 +42,34 @@ fn cols(laid: &(usize, Vec<(Col, usize)>)) -> Vec<Col> {
     laid.1.iter().map(|c| c.0).collect()
 }
 
-/// The manager's row (P3 step 7, §3.6): its state in the strip's words and inks — who waits, never what (polish landing
-/// 1: no count of its cards, the stack's peeks say them) —, whom it overlaps (each name its colour), `↓N` behind, its
-/// context (warning past 80 %), its last report line, then the rest the list always said — empty cells left out.
+/// The manager's row (P3 step 7, §3.6; the one list L1): `▲` in a column of its own while it waits on you — who waits,
+/// never what (polish landing 1: no count of its cards, the stack's peeks say them) —, its state with the step its turn
+/// is at in the strip's inks, whom it overlaps (each name its colour), `↓N` behind, its context (warning past 80 %), its
+/// model, its last report line, then the rest the list always said — empty cells left out; no `At` (the step says it).
 #[test]
 fn a_row_says_what_the_manager_needs() {
     let r = row(&full(WorkspaceId::here(1), "fix", Doing::Waiting));
-    assert_eq!(r.cell(Col::State), [("▲ waits".to_string(), Ink::Warn)]);
+    assert_eq!(r.cell(Col::Waits), [("▲".to_string(), Ink::Warn)]);
+    assert_eq!(r.cell(Col::State), [("waits".to_string(), Ink::Warn)]);
+    assert_eq!(r.cell(Col::Model), [("opus · high".to_string(), Ink::Faint)]);
+    assert!(!r.line().contains("src/a.rs"), "no At: {}", r.line());
+    // (the step its turn is at, in the now line's words: in warning while it waits, faint while it works)
+    let asks = |doing| Shown {
+        step: "▸ asks to run cargo test".into(),
+        ..full(WorkspaceId::here(1), "fix", doing)
+    };
+    assert_eq!(
+        row(&asks(Doing::Waiting)).cell(Col::State),
+        [("▸ asks to run cargo test".to_string(), Ink::Warn)]
+    );
+    let edits = Shown {
+        step: "● editing src/a.rs 12-15".into(),
+        ..full(WorkspaceId::here(1), "fix", Doing::Working)
+    };
+    let r = row(&edits);
+    assert_eq!(r.cell(Col::State), [("● editing src/a.rs 12-15".to_string(), Ink::Faint)]);
+    assert!(r.cell(Col::Waits).is_empty() && r.working, "no ▲ while it works");
+    assert_eq!(row(&asks(Doing::Done)).text(Col::State), "done", "done says done");
     assert!(!r.cells.iter().any(|c| c.1.iter().any(|p| p.0.contains("card"))), "no count of cards");
     assert_eq!(r.cell(Col::Overlap), [("≈ ".into(), Ink::Warn), ("main".into(), Ink::Participant(0))]);
     assert_eq!((r.text(Col::Behind), r.text(Col::Ahead)), ("↓3".into(), "↑2".into()));
@@ -66,7 +88,9 @@ fn a_row_says_what_the_manager_needs() {
     }
     let idle = Shown { overlap: Vec::new(), context: None, ..full(WorkspaceId::HOME, "main", Doing::Idle) };
     let r = row(&idle);
-    assert!(r.cell(Col::State).is_empty() && r.cell(Col::Overlap).is_empty());
+    assert!(
+        r.cell(Col::State).is_empty() && r.cell(Col::Overlap).is_empty() && r.cell(Col::Waits).is_empty()
+    );
     assert!(r.front, "the front's name bold");
     // (a rebase and the bring queue before the state)
     let rebasing =
@@ -95,33 +119,37 @@ fn a_row_says_what_the_manager_needs() {
     assert_eq!(row(&idle).text(Col::State), "wakes main");
 }
 
-/// The list's width at 160 (the frame 96 wide) and at 80 (48): whole columns fold in `FOLDS`' order — the rest first,
-/// then the report (cut to what's there before it goes), the context, behind, the overlaps; the state last, the name
-/// never. Every narrower room shows a subset of the wider's.
+/// The list's width at 160 (the frame 96 wide) and at 80 (48): the columns give way in `LADDER`'s order — the rest
+/// first, then the report (cut to what's there before it goes), the model, the step cut to its floor, the context, the
+/// cost, behind, the overlaps, `▲`; the state last, the name never. Every narrower room shows a subset of the wider's.
 #[test]
-fn the_row_folds_at_80_in_its_order() {
+fn the_row_gives_way_in_its_order() {
+    let step = "● editing src/sessionpane.rs 120-180 and its tests";
     let rows = [
-        row(&full(WorkspaceId::HOME, "main", Doing::Working)),
-        row(&full(WorkspaceId::here(1), "fix-login", Doing::Waiting)),
+        row(&Shown { step: step.into(), ..full(WorkspaceId::HOME, "main", Doing::Working) }),
+        row(&Shown { model: "haiku".into(), ..full(WorkspaceId::here(1), "fix-login", Doing::Waiting) }),
     ];
     // (the rows' room in a frame `w` wide: its sides, the bar's cells, a cell before the side)
     let room = |w: usize| w - 2 - 2 - 1;
     let wide = lay(&rows, 400);
     assert_eq!(cols(&wide), COLS, "every column with room for all");
+    let width = |l: &(usize, Vec<(Col, usize)>), c: Col| l.1.iter().find(|x| x.0 == c).map(|x| x.1);
+    assert_eq!(width(&wide, Col::State), Some(STATE_MAX), "the step to its most");
     let at160 = lay(&rows, room(96));
     let shown = cols(&at160);
     assert!(
-        [Col::State, Col::Overlap, Col::Behind, Col::Context, Col::Report].iter().all(|c| shown.contains(c)),
+        [Col::Waits, Col::State, Col::Overlap, Col::Behind, Col::Context, Col::Cost]
+            .iter()
+            .all(|c| shown.contains(c)),
         "at 160 the manager's columns all: {shown:?}"
     );
-    // (the cost after the report: a parent's children's total stays in sight while the report is cut — user, 2026-10-29)
-    assert!(shown.contains(&Col::Cost), "at 160 the cost stays: {shown:?}");
-    let report_gone = (0..400).rev().map(|r| cols(&lay(&rows, r))).find(|c| !c.contains(&Col::Report));
-    assert!(report_gone.is_some_and(|c| c.contains(&Col::Cost)), "the report goes before the cost");
     let at80 = cols(&lay(&rows, room(48)));
-    assert!(!at80.contains(&Col::Report), "at 80 the report first: {at80:?}");
-    assert!(at80.contains(&Col::State), "the state stays: {at80:?}");
-    // (from wide to nothing, one room at a time: what goes, goes in `FOLDS`' order, and never comes back)
+    assert!(
+        !at80.contains(&Col::Report) && !at80.contains(&Col::Model),
+        "at 80 the report and the model first: {at80:?}"
+    );
+    assert!(at80.contains(&Col::State) && at80.contains(&Col::Waits), "the state stays, and ▲: {at80:?}");
+    // (from wide to nothing, one room at a time: what goes, goes in `LADDER`'s order, and never comes back)
     let mut gone: Vec<Col> = Vec::new();
     let mut was = cols(&wide);
     for r in (0..400).rev() {
@@ -130,18 +158,89 @@ fn the_row_folds_at_80_in_its_order() {
         gone.extend(was.iter().filter(|c| !now.contains(c)));
         was = now;
     }
-    assert_eq!(gone, FOLDS, "the order they fold in");
-    // (the report cut before it goes, once the rest went: to its least)
-    // (from wide to narrow: the first room it's cut in)
-    let cut = (0..400)
-        .rev()
-        .map(|r| lay(&rows, r))
-        .find(|l| l.1.iter().any(|c| c.0 == Col::Report && c.1 < REPORT_MAX));
-    let cut = cut.expect("cut once").1;
-    let report_at = FOLDS.iter().position(|&c| c == Col::Report).unwrap();
-    assert!(cut.iter().all(|c| !FOLDS[..report_at].contains(&c.0)), "only once the rest went: {cut:?}");
+    let order: Vec<Col> = (LADDER.iter())
+        .filter_map(|g| match *g {
+            Give::Gone(c) => Some(c),
+            Give::Cut(..) => None,
+        })
+        .collect();
+    assert_eq!(gone, order, "the order they go in");
+    // (a column cut only once everything before it in the ladder gave way)
+    let before = |c: Col| {
+        let at = LADDER
+            .iter()
+            .position(|g| *g == Give::Cut(c, if c == Col::Report { REPORT_MIN } else { STATE_MIN }));
+        order.iter().filter(|g| LADDER[..at.unwrap()].contains(&Give::Gone(**g))).copied().collect::<Vec<_>>()
+    };
+    for (c, most) in [(Col::Report, REPORT_MAX), (Col::State, STATE_MAX)] {
+        let cut = (0..400).rev().map(|r| lay(&rows, r)).find(|l| width(l, c).is_some_and(|w| w < most));
+        let cut = cut.expect("cut once").1;
+        assert!(cut.iter().all(|x| !before(c).contains(&x.0)), "{c:?} only once the rest went: {cut:?}");
+    }
+    // (the step at its floor, never shorter, while the context stays: the context goes only when the step can't have it)
+    for r in 0..400 {
+        let l = lay(&rows, r);
+        if width(&l, Col::Context).is_some() {
+            assert!(width(&l, Col::State).is_some_and(|w| w >= STATE_MIN), "{r}: {l:?}");
+        }
+        if width(&l, Col::Context).is_none() && width(&lay(&rows, r + 1), Col::Context).is_some() {
+            assert_eq!(
+                width(&lay(&rows, r + 1), Col::State),
+                Some(STATE_MIN),
+                "{r}: ctx goes with the step at 12"
+            );
+        }
+    }
     let (name_w, _) = lay(&rows, 3);
     assert_eq!(name_w, 3, "the names cut to the room, never gone");
+}
+
+/// A child's arm (2026-11-04's, the one list L1): `├─── ` under its parent, `└─── ` for the last of its siblings; a
+/// child's child one arm further in, `│` down the line of a parent that has a sibling after it, a blank where it has
+/// none; a session nobody started none.
+#[test]
+fn a_child_hangs_on_its_arm() {
+    // main → one → knot, main → two, fix → mend → cord
+    let parents = [None, Some(0), Some(1), Some(0), None, Some(4), Some(5)];
+    assert_eq!(arms(&parents), ["", "├─── ", "│    └─── ", "└─── ", "", "└─── ", "     └─── "]);
+    let r = Row { arm: "├─── ".into(), ..row(&full(WorkspaceId::here(1), "fix", Doing::Idle)) };
+    assert_eq!(r.name_width(), ARM + 3, "the arm in the name's column");
+}
+
+/// The model's column only where the rows' differ: alike, it says nothing and goes from every row; one switched, it
+/// stays on all (an unknown one counts for neither).
+#[test]
+fn the_model_shows_only_where_the_rows_differ() {
+    let of = |model: &str, n: u64| {
+        row(&Shown { model: model.into(), ..full(WorkspaceId::here(n), "s", Doing::Idle) })
+    };
+    let mut alike = [of("opus · high", 0), of("opus · high", 1), of("", 2)];
+    models_where_they_differ(&mut alike);
+    assert!(alike.iter().all(|r| r.cell(Col::Model).is_empty()), "alike: none");
+    let mut differ = [of("opus · high", 0), of("haiku", 1), of("", 2)];
+    models_where_they_differ(&mut differ);
+    let said: Vec<String> = differ.iter().map(|r| r.text(Col::Model)).collect();
+    assert_eq!(said, ["opus · high", "haiku", ""]);
+}
+
+/// The step in the list's words: its mark, verb and what it acts on; the working sign (it moves) and the time (it
+/// ticks) left out.
+#[test]
+fn the_step_is_said_without_its_time() {
+    use crate::now::{Sign, Step, words};
+    let step = |sign, verb, what: &str| Step {
+        sign,
+        verb,
+        what: what.into(),
+        warn: false,
+        took: Some(std::time::Duration::from_secs(75)),
+        key: String::new(),
+        call: String::new(),
+    };
+    let run = step(Sign::Mark(crate::chat::Mark::Run), "asks to run", "cargo test");
+    assert_eq!(words(&run), "▸ asks to run cargo test");
+    assert_eq!(words(&step(Sign::Working, "thinking", "")), "thinking");
+    assert!(!words(&run).contains("1m"), "no time");
 }
 
 /// Its Claude's last report line: the last sentence of its last answer, Markdown's marks out; nothing before one.
@@ -679,8 +778,8 @@ fn a_card_that_came_on_its_own_folds_off_the_session_list() {
 }
 
 /// orchestra N6: a session another one's Claude started comes right after its parent — fix, yours and opened before them,
-/// after main's children, its own child after it — a faint `›` before its name; `j`/`k` and the digits go by that
-/// order, the one drawn.
+/// after main's children, its own child after it, and a child's child right under that child — on its arm (the one
+/// list L1); `j`/`k` and the digits go by that order, the one drawn.
 #[test]
 fn a_child_follows_its_parent_in_the_list() {
     let dir = crate::scratch::Scratch::new("sessionchildren");
@@ -694,20 +793,35 @@ fn a_child_follows_its_parent_in_the_list() {
         l.claude.id
     };
     let fix = add(&mut ed, "fix", None);
-    add(&mut ed, "one", Some(main));
+    let one = add(&mut ed, "one", Some(main));
     add(&mut ed, "two", Some(main));
     add(&mut ed, "mend", Some(fix));
-    let order = ["main", "one", "two", "fix", "mend"];
+    add(&mut ed, "knot", Some(one));
+    let order = ["main", "one", "knot", "two", "fix", "mend"];
     let rows = ed.sessions_rows();
-    let named: Vec<(&str, bool)> = rows.iter().map(|r| (r.name.as_str(), r.child)).collect();
-    assert_eq!(named, [("main", false), ("one", true), ("two", true), ("fix", false), ("mend", true)]);
+    let named: Vec<(&str, &str)> = rows.iter().map(|r| (r.name.as_str(), r.arm.as_str())).collect();
+    assert_eq!(
+        named,
+        [
+            ("main", ""),
+            ("one", "├─── "),
+            ("knot", "│    └─── "),
+            ("two", "└─── "),
+            ("fix", ""),
+            ("mend", "└─── ")
+        ]
+    );
     feed(&mut ed, " W");
     let s = frame(&mut ed, 160, 40);
     let drawn: Vec<&str> = (s.lines())
         .filter_map(|l| order.iter().find(|n| l.contains(&format!(" {n} ")) && l.contains('│')).copied())
         .collect();
     assert_eq!(drawn, order, "drawn in that order:\n{s}");
-    assert!(s.lines().any(|l| l.contains("› one ")) && !s.contains("› fix"), "{s}");
+    for line in ["├─── one ", "│    └─── knot ", "└─── two ", "└─── mend "]
+    {
+        assert!(s.lines().any(|l| l.contains(line)), "{line}:\n{s}");
+    }
+    assert!(!s.contains("─── fix"), "no arm for fix, a session of yours:\n{s}");
     let at = |ed: &Editor| {
         let id = ed.sessions_here().unwrap();
         ed.sessions_in_order().iter().find(|l| l.id == id).unwrap().name.clone()
@@ -720,8 +834,8 @@ fn a_child_follows_its_parent_in_the_list() {
     assert_eq!(walked, order, "j goes by it");
     feed(&mut ed, "kk");
     assert_eq!(at(&ed), "two", "k too");
-    feed(&mut ed, "4");
-    assert_eq!(ed.workspace.name, "fix", "4: the fourth row drawn");
+    feed(&mut ed, "3");
+    assert_eq!(ed.workspace.name, "knot", "3: the third row drawn");
 }
 
 /// The list is searched with `/` as every pane is (user, 2026-10-23), never type-to-narrow: its own prompt, the

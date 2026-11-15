@@ -104,6 +104,30 @@ pub fn label(ed: &Editor) -> Option<String> {
     Some(if takes { format!("{name} · {effort}") } else { name })
 }
 
+/// Session `l`'s model as its row in the session list says it: the family of what answered (`opus`), else of what it
+/// asks for, and the effort where that model takes one — `opus · high`. Empty before anything's known (no chat yet,
+/// nothing said).
+pub fn row_label(llm: &crate::llm::LlmConfig, l: &crate::workspace::Workspace) -> String {
+    let Some(c) = l.claude.chat.as_ref() else { return String::new() };
+    let Choice { model, effort } = (l.claude.choice.clone())
+        .unwrap_or_else(|| Choice { model: llm.model.clone(), effort: llm.effort.clone() });
+    let value = model.unwrap_or_else(|| "default".into());
+    let m = c.models.iter().find(|m| m.value == value);
+    let id = match (c.model.as_str(), m) {
+        ("", Some(m)) if !m.resolved.is_empty() => m.resolved.clone(),
+        ("", _) if value != "default" => value.clone(),
+        ("", _) => return String::new(),
+        (id, _) => id.to_string(),
+    };
+    let bare = id.split('[').next().unwrap_or_default();
+    let short = crate::usage::model_short(bare);
+    let family = short.split(' ').next().unwrap_or_default();
+    match m.is_some_and(|m| m.efforts.contains(&effort)) {
+        true => format!("{family} · {effort}"),
+        false => family.to_string(),
+    }
+}
+
 /// Whether the model `answered` is what `value` asks for: the model it resolves to (an alias, `default`) —
 /// ids compared without a `[1m]`-style suffix, a dated one counting as the same — else, before claude has
 /// said what it offers, the value itself or a family alias in the id (`opus`).

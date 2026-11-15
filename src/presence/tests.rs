@@ -218,10 +218,10 @@ fn presence_maps_lines_across_checkouts() {
         assert!(matches!(fg, vt100::Color::Rgb(..)), "a colour of its own, not the default");
     }
     assert_eq!(sign(&p, c).0, " ", "none past its lines");
-    // Where each is: the list's row
+    // Where each is: no longer the list's row (the one list L1: the step its turn is at says it, and this gaze has no
+    // turn) — the UI state's; never Claude's level (C1 tells Claude nothing)
     let at = ed.session_items();
-    assert!(at.iter().any(|i| i.label == "main" && i.hint.contains("a.rs:2 · reading")), "{at:#?}");
-    // …the UI state's; never Claude's level (C1 tells Claude nothing)
+    assert!(!at.iter().any(|i| i.hint.contains("a.rs:2 · reading")), "{at:#?}");
     let main_at = |s: crate::uistate::UiState| {
         s.workspaces.iter().find(|s| s.name == "main").and_then(|s| s.sessions[0].at.clone())
     };
@@ -423,7 +423,7 @@ fn every_session_is_named_one_way_in_the_chrome() {
         let at = rows[y].find(s).unwrap_or_else(|| panic!("{s:?} in {}", rows[y]));
         p.screen().cell(y as u16, rows[y][..at].chars().count() as u16).unwrap().fgcolor()
     };
-    // The list: each row's name in its colour, no glyph; what needs you (docs' `▲ waits`) in warning
+    // The list: each row's name in its colour, no glyph; what needs you (docs' `▲`, its own column) in warning
     press(&mut ed, "<space>W");
     let p = frame(&mut ed, 160);
     let r = rows(&p);
@@ -435,7 +435,7 @@ fn every_session_is_named_one_way_in_the_chrome() {
         );
     }
     // (the list's row — the strip on the screen's top row says it too)
-    let docs_row = (1..r.len()).find(|&y| r[y].contains("▲ waits ")).expect("docs' row");
+    let docs_row = (1..r.len()).find(|&y| r[y].contains("▲  waits ")).expect("docs' row");
     assert_eq!(fg_of(&p, &r, docs_row, "▲"), warning, "what needs you, in warning: {}", r[docs_row]);
     press(&mut ed, "q");
     // A recovery card's rows: each name in its colour, its row faint or not; one whose session isn't here, plain

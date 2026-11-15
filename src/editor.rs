@@ -11181,8 +11181,15 @@ mod tests {
         let screen = draw(&mut ed);
         // (the follow card's head says it waits; its run is the knot in hand)
         assert!(screen.contains("▲ waits") && !screen.contains("exploring"), "{screen}");
+        // (the session list's row: `▲` in its column, the step in the now line's words, in warning — the one list L1)
+        use crate::sessionpane::{Col, Ink};
+        let row = ed.sessions_rows().remove(0);
+        assert_eq!(row.cell(Col::Waits), [("▲".to_string(), Ink::Warn)]);
+        assert_eq!(row.cell(Col::State), [(format!("▸ asks to run {command}"), Ink::Warn)]);
         ed.offer_accept();
         settle_until(&mut ed, |ed| ed.workspace.task_run.is_some());
+        let row = ed.sessions_rows().remove(0);
+        assert!(row.cell(Col::Waits).is_empty() && row.text(Col::State).contains("sleep 1"), "{row:?}");
         let screen = draw(&mut ed);
         // (the card names the tool, as its chat row does — its mark a run's)
         assert!(screen.contains("▸ run    sleep 1") && !screen.contains("waiting"), "{screen}");
@@ -16438,14 +16445,15 @@ mod tests {
         let r = rows(&ed);
         // (the checkout tarae started in by its branch, as the sessions are)
         assert_eq!(r.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["main", "feat", "other"]);
-        assert!(r[1].1.starts_with("▲ waits  ↑1"), "no count of cards: {r:?}");
+        assert!(r[1].1.starts_with("▲  waits  ↑1"), "no count of cards: {r:?}");
         assert!(r[1].1.contains("↑1  1 changed"), "{r:?}");
         // (each row's name in its session's colour, what needs you in warning)
         let row = &ed.sessions_rows()[1];
         let colour = ed.sessions_in_order()[1].claude.colour;
         assert_eq!(row.colour, colour);
         use crate::sessionpane::{Col, Ink};
-        assert_eq!(row.cell(Col::State), [("▲ waits".to_string(), Ink::Warn)]);
+        assert_eq!(row.cell(Col::Waits), [("▲".to_string(), Ink::Warn)]);
+        assert_eq!(row.cell(Col::State), [("waits".to_string(), Ink::Warn)]);
         // `esc` gives the keys back, the list stays; `space W` gives them to it again
         feed(&mut ed, "<esc>");
         assert!(ed.sessions_pane.is_some() && ed.workspace.is_at(Here::Code));

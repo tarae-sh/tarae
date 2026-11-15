@@ -2920,7 +2920,7 @@ mod tests {
         let shown = |doing| crate::worktree::Shown {
             id,
             name: "back".into(),
-            child: false,
+            parent: None,
             branch: None,
             facts: None,
             doing,
@@ -2931,7 +2931,8 @@ mod tests {
             compacted: false,
             reviewer: String::new(),
             claude: None,
-            at: String::new(),
+            step: String::new(),
+            model: String::new(),
             colour: 0,
             overlap: Vec::new(),
             billing: Default::default(),
