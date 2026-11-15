@@ -21,9 +21,10 @@
 //! the end: the chat is idle, the trip said once, and its row held until you quit.
 //!
 //! A third, `an_untrusted_projects_agent_waits_for_its_card` (step 3's guard 4 and its watch, L5): an untrusted
-//! project's held file holds the agent on its gate (`agentgate.rs`), each start a staged handle in place of a process
-//! (`agentgate::Stage`). The gate's read, the user's first message, the chat opened and the card's answer land in any
-//! order; in a run answering `y`, once its prompt went, a held file is added and the watch looks (its round a job,
+//! project's held files — its own and its repository top's (L-B2) — hold the agent on its gate (`agentgate.rs`), each
+//! start a staged handle in place of a process (`agentgate::Stage`). The gate's read, the user's first message, the chat
+//! opened and the card's answer land in any order; in a run answering `y`, once its prompt went, a held file is added
+//! in the top's and the watch looks (its round a job,
 //! `agentgate::look_again`), and the agent's wire takes the stop. After every step: no start before its `y` (none at
 //! all in a run answering `n`), a second only after the first's end landed, the message sent once, the stop said once.
 //! At the end, a `y` run: started twice, the card answered twice (it asked again), the message sent once, to the first
@@ -836,9 +837,14 @@ fn live(ed: &Editor) -> Option<usize> {
 fn card_run(choices: Choices) -> Vec<String> {
     let scratch = crate::scratch::Scratch::new("sim-acp-card");
     let root = std::fs::canonicalize(scratch.path()).unwrap();
-    let project = root.join("project");
-    std::fs::create_dir_all(project.join(".stand-in")).unwrap();
-    std::fs::write(project.join(".stand-in/hooks.json"), "{}").unwrap();
+    // (the project a folder of a repository whose top holds a file too — L-B2: the chain, one listing)
+    let repo = root.join("repo");
+    let project = repo.join("project");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    for folder in [&repo, &project] {
+        std::fs::create_dir_all(folder.join(".stand-in")).unwrap();
+        std::fs::write(folder.join(".stand-in/hooks.json"), "{}").unwrap();
+    }
     let mut sim = Sim::new(CARD, choices, LIMIT);
     let yes = sim.choices.below(2) == 0;
     let mut ed = Editor::new(crate::config::Config::default());
@@ -864,7 +870,7 @@ fn card_run(choices: Choices) -> Vec<String> {
         changed: Cell::new(false),
         looked: Cell::new(false),
         ended: Cell::new(false),
-        added: project.join(".stand-in/added.json"),
+        added: repo.join(".stand-in/added.json"),
     };
     let check = |ed: &Editor| card_held(ed, &world);
     let print = |ed: &Editor| card_print(ed, &world);

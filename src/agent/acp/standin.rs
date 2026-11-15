@@ -24,10 +24,11 @@
 //!   that never ends by itself), heard as `{"linger_pid": pid}`.
 //! - `{"tty": true}` reads its session and group and tries to open `/dev/tty`, heard as `{"pid": pid, "pgid":
 //!   pgid, "sid": sid, "tty": "opened" or why not}`.
-//! - `{"own": {"name": …, "args": …, "id": …}}` runs a tool as agy 1.5.9 does (`own`): reported, its folder's hooks
-//!   asked on agy's input (heard as `{"hook": their answer}`), then `failed` where they refused or failed, else the
-//!   ask (`pending`, `session/request_permission`, its answer waited for) and, on `allow_once`, the call and
-//!   `completed` — with `"mcp": message`, one of tarae's: the message sent to tarae's server (as an `mcp` step) and its
+//! - `{"own": {"name": …, "args": …, "id": …}}` runs a tool as agy 1.5.9 does (`own`): reported, the project's
+//!   `.stand-in/` hooks from the git top down, then its folder's, asked on agy's input (heard as `{"hook": their
+//!   answer}`), then `failed` where they refused or failed, else the ask (`pending`, `session/request_permission`, its
+//!   answer waited for) and, on `allow_once`, the call and `completed`, on any other `in_progress` then `failed`, as
+//!   1.5.9 reported a refusal (`after_refusal`) — with `"mcp": message`, one of tarae's: the message sent to tarae's server (as an `mcp` step) and its
 //!   answer waited for, as agy calls a server's tool. With `NO_ASK` set, no ask: agy 1.5.4 and 1.5.7.
 //!
 //! It plays agy's part, so its row takes agy's recipe (`agent::AGY_TOOLS_OFF`): its `--gemini-dir <folder>`, which
@@ -252,7 +253,8 @@ impl Agent {
     /// refusal, past its timeout, an exit other than 0, what isn't JSON) `failed` with the reason, and nothing asked.
     /// Else — one allowed, or none said anything (no decision, #8) — `pending` and a permission ask offering
     /// `allow_once` and `reject_once` only, in every mode; on `allow_once` `in_progress`, the call (one of tarae's:
-    /// its `mcp` message to tarae's server, the answer waited for), then `completed`; any other answer `failed`. With
+    /// its `mcp` message to tarae's server, the answer waited for), then `completed`; any other answer `in_progress`
+    /// then `failed`, as 1.5.9 reported a `reject_once` (`after_refusal`; `cancelled` unmeasured, the same). With
     /// `NO_ASK` set, the call is made after the hooks, unasked (agy 1.5.4 and 1.5.7).
     fn own(&mut self, call: &Value) {
         let (id, name, args) = (&call["id"], &call["name"], &call["args"]);
@@ -273,7 +275,7 @@ impl Agent {
             "transcriptPath": format!("{brain}/.system_generated/logs/transcript_full.jsonl"),
             "workspacePaths": [self.cwd],
         });
-        let answer = hook(&dir, &input);
+        let answer = hook(&dir, &self.cwd, &input);
         self.heard(&json!({"hook": answer}));
         let failed = |reason: &Value| {
             let content = match reason.is_null() {
@@ -303,7 +305,9 @@ impl Agent {
                     o["kind"] == "allow_once" && a["result"]["outcome"]["optionId"] == o["optionId"]
                 }) && a["result"]["outcome"]["outcome"] == "selected";
             if !allowed {
-                self.update(failed(&Value::Null));
+                for report in after_refusal(id, name, args, kind) {
+                    self.update(report);
+                }
                 return;
             }
             self.update(
@@ -359,15 +363,35 @@ impl Agent {
     }
 }
 
-/// The answer of the hooks `<dir>/config/hooks.json` names for every tool (agy's shape, `hook::file`) — its groups by
-/// name (serde_json's map is sorted; tarae's file has one), each group's hooks in the file's order — each run as
-/// `run_hook` runs one: the first refusal or failure (a refusal of the stand-in's own words, with
-/// `failed` saying why: agy 1.5.9 fails the call, #5 #8), which ends the chain; else the last answer naming a
-/// decision; else `"none"` (no decision: the call goes on to its ask, #8).
-fn hook(dir: &str, input: &Value) -> Value {
-    let file = std::fs::read_to_string(format!("{dir}/config/hooks.json")).unwrap_or_default();
-    let file: Value = serde_json::from_str(&file).unwrap_or_default();
-    let groups = file.as_object().into_iter().flat_map(|g| g.values());
+/// What 1.5.9 reports after an ask it was refused (probe 1, `.sb/agent-p4-probe/out-1794764990/wire.jsonl`: nine asks
+/// answered `reject_once`, each followed at once by these two): `in_progress`, then `failed`, each with the call's
+/// name, args, kind, title (`Run <name>`) and raw input again, and no `content`. (`cancelled` wasn't measured.)
+fn after_refusal(id: &Value, name: &Value, args: &Value, kind: &str) -> [Value; 2] {
+    let title = format!("Run {}", name.as_str().unwrap_or_default());
+    ["in_progress", "failed"].map(|status| {
+        json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "name": name, "args": args,
+            "status": status, "kind": kind, "title": title, "rawInput": args})
+    })
+}
+
+/// The answer of the hooks for every tool (agy's shape, `hook::file`) that the project's `.stand-in/hooks.json` name in
+/// every folder from the git top down to `cwd` (`agenttrust::chain`, as 1.5.9 loads `.agents/`), then
+/// `<dir>/config/hooks.json` — the order 1.5.9 was measured to run them in (#16) — each file's groups by name
+/// (serde_json's map is sorted; tarae's file has one), each group's hooks in the file's order, each run as `run_hook`
+/// runs one: the first refusal or failure (a refusal of the stand-in's own words, with `failed` saying why: agy 1.5.9
+/// fails the call, #5 #8), which ends the chain; else the last answer naming a decision; else `"none"` (no decision:
+/// the call goes on to its ask, #8).
+fn hook(dir: &str, cwd: &str, input: &Value) -> Value {
+    // (no session's cwd yet: none of the project's)
+    let chain = Some(std::path::Path::new(cwd)).filter(|c| c.is_absolute()).map(crate::agenttrust::chain);
+    let project = chain.iter().flat_map(|c| {
+        c.held(crate::agent::STAND_IN.held).into_iter().map(|h| c.top.join(h).join("hooks.json"))
+    });
+    let files = project.chain([std::path::PathBuf::from(format!("{dir}/config/hooks.json"))]);
+    let files: Vec<Value> = (files.map(|f| std::fs::read_to_string(f).unwrap_or_default()))
+        .map(|text| serde_json::from_str(&text).unwrap_or_default())
+        .collect();
+    let groups = files.iter().flat_map(|f| f.as_object().into_iter().flat_map(|g| g.values()));
     let entries = groups.flat_map(|g| g["PreToolUse"].as_array().into_iter().flatten());
     let hooks =
         entries.filter(|e| e["matcher"] == "*").flat_map(|e| e["hooks"].as_array().into_iter().flatten());
@@ -472,4 +496,66 @@ fn run() {
     for step in &script {
         a.step(step);
     }
+}
+
+/// The design session's note on L-B1: after a refused ask the stand-in reports what 1.5.9 did in probe 1 — its first
+/// ask's two lines (`wire.jsonl` 19 and 20, `call_12221093999442458841`), as they were.
+#[test]
+fn a_refused_asks_report_is_what_1_5_9_said() {
+    let id = "call_12221093999442458841";
+    let args = json!({"text": "one", "toolSummary": "Mark probe log"});
+    let measured = |status: &str| {
+        let line = format!(
+            r#"{{"sessionUpdate":"tool_call_update","toolCallId":"{id}","name":"mcp_tarae_mark","args":{args},"status":"{status}","kind":"other","title":"Run mcp_tarae_mark","rawInput":{args}}}"#
+        );
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let reports = after_refusal(&json!(id), &json!("mcp_tarae_mark"), &args, "other");
+    assert_eq!(reports, [measured("in_progress"), measured("failed")]);
+    assert!(reports.iter().all(|r| r.get("content").is_none()), "no content at all");
+}
+
+/// L-B2's stand-in, as 1.5.9 was measured (probe 2, #16 and run D): the project's `.stand-in/hooks.json` from the git
+/// top down to the cwd, then its config's — never one above the top — and a deny ends the chain there; with no git top,
+/// the cwd's alone, then the config's.
+#[test]
+fn the_projects_hooks_run_top_down_before_the_configs_and_a_deny_ends_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = crate::scratch::Scratch::new("standin-hooks");
+    let log = dir.join("ran");
+    let hooks_at = |folder: &std::path::Path, name: &str, said: &str| {
+        std::fs::create_dir_all(folder).unwrap();
+        let script = folder.join(format!("{name}.sh"));
+        let text = format!("#!/bin/sh\necho {name} >> '{}'\necho '{said}'\n", log.display());
+        std::fs::write(&script, text).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hook = json!({"type": "command", "command": script.display().to_string()});
+        let file = json!({"g": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}});
+        std::fs::write(folder.join("hooks.json"), file.to_string()).unwrap();
+    };
+    let (allow, deny) = (r#"{"decision": "allow"}"#, r#"{"decision": "deny", "reason": "no"}"#);
+    let (repo, home) = (dir.join("outer/repo"), dir.join("home"));
+    let proj = repo.join("mid/proj");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    hooks_at(&dir.join("outer/.stand-in"), "outer", allow);
+    hooks_at(&repo.join(".stand-in"), "top", allow);
+    hooks_at(&repo.join("mid/.stand-in"), "mid", "");
+    hooks_at(&proj.join(".stand-in"), "proj", allow);
+    hooks_at(&home.join("config"), "config", allow);
+    let run = || {
+        let _ = std::fs::remove_file(&log);
+        let answer = hook(&home.display().to_string(), &proj.display().to_string(), &json!({}));
+        let ran = std::fs::read_to_string(&log).unwrap_or_default();
+        (ran.split_whitespace().map(String::from).collect::<Vec<_>>(), answer["decision"].clone())
+    };
+    assert_eq!(run(), (vec!["top".into(), "mid".into(), "proj".into(), "config".into()], json!("allow")));
+    hooks_at(&repo.join("mid/.stand-in"), "mid", deny);
+    assert_eq!(run(), (vec!["top".into(), "mid".into()], json!("deny")), "a project's deny ends the chain");
+    hooks_at(&home.join("config"), "config", deny);
+    hooks_at(&repo.join("mid/.stand-in"), "mid", allow);
+    let all = vec!["top".into(), "mid".into(), "proj".into(), "config".into()];
+    assert_eq!(run(), (all, json!("deny")), "the project's allows lift no deny of the config's");
+    std::fs::remove_dir(repo.join(".git")).unwrap();
+    // (the scratch folder outside any repository: the cwd's alone)
+    assert_eq!(run(), (vec!["proj".into(), "config".into()], json!("deny")), "no git top");
 }

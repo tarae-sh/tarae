@@ -501,15 +501,16 @@ fn holds(path: &Path, bytes: &[u8], mode: u32) -> bool {
         && was == bytes
 }
 
-/// `w`'s files and folders watched: tarae's two, each held path (made, replaced or gone — not there yet: the closest
-/// folder above it), and every folder under one, as deep as `agenttrust::look` reads, for its files added, removed or
-/// written.
+/// `w`'s files and folders watched: tarae's two, each held path in every folder from the root up to its git top
+/// (`agenttrust::chain`; made, replaced or gone — not there yet: the closest folder above it), and every folder under
+/// one, as deep as `agenttrust::look` reads, for its files added, removed or written.
 fn arm(watcher: &mut crate::fswatch::Watcher, w: &Watched) {
     use crate::agenttrust::{DEPTH_MAX, FILES_MAX};
     w.ours.iter().for_each(|(p, ..)| watcher.file(p));
     let mut folders = 0;
-    for h in w.row.held {
-        let top = w.root.join(h.trim_end_matches('/'));
+    let chain = crate::agenttrust::chain(&w.root);
+    for h in chain.held(w.row.held) {
+        let top = chain.top.join(h);
         watcher.file(&top);
         let mut next = vec![(top, 0)];
         while let Some((dir, depth)) = next.pop() {

@@ -3,8 +3,9 @@
 //! card. No flag keeps the agent from loading them, so held back is not started: the chat's start waits for the answer,
 //! and what's sent meanwhile waits with it.
 //!
-//! - Read on guard 1's worker job (`agentgate::ready`): every file under the row's held paths, each by its bytes'
-//!   SHA-256, the digest over (path from the root, that hash) in order — a yes is for each file's content, as Claude
+//! - Read on guard 1's worker job (`agentgate::ready`): every file under the row's held paths in every folder from the
+//!   root up to its git top (`chain`, step 4's L-B2: what agy loads), each by its bytes' SHA-256, the digest over (path
+//!   from the top, that hash) in order — a yes is for each file's content, as Claude
 //!   settings' is, so any change asks again.
 //! - A link is never read through: its target, each hop, is resolved from the link's own folder without reading the
 //!   disk (`within`). It's trusted only as a name for a file the listing holds — read and hashed with the rest — and
@@ -45,7 +46,7 @@ const TOO_MANY: &str = "more files than tarae reads";
 /// A row's held files as read, and the answer for them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seen {
-    /// Each file from the project's root, in order, and a link's file: the listed file it names, from the root.
+    /// Each file from the git top (`Chain.top`), in order, and a link's file: the listed file it names, from the top.
     /// Empty: none there.
     pub files: Vec<(String, Option<String>)>,
     pub hash: Digest,
@@ -59,6 +60,48 @@ pub struct Seen {
 /// The first held path of `row` under `root`: what its answer is kept for.
 fn file_of(row: &Row, root: &Path) -> PathBuf {
     root.join(row.held.first().map_or("", |h| h.trim_end_matches('/')))
+}
+
+/// The folders a row's held paths are read in, and what they're keyed from (L-B2). agy loads `.agents/` in every
+/// folder from its cwd up to the git top — the nearest holding `.git`, a folder or a worktree's file — and not above it
+/// (measured, 1.5.9, #16: a worktree's file is its top); with no git top, the cwd's alone (measured). Found up the
+/// root's real path, as agy's cwd is: stats only, no git.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chain {
+    /// The git top's real path, or the root's with none: the keys are from it.
+    pub top: PathBuf,
+    /// Each folder from the top down to the root, from the top (the top itself empty).
+    pub folders: Vec<PathBuf>,
+    /// The top as the root was written (macOS's `/tmp` for `/private/tmp`), where that names the same folder: a link's
+    /// absolute target is taken written either way.
+    pub given: Option<PathBuf>,
+}
+
+impl Chain {
+    /// `held` (a row's) in every folder of the chain, from the top, the top's first.
+    pub fn held(&self, held: &[&str]) -> Vec<String> {
+        let folders = self.folders.iter();
+        let each = folders.flat_map(|f| held.iter().map(move |h| f.join(h.trim_end_matches('/'))));
+        each.map(|p| p.display().to_string()).collect()
+    }
+}
+
+/// `root`'s chain: from its git top down to it. Reads the disk (stats): a worker's.
+pub fn chain(root: &Path) -> Chain {
+    let real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let top =
+        (real.ancestors()).find(|d| std::fs::metadata(d.join(".git")).is_ok()).unwrap_or(&real).to_path_buf();
+    let below = real.strip_prefix(&top).unwrap_or(Path::new(""));
+    let mut folders = vec![PathBuf::new()];
+    for c in below.components() {
+        let next = folders[folders.len() - 1].join(c);
+        folders.push(next);
+    }
+    let up = folders.len() - 1;
+    let given = (root.ancestors().nth(up))
+        .filter(|g| *g != top && std::fs::canonicalize(g).is_ok_and(|r| r == top))
+        .map(Path::to_path_buf);
+    Chain { top, folders, given }
 }
 
 /// One thing found under a held path: a file's bytes, or a link's target.
@@ -154,13 +197,19 @@ fn within(roots: &[&Path], held: &[&str], from: &Path, to: &Path) -> Option<Stri
     held.iter().any(|h| rel.starts_with(h)).then(|| rel.display().to_string())
 }
 
-/// The file each link of `found` (sorted, under `root`) names: its path from the root, each hop `within` `row`'s held
-/// paths, the last a file `found` holds (None: not a link). Err: the first link that names anything else, and why.
-fn links_resolved(row: &Row, root: &Path, found: &[Found]) -> Result<Vec<Option<String>>, (String, String)> {
+/// The file each link of `found` (sorted, from `chain`'s top) names: its path from the top, each hop `within` `row`'s
+/// held paths in every folder of the chain, the last a file `found` holds (None: not a link). Err: the first link that
+/// names anything else, and why.
+fn links_resolved(
+    row: &Row,
+    chain: &Chain,
+    found: &[Found],
+) -> Result<Vec<Option<String>>, (String, String)> {
     let shown = crate::trust::visible_line;
-    let real = std::fs::canonicalize(root).ok();
-    let roots: Vec<&Path> = std::iter::once(root).chain(real.as_deref()).collect();
-    let held: Vec<&str> = row.held.iter().map(|h| h.trim_end_matches('/')).collect();
+    let root = chain.top.as_path();
+    let roots: Vec<&Path> = std::iter::once(root).chain(chain.given.as_deref()).collect();
+    let held = chain.held(row.held);
+    let held: Vec<&str> = held.iter().map(String::as_str).collect();
     let at = |rel: &str| found.binary_search_by(|f| f.rel().cmp(rel)).ok().map(|i| &found[i]);
     let resolved = |rel: &String, to: &String| {
         let (mut name, mut to) = (rel.clone(), to.clone());
@@ -193,20 +242,22 @@ fn links_resolved(row: &Row, root: &Path, found: &[Found]) -> Result<Vec<Option<
         .collect()
 }
 
-/// `row`'s held files under `root` and the answer kept for them in `store` (`trust.rs`'s; None: none kept). Err: why
-/// it isn't started there, whatever is answered. Reads the disk: a worker's.
+/// `row`'s held files in every folder from `root` up to its git top (`chain`), as one listing keyed from the top, and
+/// the answer kept for them in `store` (`trust.rs`'s; None: none kept) — at the root's place, as before. Err: why it
+/// isn't started there, whatever is answered. Reads the disk: a worker's.
 pub fn look(row: &Row, root: &Path, store: Option<&Path>) -> Result<Seen, String> {
     let name = row.name;
     let shown = crate::trust::visible_line;
     let refused = |(rel, why): (String, String)| {
         format!("{}: {why} — never trusted; {name} isn't started here", shown(&rel))
     };
+    let chain = chain(root);
     let mut found = Vec::new();
-    for h in row.held {
-        gather(root, &root.join(h.trim_end_matches('/')), 0, &mut found).map_err(refused)?;
+    for h in chain.held(row.held) {
+        gather(&chain.top, &chain.top.join(h), 0, &mut found).map_err(refused)?;
     }
     found.sort_by(|a, b| a.rel().cmp(b.rel()));
-    let links = links_resolved(row, root, &found).map_err(refused)?;
+    let links = links_resolved(row, &chain, &found).map_err(refused)?;
     for f in &found {
         let Found::File(rel, bytes) = f else { continue };
         let json = Path::new(rel).extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));

@@ -570,3 +570,151 @@ fn a_folders_answer_is_carried_to_the_repository_made_there() {
     assert!(matches!(now.place, Place::Repo { .. }) && now.state == State::Trusted, "{now:?}");
     ed.workspace.claude.chat = None;
 }
+
+// ── L-B2: every held folder up to the git top ─────────────────────────────────────────────────
+
+/// `text` at `rel` in the stand-in's held folder of `at`.
+fn held_at(at: &Path, rel: &str, text: &str) {
+    let path = at.join(".stand-in").join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// The files `look` read, as the card says them.
+fn listed_lines(root: &Path) -> Vec<String> {
+    look(&STAND_IN, root, None).unwrap().files.iter().map(line).collect()
+}
+
+/// L-B2 (#16, measured on 1.5.9: `proj`, `mid` and `top` loaded, `outer` above the top not): every held folder from
+/// the root up to the git top is one listing, keyed from the top. A link in the root's to a parent's file is trusted
+/// with it (the links rule's roots are the chain's folders), one to the folder above the top isn't; the card names the
+/// parents' files with the root's.
+#[test]
+fn every_held_folder_up_to_the_git_top_is_one_listing() {
+    let dir = Scratch::new("agenttrust-chain");
+    let top = dir.join("outer/top");
+    std::fs::create_dir_all(top.join(".git")).unwrap();
+    held_at(&dir.join("outer"), "o.json", "{}");
+    held_at(&top, "t.json", "1");
+    held_at(&top.join("mid"), "m.json", "2");
+    let root = top.join("mid/proj");
+    held_at(&root, "p.json", "3");
+    let to = root.join(".stand-in/to.json");
+    link(top.join("mid/.stand-in/m.json"), &to);
+    let files = ["  .stand-in/t.json", "  mid/.stand-in/m.json", "  mid/proj/.stand-in/p.json"];
+    let with_link = [&files[..], &["  mid/proj/.stand-in/to.json → mid/.stand-in/m.json (a link)"]].concat();
+    assert_eq!(listed_lines(&root), with_link, "absolute, to a parent's file");
+    let outer = dir.join("outer/.stand-in/o.json");
+    link(&outer, &to);
+    let refused = format!(
+        "mid/proj/.stand-in/to.json: a link to {}, outside .stand-in/ — never trusted; stand-in isn't started here",
+        outer.display()
+    );
+    assert_eq!(look(&STAND_IN, &root, None).err(), Some(refused), "to the folder above the top");
+    std::fs::remove_file(&to).unwrap();
+    let mut ed = editor(&dir, &root, "a");
+    crate::chat::gate_opened(&mut ed);
+    settle_until(&mut ed, |ed| card(ed).is_some());
+    let o = card(&ed).unwrap();
+    assert_eq!(o.title, "Trust this project's stand-in files?");
+    assert_eq!(o.question.lines().skip(2).collect::<Vec<_>>(), files);
+    assert!(heard(&dir, "a").is_empty(), "the stand-in started");
+}
+
+/// A yes is for the whole chain's bytes: a parent's held file changed, or one added in the top's, asks again.
+#[test]
+fn a_change_in_a_parents_held_file_asks_again() {
+    let dir = Scratch::new("agenttrust-chain-changed");
+    let top = dir.join("top");
+    std::fs::create_dir_all(top.join(".git")).unwrap();
+    held_at(&top.join("mid"), "m.json", "{}");
+    let root = top.join("mid/proj");
+    held_at(&root, "p.json", "{}");
+    let store = dir.join("trust.json");
+    let state = || look(&STAND_IN, &root, Some(&store)).unwrap().state;
+    let seen = look(&STAND_IN, &root, Some(&store)).unwrap();
+    assert_eq!(seen.hash, digest(&[("mid/.stand-in/m.json", "{}"), ("mid/proj/.stand-in/p.json", "{}")]));
+    crate::trust::record(store.clone(), crate::trust::Kind::Agent, seen.file.clone(), seen.hash, true)
+        .unwrap();
+    assert_eq!(state(), State::Trusted);
+    held_at(&top.join("mid"), "m.json", "{ }");
+    assert_eq!(state(), State::Ask, "a parent's byte changed");
+    held_at(&top.join("mid"), "m.json", "{}");
+    assert_eq!(state(), State::Trusted, "put back");
+    held_at(&top, "added.json", "");
+    assert_eq!(state(), State::Ask, "a file added in the top's");
+}
+
+/// With no git top only the root's held folder is held: all 1.5.9 loads there (measured, probe 2 run D: `nproj`
+/// alone, not `na`, `nogit` nor the scratch root's) — so the card says nothing more. A `.git` made above, and the
+/// folders up to it join.
+#[test]
+fn with_no_git_top_only_the_roots_is_held() {
+    let dir = Scratch::new("agenttrust-nogit");
+    let nogit = dir.join("nogit");
+    held_at(&nogit, "n.json", "1");
+    held_at(&nogit.join("a"), "a.json", "2");
+    let root = nogit.join("a/proj");
+    held_at(&root, "p.json", "3");
+    let real = std::fs::canonicalize(&root).unwrap();
+    assert!(real.ancestors().all(|d| !d.join(".git").exists()), "the scratch folder is in a repository");
+    assert_eq!(listed_lines(&root), ["  .stand-in/p.json"]);
+    let mut ed = editor(&dir, &root, "a");
+    crate::chat::gate_opened(&mut ed);
+    settle_until(&mut ed, |ed| card(ed).is_some());
+    let o = card(&ed).unwrap();
+    assert_eq!(o.title, "Trust this folder's stand-in files?");
+    let head =
+        "stand-in isn't started until you answer — these run with your permissions, outside tarae's sandbox:";
+    assert_eq!(o.question.lines().collect::<Vec<_>>(), [head, "", "  .stand-in/p.json"], "nothing more said");
+    ed.workspace.claude.chat = None;
+    std::fs::create_dir(nogit.join(".git")).unwrap();
+    assert_eq!(
+        listed_lines(&root),
+        ["  .stand-in/n.json", "  a/.stand-in/a.json", "  a/proj/.stand-in/p.json"]
+    );
+}
+
+/// A held file anywhere in the chain naming an MCP server as tarae's refuses the start, trusted or not: a parent's
+/// too, not the root's alone.
+#[test]
+fn a_parents_held_file_naming_a_server_tarae_refuses_the_start() {
+    let dir = Scratch::new("agenttrust-chain-tarae");
+    let top = dir.join("top");
+    std::fs::create_dir_all(top.join(".git")).unwrap();
+    let text = json!({"mcpServers": {"tarae": {"command": "x"}}}).to_string();
+    held_at(&top.join("mid"), "mcp_config.json", &text);
+    let root = top.join("mid/proj");
+    held_at(&root, "hooks.json", "{}");
+    let store = dir.join("trust.json");
+    let said = "mid/.stand-in/mcp_config.json names an MCP server \"tarae\" — its tools would pass for tarae's; \
+                stand-in isn't started here";
+    assert_eq!(look(&STAND_IN, &root, Some(&store)).err().as_deref(), Some(said));
+    let hash = digest(&[("mid/.stand-in/mcp_config.json", &text), ("mid/proj/.stand-in/hooks.json", "{}")]);
+    crate::trust::record(store.clone(), crate::trust::Kind::Agent, root.join(".stand-in"), hash, true)
+        .unwrap();
+    assert_eq!(look(&STAND_IN, &root, Some(&store)).err().as_deref(), Some(said), "trusted: still refused");
+    let mut ed = editor(&dir, &root, "a");
+    crate::chat::gate_opened(&mut ed);
+    settle_until(&mut ed, |ed| says(ed, said));
+    assert!(card(&ed).is_none() && !chat(&ed).running());
+    assert!(heard(&dir, "a").is_empty(), "the stand-in started");
+}
+
+/// A linked checkout's `.git` file is its top — measured, 1.5.9 (probe 2 run B: `wt` and `sub` loaded; `wtop`, a
+/// plain folder above, and `flat`, its main checkout, not).
+#[test]
+fn a_worktrees_git_file_is_its_top() {
+    let dir = Scratch::new("agenttrust-worktree");
+    let (flat, wtop) = (dir.join("flat"), dir.join("wtop"));
+    let wt = wtop.join("wt");
+    std::fs::create_dir_all(flat.join(".git")).unwrap();
+    linked(&flat, &wt);
+    held_at(&flat, "f.json", "1");
+    held_at(&wtop, "x.json", "2");
+    held_at(&wt, "w.json", "3");
+    let root = wt.join("sub");
+    held_at(&root, "s.json", "4");
+    assert!(std::fs::symlink_metadata(wt.join(".git")).unwrap().is_file(), "its .git a file");
+    assert_eq!(listed_lines(&root), ["  .stand-in/w.json", "  sub/.stand-in/s.json"]);
+}

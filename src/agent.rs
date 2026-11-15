@@ -191,8 +191,8 @@ pub struct Row {
     /// it moves (`acp::Wire`'s mode). None: it has no modes.
     #[cfg(test)]
     pub mode: Option<&'static str>,
-    /// What a project can make it load that runs as you, from the project's root (guard 4, `agenttrust.rs`): held until
-    /// you trust it on a card, the agent not started before. A path ending in `/` is a folder: every file under it.
+    /// What a project can make it load that runs as you, in every folder from the project's root up to its git top
+    /// (guard 4, `agenttrust.rs`): held until you trust it on a card, the agent not started before. A path ending in `/` is a folder: every file under it.
     #[cfg(test)]
     pub held: &'static [&'static str],
 }

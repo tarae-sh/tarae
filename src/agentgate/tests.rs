@@ -142,6 +142,40 @@ fn renamed_over(path: &Path, bytes: &[u8]) {
     std::fs::rename(&temp, path).unwrap();
 }
 
+/// L-B2's watch: every held folder up to the git top is armed — a file added in a parent's while the agent runs (a
+/// `git pull` in the repository above the project's folder) stops it, said once, and the card asks again naming it
+/// with the rest of the chain's.
+#[test]
+fn a_file_added_in_a_parents_held_folder_while_it_runs_stops_it() {
+    let dir = crate::scratch::Scratch::new("agentgate-watch-parent");
+    let repo = dir.join("repo");
+    let root = repo.join("p");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    for folder in [&repo, &root] {
+        std::fs::create_dir_all(folder.join(".stand-in")).unwrap();
+        std::fs::write(folder.join(".stand-in/hooks.json"), "{}").unwrap();
+    }
+    let seen = crate::agenttrust::look(&STAND_IN, &root, None).unwrap();
+    crate::trust::record(dir.join("trust.json"), crate::trust::Kind::Agent, seen.file, seen.hash, true)
+        .unwrap();
+    let mut ed = running_editor(&dir, &root);
+    crate::chat::gate_opened(&mut ed);
+    settle_until(&mut ed, |ed| chat(ed).running() && heard_n(&dir, "session/new") == 1);
+    std::fs::write(repo.join(".stand-in/added.json"), "{\"pulled\": true}").unwrap();
+    let card = |ed: &Editor| {
+        let o = ed.offers.iter().find(|o| matches!(o.what, crate::offer::What::AgentFiles { .. }))?;
+        Some(o.question.lines().skip(2).map(String::from).collect::<Vec<_>>())
+    };
+    settle_until(&mut ed, |ed| card(ed).is_some());
+    let words = "stand-in's files in this project changed while it ran — stopped: it and everything it started ended. \
+                 Their card asks again.";
+    assert_eq!(said_n(&ed, words), 1, "said once");
+    assert!(!chat(&ed).running(), "stopped");
+    let lines = ["  .stand-in/added.json", "  .stand-in/hooks.json", "  p/.stand-in/hooks.json"];
+    assert_eq!(card(&ed).unwrap(), lines);
+    ed.workspace.claude.chat = None;
+}
+
 /// The watch (L5): the hook file changed while the agent runs stops it — its turn and group ended, said once in the
 /// transcript and in a toast, its watch over. A message after it starts it again on the conversation, the file written
 /// again, said.

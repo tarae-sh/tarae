@@ -1133,6 +1133,27 @@ fn an_own_call_that_never_ends_keeps_no_input_and_so_many_at_most() {
     assert_eq!(says(st.line(&done)).last(), Some(&format!("exit tripped one with no name: {words}")));
 }
 
+/// The design session's note on L-B1: the tools whose ask's answer the log was told are the agent's names, so
+/// `ASKS_SAID_MAX` at most — past it nothing more is kept (or said); each ask is still answered.
+#[test]
+fn the_asks_said_are_so_many_at_most() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    for n in 0..ASKS_SAID_MAX + 8 {
+        let tool = format!("tool_{n}");
+        let params = agy_ask(Some(&tool), &format!("Run {tool}"), "execute");
+        let ask =
+            json!({"jsonrpc": "2.0", "id": n, "method": "session/request_permission", "params": params});
+        st.line(&ask);
+        agent.answer_permission(&n.to_string(), Permission::Deny { message: String::new() });
+        st.take();
+        let deny = json!({"outcome": {"outcome": "selected", "optionId": "deny"}});
+        assert_eq!(st.written(), [json!({"jsonrpc": "2.0", "id": n, "result": deny})], "answered {n}");
+    }
+    assert_eq!(st.w.asks_said.len(), ASKS_SAID_MAX, "so many at most");
+    assert!(!st.w.asks_said.contains(&format!("tool_{ASKS_SAID_MAX}")), "past it, not kept");
+}
+
 /// Guard 3 on the stand-in: one of its own tools reported `completed` stops the session at once — never at its
 /// `in_progress` before (Q5) — its group ended (a process of its own that would outlive it included), the turn
 /// ended in tarae's words, its end a trip naming the tool; a prompt after it is never written.

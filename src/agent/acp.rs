@@ -107,6 +107,10 @@ const MODE_BACKS: usize = 3;
 /// the oldest is let go — its `completed` then trips as one with no name, as an update with no `tool_call` does.
 const OWN_OPEN: usize = 64;
 
+/// The most tools whose ask's answer the log was told, a session (`Wire.asks_said`): past it, nothing more is kept or
+/// said — the names are the agent's, as many as it likes.
+const ASKS_SAID_MAX: usize = 64;
+
 /// A tool's name as tarae's own words say it where a trip is made (its words, so the turn's end, the toast and the
 /// status line; `Ended::Tripped`; the log): the agent's string, as long as it likes, cut to `NAME_SHOWN` characters,
 /// and every character but a plain printable one (ASCII's, the space) made `?` — no newline, escape or bidi mark of
@@ -448,7 +452,8 @@ struct Wire {
     /// The permission asks still open: each its id as `Event::Permission` gives it, its JSON-RPC id, options and
     /// tool (`tool_name`).
     asks: HashMap<String, (Value, Value, String)>,
-    /// The tools whose ask's answer the log was told: once a tool a session.
+    /// The tools whose ask's answer the log was told: once a tool a session, `ASKS_SAID_MAX` at most (the names are the
+    /// agent's) — past it nothing more is kept or said.
     asks_said: HashSet<String>,
     /// tarae's own tools' calls, whose updates are dropped too.
     dropped: HashSet<String>,
@@ -856,7 +861,7 @@ impl Wire {
             let kinds = shown(&kinds.collect::<Vec<_>>().join(" "));
             let said = format!("its ask for {tool:?} offered no {wanted} — cancelled (it offered: {kinds})");
             crate::log::line(name, "warn", &said);
-        } else if self.asks_said.insert(tool.clone()) {
+        } else if self.asks_said.len() < ASKS_SAID_MAX && self.asks_said.insert(tool.clone()) {
             let said = format!("its asks for {tool:?} answered {wanted} (said once a tool a session)");
             crate::log::line(name, "info", &said);
         }
