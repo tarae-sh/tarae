@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use super::{CAPTION_MAX, Cut, Entry, FADE_MS, Marks, envelope, length, number, reading_ms};
+use super::{CAPTION_MAX, Cut, Entry, FADE_MS, Marks, Program, envelope, length, number, reading_ms};
 use crate::Result;
 use crate::camera::CROSS_MS;
 use crate::scenes::docshots::Bg;
@@ -137,6 +137,16 @@ impl Step {
     /// Its clock (µs of its manifest) `since` µs of video into it.
     pub(crate) fn clock(&self, since: u64) -> u64 {
         (since as f64 * self.speed).round() as u64
+    }
+
+    /// The first frame from its start (`start`, µs of video, on a frame) whose clock has reached `c` (µs of its
+    /// manifest): where a station is inked, and where the character starts painting and comes to rest.
+    pub(crate) fn reaches(&self, start: u64, c: u64) -> u64 {
+        let mut j = Program::frame_at(start);
+        while self.clock(Program::time_of(j) - start) < c {
+            j += 1;
+        }
+        j
     }
 
     /// Where on its clock it's settled (µs): its `ms`, then what came at the end come in (`FADE_MS` of video).

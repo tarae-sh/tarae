@@ -683,7 +683,19 @@ pub(crate) fn make(
     // (the pictures' files, checked at 2160p before any frame; their boards at the video's size, read as they come)
     let checking = Instant::now();
     let found = picture::check(cut, look.ground)?;
-    said.extend(pictures_said(cut, &found, checking.elapsed()));
+    let paints = mascot.as_ref().is_some_and(|(art, _)| art.paints());
+    let painter = match (paints, mascot) {
+        (true, _) => {
+            "the character paints each step on the tablet (the mascot's motions say how)".to_string()
+        }
+        (false, Some((art, _))) => format!(
+            "the character watches (painting: its pictures, frame-draw-1…3.png, frame-draw-lift.png, \
+             frame-draw-in.png and frame-swing-1.png, not all in {})",
+            art.dir.display()
+        ),
+        (false, None) => "no character to paint them".to_string(),
+    };
+    said.extend(pictures_said(cut, &found, checking.elapsed(), &painter));
     let mut boards = Boards::new(cut, scale, &look)?;
     let keys = match dir.join("keys.bin").exists() {
         true => crate::record::read_log(&dir.join("keys.bin"))?,
@@ -726,6 +738,10 @@ pub(crate) fn make(
         // (pressing fast-forward winds the skein where its pictures were found, else it's held as before)
         if cut.mascot.fast && winds {
             plan.wind(prog, &hands);
+        }
+        // (painting each step on the tablet as it's drawn, where its pictures were found, else watching)
+        if paints {
+            plan.paint(prog);
         }
         ((heard.taps, keyless, hands, pops), Some(plan))
     };
@@ -1876,17 +1892,21 @@ fn route_said(prog: &Program) -> Vec<String> {
 }
 
 /// `cut.txt`'s lines of the pictures: how many, their steps' drawing and standing, that `record check` doesn't scan
-/// them, the character watching; each step with what its files said (`found`, `picture::check`'s, which took
-/// `took`); the opening's picture.
-fn pictures_said(cut: &Cut, found: &[Vec<picture::Found>], took: std::time::Duration) -> Vec<String> {
+/// them, the character painting or watching (`painter`); each step with what its files said (`found`,
+/// `picture::check`'s, which took `took`); the opening's picture.
+fn pictures_said(
+    cut: &Cut,
+    found: &[Vec<picture::Found>],
+    took: std::time::Duration,
+    painter: &str,
+) -> Vec<String> {
     let mut out = Vec::new();
     let steps = || cut.pictures.iter().flat_map(|p| &p.steps);
     if !cut.pictures.is_empty() {
         let s = |us: u64| us as f64 / 1e6;
         out.push(format!(
             "pictures: {}, {} steps — {:.1} s drawn, {:.1} s standing, {:.1} s of video with the crossings in; not \
-             scanned by `record check` (no cells); {} strokes, {} fades; the character watches (painting: not yet); \
-             checked at 2160p in {:.1} s",
+             scanned by `record check` (no cells); {} strokes, {} fades; {painter}; checked at 2160p in {:.1} s",
             cut.pictures.len(),
             steps().count(),
             s(steps().map(|x| x.drawing()).sum()),

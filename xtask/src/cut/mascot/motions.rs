@@ -42,9 +42,18 @@
 //!   in, the face on the keys glances up to it — `GLANCE_MS` while the hands keep tapping, the turns as any glance's —
 //!   once, and no seeded glance while that line stands. A face already up (watching, fast-forward) meets it as it is
 //!   (the nod is the motions' to come); a whole-body motion goes on.
+//! - **Painting on the tablet** (`Plan::paint`, Z3: the mascot brief's §6.2, the user's "붓으로 슥슥 … 너무 빠르게
+//!   휙휙 할 필요는 없을 듯"), where its pictures are found: one calm rhythm of its own, never the board's strokes — while
+//!   a step is drawn, from the frame its first stroke starts to the frame its last ends, the brush across the tablet
+//!   (`draw-1`, `-2`, `-3`, `PAINT_EACH` frames each: a second), lifted `PAINT_LIFT`, again; no picture of it under
+//!   `PAINT_LEAST` frames (`rhythm`). Then at rest (`draw-in`: the brush up, the eyes off the tablet) on the frame the
+//!   last stroke ends, the one its station is inked on, through the stand. The keyboard becomes the tablet inside the
+//!   board's crossing into the picture (`swing-1`, then `draw-in`), and back inside the crossing out. A surprise,
+//!   stretch or swing over it stays. Not found: it watches, said.
 //! - Every switch off: V4's mascot, picture for picture (no turn either).
 
 use super::{Arms, Face, Hands, Pic, Pose, QUIET_MS, Switches};
+use crate::camera::CROSS_MS;
 use crate::cut::sound::KEYS_MAX_SPEED;
 use crate::cut::{HOLD_STEP, Hold, Marks, Pace, Program, What, clock, ms_of};
 use crate::rain::Rng;
@@ -98,6 +107,56 @@ pub(crate) const WIND_EVERY: u64 = 4;
 pub(crate) const WIND_EVERY_FAST: u64 = 2;
 pub(crate) const WIND_FAST_PAST: f64 = 8.0;
 pub(crate) const WIND_KEY_GAP: u64 = 2;
+/// Painting: the brush at the tablet's left, middle and right this many frames each — across in a second…
+pub(crate) const PAINT_EACH: u64 = 10;
+/// …then lifted this many, and again (a sweep: 38 frames, 1.27 s).
+pub(crate) const PAINT_LIFT: u64 = 8;
+/// No picture of painting stands fewer frames than this: nothing flickers.
+pub(crate) const PAINT_LEAST: u64 = 8;
+
+/// Painting's rhythm over a run of `n` frames from a step's first stroke: `draw-1`, `-2`, `-3` `PAINT_EACH` frames each,
+/// `draw-lift` `PAINT_LIFT`, again; a last piece under `PAINT_LEAST` taken by the one before it; a run under
+/// `PAINT_LEAST`, none (the rest stays).
+pub(crate) fn rhythm(n: u64) -> Vec<Pic> {
+    if n < PAINT_LEAST {
+        return Vec::new();
+    }
+    let sweep = [
+        (Pic::Draw(0), PAINT_EACH),
+        (Pic::Draw(1), PAINT_EACH),
+        (Pic::Draw(2), PAINT_EACH),
+        (Pic::DrawLift, PAINT_LIFT),
+    ];
+    let mut pieces: Vec<(Pic, u64)> = Vec::new();
+    let mut left = n;
+    for &(p, len) in sweep.iter().cycle() {
+        if left == 0 {
+            break;
+        }
+        pieces.push((p, len.min(left)));
+        left -= len.min(left);
+    }
+    let k = pieces.len();
+    if k >= 2 && pieces[k - 1].1 < PAINT_LEAST {
+        pieces[k - 2].1 += pieces[k - 1].1;
+        pieces.pop();
+    }
+    pieces.iter().flat_map(|&(p, len)| std::iter::repeat_n(p, len as usize)).collect()
+}
+
+/// What painting laid (`Plan::paint`): the steps painted of the pictures' all, and each one's run (frames, from its first
+/// stroke to its rest); the frames of each of the three, of the lift, of the rest (`draw-in`, the turn's too) and of
+/// `swing-1` turning; the shortest a picture of the rhythm stood (frames).
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Painted {
+    pub(crate) steps: (usize, usize),
+    pub(crate) runs: Vec<(u64, u64)>,
+    pub(crate) frames: [usize; 3],
+    pub(crate) lift: usize,
+    pub(crate) rest: usize,
+    pub(crate) turns: usize,
+    pub(crate) least: Option<u64>,
+}
 
 /// The fast-forward holds (frames, from–to, in order): each run of frames shown past `KEYS_MAX_SPEED` — runs with only
 /// a cut between are one, the frames are next to each other — of `FAST_MIN_MS` or more; and how many runs were shorter.
@@ -313,6 +372,8 @@ pub(crate) struct Plan {
     pub(crate) wind_key_steps: usize,
     /// The character's lines, met as each came in (`says`).
     pub(crate) lines: Lines,
+    /// What painting laid, where it did (`paint`).
+    pub(crate) painted: Option<Painted>,
 }
 
 /// How the character met its lines (`[mascot] says`): how many lines in how many rows; the first frame of each it
@@ -871,7 +932,74 @@ impl Plan {
             wound: false,
             wind_key_steps: 0,
             lines,
+            painted: None,
         }
+    }
+
+    /// Each picture's steps painted on the tablet as they're drawn (its pictures found, `Art::paints`; module doc,
+    /// "Painting on the tablet"). Over the picture's part and the crossing out after it: the crossing in's first half
+    /// `swing-1`, then `draw-in` — the rest — but where a step is drawn, from the frame its clock reaches its first
+    /// stroke's start to the frame it reaches its last's end (`Step::reaches`, as the station's inking), `rhythm`; the
+    /// crossing out's first half `draw-in` still, its second `swing-1`, then the plan's own. Only the plain pictures
+    /// (arms and a face) are painted over: a surprise, stretch or swing stays.
+    pub(crate) fn paint(&mut self, prog: &Program) {
+        let mut painted = Painted::default();
+        let cross = CROSS_MS * 1000;
+        for p in &prog.parts {
+            let What::Picture(i) = p.what else { continue };
+            let pic = &prog.cut.pictures[i];
+            let a = Program::frame_at(p.at);
+            let (crossed, b) = (Program::frame_at(p.at + cross), Program::frame_at(p.at + p.len));
+            let out = Program::frame_at(p.at + p.len + cross);
+            let at = |k: u64| (k - a) as usize;
+            let mut lay = vec![Pic::DrawIn; at(out)];
+            lay[..at(a + (crossed - a) / 2)].fill(Pic::Swing(0));
+            lay[at(b + (out - b) / 2)..].fill(Pic::Swing(0));
+            let first = Program::time_of(a);
+            for (s, &start) in pic.steps.iter().zip(&pic.starts()) {
+                painted.steps.1 += 1;
+                let from = s.strokes.iter().map(|x| x.at).min();
+                let to = s.strokes.iter().map(|x| x.at + x.ms).max();
+                let (Some(from), Some(to)) = (from, to) else { continue };
+                let (s0, e) = (s.reaches(first + start, from * 1000), s.reaches(first + start, to * 1000));
+                let run = rhythm(e - s0);
+                if run.is_empty() {
+                    continue;
+                }
+                lay[at(s0)..at(e)].copy_from_slice(&run);
+                painted.steps.0 += 1;
+                painted.runs.push((s0, e));
+            }
+            for (j, &l) in lay.iter().enumerate() {
+                let k = a as usize + j;
+                if !matches!(self.pics.get(k), Some(Some(Pic::At(..)))) {
+                    continue;
+                }
+                self.pics[k] = Some(l);
+                match l {
+                    Pic::Draw(m) => painted.frames[usize::from(m)] += 1,
+                    Pic::DrawLift => painted.lift += 1,
+                    Pic::DrawIn => painted.rest += 1,
+                    _ => painted.turns += 1,
+                }
+            }
+        }
+        // (the shortest stand of one of the rhythm's pictures, all through)
+        let mut run: Option<(Pic, u64)> = None;
+        for k in 0..=self.pics.len() {
+            let now =
+                self.pics.get(k).copied().flatten().filter(|p| matches!(p, Pic::Draw(_) | Pic::DrawLift));
+            match (run, now) {
+                (Some((p, n)), Some(q)) if p == q => run = Some((p, n + 1)),
+                _ => {
+                    if let Some((_, n)) = run {
+                        painted.least = Some(painted.least.map_or(n, |l| l.min(n)));
+                    }
+                    run = now.map(|q| (q, 1));
+                }
+            }
+        }
+        self.painted = Some(painted);
     }
 
     /// Each fast-forward hold wound on the skein instead of held (its pictures found, `Art::winds`): the hold's own
@@ -985,6 +1113,31 @@ impl Plan {
                     FAST_MIN_MS
                 ),
             });
+        }
+        if let Some(p) = &self.painted {
+            out.push(format!(
+                "  painting on the tablet: {} steps of {}; a sweep of draw-1, -2, -3 {PAINT_EACH} frames each, then \
+                 draw-lift {PAINT_LIFT}, again — none under {PAINT_LEAST} frames (the shortest {}); from each step's \
+                 first stroke to its last's end, then at rest on draw-in; the keyboard a tablet inside the board's \
+                 crossings (swing-1, draw-in); frames: draw-1 {}, draw-2 {}, draw-3 {}, lifted {}, draw-in {}, swing-1 {}",
+                p.steps.0,
+                p.steps.1,
+                p.least.map_or("none".into(), |l| l.to_string()),
+                p.frames[0],
+                p.frames[1],
+                p.frames[2],
+                p.lift,
+                p.rest,
+                p.turns
+            ));
+            for &(s0, e) in &p.runs {
+                out.push(format!(
+                    "    painted {} to {} ({:.1} s)",
+                    secs(s0),
+                    secs(e),
+                    (e - s0) as f64 / FPS as f64
+                ));
+            }
         }
         if sw.says {
             out.push(format!("  {}", self.lines.said()));

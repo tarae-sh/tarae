@@ -4223,6 +4223,232 @@ fn made(
     enc.write_header().unwrap().write_image_data(&px).unwrap();
 }
 
+// ── Painting on the tablet ──
+
+/// A cut whose one picture, at 30 s, is the route's one station, its files names only in `dir`: step `p` drawn 3 s and
+/// standing 2 s — with `gaps`, a stroke 0–600 ms, a dab at 700 ms (10 ms, under a frame), a short stroke at 900 ms
+/// (50 ms), a long one 1.5–3 s; without, one stroke 0–3 s —; step `q` at 2×, a stroke 400–1600 ms of its 2 s
+/// (0.2–0.8 s of video), standing 1 s.
+fn painted_cut(dir: &std::path::Path, gaps: bool) -> Cut {
+    let stroke = |at: u64, ms: u64, path: Value| json!({ "at": at, "ms": ms, "r": 30, "path": path });
+    let wide = || json!([[200, 200], [2000, 200]]);
+    let p = match gaps {
+        true => vec![
+            stroke(0, 600, wide()),
+            stroke(700, 10, json!([[700, 500]])),
+            stroke(900, 50, json!([[500, 500], [540, 500]])),
+            stroke(1500, 1500, wide()),
+        ],
+        false => vec![stroke(0, 3000, wide())],
+    };
+    let q = vec![stroke(400, 1200, wide())];
+    for (name, ms, strokes) in [("p", 3000, p), ("q", 2000, q)] {
+        for f in [format!("{name}.png"), format!("{name}.ink.png"), format!("{name}.wash.png")] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        let m = json!({ "size": [3840, 1860], "ms": ms, "fades": [], "strokes": strokes });
+        std::fs::write(dir.join(format!("{name}.json")), m.to_string()).unwrap();
+    }
+    let file = |n: &str| dir.join(n).display().to_string();
+    let pic = format!(
+        "[route]\nstations = [\"Here\"]\n\n[[station]]\npicture = 1\n\n[[picture]]\nat = \"30s\"\nsteps = [\n  \
+         {{ file = \"{}\", for = \"2s\" }},\n  {{ file = \"{}\", for = \"1s\", speed = 2 }},\n]\n",
+        file("p.png"),
+        file("q.png")
+    );
+    cut(&moving(&pic)).unwrap()
+}
+
+/// The plan over `c` (no keys), painted or not, with a surprise from frame `surprise` where given; and the picture's
+/// part's first frame and the first after it.
+fn painting(c: &Cut, paint: bool, surprise: Option<u64>) -> (Plan, u64, u64) {
+    let p = Program::new(c);
+    let s = sounds(&p, &[], &marks());
+    let hands = Hands::new(&s.taps).sped(&s.sped);
+    let failed = |k: u64| motions::Cause::at(Program::time_of(k), 0, "a run failed".into());
+    let causes = Causes { surprise: surprise.map(failed).into_iter().collect(), swing: Vec::new() };
+    let sw = Switches { surprise: surprise.is_some(), ..STILL };
+    let mut plan = Plan::new(&p, &hands, &causes, &[], &sw, 7);
+    if paint {
+        plan.paint(&p);
+    }
+    let part = p.parts.iter().find(|x| x.what == What::Picture(0)).unwrap();
+    (plan, Program::frame_at(part.at), Program::frame_at(part.at + part.len))
+}
+
+/// The pictures from frame `a` on, `n` of them, one letter each: `1`–`3` the brush across the tablet, `l` lifted, `i`
+/// `draw-in` (the turn, the rest), `s` `swing-1`, `w` watching.
+fn brushed(plan: &Plan, a: u64, n: u64) -> String {
+    (a..a + n)
+        .map(|k| match plan.pic(k) {
+            Some(Pic::Draw(m)) => char::from(b'1' + m),
+            Some(Pic::DrawLift) => 'l',
+            Some(Pic::DrawIn) => 'i',
+            Some(Pic::Swing(0)) => 's',
+            Some(Pic::WATCH) => 'w',
+            Some(Pic::At(..)) => 'k',
+            _ => '?',
+        })
+        .collect()
+}
+
+/// `s` cut into its runs of one letter: each letter and how many.
+fn stands(s: &str) -> Vec<(char, usize)> {
+    let mut out: Vec<(char, usize)> = Vec::new();
+    for c in s.chars() {
+        match out.last_mut() {
+            Some((l, n)) if *l == c => *n += 1,
+            _ => out.push((c, 1)),
+        }
+    }
+    out
+}
+
+/// While a step is drawn the character paints in one calm rhythm of its own: across the tablet `draw-1`, `-2`, `-3`
+/// `PAINT_EACH` frames each, lifted `PAINT_LIFT`, again — a last piece under `PAINT_LEAST` taken by the one before, a
+/// run under it none. No picture of it stands under `PAINT_LEAST` frames; a step at 2× paints at the same pace; the
+/// board's dabs, short strokes and gaps pick nothing — one stroke over the same span paints the same frames.
+#[test]
+fn the_character_paints_in_one_calm_rhythm_of_its_own() {
+    let sweep = |n: usize| ["1".repeat(10), "2".repeat(10), "3".repeat(10), "l".repeat(8)].concat().repeat(n);
+    let said = |v: Vec<Pic>| brushed_of(&v);
+    assert_eq!(said(motions::rhythm(38)), sweep(1));
+    let lifted = ["1".repeat(10), "2".repeat(10), "3".repeat(10), "l".repeat(12)].concat();
+    assert_eq!(
+        said(motions::rhythm(80)),
+        sweep(1) + &lifted,
+        "a last piece of 4: the lift before it takes it"
+    );
+    assert_eq!(said(motions::rhythm(9)), "111111111");
+    assert!(motions::rhythm(motions::PAINT_LEAST - 1).is_empty(), "a run too short to read: the rest stays");
+    for n in motions::PAINT_LEAST..400 {
+        let r = said(motions::rhythm(n));
+        assert_eq!(r.len() as u64, n);
+        assert!(stands(&r).iter().all(|s| s.1 as u64 >= motions::PAINT_LEAST), "{n}: {r}");
+    }
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-rhythm");
+    let c = painted_cut(dir.path(), true);
+    let (plan, a, b) = painting(&c, true, None);
+    // (p: 90 frames from its first stroke, the last 4 the first sweep's; q at 2×: 0.6 s of video, 18 frames)
+    let p = sweep(2) + &"1".repeat(14);
+    let shown = brushed(&plan, a + 6, 174);
+    assert_eq!(shown, [p.as_str(), &"i".repeat(66), &"1".repeat(10), &"2".repeat(8)].concat());
+    let painted = plan.painted.as_ref().unwrap();
+    assert_eq!(
+        (painted.steps, painted.least, painted.frames, painted.lift),
+        ((2, 2), Some(8), [44, 28, 20], 16)
+    );
+    // (every picture painting shows from the first stroke, the rest too, stands PAINT_LEAST at least — but the turn
+    // out's swing-1)
+    let all = brushed(&plan, a + 6, b - a);
+    let runs = stands(&all);
+    assert_eq!(runs.last(), Some(&('s', 3)));
+    assert!(runs[..runs.len() - 1].iter().all(|s| s.1 as u64 >= motions::PAINT_LEAST), "{runs:?}");
+    // (the dabs, the short stroke and the gaps: the same frames as one stroke over the span)
+    let one = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-one");
+    let (whole, _, _) = painting(&painted_cut(one.path(), false), true, None);
+    let n = Program::new(&c).frames();
+    assert!((0..n).all(|k| plan.pic(k) == whole.pic(k)), "the board's strokes pick nothing");
+    let said = plan.said(&STILL).join("\n");
+    assert!(
+        said.contains(
+            "painting on the tablet: 2 steps of 2; a sweep of draw-1, -2, -3 10 frames each, then draw-lift 8"
+        ),
+        "{said}"
+    );
+}
+
+/// `brushed`'s letters for a row of pictures.
+fn brushed_of(v: &[Pic]) -> String {
+    v.iter()
+        .map(|p| match p {
+            Pic::Draw(m) => char::from(b'1' + m),
+            Pic::DrawLift => 'l',
+            _ => '?',
+        })
+        .collect()
+}
+
+/// Painting starts on the frame the step's clock reaches its first stroke and comes to rest (`draw-in`) on the frame it
+/// reaches its last's end — the very frame the station is inked on —, at rest through the stand to the next step.
+#[test]
+fn painting_starts_with_the_first_stroke_and_rests_as_the_last_ends() {
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-rest");
+    let c = painted_cut(dir.path(), true);
+    let prog = Program::new(&c);
+    let (plan, a, _) = painting(&c, true, None);
+    let painted = plan.painted.as_ref().unwrap();
+    // (p from the crossing's end, its first stroke at 0; q from 0.2 s of video after its start, at 2× its 400 ms)
+    let q = a + 6 + 150;
+    assert_eq!(painted.runs, [(a + 6, a + 96), (q + 6, q + 24)]);
+    for &(s0, e) in &painted.runs {
+        assert!(
+            matches!(plan.pic(s0 - 1), Some(Pic::DrawIn)) && plan.pic(s0) == Some(Pic::Draw(0)),
+            "starts at {s0}"
+        );
+        assert!(matches!(plan.pic(e - 1), Some(Pic::Draw(_) | Pic::DrawLift)), "painting up to {e}");
+        assert_eq!(plan.pic(e), Some(Pic::DrawIn), "at rest from {e}");
+    }
+    assert_eq!(Program::frame_at(prog.inks[0]), q + 24, "the station inked on the frame it comes to rest");
+    assert_eq!(brushed(&plan, a + 96, 66), "i".repeat(66), "at rest through the stand");
+}
+
+/// The keyboard becomes the tablet inside the board's crossing into the picture — its first half `swing-1`, its second
+/// `draw-in` —, before the first stroke begins; and back inside the crossing out, then the plan's own. A surprise over
+/// it stays; outside the part and its crossing out, nothing changes.
+#[test]
+fn the_keyboard_turns_into_the_tablet_inside_the_boards_crossing() {
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-turn");
+    let c = painted_cut(dir.path(), true);
+    let prog = Program::new(&c);
+    let (plan, a, b) = painting(&c, true, None);
+    let part = *prog.parts.iter().find(|x| x.what == What::Picture(0)).unwrap();
+    let crossing = |at: u64| Program::frame_at(at)..Program::frame_at(at + camera::CROSS_MS * 1000);
+    let (into, out) = (crossing(part.at), crossing(part.at + part.len));
+    assert!(prog.confined().contains(&part.at) && prog.confined().contains(&(part.at + part.len)));
+    assert_eq!((into.clone(), out.clone()), (a..a + 6, b..b + 6));
+    assert_eq!(
+        brushed(&plan, a - 1, 8),
+        "wsssiii1",
+        "in: the turn inside the crossing, the first stroke after it"
+    );
+    assert_eq!(brushed(&plan, b - 1, 8), "iiiisssw", "out: back inside the crossing out");
+    // (a surprise over the painting stays; the rest as it was outside)
+    let (plain, _, _) = painting(&c, false, None);
+    let (surprised, _, _) = painting(&c, true, Some(a + 20));
+    assert!(
+        (a + 20..a + 35).all(|k| matches!(surprised.pic(k), Some(Pic::Surprise(_)))),
+        "the surprise stays"
+    );
+    assert_eq!(surprised.pic(a + 40), plan.pic(a + 40), "the rhythm's own frame after it");
+    let n = prog.frames();
+    assert!(
+        (0..n).filter(|k| !(a..out.end).contains(k)).all(|k| plan.pic(k) == plain.pic(k)),
+        "outside: as it was"
+    );
+}
+
+/// Painting's pictures are looked for only where the cut has pictures, and with one of the six missing the character
+/// watches: no plan paints.
+#[test]
+fn without_paintings_pictures_the_character_watches() {
+    let s = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-art");
+    let paint = Pic::painting();
+    assert_eq!(paint.len(), 6);
+    let load =
+        || Art::load(Bg::Dark, Some(s.path().to_path_buf()), video::Scale::HD, (&[], &paint), true).unwrap();
+    assert!(!load().paints(), "none there: watching");
+    for p in &paint[..5] {
+        made(&s, &p.name(), mascot::BOX, None);
+    }
+    assert!(!load().paints(), "five of six: watching");
+    made(&s, "swing-1", mascot::BOX, None);
+    assert!(load().paints(), "all six: painting");
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-none");
+    let (plain, _, _) = painting(&painted_cut(dir.path(), true), false, None);
+    assert!(plain.painted.is_none() && !plain.said(&STILL).join("\n").contains("painting"));
+}
+
 /// A time `cut.txt` says for a frame is its start rounded up to the tenth: going to it lands on that frame or the two
 /// after, never the one before (a hold from frame 4633 is said at 2:34.5, not 2:34.4 — frame 4632, at 1×).
 #[test]

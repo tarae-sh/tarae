@@ -1725,12 +1725,7 @@ impl<'c> Program<'c> {
         let Some(p) = parts.iter().find(|p| p.what == What::Picture(n)) else { return u64::MAX };
         let Some((k, end)) = route::last_stroke(pic) else { return u64::MAX };
         let start = Program::time_of(Program::frame_at(p.at)) + pic.starts()[k];
-        let step = &pic.steps[k];
-        let mut j = Program::frame_at(start);
-        while step.clock(Program::time_of(j) - start) < end {
-            j += 1;
-        }
-        Program::time_of(j)
+        Program::time_of(pic.steps[k].reaches(start, end))
     }
 
     /// The route on the rule at the video's `v` µs: the stations inked by then.
