@@ -151,7 +151,7 @@ pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, Sp
 /// shim, `spawn::Limit::Original`) — not Claude's raised one, which was measured for claude alone. `Acts::User`:
 /// what acts for Claude or a plugin gets the filter that keeps it from new user namespaces, for runs; the agent's
 /// own process isn't a run (it runs as you, unsandboxed: the user's decision) — as Claude's own process, which
-/// std starts with no filter, isn't.
+/// `spawn::setsid_fed` starts with no filter, isn't.
 pub fn spawn(s: &Start, dir: &Path, given: Option<&Env>) -> Result<(Spawned, PipeWriter), SpawnError> {
     let cmd = command(s, dir, given)?;
     crate::spawn::setsid_fed_as(&cmd, crate::spawn::Acts::User).map_err(SpawnError::Start)

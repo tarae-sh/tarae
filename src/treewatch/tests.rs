@@ -879,8 +879,12 @@ fn a_look_decides_a_file_by_the_table_compares_a_folder_and_counts_what_the_stre
     changes_in(&root, thirty_ago);
     assert_eq!(t.step(&[(root.clone(), flag::MUST_SCAN_SUB_DIRS)]).len(), 4);
     assert_eq!(t.missed, 0, "the stream asked for that compare");
-    // and a folder's own event carrying every item flag FSEvents defines: the stream's, never a look's
+    // and a folder's own event carrying every item flag FSEvents defines: the stream's, never a look's. (`fresh.rs`
+    // written again as it was a moment ago keeps its stamp wherever the filesystem's clock didn't tick between the two
+    // writes — a jiffy on Linux before multigrain stamps: 5 runs in 10 on colima's 6.8 — and a folder's compare goes by
+    // the stamp alone (round 5): so it's written longer, its size the stamp's move whatever the clock.)
     changes_in(&root, thirty_ago - Duration::from_secs(10));
+    write(&root.join("fresh.rs"), "just made, and again");
     assert_eq!(t.step(&[(root.clone(), ITEM_FLAGS)]).len(), 4);
     assert_eq!(t.missed, 0, "the stream named that folder");
 }

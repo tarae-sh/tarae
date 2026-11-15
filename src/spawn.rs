@@ -1,5 +1,5 @@
-//! Starting a run's process (a task, tests — and every git tarae runs, `gitrepo`) in a session of its own
-//! without forking the editor.
+//! Starting a run's process (a task, tests — and every git tarae runs, `gitrepo`, and Claude's own process,
+//! `agent::spawn`) in a session of its own without forking the editor.
 //!
 //! `setsid_fork` is a `pre_exec`, and any `pre_exec` makes std fork the whole editor and exec in the child:
 //! the fork copies the page tables, so it costs with the editor's memory — measured 2.9 ms at 230 MB and
@@ -111,8 +111,8 @@ pub fn setsid_fed_as(cmd: &Command, acts: Acts) -> io::Result<(Spawned, PipeWrit
     fed()
 }
 
-/// `setsid_git` with a pipe for its stdin (tarae's git fed a buffer's text — `gitrepo`): the end to write it,
-/// to drop once written.
+/// `setsid_git` with a pipe for its stdin (tarae's git fed a buffer's text — `gitrepo`; Claude's own process,
+/// `agent::spawn`, its raised limit the one measured for claude): the end to write it, to drop once written.
 pub fn setsid_fed(cmd: &Command) -> io::Result<(Spawned, PipeWriter)> {
     let (s, input) = start(cmd, true, Limit::Raised)?;
     Ok((s, input.ok_or_else(|| io::Error::other("no stdin pipe"))?))
@@ -711,23 +711,11 @@ mod tests {
         };
         let out = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
         let paths: [(&str, &dyn Fn() -> String); 5] = [
-            // language servers, Claude — std's spawn
+            // language servers — std's spawn
             ("std", &|| {
-                let cfg = crate::llm::LlmConfig {
-                    command: "/bin/sh".into(),
-                    args: vec!["-c".into(), LIST_FDS.into()],
-                    ..Default::default()
-                };
-                out(crate::agent::claude::spawn(
-                    &cfg,
-                    &[],
-                    Path::new("/"),
-                    None,
-                    &crate::billing::Credential::Subscription,
-                )
-                .unwrap()
-                .wait_with_output()
-                .unwrap())
+                let mut c = ls();
+                c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+                out(c.output().unwrap())
             }),
             // plugins — std's fork with `pre_exec`
             ("spawn::setsid_fork", &|| {
@@ -735,7 +723,7 @@ mod tests {
                 c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
                 out(crate::spawn::setsid_fork(&mut c).output().unwrap())
             }),
-            // runs and tests, tarae's git (fed its stdin: `setsid_fed`)
+            // runs and tests, tarae's git and Claude (fed its stdin: `setsid_fed`)
             ("spawn::setsid", &|| output(setsid(&ls()).unwrap()).0),
             ("spawn::setsid_fed", &|| output(setsid_fed(&ls()).unwrap().0).0),
             // the terminal panel's next program

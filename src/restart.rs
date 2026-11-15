@@ -2274,6 +2274,45 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Claude's own process leads a session of its own (`agent::spawn`), so no terminal's hangup nor a signal to
+    /// tarae's group reaches it: tarae's own end is what ends it, with its group — `:q!` (the editor dropped as `main`
+    /// returns), a caught SIGTERM's or SIGHUP's (`term::quit_by_signal`, then the same) and `:restart`'s (`let_go`,
+    /// before the exec). Its stand-in reads none of its stdin and leaves a process of its own running: a claude that
+    /// its stdin's end wouldn't stop at once (mid-turn), with a child of its own (its git, a shell).
+    #[test]
+    fn taraes_end_leaves_no_claude_behind() {
+        use crate::agent::claude::test::{gone, written};
+        for way in ["q", "signal", "restart"] {
+            let (_, _, dir, mut ed) = two_sessions(&format!("no-claude-left-{way}"));
+            let script = format!(
+                "sleep 300 </dev/null >/dev/null 2>&1 & echo $! > '{}/child'; exec sleep 300",
+                dir.display()
+            );
+            ed.config.llm.args = vec!["-c".into(), script];
+            crate::chat::open(&mut ed);
+            settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().and_then(|c| c.pid()).is_some());
+            let claude = ed.workspace.claude.chat.as_ref().and_then(|c| c.pid()).unwrap();
+            let child: u32 = written(&dir.join("child")).trim().parse().unwrap();
+            match way {
+                "q" => {
+                    // (typed as the command line runs it: the open chat has the keys)
+                    crate::typed::execute(&mut ed, "q!").unwrap();
+                    assert!(ed.should_quit, ":q! quits");
+                    drop(ed);
+                }
+                "signal" => {
+                    crate::term::quit_by_signal(&mut ed);
+                    assert!(ed.should_quit, "a caught signal quits");
+                    drop(ed);
+                }
+                _ => drop(std::mem::ManuallyDrop::into_inner(let_go(ed))),
+            }
+            assert!(gone(claude), "{way}: the chat's claude outlived tarae's end");
+            assert!(gone(child), "{way}: what claude left running outlived tarae's end");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
     /// #227: every type with a `Drop` in tarae's code, sorted for `:restart`'s exec — which forgets `Memory` (buffers,
     /// turns, run output, transcripts) without dropping it. A new one fails here until it's sorted: can a document, a
     /// turn, an output or a transcript hold it? If so and its drop does more than the exec does anyway (free memory,

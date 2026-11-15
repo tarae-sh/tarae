@@ -472,16 +472,18 @@ fn spawn_signals(tx: crate::event::Tx) {
                 _ => return,
             }
         }
-        let quit = |ed: &mut Editor| {
-            // (the terminal or its pane went, or someone ended tarae: what's unsaved is kept for the next
-            // start — `recovery.rs`)
-            if let Some(r) = ed.recovery.as_mut() {
-                r.keep = true;
-            }
-            let _ = crate::typed::quit(ed, true);
-        };
-        let _ = tx.send(Event::Job(Box::new(quit)));
+        let _ = tx.send(Event::Job(Box::new(quit_by_signal)));
     });
+}
+
+/// A caught signal's quit, on the main loop (`spawn_signals`): as `:q!`, what's unsaved kept.
+pub(crate) fn quit_by_signal(ed: &mut Editor) {
+    // (the terminal or its pane went, or someone ended tarae: what's unsaved is kept for the next start —
+    // `recovery.rs`)
+    if let Some(r) = ed.recovery.as_mut() {
+        r.keep = true;
+    }
+    let _ = crate::typed::quit(ed, true);
 }
 
 /// Input thread — so terminal reads don't block the main loop.

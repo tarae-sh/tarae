@@ -1,10 +1,8 @@
 pub mod flags;
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, PipeWriter, Write};
 use std::path::Path;
-#[cfg(test)]
-use std::process::Stdio;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
@@ -17,6 +15,7 @@ use crate::event::Apply;
 #[cfg(test)]
 use crate::llm::LlmConfig;
 use crate::llm::{ClaudeEnv, Env, judged, process_names};
+use crate::spawn::Spawned;
 
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
 pub(crate) const DEFAULT_ARGS: &[&str] = &[
@@ -64,7 +63,8 @@ impl ModelInfo {
 /// over the process's as if inherited (None: the process's own); what's left out is judged on it alone, and the
 /// process's names those rules judge aren't inherited (`judged`). As you, as every other tool runs claude: no
 /// sandbox of its own (user decision 2026-10-17) — what it does through its tools goes through tarae. Tests'
-/// (a start is `agent::start`, on its role's flags): `cfg`'s program on its own `llm.args`, `extra` after.
+/// (a start is `agent::start`, on its role's flags): `cfg`'s program on its own `llm.args`, `extra` after — started
+/// as `agent::start` starts it, in a session of its own (`spawn::setsid_fed`).
 #[cfg(test)]
 pub fn spawn(
     cfg: &LlmConfig,
@@ -72,11 +72,23 @@ pub fn spawn(
     dir: &Path,
     given: Option<&Env>,
     cred: &Credential,
-) -> Result<Child, SpawnError> {
+) -> Result<(Spawned, PipeWriter), SpawnError> {
     let s = crate::agent::Start::new(crate::agent::Role::Draft, cfg);
-    let mut cmd = command(&s, &cfg.args, extra, dir, given, cred)?;
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.spawn().map_err(SpawnError::Start)
+    let cmd = command(&s, &cfg.args, extra, dir, given, cred)?;
+    crate::spawn::setsid_fed(&cmd).map_err(SpawnError::Start)
+}
+
+/// Tests: what a process `spawn` started wrote to stdout, its stdin closed first, once it has ended (reaped).
+#[cfg(test)]
+pub fn stdout_of((mut s, stdin): (Spawned, PipeWriter)) -> String {
+    use std::io::Read as _;
+    drop(stdin);
+    let mut out = String::new();
+    if let Some(mut o) = s.stdout.take() {
+        let _ = o.read_to_string(&mut out);
+    }
+    let _ = crate::spawn::wait(s.pid);
+    out
 }
 
 /// `s`'s command, not started: its program (`llm.command`, itself) on `args` (its role's, in place of `llm.args`)
@@ -276,36 +288,27 @@ impl Lines {
     }
 }
 
-/// A claude started: its first lines written (tarae's MCP server offered when `first.tools`, then the prompt if
-/// there is one) — off the main loop, through its `Lines` — and its stream read by `pump` into `route`. Err: those
-/// lines couldn't go (no stdin, or it stopped reading), the child ended and reaped off the main loop. `resumed`: it
-/// was started to continue a conversation (`--resume`) — its end may say that one is gone (`exit`).
+/// A claude started (`agent::spawn`: the process, in a session of its own, and its stdin's writing end): its first
+/// lines written (tarae's MCP server offered when `first.tools`, then the prompt if there is one) — off the main loop,
+/// through its `Lines` — and its stream read by `pump` into `route`. Err: those lines couldn't go (it stopped
+/// reading), the child and its group ended and reaped off the main loop. `resumed`: it was started to continue a
+/// conversation (`--resume`) — its end may say that one is gone (`exit`).
 pub(super) fn begin(
-    mut child: Child,
+    (child, stdin): (Spawned, PipeWriter),
     first: First,
     once: bool,
     resumed: bool,
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<Apply> + Send + 'static,
 ) -> Result<Started, SpawnError> {
-    let pid = child.id();
-    let sent = match child.stdin.take() {
-        Some(stdin) => {
-            let lines = Lines::new(stdin);
-            let own = first.tools.then(|| lines.weak());
-            let offered = if first.tools { lines.initialize() } else { Ok(()) };
-            let sent = offered.and_then(|_| first.prompt.map_or(Ok(()), |p| lines.prompt(p)));
-            sent.map(|_| (lines, own))
-        }
-        None => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "no stdin")),
-    };
-    let (lines, own) = match sent {
-        Ok(sent) => sent,
-        Err(e) => {
-            super::process::end(child);
-            return Err(SpawnError::Write(e));
-        }
-    };
+    let pid = child.pid;
+    let lines = Lines::new(stdin);
+    let own = first.tools.then(|| lines.weak());
+    let offered = if first.tools { lines.initialize() } else { Ok(()) };
+    if let Err(e) = offered.and_then(|_| first.prompt.map_or(Ok(()), |p| lines.prompt(p))) {
+        super::process::end(pid);
+        return Err(SpawnError::Write(e));
+    }
     pump(child, own, once, resumed, tx, route);
     Ok(Started { agent: Agent::Claude(lines), pid })
 }
@@ -334,7 +337,7 @@ impl Lines {
         Weak(Arc::downgrade(&self.0))
     }
 
-    pub fn new(mut stdin: std::process::ChildStdin) -> Lines {
+    pub fn new(mut stdin: PipeWriter) -> Lines {
         let (tx, rx) = channel::<String>();
         crate::event::thread("tarae-llm-write", move || {
             while let Ok(line) = rx.recv() {
@@ -361,21 +364,21 @@ impl Lines {
 pub const FLUSH: Duration = Duration::from_millis(25);
 
 /// Reader thread body: parses stdout line by line and sends closures built by `route` to the main loop.
-/// With `once`, reaps the process after the first turn (ask). Otherwise runs until the process exits (chat).
-/// stderr is drained separately (so a full pipe doesn't stall the child) — its last line is the error text.
-/// stdout is read on a thread of its own (`tarae-llm-lines`), its lines handed over through a channel this one
+/// With `once`, ends the process after the first turn (ask). Otherwise runs until the process exits (chat). Either
+/// way its group ends with it and it's reaped (`process::reap_group`). stderr is drained separately (so a full pipe
+/// doesn't stall the child) — its last line is the error text. stdout is read on a thread of its own (`tarae-llm-lines`), its lines handed over through a channel this one
 /// waits on no longer than what it holds may wait (`FLUSH`). `own`: its stdin, where a control request no one
 /// above the wire answers gets its `{}` (None: it asks none — a claude without tarae's tools). `resumed`: as
 /// `begin`'s.
 pub fn pump(
-    mut child: Child,
+    mut child: Spawned,
     own: Option<Weak>,
     once: bool,
     resumed: bool,
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<Apply> + Send + 'static,
 ) {
-    super::process::UNREAPED.lock().unwrap_or_else(|e| e.into_inner()).push(child.id());
+    super::process::UNREAPED.lock().unwrap_or_else(|e| e.into_inner()).push(child.pid);
     crate::event::thread("tarae-llm-read", move || {
         // stderr's last line arrives when the pipe closes
         let (err_tx, err_rx) = channel::<String>();
@@ -551,9 +554,10 @@ pub fn pump(
             }
         }
         if once {
-            let _ = child.kill();
+            super::process::end_group(child.pid);
         }
-        super::process::reap(&mut child);
+        // (what it left in its group — its git, `security`, a shell — ends with it)
+        super::process::reap_group(child.pid);
         // Let stderr drain after exit (else the real error is lost) — bounded, in case a grandchild holds it
         let err = err_rx.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
         if once && !done {
@@ -816,39 +820,123 @@ pub mod test {
     pub fn answer(p: crate::agent::Permission) -> serde_json::Value {
         super::permission(p)
     }
+
+    /// An editor in `dir` whose chat's claude is `script` in `sh` (its conversations kept in `dir/chats`): the chat
+    /// opened and its process started — and that process's pid.
+    pub fn chat_on(dir: &std::path::Path, script: &str) -> (crate::editor::Editor, u32) {
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.to_path_buf();
+        ed.chats_dir = Some(dir.join("chats"));
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), script.into()];
+        crate::chat::open(&mut ed);
+        let pid = |ed: &crate::editor::Editor| ed.workspace.claude.chat.as_ref().and_then(|c| c.pid());
+        crate::test_results::settle_until(&mut ed, |ed| pid(ed).is_some());
+        let pid = pid(&ed).unwrap();
+        (ed, pid)
+    }
+
+    /// What a stand-in wrote to `path`, once it's there whole (its last line ended).
+    pub fn written(path: &std::path::Path) -> String {
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && text.ends_with('\n')
+            {
+                return text;
+            }
+            assert!(std::time::Instant::now() < end, "nothing written to {}", path.display());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Whether process `pid` is gone, once it is (within the patience). A process of claude's group is an orphan once
+    /// the group ends, gone when whoever adopts it reaps it — a moment's wait: on macOS launchd; on Linux in a real
+    /// tarae tarae itself, a child subreaper (`reaper::at_start`) that takes it as adopted (in a session neither its
+    /// own nor tarae's); in a test, which makes no subreaper, init — under `cargo xtask linux` the container's pid 1.
+    pub fn gone(pid: u32) -> bool {
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        loop {
+            // SAFETY: signal 0 only asks whether the process is there (a zombie still is).
+            if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+                return true;
+            }
+            if std::time::Instant::now() > end {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test::{chat_on, gone, written};
     use super::*;
     use crate::llm::spawn_failed;
 
-    /// Agents beside Claude, step 2's finding A: a start whose first lines can't be written (here: no stdin to write
-    /// them to) comes back as its error, said, and its child — which no reader took — is ended and reaped, never left
-    /// a zombie. The stand-in would write on and on; once its stdout is dropped unread it dies of it, but only a
-    /// reap takes it out of the process table.
+    /// Claude's own process has a session of its own (`agent::spawn`: `spawn::setsid_fed`, the user's decision of
+    /// 2026-11-14) — its session and group its own pid, the pid tarae started — and so no controlling terminal: it
+    /// can't open `/dev/tty`. The session is what's checked first: a run with no terminal can't open `/dev/tty`
+    /// whatever claude's start, so that alone would hold on a runner without one.
     #[test]
-    fn a_start_whose_first_write_fails_reaps_its_child_and_says_why() {
-        let child = Command::new("/bin/sh")
-            .args(["-c", "exec yes"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        let ed = crate::editor::Editor::new(crate::config::Config::default());
-        let first = First { tools: true, prompt: Some(Prompt::Text("hi".into())) };
-        let Err(e) = begin(child, first, true, false, ed.events.sender(), |_| None) else {
-            panic!("it started")
-        };
-        assert_eq!(e.said("claude", false), "claude: no stdin");
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        // (signal 0: whether the pid is still in the process table — a zombie is, a reaped child isn't)
-        // SAFETY: signal 0 sends nothing, it only asks.
-        while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-            assert!(std::time::Instant::now() < end, "ended and reaped");
-            std::thread::sleep(Duration::from_millis(10));
+    fn claude_has_a_session_of_its_own_and_no_terminal() {
+        let dir = crate::scratch::Scratch::new("claude-own-session");
+        let script = format!(
+            "if ( : </dev/tty ) 2>/dev/null; then t=opened; else t=refused; fi; echo \"$t\" > '{}/tty'; cat > /dev/null",
+            dir.display()
+        );
+        let (ed, pid) = chat_on(&dir, &script);
+        let tty = written(&dir.join("tty"));
+        // SAFETY: getpgid and getsid only read; the stand-in is still there, reading its stdin.
+        let (pgid, sid) = unsafe { (libc::getpgid(pid as libc::pid_t), libc::getsid(pid as libc::pid_t)) };
+        assert_eq!((pgid as u32, sid as u32), (pid, pid), "its group and its session its own, pid {pid}");
+        assert_eq!(tty, "refused\n", "no terminal");
+        drop(ed);
+    }
+
+    /// Claude's end is its group's (`process::kill`, `process::reap_group`): what it started and left running — its
+    /// git, `security`, a shell — ends with it, whether the chat ends it (`:chat-close`) or it exits by itself (here
+    /// at its first line, the wire's `initialize`).
+    #[test]
+    fn what_claude_left_running_ends_with_the_chat_or_its_own_exit() {
+        let dir = crate::scratch::Scratch::new("claude-group");
+        for (n, then) in [(0, "cat > /dev/null"), (1, "read -r first; exit 0")] {
+            let script = format!(
+                "sleep 300 </dev/null >/dev/null 2>&1 & echo $! > '{}/child-{n}'; {then}",
+                dir.display()
+            );
+            let (mut ed, pid) = chat_on(&dir, &script);
+            let child: u32 = written(&dir.join(format!("child-{n}"))).trim().parse().unwrap();
+            if n == 0 {
+                crate::chat::close(&mut ed);
+            }
+            assert!(gone(pid), "{then}: claude itself ended and reaped");
+            assert!(gone(child), "{then}: what claude left running outlived it");
+        }
+    }
+
+    /// Agents beside Claude, step 2's finding A: a child whose first lines couldn't be written — which no reader took
+    /// (`begin`'s error, `process::end`) — is ended with its group and reaped, never left a zombie nor a process of its
+    /// group left running. (The start makes its stdin's pipe now, so the no-stdin start that failed at once is gone;
+    /// a write that fails is a race with the process, so `end` is asked here itself.)
+    #[test]
+    fn a_child_no_reader_took_is_ended_with_its_group_and_reaped() {
+        let mut sh = Command::new("/bin/sh");
+        sh.args(["-c", "sleep 300 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 300"]);
+        let (mut child, _stdin) = crate::spawn::setsid_fed(&sh).unwrap();
+        let mut first = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut first).unwrap();
+        let left: u32 = first.trim().parse().expect("its child's pid");
+        super::super::process::end(child.pid);
+        for (pid, what) in [(child.pid, "ended and reaped"), (left, "its group's process ended")] {
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            // (signal 0: whether the pid is still in the process table — a zombie is, a reaped child isn't)
+            // SAFETY: signal 0 sends nothing, it only asks.
+            while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+                assert!(std::time::Instant::now() < end, "{what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 
@@ -856,14 +944,11 @@ mod tests {
     /// on lines that can't come.
     #[test]
     fn a_claude_without_stdout_is_reaped_and_its_end_told() {
-        let child = Command::new("/bin/sh")
-            .args(["-c", "exit 0"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
+        let mut sh = Command::new("/bin/sh");
+        sh.args(["-c", "exit 0"]);
+        let mut child = crate::spawn::setsid(&sh).unwrap();
+        child.stdout = None;
+        let pid = child.pid;
         let (tx, rx) = channel::<bool>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         pump(child, None, false, false, ed.events.sender(), move |ev| {
@@ -885,15 +970,10 @@ printf '%s\n' '{"type":"control_request","request_id":"x2","request":{"subtype":
 read -r a; read -r b; printf '%s\n%s\n' "$a" "$b" > "$1/answers"
 while read -r l; do :; done
 echo closed > "$1/eof""#;
-        let mut child = Command::new("/bin/sh")
-            .args(["-c", script, "sh"])
-            .arg(dir.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let lines = Lines::new(child.stdin.take().unwrap());
+        let mut sh = Command::new("/bin/sh");
+        sh.args(["-c", script, "sh"]).arg(dir.path());
+        let (child, stdin) = crate::spawn::setsid_fed(&sh).unwrap();
+        let lines = Lines::new(stdin);
         let (tx, rx) = channel::<String>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         pump(child, Some(lines.weak()), false, false, ed.events.sender(), move |ev| {
@@ -944,24 +1024,20 @@ echo closed > "$1/eof""#;
         let start = serde_json::json!({"type": "stream_event", "event": {"type": "content_block_start",
             "index": 1, "content_block": {"type": "tool_use", "id": "w1", "name": "mcp__tarae__edit", "input": {}}}});
         // (four lines at once, a pause of 2 s, the next)
-        let mut child = Command::new("/bin/sh")
-            .args(["-c", r#"printf '%s\n' "$1" "$2" "$3" "$4" "$5"; sleep 2; printf '%s\n' "$6""#, "sh"])
-            .args([
+        let mut sh = Command::new("/bin/sh");
+        sh.args(["-c", r#"printf '%s\n' "$1" "$2" "$3" "$4" "$5"; sleep 2; printf '%s\n' "$6""#, "sh"]).args(
+            [
                 text("one"),
                 text("two"),
                 start.to_string(),
                 input(r#"{"edits": [{"file_path": "a.rs", "new_string": "x"#),
                 input("y"),
                 text("three"),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+            ],
+        );
+        let child = crate::spawn::setsid(&sh).unwrap();
         let (tx, rx) = channel::<(std::time::Instant, String)>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
-        let _ = child.stdin.take();
         pump(child, None, false, false, ed.events.sender(), move |ev| {
             let said = match ev {
                 Event::Text(t) => format!("text {t}"),
@@ -1013,17 +1089,11 @@ echo closed > "$1/eof""#;
             ev(serde_json::json!({"type": "content_block_delta", "index": 1,
                 "delta": {"type": "text_delta", "text": "It clones."}})),
         ];
-        let mut child = Command::new("/bin/sh")
-            .args(["-c", r#"printf '%s\n' "$@""#, "sh"])
-            .args(lines)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut sh = Command::new("/bin/sh");
+        sh.args(["-c", r#"printf '%s\n' "$@""#, "sh"]).args(lines);
+        let child = crate::spawn::setsid(&sh).unwrap();
         let (tx, rx) = channel::<String>();
         let ed = crate::editor::Editor::new(crate::config::Config::default());
-        let _ = child.stdin.take();
         pump(child, None, false, false, ed.events.sender(), move |ev| {
             let said = match ev {
                 Event::ThinkingBlock(open) => format!("block {}", if open { "open" } else { "closed" }),
@@ -1089,9 +1159,8 @@ echo closed > "$1/eof""#;
         };
         let given = Env::from([("DISABLE_UPDATES".to_string(), "0".to_string())]);
         let sub = Credential::Subscription;
-        let child = spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap();
-        let out = child.wait_with_output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "1 0");
+        let out = stdout_of(spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap());
+        assert_eq!(out, "1 0");
     }
 
     /// Every claude tarae starts has Claude Code's auto memory off and no team memory stores — over what it would
@@ -1106,9 +1175,8 @@ echo closed > "$1/eof""#;
             ("CLAUDE_MEMORY_STORES".to_string(), "team".to_string()),
         ]);
         let sub = Credential::Subscription;
-        let child = spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap();
-        let out = child.wait_with_output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "1 unset");
+        let out = stdout_of(spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap());
+        assert_eq!(out, "1 unset");
     }
 
     /// Every claude tarae starts is without `SSH_AUTH_SOCK` — whether it would inherit it from tarae's own
@@ -1123,9 +1191,8 @@ echo closed > "$1/eof""#;
         // (given, as `given` passes tarae's environment on; the test binary's own isn't changed — a stand-in path)
         let given = Env::from([("SSH_AUTH_SOCK".to_string(), "/tarae-test/agent.sock".to_string())]);
         let sub = Credential::Subscription;
-        let child = spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap();
-        let out = child.wait_with_output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "unset");
+        let out = stdout_of(spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap());
+        assert_eq!(out, "unset");
     }
 
     /// Every claude tarae starts is without your wiki's token (`web.signed-in`'s variable) — inherited from tarae's
@@ -1145,9 +1212,8 @@ echo closed > "$1/eof""#;
         };
         let given = Env::from([("TARAE_TEST_PAT".to_string(), "tarae-fake-token".to_string())]);
         let sub = Credential::Subscription;
-        let child = spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap();
-        let out = child.wait_with_output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "unset");
+        let out = stdout_of(spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap());
+        assert_eq!(out, "unset");
     }
 
     /// Every claude tarae starts is its own program, `llm.command`, as every other tool runs it — no sandbox of

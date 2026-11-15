@@ -1031,6 +1031,17 @@ Kept:
 - **Your SSH agent**: no claude tarae starts gets `SSH_AUTH_SOCK` (its git only reads status, it never needs the
   agent). A socket it finds on its own is reached (G20).
   test: `agent::claude::tests::every_claude_tarae_starts_has_no_ssh_agent`
+- **Not your terminal's** (your decision, 2026-11-14): claude starts in a session of its own, as every child of
+  tarae's does, so it leads its own process group and has no controlling terminal. That takes away the name
+  `/dev/tty`, a place in tarae's session and foreground group (a signal your terminal sends them doesn't reach it),
+  and with them `TIOCSTI` on Linux, where the kernel wants the caller's controlling terminal. srt's
+  `bwrap --new-session` does the same on Linux. Its end is its group's: what it started (its git, `security`, a
+  shell) ends with it, whether the chat ends it or it exits, and tarae's own end (`:q!`, a caught SIGTERM or SIGHUP,
+  `:restart`) ends it. The ambient handle goes, as the SSH agent's socket (G20) and keys in the environment did.
+  It's hygiene, not a wall: claude still runs as you (G1), and what's left is below.
+  test: `agent::claude::tests::claude_has_a_session_of_its_own_and_no_terminal` ·
+  `agent::claude::tests::what_claude_left_running_ends_with_the_chat_or_its_own_exit` ·
+  `restart::tests::taraes_end_leaves_no_claude_behind`
 - **Where tarae's AppArmor profile lends user namespaces**, what starts for Claude doesn't get them.
   test: `spawn::tests::only_claudes_and_plugins_processes_are_kept_from_user_namespaces` ·
   `seccomp::tests::what_starts_outside_for_claude_makes_no_user_namespace`
@@ -1067,6 +1078,9 @@ Not kept:
   `--strict-mcp-config` and starts none of them; your own claude, outside tarae, would.
 - **An SSH agent it finds.** Without the variable claude has to find a path on its own (launchd's socket on macOS,
   `$XDG_RUNTIME_DIR` on Linux); one it finds is reached (G20).
+- **Your terminal, by its path** (G37). The terminal's node is your own (`/dev/ttys001` is `crw--w---- <you> tty`), so
+  code running as you in claude's tree can still open it by its path. Nor is there a death watch: after a tarae that
+  died without cleaning up, claude ends when its stdin closes, as before (measured, idle and mid-turn).
 - **Claude Code's own memory folder** (`~/.claude/projects/<project>/memory/`, shared by every checkout of a
   repository) is inside claude's own folder: no claude tarae starts loads it (auto memory is off — above), but its
   own code could still read or write it, as your own Claude Code's could.
@@ -1307,6 +1321,7 @@ Not Claude's, but a hostile repository reaches them:
 | G34 | macOS: a key's mode or group changed through `setattrlist(2)` — B1 closes `chmod`, `chown`, `chflags` and the ACL calls on a file named like a key, but `setattrlist` with `ATTR_CMN_ACCESSMASK` made one 0666 and with `ATTR_CMN_GRPID` gave it the group `everyone` (its flags refused, its times open as `touch`'s) | Seatbelt checks setattrlist's attributes but the flags by the whole `file-write*`, none of its named ops (measured, 2026-11-10: `.sb/b1-seatbelt.sh`, the real test) | its bytes and its name never change, and nothing more is read inside the run (the reads are closed by name, not by mode); the cost is on a shared Mac, where another account may then read it. Kept as built (your decision, 2026-11-10); closing it, a rule of its own |
 | G35 | macOS: what the read rules close read from a folder's clone — Seatbelt checks `clonefile(2)` of a folder (and `fclonefileat`, `copyfile`'s clone) on its source alone, never as a read of what's in it: a clone of the folder above home, made in the run's own folder, read `~/.ssh` from the copy, and so for every place closed by its place or a file by its name, since the sandbox existed (found in G33's review, measured on tarae's profile, 2026-11-11) | the read rules are by path, and a clone copies a tree without a path inside it being read | closed (2026-11-11): the profile refuses every folder's clone, then allows it only where a run reads everything below — tools' output in the project, the run's own folder, an install, a write folder no place of the key rule holds or is held by (a toolchain's cache: uv's and bun's installs) — and there not a folder holding home, a kept place or a token's settings, nor that place (literal and `subpath` parameters). A file's clone is untouched: its own read is checked (B1). Said by its place, no grant lifts it; a copy (`cp -R`) does what's needed (test: `sandbox::tests::a_clone_of_the_folder_above_home_reads_nothing_of_home`, `sandbox::tests::a_run_cant_clone_a_folder_where_keys_are_closed`, `sandbox::keyfolders::tests::a_folders_clone_is_refused_by_place_and_said_so`) |
 | G36 | The code tool (`llm.code`, off by default) runs model-written JavaScript inside tarae's own process, on tarae-wasm's JIT where the architecture's JIT has been fuzzed: a wrong compile there could reach tarae's memory | the program has to run somewhere, and the engine is pinned and fixed, so what an attacker controls is the paths QuickJS takes through the JIT | narrowed: no imports, a fresh instance each program, the JIT run against the interpreter on a JS corpus for an hour before an architecture uses it, the limits above (§2.z); **aarch64's hour passed clean** (2026-11-12, so `LIMITS.jit` is true there): the harness `crates/tarae-wasm/examples/qjs_fuzz.rs`, seeds 10,000,000 to 10,225,329, 225,330 cases compared, 0 differences (every reply whole, every trap, and after every step the fuel left, the memory's hash and length; not compared: the fuel left after an out-of-fuel trap, which the JIT zeroes and the interpreter keeps — a convention of an instance then dropped, read by tests only), on the engine `target/quickjs/quickjs.wasm` sha256 `003861fcc0089dfa9934abe62f1772524fd0a81f51ab2f33bf2059097e3d01df`, QuickJS-ng v0.18.0 built from `xtask/quickjs/pin` (its TAG, SOURCE and IMAGE); redone with tarae-wasm's crate doc's commands (`--from 10000000 --secs 3600`; `--replay SEED` for one case); **a re-pin of the engine or a change to tarae-wasm's `jit/` means the hour again** on each architecture that runs the JIT, and this row's figures replaced, before it lands (the pin's checklist says so); left open: **x86-64 stays on the interpreter** (`LIMITS.jit` false there) until its own hour on a real x86 machine; left: the runtime and the engine's C, as any interpreter's |
+| G37 | claude shared tarae's session, process group and controlling terminal: `/dev/tty` was your terminal to it, `TIOCSTI` on Linux could type into it, and what it started outlived it | it was started as a plain child (std's spawn) | narrowed (your decision, 2026-11-14): claude starts in a session of its own, its group ended with it (tests: `agent::claude::tests::claude_has_a_session_of_its_own_and_no_terminal`, `agent::claude::tests::what_claude_left_running_ends_with_the_chat_or_its_own_exit`, `restart::tests::taraes_end_leaves_no_claude_behind`); left: the terminal's node is yours, so code running as you can still open it by its path — hygiene, not a wall (§2) |
 
 ## 5. For a reviewer: where to start
 

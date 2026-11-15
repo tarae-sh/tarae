@@ -1601,9 +1601,9 @@ pub(crate) mod tests {
             true => Env::from([("ANTHROPIC_API_KEY".into(), "tarae-fake-key-2".into())]),
             false => Env::new(),
         };
-        let mut child = spawn(&cfg, &[], &dir, Some(&given), &Credential::Subscription).unwrap();
-        drop(child.stdin.take());
-        child.wait().unwrap();
+        crate::agent::claude::stdout_of(
+            spawn(&cfg, &[], &dir, Some(&given), &Credential::Subscription).unwrap(),
+        );
         let names = std::fs::read_to_string(dir.join("env.names")).unwrap();
         let names: Vec<&str> = names.lines().collect();
         if how == "keep" {

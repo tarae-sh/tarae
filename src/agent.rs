@@ -397,17 +397,19 @@ pub fn command(
     }
 }
 
-/// `command`, started, its stdin, stdout and stderr piped.
+/// Claude's `command`, started in a session of its own (`spawn::setsid_fed`, as every child of tarae's — the user's
+/// decision, 2026-11-14): its own process group, which its end ends with it (`process::reap_group`, `kill`), and no
+/// controlling terminal — it and what it starts don't have tarae's terminal as `/dev/tty`, nor are in its session or
+/// foreground group. Its stdin a pipe (the writing end returned), stdout and stderr pipes. It keeps tarae's raised
+/// descriptor limit, the one measured for claude (`nofile`). No filter on it (`Acts::User`'s way): it runs as you.
 fn spawn(
     s: &Start,
     dir: &std::path::Path,
     given: Option<&crate::llm::Env>,
     cred: Option<&crate::billing::Credential>,
-) -> Result<std::process::Child, SpawnError> {
-    use std::process::Stdio;
-    let mut cmd = command(s, dir, given, cred)?;
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.spawn().map_err(SpawnError::Start)
+) -> Result<(crate::spawn::Spawned, std::io::PipeWriter), SpawnError> {
+    let cmd = command(s, dir, given, cred)?;
+    crate::spawn::setsid_fed(&cmd).map_err(SpawnError::Start)
 }
 
 /// Where an agent runs and on whose account: its folder (the project's root, a helper's own), `given` a test's
@@ -445,8 +447,8 @@ pub fn start(
 ) -> Result<Started, SpawnError> {
     match s.row.wire {
         Wire::Claude => {
-            let child = spawn(s, at.dir, at.given, at.cred)?;
-            claude::begin(child, first, once, s.resume.is_some(), tx, route)
+            let started = spawn(s, at.dir, at.given, at.cred)?;
+            claude::begin(started, first, once, s.resume.is_some(), tx, route)
         }
         #[cfg(test)]
         Wire::Acp => acp::begin(acp::spawn(s, at.dir, at.given)?, s, &at, first, once, tx, route),
@@ -460,8 +462,8 @@ pub fn tools_relay(args: &[String]) -> anyhow::Result<()> {
     acp::bridge::cli(args)
 }
 
-/// An agent's process ended by its pid, while its reader still holds it (else nothing is sent: the pid may be
-/// anyone's by then).
+/// An agent's process and its group ended by its pid, while its reader still holds it (else nothing is sent: the
+/// pid may be anyone's by then).
 pub use process::kill;
 
 /// Why an agent didn't start.
