@@ -723,6 +723,37 @@ fn a_child_come_dries_once_in_the_list_and_on_the_strip() {
     crate::clock::release();
 }
 
+/// A child the strip folds into `+N` (too narrow for every name) dries once as it comes, never again: it isn't on the
+/// strip the frame before, and that read as come each frame — its row in the list washed for good (the one list's shots
+/// at 80, the design session 2026-11-16).
+#[test]
+fn a_child_folded_into_the_strips_count_comes_once() {
+    let (mut ed, _docs, dir) = two("childfold");
+    feed(&mut ed, "<space>W");
+    frame(&mut ed);
+    let main = ed.workspace.claude.id;
+    let kids: Vec<_> = (0..6)
+        .map(|i| {
+            let id = ed.workspace_add(dir.path().join(format!("child-with-a-long-name-{i}")));
+            let l = ed.workspace_by_id(id).unwrap();
+            (l.name, l.claude.parent) = (format!("child-with-a-long-name-{i}"), Some(main));
+            id
+        })
+        .collect();
+    frame(&mut ed);
+    let came = landed(&ed).expect("they came");
+    assert!(kids.iter().all(|k| came.contains(&Place::Row(*k))), "{came:?}");
+    let folded: Vec<_> =
+        kids.iter().filter(|k| !ed.seen.strip.as_ref().unwrap().iter().any(|s| s.0 == **k)).collect();
+    assert!(!folded.is_empty(), "some folded into +N on a 100-wide strip");
+    crate::clock::advance(shown_for(ARRIVED));
+    ed.schedule_tick();
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "dry — a folded child doesn't come again");
+    assert!(kids.iter().all(|k| ed.arrival(&Place::Row(*k)) == 0.0));
+    crate::clock::release();
+}
+
 /// §6, as the takes had it: a child's row come, then `◂ new` 0.2 s on — the row keeps drying on its own clock beside it.
 #[test]
 fn a_newer_landing_never_cuts_an_older_short() {

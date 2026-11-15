@@ -3002,7 +3002,7 @@ impl Editor {
         let here = self.sessions_here();
         // (a helper's row: a session's own keys refused in words — `enter` goes where its work is, the one list L4)
         if let Some(crate::sessionpane::RowId::Helper { of, kind }) = self.sessions_hand()
-            && matches!(c, 'O' | 'd' | 'b' | 'm' | 'x' | 'v' | 'f' | '$')
+            && crate::sessionpane::takes_the_session(c)
         {
             let owner =
                 self.sessions_in_order().into_iter().find(|l| l.id == of).map(|l| l.label().to_string());

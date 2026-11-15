@@ -11,7 +11,7 @@
 use crate::editor::{Drag, Editor};
 use crate::event::MouseKind;
 use crate::float::Grip;
-use crate::pane::GroupKind;
+use crate::pane::{GroupKind, Shows};
 use crate::selection::{Held, Selection, Unit};
 use crate::sizes::{Border, Slot};
 use crate::split::PaneId;
@@ -554,9 +554,13 @@ impl Editor {
         {
             return at(S::Float(kind), Part::Frame(grip));
         }
+        // (a docked list's own line — its edge cell, in its rect — is its border's: it drags, as any docked group's)
+        let own_line =
+            |k| down && self.border_at(x, y).is_some_and(|b| self.line_of(Shows::Group(k)) == Some(b));
         let docked_list = crate::floatlist::KINDS.into_iter().find(|&k| {
             self.dock_rect(k)
                 .is_some_and(|(_, r)| (r.x..r.x + r.w).contains(&x) && (r.y..r.y + r.h).contains(&y))
+                && !own_line(k)
         });
         let list = floated.filter(|&k| crate::floatlist::is_list(k));
         if let Some(kind) = list.or(docked_list.filter(|_| floated.is_none() && self.picker.is_none())) {

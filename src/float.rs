@@ -21,6 +21,10 @@ use crate::split::{PaneId, Rect};
 pub const MOVE_COLS: usize = 4;
 pub const MOVE_ROWS: usize = 2;
 
+/// `C-w > <` on a list centred by the rule move each of its sides this many columns (`float_size`): together
+/// `STEP_COLS`, as a move of its one edge does once it's placed.
+pub const CENTRED_STEP: usize = crate::sizes::STEP_COLS / 2;
+
 /// What a press on a floating frame took hold of (`Editor::float_grip`): its top line off the names — it moves, the
 /// press this far from its top-left corner —, or its edges — they size it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,16 +194,15 @@ impl Editor {
         let (w, h) = self.float_screen();
         let f = Frame::of_rect(r, w, h);
         // (a floating list's is the viewer's, kept with the sizes — as tall as its rows still unless its height
-        // changed, as wide as them unless its width did (a move keeps it), centred unless it moved or its width changed)
+        // changed, centred by the rule unless it moved or a side of it did)
         if crate::floatlist::is_list(kind) {
             let (Some(was_f), Some(was)) = (self.float_list_frame(kind), self.float_rect(kind)) else {
                 return self.float_list_frame_set(kind, Some(f));
             };
             let h = if was_f.h == 0 && was.h == r.h { 0 } else { f.h };
-            let w = if was_f.w == 0 && was.w == r.w { 0 } else { f.w };
             let placed = was_f.x == Frame::PLACED && was.x == r.x && was.w == r.w;
             let x = if placed { Frame::PLACED } else { f.x };
-            self.float_list_frame_set(kind, Some(Frame { x, w, h, ..f }));
+            self.float_list_frame_set(kind, Some(Frame { x, h, ..f }));
             return;
         }
         if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind)
@@ -296,11 +299,30 @@ impl Editor {
     }
 
     /// `C-w < > - +` from a floating group's member: it narrower or wider by `STEP_COLS`, shorter or taller by
-    /// `STEP_ROWS` — its left and top edges staying, within the screen. False: the keys aren't in a floating group.
+    /// `STEP_ROWS` — its left and top edges staying, within the screen. A list centred by the rule (the session list
+    /// where it was first placed — the user, 2026-11-16) narrower or wider on both sides, `CENTRED_STEP` each, so it
+    /// stays centred; once moved or dragged, its left edge stays. False: the keys aren't in a floating group.
     pub fn float_size(&mut self, dir: crate::split::Dir, more: bool) -> bool {
         let Some(kind) = self.float_in_hand() else { return false };
         let Some(r) = self.float_rect(kind) else { return false };
         let (sw, sh) = self.float_screen();
+        let centred = self.float_list_frame(kind).filter(|f| f.x == Frame::PLACED);
+        if let (Some(f), crate::split::Dir::Vertical) = (centred, dir) {
+            let step = 2 * CENTRED_STEP;
+            let w = if more { r.w + step } else { r.w.saturating_sub(step) };
+            let w = w.clamp(crate::pane::FLOAT_MIN_W.min(sw), sw);
+            if w == r.w {
+                let how = if more { "wide" } else { "narrow" };
+                self.say_size(format!("{} as {how} as it goes — C-w = back", kind.name()));
+                return true;
+            }
+            let w_of = Frame::of_rect(Rect { w, ..r }, sw, sh).w;
+            self.float_list_frame_set(kind, Some(Frame { w: w_of, ..f }));
+            self.float_keep();
+            let r = self.float_rect(kind).unwrap_or(r);
+            self.say_size(format!("{} {} × {}, in the middle", kind.name(), r.w, r.h));
+            return true;
+        }
         let r = match dir {
             crate::split::Dir::Vertical => {
                 let step = crate::sizes::STEP_COLS;
@@ -333,17 +355,11 @@ impl Editor {
         self.sizes_keep();
     }
 
-    /// `C-w =` from a floating group's member: back in the middle, 3/5 × 1/2 of the screen — a list as tall as its rows,
-    /// the session list as wide as them too. False: not in one.
+    /// `C-w =` from a floating group's member: back in the middle, 3/5 × 1/2 of the screen — a list 3/5 wide and as
+    /// tall as its rows. False: not in one.
     pub fn float_auto(&mut self) -> bool {
         let Some(kind) = self.float_in_hand() else { return false };
         match kind {
-            k if crate::floatlist::list_frame(k).w == 0 => {
-                self.float_list_frame_set(k, None);
-                self.float_keep();
-                self.say_size(format!("{} as wide as its rows, in the middle", kind.name()));
-                return true;
-            }
             k if crate::floatlist::is_list(k) => self.float_list_frame_set(k, None),
             _ => {
                 if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind) {

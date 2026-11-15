@@ -467,8 +467,9 @@ pub fn arrivals(ed: &mut Editor, peeks: &[u64], drawn: &[u64], unread: bool) {
                         places.push(Place::News(id));
                     }
                 }
-                // (a child come on the strip, as in the list: its name)
-                None if child(id) => places.push(Place::Row(id)),
+                // (a child come on the strip, as in the list: its name — come, not one the strip folded into `+N` the
+                // frame before, whose row would dry forever, starting over each frame)
+                None if child(id) && !ed.seen.sessions.contains(&id) => places.push(Place::Row(id)),
                 None => {}
             }
         }
@@ -544,6 +545,7 @@ pub fn drawn(ed: &mut Editor) {
     let d = ed.screen.news.take();
     ed.seen.strip =
         (!d.strip.is_empty()).then(|| strip(ed).into_iter().filter(|s| d.strip.contains(&s.0)).collect());
+    ed.seen.sessions = std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|l| l.id).collect();
     ed.seen.unread = Some(d.unread);
     (ed.seen.waiting, ed.seen.quiet) = (Some(d.waiting), Some(d.quiet));
     ed.seen.badges = d.badges;
@@ -587,6 +589,8 @@ pub struct Seen {
     pub list: Option<Vec<(crate::event::WorkspaceId, &'static str)>>,
     /// The strip's sessions it drew, each its state word and its `•` — None where it drew no strip.
     pub strip: Option<Vec<(crate::event::WorkspaceId, (&'static str, bool))>>,
+    /// Every session there was, drawn or not — a child the strip folds into `+N` isn't come again each frame.
+    pub sessions: Vec<crate::event::WorkspaceId>,
     /// `◂ new` on the status line.
     pub unread: Option<bool>,
     /// `▲N waiting`'s N and `N runs quiet`'s.

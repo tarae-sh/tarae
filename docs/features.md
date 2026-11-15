@@ -629,7 +629,10 @@ your `PATH`.
   zellij's session manager and tmux's choose-tree do —, or docked beside or above the code (`C-w H`/`L`/`K`, `C-w e`
   floats it again), where it stays after `enter` — the overview kept in sight —, its side kept as its width is, and
   after `:restart` it's back up there (a floating one isn't: done once used); floating, 3/5 of the screen wide and as tall as its rows up to half of it, its top at 1/4 of the screen's
-  height as every floating pane's (growing downward as sessions come, its top never moving), searched with `/` as every pane is (`n`/`N`, its matches lit; its
+  height as every floating pane's (growing downward as sessions come, its top never moving), centred: `C-w >` and
+  `C-w <` widen and narrow it on both sides while it's where it was placed, its left edge staying once moved or
+  dragged, `C-w =` back to 3/5 in the middle, both side borders drag, the width you set kept; docked, `C-w < >` and
+  its border size its column as any docked panel's —, searched with `/` as every pane is (`n`/`N`, its matches lit; its
   letters are keys: `o` new, `d` end, `b` bring, …) — the overview for whoever watches them: each row a session's name in its colour, its state
   (`working` · `▲ waits` · `◦ stuck?` · `done` · `queued 2nd`), what waits for you counted, `≈` whom it would
   conflict with, `↓N` behind its base, its context, its Claude's last sentence, then the rest (branch, changes, cost,

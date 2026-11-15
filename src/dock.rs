@@ -435,10 +435,14 @@ impl Editor {
         n
     }
 
-    /// `C-w < > - +` from a docked group's member: its size `STEP_COLS`/`STEP_ROWS` more or less — `< >` beside the
-    /// code, `- +` over it (the other pair said). False: the keys aren't in a docked group.
+    /// `C-w < > - +` from a docked group's member — the docked session list's too (#601: it has no run panel) —: its
+    /// size `STEP_COLS`/`STEP_ROWS` more or less — `< >` beside the code, `- +` over it (the other pair said). False:
+    /// the keys aren't in a docked group.
     pub fn size_dock(&mut self, dir: Dir, more: bool) -> bool {
-        let Some(kind) = self.slot_in_hand().and(self.workspace.viewer.hand) else { return false };
+        let list = self.float_list_in_hand().filter(|&k| self.docked_in_sight(k));
+        let Some(kind) = list.or_else(|| self.slot_in_hand().and(self.workspace.viewer.hand)) else {
+            return false;
+        };
         let Some((side, r)) = self.dock_rect(kind) else { return false };
         let beside = side.beside();
         if beside != (dir == Dir::Vertical) {

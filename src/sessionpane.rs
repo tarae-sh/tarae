@@ -199,8 +199,8 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
     // before it
     let step = |or: String| if l.step.is_empty() { or } else { l.step.clone() };
     let (said, ink) = match l.doing {
-        Doing::Waiting => (step("waits".into()), Ink::Warn),
-        Doing::Done => ("done".into(), Ink::Accent),
+        Doing::Waiting => (step("waits".into()), word("waits")),
+        Doing::Done => ("done".into(), word("done")),
         d @ Doing::Stuck { .. } => (format!("◦ stuck? {}", d.said()), Ink::Warn),
         d @ Doing::Queued { .. } => (step(d.said()), Ink::Faint),
         Doing::Working => (step("working".into()), Ink::Faint),
@@ -287,6 +287,25 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
     }
 }
 
+/// A state word's ink, one rule for a session's row and a helper's (the design session, 2026-11-16): `done` the accent —
+/// news, its work ended; `waits` and `failed` the warning — it needs you (a turn's error is a warning toast,
+/// `workspace::turn_end_words`); `stopped` faint — your own key's, or its turn's end, never news (a turn you stopped is
+/// an info toast there).
+pub const WORDS: [(&str, Ink); 4] =
+    [("done", Ink::Accent), ("waits", Ink::Warn), ("failed", Ink::Warn), ("stopped", Ink::Faint)];
+
+/// The ink `WORDS` gives what a state cell says by its first word (`done · 2 findings`: `done`'s) — None: no word of
+/// theirs.
+pub fn word_ink(said: &str) -> Option<Ink> {
+    let first = said.split([' ', '·']).next()?;
+    WORDS.iter().find(|w| w.0 == first).map(|w| w.1)
+}
+
+/// `WORDS`' ink for one of its words.
+fn word(w: &str) -> Ink {
+    word_ink(w).unwrap_or(Ink::Text)
+}
+
 /// Before a child's name in the chat's top line, faint, when its parent went into `+N` (elsewhere there a child joins
 /// its parent or a sibling by `›`, `term::MEMBERS_SEP`). The list draws a child's arm instead (`arms`).
 pub const CHILD: &str = "› ";
@@ -354,29 +373,6 @@ pub fn models_where_they_differ(rows: &mut [Row]) {
             r.cells.retain(|c| c.0 != Col::Model);
         }
     }
-}
-
-/// The columns that widen the floating list's frame (`need`): what a person watching several sessions work reads —
-/// the rest only in room left over.
-const WIDENS: [Col; 8] =
-    [Col::Waits, Col::State, Col::Overlap, Col::Behind, Col::Context, Col::Model, Col::Report, Col::Cost];
-
-/// What a floating frame takes beside its rows' text: its two sides, the bar's cell and a blank, a cell before the side.
-pub const FRAMED: usize = 5;
-
-/// The cells the floating list's frame needs for `rows` (the one list L2, `.sb/one-list-plan.md` §1): the name's
-/// column, then each of `WIDENS` as wide as its widest (the state to `STATE_MAX`, the report to `REPORT_MAX`) with its
-/// `GAP`, then the frame's own (`FRAMED`) — taken over every row, in sight or not, so scrolling never widens it.
-pub fn need(rows: &[Row]) -> usize {
-    let width = |c: Col| rows.iter().map(|r| r.text(c).width()).max().unwrap_or(0);
-    let cap = |c: Col, w: usize| match c {
-        Col::Report => w.min(REPORT_MAX),
-        Col::State => w.min(STATE_MAX),
-        _ => w,
-    };
-    let name = rows.iter().map(Row::name_width).max().unwrap_or(0);
-    let cols: usize = WIDENS.iter().map(|&c| cap(c, width(c))).filter(|&w| w > 0).map(|w| GAP + w).sum();
-    name + cols + FRAMED
 }
 
 /// The columns shown in a pane whose rows are `room` cells wide (the name's column first, then each shown column
@@ -627,10 +623,10 @@ pub fn helpers(ed: &Editor, l: &crate::workspace::Workspace) -> Vec<Helper> {
                 }
                 _ if running => (format!("reviewing · {}", count(r.reads, "read", "reads")), Ink::Faint),
                 State::Done => {
-                    (format!("done · {}", count(r.findings.len(), "finding", "findings")), Ink::Accent)
+                    (format!("done · {}", count(r.findings.len(), "finding", "findings")), word("done"))
                 }
-                State::Failed(_) => ("failed".into(), Ink::Warn),
-                _ => ("stopped".into(), Ink::Warn),
+                State::Failed(_) => ("failed".into(), word("failed")),
+                _ => ("stopped".into(), word("stopped")),
             };
             let name = if r.board.is_some() { "board" } else { "reviewer" };
             let cost = r.cost.filter(|_| ed.config.llm.cost).map(crate::usage::dollars).unwrap_or_default();
@@ -692,8 +688,13 @@ pub fn helpers(ed: &Editor, l: &crate::workspace::Workspace) -> Vec<Helper> {
 /// asked (in the report's column), its cost.
 fn helper_row(l: &crate::worktree::Shown, h: Helper) -> Row {
     let mut cells: Vec<(Col, Vec<Part>)> = Vec::new();
+    // (its state word in the ink a session's row gives the same word — `WORDS`, whoever wrote how it ended)
+    let mut said = h.said;
+    if let Some(ink) = word_ink(&said.0) {
+        said.1 = ink;
+    }
     for (c, part) in [
-        (Col::State, h.said),
+        (Col::State, said),
         (Col::Model, (h.model, Ink::Faint)),
         (Col::Report, (h.what, Ink::Faint)),
         (Col::Cost, (h.cost, Ink::Text)),
@@ -705,6 +706,19 @@ fn helper_row(l: &crate::worktree::Shown, h: Helper) -> Row {
     let (name, working) = (h.name, h.running);
     let helper = Some(h.kind);
     Row { id: l.id, helper, name, colour: l.colour, front: false, arm: String::new(), working, cells }
+}
+
+/// The list's top line's counts, in their order — the line folds them from the last: its sessions, how many of them
+/// work, then its helpers (design session, 2026-11-16: `8 sessions · 8 working · 3 helpers` read as every session at
+/// work — a helper's work is its own row's, never the sessions' count).
+pub fn counts(rows: &[Row]) -> Vec<String> {
+    let sessions = rows.iter().filter(|r| r.helper.is_none());
+    let working = sessions.clone().filter(|r| r.working).count();
+    let helpers = rows.len() - sessions.count();
+    let mut v = vec![crate::nav::count(rows.len() - helpers, "session")];
+    v.extend((working > 0).then(|| format!("{working} working")));
+    v.extend((helpers > 0).then(|| crate::nav::count(helpers, "helper")));
+    v
 }
 
 /// Every session's helpers as the list says them, while the list is in sight (else None) — a helper's event that
@@ -850,6 +864,27 @@ impl Editor {
 /// Row `row`'s text `re` matches: its name, else a column's (its parts as one).
 pub(crate) fn matches(row: &Row, re: &regex::Regex) -> bool {
     re.is_match(&row.name) || COLS.iter().any(|&c| re.is_match(&row.text(c)))
+}
+
+/// The letters the session list takes beyond a floating list's own (`floatlist::key`: the moves, `/` `?` `n` `N`, `q`,
+/// `enter`, `esc`) and the digits (`Editor::session_list_key`): each, what it does, and whether it acts on the session
+/// in hand — a helper's row has none, so those are refused there in words (the one list L4).
+pub const KEYS: [(char, &str, bool); 10] = [
+    ('o', "new", false),
+    ('O', "fork", true),
+    ('d', "end", true),
+    ('b', "bring into its base", true),
+    ('m', "mark to bring", true),
+    ('B', "bring the marked in turn", false),
+    ('x', "drop its build", true),
+    ('v', "woven", true),
+    ('f', "follow", true),
+    ('$', "billing", true),
+];
+
+/// Key `c` acts on the session in hand (`KEYS`).
+pub fn takes_the_session(c: char) -> bool {
+    KEYS.iter().any(|k| k.0 == c && k.2)
 }
 
 /// The list's keys for its frame's bottom line (docked, its foot), as they apply to the row in hand: `enter` switches, `/` searches, then what the row's session

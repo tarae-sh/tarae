@@ -907,60 +907,166 @@ fn the_session_list_is_searched_with_slash() {
     assert_eq!(ed.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Session), "o: new");
 }
 
-/// The floating list is as wide as its rows need (the one list L2, `.sb/one-list-plan.md` §1): a list's 3/5 at least,
-/// the screen less a picker's margins at most, centred across; it widens as they need more and never narrows while it's
-/// up, and opened again it starts from that moment's rows. A width you set (`C-w >`) is kept as rows come; `C-w =`
-/// gives it its rows' width again. Its frame says a width of 0 and a left placed by the rule as `null`.
+/// The floating list's rect at `w` × `h`, a frame drawn first.
+fn list_rect(ed: &mut Editor, w: u16, h: u16) -> crate::split::Rect {
+    frame(ed, w, h);
+    ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).unwrap().1
+}
+
+/// The last thing said.
+fn last_said(ed: &Editor) -> String {
+    ed.messages.last().map(|m| m.2.clone()).unwrap_or_default()
+}
+
+/// The session list floats at a list's 3/5, centred (the user, 2026-11-16: the decided measure stands), whatever its
+/// rows need. Where the rule places it, `C-w >` and `C-w <` widen and narrow it on both sides, two cells each, so it
+/// stays centred — as a share of the screen, on another screen too; kept with the sizes and opened again so; never past
+/// its least, said. `C-w =` puts it back to 3/5 and centred. Its left placed by the rule is `null` in `sizes.json`.
 #[test]
-fn the_list_is_as_wide_as_its_rows() {
+fn the_list_is_three_fifths_and_widens_on_both_sides_while_centred() {
     use crate::pane::Frame;
     use crate::split::Rect;
     let dir = crate::scratch::Scratch::new("sessionwide");
     let mut ed = Editor::new(crate::config::Config::default());
     (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
-    let rect = |ed: &mut Editor| {
-        frame(ed, 80, 40);
-        ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).unwrap().1
-    };
-    let drop_last = |ed: &mut Editor| {
-        let id = ed.workspaces.last().unwrap().id;
-        ed.workspaces.retain(|l| l.id != id);
-    };
     feed_at(&mut ed, " W", 80, 40);
-    assert_eq!(rect(&mut ed), Rect { x: 16, y: 10, w: 48, h: 3 }, "a short row: a list's 3/5, centred");
-    // (a name 60 cells long: 60 and the frame's 5)
+    assert_eq!(list_rect(&mut ed, 80, 40), Rect { x: 16, y: 10, w: 48, h: 3 }, "a list's 3/5, centred");
+    // (a name 60 cells long: the width stays — the rows give way, as `lay` says)
     ed.workspace_add(dir.join("n".repeat(60)));
-    assert_eq!(rect(&mut ed), Rect { x: 7, y: 10, w: 65, h: 4 }, "as wide as its rows need, centred");
-    drop_last(&mut ed);
-    assert_eq!(rect(&mut ed).w, 65, "never narrower while it's up");
-    ed.workspace_add(dir.join("m".repeat(90)));
-    assert_eq!((rect(&mut ed).x, rect(&mut ed).w), (2, 76), "the screen less its margins at most");
-    drop_last(&mut ed);
-    feed_at(&mut ed, "q W", 80, 40);
-    assert_eq!(rect(&mut ed).w, 48, "opened again: from that moment's rows");
-    assert_eq!(rect(&mut ed).x, 16);
-    // A width you set is kept; `C-w =` gives it its rows' again
+    assert_eq!(list_rect(&mut ed, 80, 40), Rect { x: 16, y: 10, w: 48, h: 4 }, "3/5 whatever the rows need");
+    assert_eq!(list_rect(&mut ed, 160, 40), Rect { x: 32, y: 10, w: 96, h: 4 }, "3/5 at 160 too");
+    // `C-w >`: two cells on each side
     feed_at(&mut ed, "<C-w>>", 80, 40);
-    let set = rect(&mut ed);
-    assert_eq!((set.x, set.w), (16, 48 + crate::sizes::STEP_COLS), "wider, its left edge staying");
-    assert!(ed.sizes.sessions.is_some_and(|f| f.w != 0 && f.x != Frame::PLACED), "kept with the sizes");
-    ed.workspace_add(dir.join("n".repeat(60)));
-    assert_eq!(rect(&mut ed).w, set.w, "the width you set, whatever the rows need");
-    feed_at(&mut ed, "<C-w>=", 80, 40);
-    assert_eq!((ed.sizes.sessions, rect(&mut ed).w, rect(&mut ed).x), (None, 65, 7), "its rows' width again");
-    assert!(ed.messages.last().unwrap().2.contains("as wide as its rows"), "said");
-    // A move keeps it as wide as its rows, its left where it was moved to
-    feed_at(&mut ed, "<C-w>ml<ret>", 80, 40);
+    assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (14, 52), "wider on both sides");
+    assert_eq!(last_said(&ed), "sessions 52 × 4, in the middle · C-w = automatic");
+    feed_at(&mut ed, "<C-w>>", 80, 40);
+    assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (12, 56), "and again");
     assert!(
-        ed.sizes.sessions.is_some_and(|f| f.w == 0 && f.x != Frame::PLACED && f.h == 0),
-        "{:?}",
-        ed.sizes.sessions
+        ed.sizes.sessions.is_some_and(|f| f.x == Frame::PLACED && f.h == 0),
+        "kept, centred, as tall as its rows"
     );
+    // (a share of the screen: 56 of 80 is 112 of 160, centred there)
+    assert_eq!(
+        (list_rect(&mut ed, 160, 40).x, list_rect(&mut ed, 160, 40).w),
+        (24, 112),
+        "on another screen"
+    );
+    // `C-w <`: two cells off each side
+    feed_at(&mut ed, "<C-w><lt>", 80, 40);
+    assert_eq!(
+        (list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w),
+        (14, 52),
+        "narrower on both sides"
+    );
+    // Opened again: the width you set, centred
+    feed_at(&mut ed, "q W", 80, 40);
+    assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (14, 52), "kept");
+    // `C-w =`: 3/5 and centred again
+    feed_at(&mut ed, "<C-w>=", 80, 40);
+    assert_eq!(
+        (ed.sizes.sessions, list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w),
+        (None, 16, 48)
+    );
+    assert!(last_said(&ed).starts_with("sessions in the middle"), "{}", last_said(&ed));
+    // Never narrower than a floating pane's least, said
+    feed_at(&mut ed, "<C-w><lt><C-w><lt>", 80, 40);
+    assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (20, 40), "its least");
+    feed_at(&mut ed, "<C-w><lt>", 80, 40);
+    assert_eq!(list_rect(&mut ed, 80, 40).w, 40);
+    assert!(last_said(&ed).starts_with("sessions as narrow as it goes — C-w = back"), "{}", last_said(&ed));
     // (as `sizes.json` keeps it)
-    assert_eq!(Frame::ROWS.json(), serde_json::json!([null, null, 0, 0]));
-    assert_eq!(Frame::of_json(&Frame::ROWS.json()), Some(Frame::ROWS));
-    // `:messages` stays a list's 3/5
+    assert_eq!(Frame::SESSIONS.json(), serde_json::json!([null, null, 600, 0]));
+    assert_eq!(Frame::of_json(&Frame::SESSIONS.json()), Some(Frame::SESSIONS));
+    // `:messages` stays a list's 3/5 with its left set
     assert_eq!(crate::floatlist::list_frame(GroupKind::Messages), Frame::LIST);
+}
+
+/// Once moved across (`C-w m`) the list's left edge stays as `C-w >` and `C-w <` size it, its right moving; `C-w =` puts
+/// it back to 3/5 and centred. A move down only keeps it centred across: `C-w >` still widens it on both sides.
+#[test]
+fn once_moved_the_lists_left_edge_stays_as_keys_size_it() {
+    let dir = crate::scratch::Scratch::new("sessionmoved");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    feed_at(&mut ed, " W<C-w>mj<ret><C-w>>", 80, 40);
+    let r = list_rect(&mut ed, 80, 40);
+    assert_eq!((r.x, r.y, r.w), (14, 12, 52), "moved down: still centred across, wider on both sides");
+    feed_at(&mut ed, "<C-w>=<C-w>ml<ret>", 80, 40);
+    assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (20, 48), "moved right");
+    feed_at(&mut ed, "<C-w>>", 80, 40);
+    assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (20, 52), "its left edge stays");
+    assert_eq!(last_said(&ed), "sessions 52 × 3 · C-w = automatic");
+    feed_at(&mut ed, "<C-w><lt><C-w><lt>", 80, 40);
+    assert_eq!(
+        (list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w),
+        (20, 44),
+        "narrower, its left staying"
+    );
+    feed_at(&mut ed, "<C-w>=", 80, 40);
+    assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (16, 48), "back in the middle");
+}
+
+/// A press at (`x`, `y`) dragged to (`to`, `y`) and let go there, a frame `w` × `h` drawn after each.
+fn drag_at(ed: &mut Editor, (x, y): (usize, usize), to: usize, (w, h): (u16, u16)) {
+    use crate::event::{Mouse, MouseKind as K};
+    for (kind, x) in [(K::Down, x), (K::Drag, to), (K::Up, to)] {
+        ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        frame(ed, w, h);
+    }
+}
+
+/// The mouse sizes the floating list by both side borders, to the cell: the right one dragged moves its right edge, the
+/// left one its left, the other side staying — kept and said; dragged, it's placed, so `C-w >` moves its right edge
+/// only. Docked right, its border drags its width, the far side staying, and `C-w >` / `C-w <` move that edge as any
+/// docked column's (#601: they skipped it — it has no run panel).
+#[test]
+fn the_lists_side_borders_drag_floating_and_docked_and_keys_size_it_docked() {
+    use crate::pane::Shows;
+    let dir = crate::scratch::Scratch::new("sessiondrag");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let sz = (160, 40);
+    feed(&mut ed, " W");
+    let r = list_rect(&mut ed, 160, 40);
+    assert_eq!((r.x, r.w), (32, 96));
+    // Its right border, 6 cells right: 6 wider, its left staying
+    drag_at(&mut ed, (r.x + r.w - 1, r.y + 1), r.x + r.w - 1 + 6, sz);
+    let d = list_rect(&mut ed, 160, 40);
+    assert_eq!((d.x, d.w), (32, 102), "the right edge to the cell");
+    assert_eq!(last_said(&ed), "sessions 102 × 3 · C-w = automatic");
+    assert!(ed.sizes.sessions.is_some_and(|f| f.x != crate::pane::Frame::PLACED), "kept, placed");
+    // Its left border, 5 cells left: 5 wider, its right staying
+    drag_at(&mut ed, (d.x, d.y + 1), d.x - 5, sz);
+    let d = list_rect(&mut ed, 160, 40);
+    assert_eq!((d.x, d.x + d.w), (27, 134), "the left edge to the cell, the right staying");
+    // Dragged, `C-w >` moves its right edge only
+    feed(&mut ed, "<C-w>>");
+    assert_eq!((list_rect(&mut ed, 160, 40).x, list_rect(&mut ed, 160, 40).w), (27, 111));
+    feed(&mut ed, "<C-w>=");
+    assert_eq!((list_rect(&mut ed, 160, 40).x, list_rect(&mut ed, 160, 40).w), (32, 96), "C-w =: centred");
+    // Docked right: `C-w >` / `C-w <` move its free edge, said
+    feed(&mut ed, "<C-w>L");
+    frame(&mut ed, 160, 40);
+    let (_, r) = ed.dock_rect(GroupKind::Sessions).expect("docked, drawn");
+    assert!(ed.sessions_list_keys());
+    feed(&mut ed, "<C-w>>");
+    let (_, w) = ed.dock_rect(GroupKind::Sessions).unwrap();
+    assert_eq!((w.w, w.x + w.w), (r.w + crate::sizes::STEP_COLS, r.x + r.w), "wider, its left edge moving");
+    assert!(last_said(&ed).starts_with(&format!("sessions {} columns", w.w)), "{}", last_said(&ed));
+    feed(&mut ed, "<C-w><lt><C-w><lt>");
+    let (_, n) = ed.dock_rect(GroupKind::Sessions).unwrap();
+    assert_eq!((n.w, n.x + n.w), (r.w - crate::sizes::STEP_COLS, r.x + r.w), "narrower");
+    assert!(ed.sizes.docked[GroupKind::Sessions.dock_index()].is_some(), "kept with the sizes");
+    // Its border, dragged 6 cells left: 6 wider, the screen's edge side staying
+    let line = ed.line_of(Shows::Group(GroupKind::Sessions)).expect("its line");
+    let y = n.y + 3;
+    let x = (n.x.saturating_sub(1)..=n.x).find(|&x| ed.border_at(x, y) == Some(line)).expect("its border");
+    assert_eq!(ed.mouse_at(x, y).part, crate::mouse::Part::Border(line), "a press there takes its border");
+    drag_at(&mut ed, (x, y), x - 6, sz);
+    assert!(last_said(&ed).starts_with(&format!("sessions {} columns", n.w + 6)), "{}", last_said(&ed));
+    let (_, g) = ed.dock_rect(GroupKind::Sessions).unwrap();
+    assert_eq!((g.w, g.x + g.w), (n.w + 6, n.x + n.w), "dragged to the cell, the far side staying");
+    assert!(ed.border_at(x - 6, y) == Some(line), "its border where it was let go");
 }
 
 /// More sessions than the list has rows: the `▎` thumb in the cell before its side, at the top, the middle and the end
@@ -1030,7 +1136,8 @@ fn the_list_is_as_tall_as_its_rows() {
     feed(&mut ed, "<C-w>mj<ret><C-w>>");
     assert_eq!(ed.sizes.sessions.map(|f| f.h), Some(0), "kept, its height its rows'");
     ed.workspace_add(dir.join("c"));
-    assert_eq!(rect(&mut ed), crate::split::Rect { x: 32, y: 12, w: 100, h: 6 }, "moved 2, wider 4, grown");
+    // (moved down only, it's centred across still: wider on both sides)
+    assert_eq!(rect(&mut ed), crate::split::Rect { x: 30, y: 12, w: 100, h: 6 }, "moved 2, wider 4, grown");
     // As short as it goes: `C-w -` says so, never taller
     feed(&mut ed, "<C-w>-");
     assert_eq!(rect(&mut ed).h, 6, "no shorter");
@@ -1177,7 +1284,10 @@ fn helper_rows_hang_under_their_session_and_digits_skip_them() {
     assert!(rows.iter().all(|r| r.colour == rows[0].colour || r.id != rows[0].id), "its session's colour");
     feed(&mut ed, " W");
     let s = frame(&mut ed, 160, 40);
-    assert!(s.contains("2 sessions · 3 helpers · 3 working"), "{s}");
+    assert!(
+        s.contains("2 sessions · 3 helpers") && !s.contains("working"),
+        "helpers at work, no session: {s}"
+    );
     assert!(s.contains("├─ reviewer ") && s.contains("└─ search ×2 "), "{s}");
     // (a helper's row in hand: no session there, its keys where its work is)
     feed(&mut ed, "j");
@@ -1205,6 +1315,151 @@ fn helper_rows_hang_under_their_session_and_digits_skip_them() {
     assert_eq!(ed.workspace.name, "fix", "2: the second session, not the second row");
 }
 
+/// The top line counts the sessions, how many of them work, then the helpers (the design session, 2026-11-16:
+/// `8 sessions · 3 helpers · 8 working` read as every session at work) — a helper at work is never in the sessions'
+/// count; too narrow, `· 3 helpers` folds first.
+#[test]
+fn the_top_line_counts_the_sessions_at_work_then_the_helpers_which_fold_first() {
+    let session = |n: u64, doing| row(&full(WorkspaceId::here(n), "s", doing));
+    let helper =
+        |n: u64, running| Row { helper: Some(Kind::Search), working: running, ..session(n, Doing::Idle) };
+    let rows = [session(1, Doing::Working), helper(1, true), helper(1, true), session(2, Doing::Idle)];
+    assert_eq!(counts(&rows), ["2 sessions", "1 working", "2 helpers"], "working: the sessions'");
+    assert_eq!(counts(&rows[1..]), ["1 session", "2 helpers"], "none at work: no count of it");
+    assert_eq!(counts(&rows[3..]), ["1 session"]);
+    // Drawn: the words; narrow, the helpers' count goes first
+    let dir = crate::scratch::Scratch::new("sessioncounts");
+    let mut ed = helped(&dir);
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+    asking(&mut ed, "upper it");
+    searching(&mut ed, 1, "tokio release");
+    feed(&mut ed, " W");
+    let top = |ed: &mut Editor, w: u16| {
+        let s = frame(ed, w, 40);
+        let r = list_rect(ed, w, 40);
+        s.lines().nth(r.y).unwrap().to_string()
+    };
+    let wide = top(&mut ed, 160);
+    assert!(wide.contains("─ sessions ── 2 sessions · 1 working · 2 helpers ─"), "{wide}");
+    // (at its least, 40: the name and two counts, not the third)
+    feed_at(&mut ed, "<C-w><lt><C-w><lt>", 80, 40);
+    let narrow = top(&mut ed, 60);
+    assert!(
+        narrow.contains("─ sessions ── 2 sessions · 1 working ─") && !narrow.contains("helper"),
+        "{narrow}"
+    );
+}
+
+/// A helper's state word takes the ink a session's row gives the same word (`WORDS`, the design session 2026-11-16):
+/// `done` the accent as a session's `done`, `failed` the warning as a session's `waits`, `stopped` faint — your key's or
+/// its turn's end, never news — whatever ink the code that ended it wrote.
+#[test]
+fn a_helpers_state_word_takes_a_session_rows_ink_for_it() {
+    let session = |doing| row(&full(WorkspaceId::here(1), "s", doing)).cell(Col::State)[0].1;
+    assert_eq!(word_ink("done · 2 findings"), Some(session(Doing::Done)), "done: a session's done");
+    assert_eq!(word_ink("waits"), Some(session(Doing::Waiting)));
+    let l = full(WorkspaceId::here(1), "s", Doing::Idle);
+    let ink = |said: &str, wrote: Ink| {
+        let h = Helper {
+            kind: Kind::Ask,
+            name: "ask".into(),
+            said: (said.into(), wrote),
+            what: String::new(),
+            model: String::new(),
+            cost: String::new(),
+            running: false,
+        };
+        helper_row(&l, h).cell(Col::State)[0].1
+    };
+    assert_eq!(ink("done · 2 findings", Ink::Text), Ink::Accent);
+    assert_eq!(ink("failed", Ink::Faint), Ink::Warn);
+    assert_eq!(ink("stopped", Ink::Warn), Ink::Faint, "stopped: faint, not news");
+    assert_eq!(ink("• searching", Ink::Faint), Ink::Faint, "a step: as written");
+    assert_eq!(ink("found nothing", Ink::Faint), Ink::Faint);
+    // (and live: `space i` stopped by your key, a reviewer done)
+    let dir = crate::scratch::Scratch::new("sessionwords");
+    let mut ed = helped(&dir);
+    let done =
+        crate::reviewer::Reviewer::for_test(dir.to_path_buf(), crate::reviewer::State::Done, vec![1], "");
+    ed.workspace.reviewer = Some(done);
+    asking(&mut ed, "upper it");
+    crate::llm::cancel(&mut ed);
+    let rows = ed.sessions_rows();
+    assert_eq!(rows[1].cell(Col::State), [("done · 1 finding".to_string(), Ink::Accent)]);
+    assert_eq!(rows[2].cell(Col::State), [("stopped".to_string(), Ink::Faint)]);
+}
+
+/// A helper's row says its model where the rows' models differ (`models_where_they_differ`) and its cost where its
+/// result reported one (the reviewer's) while money is on the screen (`llm.cost`) — on its row and in its card.
+#[test]
+fn a_helpers_row_says_its_model_where_rows_differ_and_a_reported_cost() {
+    let dir = crate::scratch::Scratch::new("sessionhelpercost");
+    let mut ed = helped(&dir);
+    let mut done =
+        crate::reviewer::Reviewer::for_test(dir.to_path_buf(), crate::reviewer::State::Done, vec![1], "");
+    done.cost = Some(0.08);
+    ed.workspace.reviewer = Some(done);
+    let reviewer =
+        |ed: &Editor| ed.sessions_rows().into_iter().find(|r| r.helper == Some(Kind::Review)).unwrap();
+    let r = reviewer(&ed);
+    assert_eq!(r.text(Col::Cost), crate::usage::dollars(0.08), "its reported cost");
+    assert!(card(&r).iter().any(|p| p.0 == crate::usage::dollars(0.08)), "in its card: {:?}", card(&r));
+    // (every row's model alike — main's and its reviewer's `opus` —: said nowhere)
+    assert_eq!(r.text(Col::Model), "", "alike: none");
+    // (a search's own model beside it: each row its own)
+    searching(&mut ed, 1, "tokio release");
+    let r = reviewer(&ed);
+    assert_eq!(r.text(Col::Model), "opus", "its session's model, the rows differing");
+    assert!(card(&r).iter().any(|p| p.0 == "opus"), "in its card");
+    // (money off the screen: no cost)
+    ed.config.llm.cost = false;
+    assert_eq!(reviewer(&ed).text(Col::Cost), "");
+}
+
+/// Every key the session list takes, on a helper's row, acts or is refused in words — never nothing (the design
+/// session, 2026-11-16): each printable key, so a session's key added later can't fall through in silence where no
+/// session is in hand; those `KEYS` says act on the session are refused as a session's keys.
+#[test]
+fn every_key_on_a_helper_row_acts_or_is_refused_in_words() {
+    let dir = crate::scratch::Scratch::new("sessionhelperkeys");
+    let mut ed = helped(&dir);
+    let reviewer =
+        crate::reviewer::Reviewer::for_test(dir.to_path_buf(), crate::reviewer::State::Reading, vec![], "");
+    ed.workspace.reviewer = Some(reviewer);
+    let main = ed.workspace.id;
+    let helper_row = RowId::Helper { of: main, kind: Kind::Review };
+    // (the editor's own keys — the space menu, the command line — are never the list's)
+    for c in ('!'..='~').filter(|&c| c != ':') {
+        if ed.workspace.id != main {
+            assert!(ed.workspace_switch(main).is_in());
+        }
+        ed.prompt = None;
+        ed.session_list();
+        ed.sessions_pane.as_mut().unwrap().selected = helper_row.pack();
+        frame(&mut ed, 160, 40);
+        assert_eq!(ed.sessions_hand(), Some(helper_row));
+        ed.status = None;
+        let said_before = ed.messages.len();
+        let state = |ed: &Editor| {
+            let at = ed.float_list_here(GroupKind::Sessions);
+            (ed.workspace.id, ed.prompt.is_some(), ed.sessions_pane.is_some(), at, ed.offers.len(), ed.mode)
+        };
+        let before = state(&ed);
+        ed.handle_key(Key::plain(Code::Char(c)));
+        frame(&mut ed, 160, 40);
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let acted = state(&ed) != before;
+        assert!(
+            acted || !said.is_empty() || ed.messages.len() > said_before,
+            "{c:?} on a helper's row: nothing"
+        );
+        if takes_the_session(c) {
+            assert!(said.starts_with(&format!("{c} is a session's key")), "{c:?}: {said}");
+        }
+        ed.mode = crate::editor::Mode::Normal;
+    }
+}
+
 /// An ended helper's row stands as it ended until its session's next turn begins (the one list L4) — `space i`
 /// stopped beside a search that runs; the reviewer's done too, and past that turn while its end is unseen. A row in hand
 /// that goes leaves its session's in hand.
@@ -1223,7 +1478,7 @@ fn an_ended_helpers_row_stands_until_its_sessions_next_turn() {
         ["main", "├─ reviewer · done · 2 findings", "├─ ask · stopped", "└─ search · • searching", "fix"]
     );
     let rows = ed.sessions_rows();
-    assert_eq!(rows[2].cell(Col::State), [("stopped".to_string(), Ink::Warn)]);
+    assert_eq!(rows[2].cell(Col::State), [("stopped".to_string(), Ink::Faint)], "your key's: faint");
     assert_eq!(rows[1].cell(Col::State)[0].1, Ink::Accent);
     // (the search ends without its list: its row says so, in place of the one running)
     let id = ed.workspace.claude.searches[0].id;

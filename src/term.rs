@@ -1329,8 +1329,8 @@ struct Layout {
     /// The floating panes in sight this frame, bottom first (P3 step 7): each one's kind, its host pane (the session
     /// list's: its list) and its frame's rect on the screen — the whole screen its frame, never the code area.
     floats: Vec<(crate::pane::GroupKind, crate::split::PaneId, crate::split::Rect)>,
-    /// The session list's rows, built once a frame while it's up (`Editor::sessions_laid`): its frame's width is found
-    /// from them (`floats`) and they're drawn (`draw_sessions_pane`).
+    /// The session list's rows, built once a frame while it's up (`Editor::sessions_laid`), drawn by
+    /// `draw_sessions_pane`.
     sessions: std::rc::Rc<[crate::sessionpane::Row]>,
     /// The code panes' top lines and the dividers between them (`code_lines`, `code_dividers`), worked out once a frame:
     /// every edge that meets them asks.
@@ -1869,7 +1869,7 @@ impl Layout {
         // `C-w z`: one pane fills the screen (`sizes::Zoom`)
         let zoom = editor.zoomed();
         let zoom_shows = editor.zoomed_shows();
-        // (the session list's rows first: its frame is as wide as they need — `floats`)
+        // (the session list's rows, built once a frame)
         let sessions = editor.sessions_laid().into();
         // (the slot's header in the line where it meets what's above — panes P3 §1: filling the screen, that line
         // is its first row, no code's line over it)
@@ -6857,16 +6857,10 @@ fn draw_sessions_pane(
     let warn = Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..card };
     // Its top line: its name, how many work (who waits is each row's `▲`, what waits the card stack's — never a count
     // here too: polish landing 1); its keys are its bottom line's floating, its foot's docked (the one list L2)
-    let working = rows.iter().filter(|r| r.working).count();
-    let helpers = rows.iter().filter(|r| r.helper.is_some()).count();
-    // (the details fold from the last; digits count the sessions, helpers said apart — the one list L4)
-    let mut details = vec![(crate::nav::count(rows.len() - helpers, "session"), dim)];
-    if helpers > 0 {
-        details.push((format!(" · {}", crate::nav::count(helpers, "helper")), faint));
-    }
-    if working > 0 {
-        details.push((format!(" · {working} working"), faint));
-    }
+    // (the details fold from the last — the helpers' count first: `sessionpane::counts`)
+    let details: Vec<(String, Style)> = (crate::sessionpane::counts(rows).into_iter().enumerate())
+        .map(|(i, t)| if i == 0 { (t, dim) } else { (format!(" · {t}"), faint) })
+        .collect();
     let has = ui.lit == Some(Region::Slot);
     let names = [(Fit::from("sessions"), strong)];
     let head = TopLine { names: &names, details: &fits(&details), faint, ..TopLine::default() };

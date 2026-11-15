@@ -4,7 +4,7 @@
 01   1                                                                                             │  ▎ Ask Claude
 02                                                                                                 │
 03                                                                                                 │  It reads the whole project,
-04                                 ╭─ sessions ── 3 sessions · 3 helpers · 3 working ─────────────────────────────────────────────╮
+04                                 ╭─ sessions ── 3 sessions · 1 working · 3 helpers ─────────────────────────────────────────────╮
 05                                 │▎ main                                                                                       ▎│
 06                                 │  └─ reviewer  reviewing · 0 reads  uncommitted                                              ▎│
 07                                 │  fix-login    thinking                                                                      ▎│

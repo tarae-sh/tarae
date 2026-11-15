@@ -163,7 +163,7 @@ pub enum Place {
 /// A floating pane's frame (§3.1): its left, top, width and height as thousandths of the screen above the status
 /// line — the whole screen its frame, never the code area (user, 2026-10-23) — clamped onto the screen every frame
 /// (`rect`), so a resize keeps it in sight and in proportion. A list's may say less (`rect_rows`): `h` 0 as tall as
-/// its rows, `w` 0 as wide as its rows need, `x` placed centred across.
+/// its rows, `x` placed centred across.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frame {
     pub x: u16,
@@ -226,28 +226,18 @@ impl Frame {
     /// tall, at 1/4 of its height — it grows and shrinks downward from there, its top never moving.
     pub const LIST: Frame = Frame { x: 200, y: Self::PLACED, w: 600, h: 0 };
 
-    /// The session list's frame (the one list L2, 2026-11-15): as wide as its rows need (`w` 0, `rows_w`), centred
-    /// across (`x` placed), as tall as its rows, its top placed as a list's.
-    pub const ROWS: Frame = Frame { x: Self::PLACED, y: Self::PLACED, w: 0, h: 0 };
+    /// The session list's frame: a list's 3/5, centred across by the rule (`x` placed — the user, 2026-11-16: `C-w >`
+    /// `C-w <` widen and narrow it on both sides while it's there, `float_size`), as tall as its rows.
+    pub const SESSIONS: Frame = Frame { x: Self::PLACED, ..Self::LIST };
 
     /// A list of `n` rows this tall on a screen with `sh` rows: its rows and its frame's two lines, up to half of it.
     fn list_h(n: usize, sh: usize) -> usize {
         (n.max(1) + 2).min((sh / 2).max(3)).min(sh)
     }
 
-    /// A list as wide as its rows on a screen `sw` wide: the `wide` cells they need, no narrower than a list's 3/5
-    /// (`LIST`'s, so at its least it's `:messages`' width) and no wider than the screen less a picker's margins — at
-    /// least `FLOAT_MIN_W` while the screen has it.
-    pub fn rows_w(wide: usize, sw: usize) -> usize {
-        let least = (Self::LIST.w as usize * sw + Self::PER / 2) / Self::PER;
-        let most = sw.saturating_sub(2 * crate::chrome::PICKER_MX);
-        wide.max(least).min(most).max(FLOAT_MIN_W.min(sw))
-    }
-
-    /// A list's cells (`n` rows, `wide` cells wide as its rows need): as `rect`, but with no height set (`h` 0) as
-    /// tall as its rows (`list_h`), its top line staying — moved up only where the screen ends; with no width set
-    /// (`w` 0) as wide as `rows_w` says; a left placed (`x`), centred across.
-    pub fn rect_rows(self, sw: usize, sh: usize, n: usize, wide: usize) -> crate::split::Rect {
+    /// A list's cells (`n` rows): as `rect`, but with no height set (`h` 0) as tall as its rows (`list_h`), its top
+    /// line staying — moved up only where the screen ends; a left placed (`x`), centred across.
+    pub fn rect_rows(self, sw: usize, sh: usize, n: usize) -> crate::split::Rect {
         let mut r = match self.h {
             0 => {
                 let h = Self::list_h(n, sh);
@@ -256,9 +246,6 @@ impl Frame {
             }
             _ => self.rect(sw, sh),
         };
-        if self.w == 0 {
-            r.w = Self::rows_w(wide, sw);
-        }
         r.x = match self.x {
             Self::PLACED => (sw - r.w) / 2,
             x => ((x as usize * sw + Self::PER / 2) / Self::PER).min(sw - r.w),

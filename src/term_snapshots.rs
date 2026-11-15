@@ -3670,7 +3670,8 @@ fn snapshot_sessions_with_the_reviewer_reading() {
     let helpers: Vec<&String> = rows.iter().filter(|r| r.contains("└─ reviewer ")).collect();
     assert_eq!(helpers.len(), 2, "{rows:#?}");
     assert!(helpers.iter().all(|r| r.contains("reviewing · 0 reads")), "{rows:#?}");
-    assert!(rows[4].contains("3 sessions · 3 helpers · 3 working"), "{rows:#?}");
+    // (the sessions at work — fix-login —, then the helpers: two reviewers reading, docs' ended)
+    assert!(rows[4].contains("3 sessions · 1 working · 3 helpers"), "{rows:#?}");
     // (docs' under the frame's half of the screen: its row as the list has it)
     let list = s.ed.sessions_rows();
     let docs = list.last().unwrap();
