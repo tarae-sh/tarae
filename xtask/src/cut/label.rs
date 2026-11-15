@@ -13,6 +13,7 @@
 //!   sound.
 
 use super::draw::Layout;
+use super::route::Corner;
 use crate::recording::Picture;
 use crate::shot::Rgb;
 use crate::video::{self, Look};
@@ -46,6 +47,9 @@ const PANEL_AIR: (usize, usize) = (48, 28);
 const PANEL_RADIUS: f32 = 14.0;
 const BOARD_INK: i32 = 16;
 const WHITE: Rgb = [255, 255, 255];
+/// Way (b), a station's name small at the board's corner (`corner`): its panel's air and corners, half the title's.
+const CORNER_AIR: (usize, usize) = (24, 14);
+const CORNER_RADIUS: f32 = 10.0;
 
 /// The label in one frame: how far it's drawn (0..=1, its fades) and where the light is in its pass (0..=1 across),
 /// none between passes.
@@ -142,6 +146,67 @@ fn inside(x: f32, y: f32, (l, t, r, b): (f32, f32, f32, f32), rad: f32) -> f32 {
     (0.5 - (((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - rad)).clamp(0.0, 1.0)
 }
 
+/// The panel over the box (l, t, r, b) of a frame `px` `w` across, its corners `rad`, drawn `shown` of the way — only
+/// where the board has something under it (any pixel of the box off the ground, as this frame drew it). Whether it was.
+fn panel(px: &mut [u8], w: usize, (l0, t0, r0, b0): Rect, look: &Look, (rad, shown): (f32, f32)) -> bool {
+    let under = (t0..b0).any(|y| {
+        (l0..r0).any(|x| {
+            let p = &px[(y * w + x) * 3..][..3];
+            (0..3).any(|c| (i32::from(p[c]) - i32::from(look.ground[c])).abs() > BOARD_INK)
+        })
+    });
+    if under {
+        let rect = (l0 as f32, t0 as f32, r0 as f32, b0 as f32);
+        for y in t0..b0 {
+            for x in l0..r0 {
+                let fill = inside(x as f32 + 0.5, y as f32 + 0.5, rect, rad);
+                mix(&mut px[(y * w + x) * 3..][..3], look.ground, fill * PANEL * shown);
+            }
+        }
+    }
+    under
+}
+
+/// A box on the frame (px): left, top, right, bottom.
+pub(crate) type Rect = (usize, usize, usize, usize);
+
+/// Way (b): the panel's box for a station's name `word` (the renderer's picture's size, its margin `lay.pad`) at the
+/// board's `corner` — its outer edges on the screen's picture's margin, at its top.
+pub(crate) fn corner_box(lay: &Layout, word: (usize, usize), corner: Corner) -> Rect {
+    let k = lay.scale.k();
+    let (ax, ay) = (CORNER_AIR.0 * k, CORNER_AIR.1 * k);
+    let (iw, ih) = (word.0.saturating_sub(2 * lay.pad), word.1.saturating_sub(2 * lay.pad));
+    let top = lay.at.1 + lay.pad;
+    let (l, r) = match corner {
+        Corner::Left => (lay.at.0 + lay.pad, lay.at.0 + lay.pad + iw + 2 * ax),
+        Corner::Right => {
+            let r = lay.at.0 + lay.pic.0 - lay.pad;
+            (r - iw - 2 * ax, r)
+        }
+    };
+    (l, top, r, top + ih + 2 * ay)
+}
+
+/// Way (b): a station's name `word` (the renderer's picture in the ink on the ground) at the board's `corner`, drawn
+/// `shown` of the way, in the label's manner — the panel where the board has something under it, no light. Whether
+/// the panel was drawn.
+pub(crate) fn corner(
+    px: &mut [u8],
+    lay: &Layout,
+    word: &Picture,
+    look: &Look,
+    shown: f32,
+    at: Corner,
+) -> bool {
+    let k = lay.scale.k();
+    let b = corner_box(lay, (word.0, word.1), at);
+    let under = panel(px, lay.dims.0, b, look, (CORNER_RADIUS * k as f32, shown));
+    let to =
+        ((b.0 + CORNER_AIR.0 * k).saturating_sub(lay.pad), (b.1 + CORNER_AIR.1 * k).saturating_sub(lay.pad));
+    line(px, lay.dims, word, to, (look.ink, look.ground), (look.ink, look.ink, 1.0), shown, None);
+    under
+}
+
 /// The label `l` over the board's picture as `lay` places it: the title `title` and the small line `small` (the
 /// renderer's pictures in the text's colour on the ground, at `lay`'s scale), centred on the picture, one under the
 /// other as a chapter card stacks its lines; the panel where the board has something under them; the light (`cell`:
@@ -162,26 +227,11 @@ pub(crate) fn draw(
     let (tx, ty) = (cx - text_w / 2, cy - text_h / 2);
     let at_title = (tx + (text_w - title.0) / 2, ty);
     let at_small = (tx + (text_w - small_w) / 2, ty + title.1);
-    // (the panel's box: the words' ink and its air; the board under it, as this frame drew it)
+    // (the panel's box: the words' ink and its air)
     let (ax, ay) = (PANEL_AIR.0 * k, PANEL_AIR.1 * k);
     let (l0, t0) = ((tx + lay.pad).saturating_sub(ax), (ty + lay.pad).saturating_sub(ay));
     let (r0, b0) = (tx + text_w - lay.pad + ax, ty + text_h - lay.pad + ay);
-    let under = (t0..b0).any(|y| {
-        (l0..r0).any(|x| {
-            let p = &px[(y * w + x) * 3..][..3];
-            (0..3).any(|c| (i32::from(p[c]) - i32::from(look.ground[c])).abs() > BOARD_INK)
-        })
-    });
-    if under {
-        let rect = (l0 as f32, t0 as f32, r0 as f32, b0 as f32);
-        let rad = PANEL_RADIUS * k as f32;
-        for y in t0..b0 {
-            for x in l0..r0 {
-                let fill = inside(x as f32 + 0.5, y as f32 + 0.5, rect, rad);
-                mix(&mut px[(y * w + x) * 3..][..3], look.ground, fill * PANEL * l.shown);
-            }
-        }
-    }
+    let under = panel(px, w, (l0, t0, r0, b0), look, (PANEL_RADIUS * k as f32, l.shown));
     // (one light over both lines: across the wider line, its edge on the letters at both ends so a pass never pops in)
     let shine = l.light.map(|p| {
         let sigma = BAND_LETTERS * cell as f32 / 2.355;

@@ -123,34 +123,27 @@ fn held_row(t0: Vec<u32>, wash: Option<Vec<u8>>, held: Vec<bool>, rects: Vec<[us
 
 const INK: Rgb = [210, 200, 180];
 const WASH: Rgb = [60, 90, 140];
-const FULL: Rgb = [250, 250, 250];
 
-/// The leading end is soft: a pixel's ink comes up over `SOFT_MS` from its time, eased, never at once; fresh ink is
-/// lifted `FRESH` toward the look's ink and dries over `DRY_MS`; without fresh ink, laid as it is. What no stroke
-/// reaches comes in from the step's ms over `FADE_MS`. Settled, the board is the step's own picture.
+/// The leading end is soft: a pixel's ink comes up over `SOFT_MS` from its time, eased, never at once, then laid as it
+/// is (no fresh ink: it didn't read at 1×). What no stroke reaches comes in from the step's ms over `FADE_MS`. Settled,
+/// the board is the step's own picture.
 #[test]
-fn the_leading_end_is_soft_and_fresh_ink_dries_over_a_second() {
+fn the_leading_end_is_soft() {
     let s = step_of(1_000, Vec::new(), Vec::new());
     let h = held_row(vec![100_000, NONE], None, vec![false; 2], Vec::new());
-    let px = |t: u64, fresh: bool| h.board(&s, Some(t), fresh, FULL)[..3].to_vec();
-    let late = |t: u64| h.board(&s, Some(t), false, FULL)[3..6].to_vec();
-    assert_eq!(px(100_000, false), [10; 3], "at its time: nothing yet");
-    let mid = px(100_000 + SOFT_MS * 500, false);
+    let px = |t: u64| h.board(&s, Some(t))[..3].to_vec();
+    let late = |t: u64| h.board(&s, Some(t))[3..6].to_vec();
+    assert_eq!(px(100_000), [10; 3], "at its time: nothing yet");
+    let mid = px(100_000 + SOFT_MS * 500);
     assert!(mid[0] > 10 && mid[0] < INK[0], "halfway up its soft end: {mid:?}");
     assert_eq!(mid[0], (10.0 + (210.0 - 10.0) * 0.5f32).round() as u8, "eased: half at half");
-    assert_eq!(px(100_000 + SOFT_MS * 1000, false), INK, "whole past its soft end");
-    // (fresh: lighter toward the look's ink at first, drying to the ink itself)
-    let wet = px(100_000 + SOFT_MS * 1000, true);
-    assert!(wet[0] > INK[0] && wet[2] > INK[2], "{wet:?}");
-    let lift = FRESH * (1.0 - super::smooth(SOFT_MS as f64 * 1000.0, DRY_MS as f64 * 1000.0));
-    assert_eq!(wet[2], (180.0 + (250.0 - 180.0) * lift).round() as u8);
-    assert_eq!(px(100_000 + DRY_MS * 1000, true), INK, "dry after a second");
+    assert_eq!(px(100_000 + SOFT_MS * 1000), INK, "whole past its soft end, as it is");
     // (no stroke reaches the second pixel: it comes at the step's ms over FADE_MS)
     assert_eq!(late(999_999), [10; 3]);
     assert!(late(1_000_000 + FADE_MS * 500)[0] > 10);
     assert_eq!(late(1_000_000 + FADE_MS * 1000), INK);
-    assert_eq!(h.board(&s, None, true, FULL), h.whole, "settled: the step's own picture");
-    assert_eq!((s.settles(true), s.settles(false)), (2_000_000, 1_200_000));
+    assert_eq!(h.board(&s, None), h.whole, "settled: the step's own picture");
+    assert_eq!(s.settles(), 1_200_000);
 }
 
 /// A wash pixel's share is the strongest of the running fades whose rectangle holds it; a pixel in none comes at the
@@ -170,7 +163,7 @@ fn a_wash_pixel_takes_the_strongest_fade_whose_rectangle_holds_it() {
     let wash = Some(layer_of((4, 1), WASH, 255));
     let mut h = held_row(vec![NONE; 4], wash, held, rects);
     h.ink = None;
-    let at = |t: u64| h.board(&s, Some(t), true, FULL);
+    let at = |t: u64| h.board(&s, Some(t));
     let shade = |px: &[u8], i: usize| px[i * 3 + 2];
     let b = at(75_000);
     // (at 75 ms the first fade is 0.84 in, the second 0.16: pixel 1, in both, takes the first's)
@@ -287,10 +280,10 @@ fn a_picture_stops_the_take_its_clock_standing_and_draws_each_step_from_a_whole_
     assert!((0..5_300_000).step_by(33_333).all(|o| f(o).clock == Some(20_000) && f(o).speed.is_none()));
     assert_eq!(shows(200_000 + 1_000_000).t, Some(1_000_000));
     assert_eq!(shows(200_000 + FADE_MS * 1000).line, Some((0, 255)), "its line a caption's");
-    // (a settles at 2.281 s + 1 s: the frames standing after are one board)
-    let (a, b) = (shows(200_000 + 3_300_000), shows(200_000 + 3_500_000));
+    // (a settles at 2.281 s + 0.2 s, what came at the end in: the frames standing after are one board)
+    let (a, b) = (shows(200_000 + 2_500_000), shows(200_000 + 3_500_000));
     assert_eq!((a, a.t), (b, None));
-    assert_eq!(shows(200_000 + 3_200_000).t, Some(3_200_000), "drying still");
+    assert_eq!(shows(200_000 + 2_450_000).t, Some(2_450_000), "what came at the end still coming in");
     // (b at 2×: its clock twice its video time; no text, no line)
     assert_eq!(shows(4_000_000 + 100_000), Shows { n: Some(0), k: 1, t: Some(200_000), line: None });
     // (at a card's point, the card first; at the take's end, after its last screen held)
@@ -462,16 +455,15 @@ fn every_refusal_of_a_picture_names_its_line() {
         (list("[[picture]]\nat = \"20s\"\n"), ("[[picture]]", 0), "picture: no steps".into()),
         (list("[[picture]]\nat = \"20s\"\nsteps = []\n"), ("steps", 0), "picture: steps = [] — a step at least".into()),
         (list("[[picture]]\nat = \"20s\"\nsteps = 3\n"), ("steps", 0), "picture: steps = [{ file".into()),
-        (list("[[picture]]\nat = \"20s\"\nfresh = 1\nsteps = [\n  { file = \"a.png\", for = \"1s\" },\n]\n"), ("fresh", 0), "picture: fresh = true or false".into()),
-        (list("[[picture]]\nat = \"20s\"\nsize = 1\nsteps = [\n  { file = \"a.png\", for = \"1s\" },\n]\n"), ("size", 0), "picture: no key size (it takes at, steps, fresh)".into()),
+        (list("[[picture]]\nat = \"20s\"\nfresh = false\nsteps = [\n  { file = \"a.png\", for = \"1s\" },\n]\n"), ("fresh", 0), "picture: no key fresh (it takes at, steps)".into()),
+        (list("[[picture]]\nat = \"20s\"\nsize = 1\nsteps = [\n  { file = \"a.png\", for = \"1s\" },\n]\n"), ("size", 0), "picture: no key size (it takes at, steps)".into()),
         (list(&one("\"a.png\"")), ("steps", 0), "picture, step 1: a table".into()),
         (list(&one("{ file = \"a.png\", for = \"1s\", size = 2 }")), ("{", 0), "picture, step 1: no key size (it takes file, for, speed, text)".into()),
         (list(&one("{ for = \"1s\" }")), ("{", 0), "picture, step 1: no file".into()),
         (list(&one("{ file = \"a.jpg\", for = \"1s\" }")), ("{", 0), "picture, step 1: file = \"a.jpg\" — the step's whole picture, NAME.png".into()),
         (list(&one("{ file = \"a.png\" }")), ("{", 0), "picture, step 1 (a): no for".into()),
         (list(&one("{ file = \"a.png\", for = \"1s\", speed = 4 }")), ("{", 0), "picture, step 1 (a): speed = 0.5 to 3".into()),
-        (list(&one("{ file = \"a.png\", for = \"0.5s\" }")), ("{", 0), "picture, step 1 (a): stands 0.50 s after it's drawn — fresh ink dries over 1.0 s after it: for = \"1000ms\" at the least".into()),
-        (list("[[picture]]\nat = \"20s\"\nfresh = false\nsteps = [\n  { file = \"a.png\", for = \"0.1s\" },\n]\n"), ("{", 0), "picture, step 1 (a): stands 0.10 s after it's drawn — what came at the end comes in over 200 ms after it: for = \"200ms\" at the least".into()),
+        (list(&one("{ file = \"a.png\", for = \"0.5s\" }")), ("{", 0), "picture, step 1 (a): stands 0.50 s after it's drawn — 1.0 s at the least, to be read: for = \"1000ms\"".into()),
         (list(&one("{ file = \"a.png\", for = \"1s\", text = 3 }")), ("{", 0), "picture, step 1 (a): text = a line, or a row of lines".into()),
         (list(&one(&format!("{{ file = \"a.png\", for = \"3s\", text = \"{long}\" }}"))), ("{", 0), "picture, step 1 (a): one line of 1 to 40 characters (41 here)".into()),
         (list(&one("{ file = \"a.png\", for = \"1s\", text = [\"From inside, you can't see who.\", \"Two.\"] }")), ("{", 0), "picture, step 1 (a), line 1 of 2: stands 1.00 s (its share of the step's 2.00 s, drawn and standing) — 31 characters need 2.17 s to be read".into()),

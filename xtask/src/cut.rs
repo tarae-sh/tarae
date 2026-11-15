@@ -72,13 +72,21 @@
 //!
 //! [[picture]]                             # a drawing on the board, the take stopped (`picture.rs`): through the
 //! at = "mark \"room found\" + 8s"           # ground into it, each step drawn stroke by stroke in the order the
-//! fresh = true                            # brush made it, then standing; back to the take. The band's clock stands
+//!                                         # brush made it, then standing; back to the take. The band's clock stands
 //! steps = [                               # at `at`, no key is heard. Each step's NAME.png, NAME.ink.png,
 //!   { file = "pictures/1-room-1.png", for = "2s", text = ["One ztunnel on each node.", "It listens inside."] },
 //!   { file = "pictures/1-room-2.png", for = "2s", speed = 1.2, text = "From inside, you can't see who." },
 //! ]                                       # NAME.wash.png and NAME.json beside each other; `for` how long it
 //!                                         # stands after it's drawn, `speed` its drawing's (0.5 to 3), `text` a
 //!                                         # caption's line or row over the step, each line a share of it
+//!
+//! [route]                                 # the stations on the band's rule (`route.rs`): a dot each, the part
+//! stations = ["The room", "The key"]      # travelled in ink, the rest faint, the one being worked on in the accent
+//! board = true                            # a card-less chapter's name small at the board's corner too, 2 s (way
+//!                                         # (b); the band only if left out)
+//!
+//! [[station]]                             # in the route's order, one each: inked on the frame its picture's last
+//! picture = 1                             # stroke ends — the list's Nth [[picture]], one station a picture
 //!
 //! [[zoom]]                                # the camera on what must be read, eased in and back out — in the
 //!                                         # take, never where it ends, whatever its time
@@ -142,6 +150,7 @@ mod mascot;
 mod mask;
 mod opening;
 mod picture;
+mod route;
 mod sound;
 #[cfg(test)]
 mod tests;
@@ -742,6 +751,8 @@ pub(crate) struct Cut {
     pub(crate) end: u64,
     /// The pictures, in the take's order (`picture.rs`).
     pub(crate) pictures: Vec<picture::Picture>,
+    /// The stations on the band's rule, each inked by its picture (`route.rs`).
+    pub(crate) route: Option<route::Route>,
 }
 
 /// The file's text by lines: where a table or a key is, for what's refused.
@@ -915,7 +926,7 @@ impl Cut {
         let root = Entry { t: &top, line: 0, src: &src, name: "the file" };
         root.keys(&[
             "bg", "default", "mascot", "opening", "span", "chapter", "caption", "zoom", "music", "sound",
-            "mask", "picture",
+            "mask", "picture", "route", "station",
         ])?;
         // (a picture's files: from the list's folder, or whole paths)
         let dir = Path::new(file).parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -966,11 +977,12 @@ impl Cut {
                 ));
             }
         };
-        // (the list as read, but its `[mascot]` and its masks: switching a motion or the pops, or hiding a cell,
-        // reshuffles no blink)
+        // (the list as read, but its `[mascot]`, its masks and its route: switching a motion or the pops, hiding a
+        // cell or laying the stations reshuffles no blink)
         let mut seeded = top.clone();
-        seeded.remove("mascot");
-        seeded.remove("mask");
+        for key in ["mascot", "mask", "route", "station"] {
+            seeded.remove(key);
+        }
         let seed = (toml::to_string(&seeded).unwrap_or_default().bytes())
             .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
         let bg = match root.text("bg")? {
@@ -1211,6 +1223,7 @@ impl Cut {
             }
             pictures.push(p);
         }
+        let route = route::parse(&top, &src, &pictures)?;
 
         let mut zooms: Vec<Zoom> = Vec::new();
         for e in list("zoom")? {
@@ -1421,6 +1434,7 @@ impl Cut {
             beds,
             end: marks.end,
             pictures,
+            route,
         })
     }
 
@@ -1565,7 +1579,9 @@ pub(crate) enum Card {
 /// or a chapter with no card (which, how drawn) —; the camera's clock (µs, never whole ms: at 30 fps those make every
 /// third frame's move 2 % longer than the others', a ripple through every zoom) — in the take part where in the map it
 /// is, where it ends how far into it, on its own clock; and the words over where it ends (`label.rs`), its frames only,
-/// where the opening has them; the board a picture's (`picture.rs`), in place of the screen.
+/// where the opening has them; the board a picture's (`picture.rs`), in place of the screen; the route on the rule
+/// (`route.rs`, where the list has one, on every frame but a card's) and a station's name at the board's corner
+/// (which chapter, how drawn of 255, which corner — `draw.rs` moves it off the line being read).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
     pub(crate) screen: Option<u64>,
@@ -1579,6 +1595,8 @@ pub(crate) struct Frame {
     pub(crate) camera: Option<u64>,
     pub(crate) label: Option<label::Label>,
     pub(crate) picture: Option<picture::Shows>,
+    pub(crate) route: Option<route::Shows>,
+    pub(crate) named: Option<(usize, u8, route::Corner)>,
 }
 
 impl Frame {
@@ -1600,6 +1618,8 @@ impl Frame {
             camera: None,
             label: None,
             picture: None,
+            route: None,
+            named: None,
         }
     }
 }
@@ -1624,6 +1644,8 @@ pub(crate) struct Program<'c> {
     pub(crate) jumps: Vec<(u64, u64)>,
     captions: Vec<(u64, u64)>,
     banded: Vec<(u64, u64, usize)>,
+    /// Each station's inking (`route.rs`): the video's µs of the frame its picture's last stroke ends.
+    pub(crate) inks: Vec<u64>,
 }
 
 impl<'c> Program<'c> {
@@ -1695,7 +1717,29 @@ impl<'c> Program<'c> {
         let banded = (cut.chapters.iter().enumerate().filter(|(_, c)| !c.card))
             .map(|(i, c)| (map.video(c.at), map.video(c.at) + CHAPTER_BAND_MS * 1000, i))
             .collect();
-        Program { cut, parts, total: at, jumps, captions, banded }
+        let inks =
+            (cut.route.iter().flat_map(|r| &r.pictures)).map(|&n| Program::inked(cut, &parts, n)).collect();
+        Program { cut, parts, total: at, jumps, captions, banded, inks }
+    }
+
+    /// Where picture `n`'s station is inked (`parts`: the video's): the first frame of its last step with strokes whose
+    /// clock has reached that step's last stroke's end — the brush's last sweep.
+    fn inked(cut: &Cut, parts: &[Part], n: usize) -> u64 {
+        let pic = &cut.pictures[n];
+        let Some(p) = parts.iter().find(|p| p.what == What::Picture(n)) else { return u64::MAX };
+        let Some((k, end)) = route::last_stroke(pic) else { return u64::MAX };
+        let start = Program::time_of(Program::frame_at(p.at)) + pic.starts()[k];
+        let step = &pic.steps[k];
+        let mut j = Program::frame_at(start);
+        while step.clock(Program::time_of(j) - start) < end {
+            j += 1;
+        }
+        Program::time_of(j)
+    }
+
+    /// The route on the rule at the video's `v` µs: the stations inked by then.
+    fn route_at(&self, v: u64) -> route::Shows {
+        route::Shows { inked: self.inks.iter().filter(|&&i| i <= v).count() }
     }
 
     /// Where chapter `i` starts in the video (µs): its card's start, or (no card) the take's frame where it begins.
@@ -1750,8 +1794,16 @@ impl<'c> Program<'c> {
             })
     }
 
-    /// What the frame at the video's `v` µs shows.
+    /// What the frame at the video's `v` µs shows — with the route on the rule where the list has one (but a card).
     pub(crate) fn frame(&self, v: u64) -> Frame {
+        let f = self.frame_of(v);
+        match (&self.cut.route, f.card) {
+            (Some(_), None) => Frame { route: Some(self.route_at(v)), ..f },
+            _ => f,
+        }
+    }
+
+    fn frame_of(&self, v: u64) -> Frame {
         let p = self.part(v);
         let off = v.saturating_sub(p.at);
         match p.what {
@@ -1814,6 +1866,12 @@ impl<'c> Program<'c> {
         let chapter = (self.banded.iter().find(|c| c.0 <= m && m < c.1))
             .map(|c| (c.2, envelope(m - c.0, c.1 - c.0)))
             .filter(|c| c.1 > 0 && moving);
+        // (way (b): the station's name at the board's top-left too, from the band's frame, `route::NAME_MS`)
+        let named = (self.cut.route.as_ref().filter(|r| r.board && moving))
+            .and_then(|_| self.banded.iter().find(|c| c.0 <= m && m < c.0 + route::NAME_MS * 1000))
+            .map(|c| (c.2, (label::at(m - c.0, route::NAME_MS * 1000).shown * 255.0).round() as u8))
+            .filter(|c| c.1 > 0)
+            .map(|(i, a)| (i, a, route::Corner::Left));
         Frame {
             screen: Some(t),
             card: None,
@@ -1826,6 +1884,8 @@ impl<'c> Program<'c> {
             camera: Some(m),
             label: None,
             picture: None,
+            route: None,
+            named,
         }
     }
 

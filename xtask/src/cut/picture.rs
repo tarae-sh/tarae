@@ -8,8 +8,8 @@
 //!   `{"size":[3840,1860],"ms":2281,"strokes":[{"at":0,"ms":140,"r":24,"path":[[x,y],…]},…],"fades":[{"at":…,
 //!   "ms":320,"rect":[x,y,w,h]},…]}`. The files are from the list's folder or a whole path, never in the repository.
 //! - **Ink** comes in where the brush first comes within `r` of it (`reveal`: over every stroke, the earliest — a path
-//!   under `DAB_PX` long is a dab, a disc growing over its `ms`), its leading end soft over `SOFT_MS`, laid `FRESH` of
-//!   the way to the look's ink and dried over `DRY_MS` (`fresh = false`: as it is). **Wash**: a pixel's share is the
+//!   under `DAB_PX` long is a dab, a disc growing over its `ms`), its leading end soft over `SOFT_MS`, laid as it is
+//!   (fresh ink drying, tried at 0.25 toward the look's ink and 0.5 toward white, didn't read at 1×). **Wash**: a pixel's share is the
 //!   strongest of the fades whose rectangle holds it. What no stroke reaches and no rectangle holds comes in at the
 //!   step's `ms` over `FADE_MS` — what came at the end, counted. Settled, the board is `NAME.png` itself.
 //! - **A frame's board** is a function of the step's clock and the files alone (`Held::board`): nothing carried from
@@ -40,10 +40,8 @@ use crate::video::{self, Scale};
 pub(crate) const BOARD: (usize, usize) = (3840, 1860);
 /// The leading end of a stroke comes up over this much of its clock (at 2600 px/s, the last ~130 px at 2160p).
 pub(crate) const SOFT_MS: u64 = 50;
-/// Fresh ink dries over this much of the video; a step stands at least this long after it's drawn.
-pub(crate) const DRY_MS: u64 = 1_000;
-/// How far fresh ink is laid toward the look's ink, easing to nothing as it dries.
-pub(crate) const FRESH: f32 = 0.25;
+/// A step stands at least this long after it's drawn: the reading floor.
+pub(crate) const STAND_LEAST_MS: u64 = 1_000;
 /// The layers making the step's picture: a pixel more than this off on a channel is a miss…
 pub(crate) const MISS_BY: u8 = 2;
 /// …and this many misses at the most (0.1 % of the board).
@@ -97,12 +95,11 @@ pub(crate) struct Step {
     pub(crate) fades: Vec<Fade>,
 }
 
-/// A picture: at the take's `at` (ms), its `[[picture]]`'s line, fresh ink or not, its steps.
+/// A picture: at the take's `at` (ms), its `[[picture]]`'s line, its steps.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Picture {
     pub(crate) at: u64,
     pub(crate) line: usize,
-    pub(crate) fresh: bool,
     pub(crate) steps: Vec<Step>,
 }
 
@@ -142,11 +139,9 @@ impl Step {
         (since as f64 * self.speed).round() as u64
     }
 
-    /// Where on its clock it's settled (µs): its `ms`, then fresh ink dried (`DRY_MS` of video) — without, what came at
-    /// the end come in (`FADE_MS`).
-    pub(crate) fn settles(&self, fresh: bool) -> u64 {
-        let after = if fresh { DRY_MS } else { FADE_MS };
-        self.ms * 1000 + (after as f64 * 1000.0 * self.speed).round() as u64
+    /// Where on its clock it's settled (µs): its `ms`, then what came at the end come in (`FADE_MS` of video).
+    pub(crate) fn settles(&self) -> u64 {
+        self.ms * 1000 + (FADE_MS as f64 * 1000.0 * self.speed).round() as u64
     }
 
     /// Half through its strokes on its clock (µs): between the first's start and the last's end — its fades' where it
@@ -193,7 +188,7 @@ impl Picture {
             return (0, Some(0), None);
         }
         let (s, since) = (&self.steps[k], off - starts[k]);
-        let t = Some(s.clock(since)).filter(|&t| t < s.settles(self.fresh));
+        let t = Some(s.clock(since)).filter(|&t| t < s.settles());
         // (a row's lines: each a share of the step, the last to its end)
         let line = match s.text.len() as u64 {
             0 => None,
@@ -210,15 +205,8 @@ impl Picture {
     /// A `[[picture]]` (`e`), its files from `dir` or whole paths — refused, each with its line: what the table and its
     /// steps say, a step's file not there or in the repository, what its manifest says, a layer it needs not there.
     pub(super) fn parse(e: &Entry, marks: &Marks, dir: &Path) -> Result<Picture> {
-        e.keys(&["at", "steps", "fresh"])?;
+        e.keys(&["at", "steps"])?;
         let at = e.time("at", marks)?;
-        let fresh = match e.t.get("fresh") {
-            None => true,
-            Some(toml::Value::Boolean(b)) => *b,
-            Some(_) => {
-                return Err(e.err("fresh", "picture: fresh = true or false (fresh ink drying, or as it is)"));
-            }
-        };
         let list = match e.t.get("steps") {
             None => return Err(e.src.at(e.line, format!("picture: no steps ({STEPS})"))),
             Some(toml::Value::Array(a)) if a.is_empty() => {
@@ -228,9 +216,9 @@ impl Picture {
             Some(_) => return Err(e.err("steps", format!("picture: {STEPS}"))),
         };
         let steps = (list.iter().enumerate())
-            .map(|(k, v)| Step::parse(e, k, v, fresh, dir))
+            .map(|(k, v)| Step::parse(e, k, v, dir))
             .collect::<Result<Vec<Step>>>()?;
-        Ok(Picture { at, line: e.line, fresh, steps })
+        Ok(Picture { at, line: e.line, steps })
     }
 }
 
@@ -275,7 +263,7 @@ fn whole(v: &Value) -> Option<u64> {
 
 impl Step {
     /// Step `k` of the `[[picture]]` `e` (`v`), refused with its line and "step k".
-    fn parse(e: &Entry, k: usize, v: &toml::Value, fresh: bool, dir: &Path) -> Result<Step> {
+    fn parse(e: &Entry, k: usize, v: &toml::Value, dir: &Path) -> Result<Step> {
         let line = step_line(e, k);
         let at = |said: String| e.src.at(line, said);
         let who = format!("picture, step {}", k + 1);
@@ -324,15 +312,11 @@ impl Step {
                 .collect::<Result<_>>()?,
             Some(_) => return Err(at(format!("{who}: text = a line, or a row of lines"))),
         };
-        let floor = if fresh { DRY_MS } else { FADE_MS };
-        if hold < floor {
-            let why = match fresh {
-                true => format!("fresh ink dries over {:.1} s after it", DRY_MS as f64 / 1e3),
-                false => format!("what came at the end comes in over {FADE_MS} ms after it"),
-            };
+        if hold < STAND_LEAST_MS {
             return Err(at(format!(
-                "{who}: stands {:.2} s after it's drawn — {why}: for = \"{floor}ms\" at the least",
-                hold as f64 / 1e3
+                "{who}: stands {:.2} s after it's drawn — {:.1} s at the least, to be read: for = \"{STAND_LEAST_MS}ms\"",
+                hold as f64 / 1e3,
+                STAND_LEAST_MS as f64 / 1e3
             )));
         }
         let file = file_of(&file, dir).map_err(|x| at(format!("{who}: {x}")))?;
@@ -552,14 +536,14 @@ fn smooth(x: f64, len: f64) -> f32 {
     (u * u * (3.0 - 2.0 * u)) as f32
 }
 
-/// `src` (straight alpha `a`) laid over `dst` at `share` of its alpha, its colour `lift` of the way to `full`.
-fn lay(dst: &mut [u8], src: &[u8], share: f32, lift: f32, full: Rgb) {
+/// `src` (straight alpha `a`) laid over `dst` at `share` of its alpha.
+fn lay(dst: &mut [u8], src: &[u8], share: f32) {
     let k = f32::from(src[3]) / 255.0 * share;
     if k <= 0.0 {
         return;
     }
     for c in 0..3 {
-        let s = f32::from(src[c]) + (f32::from(full[c]) - f32::from(src[c])) * lift;
+        let s = f32::from(src[c]);
         let d = f32::from(dst[c]);
         dst[c] = (d + (s - d) * k).round().clamp(0.0, 255.0) as u8;
     }
@@ -570,7 +554,7 @@ pub(crate) fn made(before: &[u8], wash: Option<&[u8]>, ink: Option<&[u8]>) -> Ve
     let mut out = before.to_vec();
     for layer in [wash, ink].into_iter().flatten() {
         for (d, s) in out.as_chunks_mut::<3>().0.iter_mut().zip(layer.as_chunks::<4>().0) {
-            lay(d, s, 1.0, 0.0, [0; 3]);
+            lay(d, s, 1.0);
         }
     }
     out
@@ -775,9 +759,8 @@ impl Held {
 
     /// The board at the step's clock `t` (µs; None: settled, its whole picture): the board before it, its wash at each
     /// pixel's share (the strongest running fade whose rectangle holds it), its ink at each pixel's (`smooth` from its
-    /// time over `SOFT_MS`, `fresh`: lifted toward `full`, drying over `DRY_MS`); what no stroke reaches and no
-    /// rectangle holds from the step's ms over `FADE_MS`.
-    pub(crate) fn board(&self, step: &Step, t: Option<u64>, fresh: bool, full: Rgb) -> Vec<u8> {
+    /// time over `SOFT_MS`); what no stroke reaches and no rectangle holds from the step's ms over `FADE_MS`.
+    pub(crate) fn board(&self, step: &Step, t: Option<u64>) -> Vec<u8> {
         let Some(t) = t else { return self.whole.clone() };
         let t = t as f64;
         let n = self.before.len() / 3;
@@ -799,26 +782,21 @@ impl Held {
             for (i, (d, s)) in out.as_chunks_mut::<3>().0.iter_mut().zip(wash.as_chunks::<4>().0).enumerate()
             {
                 if s[3] > 0 {
-                    lay(d, s, if self.held[i] { share[i] } else { late }, 0.0, full);
+                    lay(d, s, if self.held[i] { share[i] } else { late });
                 }
             }
         }
         if let Some(ink) = &self.ink {
-            let (soft, dry) = (SOFT_MS as f64 * 1000.0, DRY_MS as f64 * 1000.0 * step.speed);
+            let soft = SOFT_MS as f64 * 1000.0;
             for (i, (d, s)) in out.as_chunks_mut::<3>().0.iter_mut().zip(ink.as_chunks::<4>().0).enumerate() {
                 if s[3] == 0 {
                     continue;
                 }
-                let (share, lift) = match self.t0[i] {
-                    NONE => (late, 0.0),
-                    t0 => {
-                        let since = t - f64::from(t0);
-                        let lift =
-                            if fresh && since >= 0.0 { FRESH * (1.0 - smooth(since, dry)) } else { 0.0 };
-                        (smooth(since, soft), lift)
-                    }
+                let share = match self.t0[i] {
+                    NONE => late,
+                    t0 => smooth(t - f64::from(t0), soft),
                 };
-                lay(d, s, share, lift, full);
+                lay(d, s, share);
             }
         }
         out
@@ -835,7 +813,6 @@ pub(crate) struct Boards<'c> {
     cut: &'c Cut,
     s: f64,
     ground: Rgb,
-    full: Rgb,
     held: Option<Held>,
     next: Option<Reading>,
     opening: Option<Vec<u8>>,
@@ -845,8 +822,7 @@ pub(crate) struct Boards<'c> {
 }
 
 impl<'c> Boards<'c> {
-    /// The boards of `cut` at `scale` on `look` (its ground, its ink for fresh ink) — refused where the board isn't
-    /// 2160p's or half of it.
+    /// The boards of `cut` at `scale` on `look` (its ground) — refused where the board isn't 2160p's or half of it.
     pub(crate) fn new(cut: &'c Cut, scale: Scale, look: &video::Look) -> Result<Boards<'c>> {
         let s = match scale.k() {
             1 => 0.5,
@@ -857,7 +833,6 @@ impl<'c> Boards<'c> {
             cut,
             s,
             ground: look.ground,
-            full: look.ink,
             held: None,
             next: None,
             opening: None,
@@ -891,7 +866,7 @@ impl<'c> Boards<'c> {
         self.hold(key);
         let p = &self.cut.pictures[n];
         match &self.held {
-            Some(h) if h.key == key => h.board(&p.steps[shows.k], shows.t, p.fresh, self.full),
+            Some(h) if h.key == key => h.board(&p.steps[shows.k], shows.t),
             _ => self.empty(),
         }
     }
