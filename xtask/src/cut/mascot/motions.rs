@@ -42,9 +42,16 @@
 //!   in, the face on the keys glances up to it — `GLANCE_MS` while the hands keep tapping, the turns as any glance's —
 //!   once, and no seeded glance while that line stands. A face already up (watching, fast-forward) meets it as it is
 //!   (the nod is the motions' to come); a whole-body motion goes on.
+//! - **Painting** (`Plan::paint`, Z3: plan 2 §6 and the design session's rule), where its pictures are found: while a
+//!   picture's step is drawn the character paints it — `paint-1`, `-2` or `-3` by where the brush is across the stroke's
+//!   own width (its left third, the middle, the right), `paint-2` for a dab or a stroke narrower than its brush (`2r`);
+//!   `paint-lift` between strokes less than `PAINT_LIFT_MS` apart; in from what it was doing and out to watching through
+//!   the swing's first two, `TURN` frames each. So `paint-3` is only ever a stroke's right end, never what stands after
+//!   the drawing. A surprise, stretch or swing over a picture stays. Not found: it watches, said.
 //! - Every switch off: V4's mascot, picture for picture (no turn either).
 
 use super::{Arms, Face, Hands, Pic, Pose, QUIET_MS, Switches};
+use crate::cut::picture::Stroke;
 use crate::cut::sound::KEYS_MAX_SPEED;
 use crate::cut::{HOLD_STEP, Hold, Marks, Pace, Program, What, clock, ms_of};
 use crate::rain::Rng;
@@ -98,6 +105,49 @@ pub(crate) const WIND_EVERY: u64 = 4;
 pub(crate) const WIND_EVERY_FAST: u64 = 2;
 pub(crate) const WIND_FAST_PAST: f64 = 8.0;
 pub(crate) const WIND_KEY_GAP: u64 = 2;
+/// Painting: strokes closer than this (video) keep the brush lifted between them; farther, the character goes out to
+/// watching and back in (the plan's "a stand under ~1 s between two steps stays at `paint-lift`").
+pub(crate) const PAINT_LIFT_MS: u64 = 1_000;
+
+/// The point `u` (0–1) of the way along `path` by its length (its first where it has none).
+fn along(path: &[(f64, f64)], u: f64) -> (f64, f64) {
+    let len: f64 = path.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
+    let mut left = u.clamp(0.0, 1.0) * len;
+    for w in path.windows(2) {
+        let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        if left <= d && d > 0.0 {
+            let f = left / d;
+            return (w[0].0 + (w[1].0 - w[0].0) * f, w[0].1 + (w[1].1 - w[0].1) * f);
+        }
+        left -= d;
+    }
+    path.last().copied().unwrap_or((0.0, 0.0))
+}
+
+/// Which of painting's three (`Pic::Paint`, from 0) shows the brush `u` (0–1) of the way along stroke `s`: by where it
+/// is across the stroke's own width — its left third, the middle, the right; the middle for a dab or a stroke narrower
+/// than its brush (`2r`), which reads best.
+pub(crate) fn paint_of(s: &Stroke, u: f64) -> u8 {
+    let (lo, hi) = (s.path.iter()).fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+    if s.path.len() < 2 || hi - lo < 2.0 * s.r {
+        return 1;
+    }
+    let x = along(&s.path, u).0;
+    ((x - lo) / (hi - lo) * 3.0).floor().clamp(0.0, 2.0) as u8
+}
+
+/// What painting laid (`Plan::paint`): the steps and strokes painted (a stroke: one frame at least) of the pictures'
+/// all; the frames of each of the three, of the lift, and of the swing's two going in and out; the longest the third
+/// stood at once (frames).
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Painted {
+    pub(crate) steps: (usize, usize),
+    pub(crate) strokes: (usize, usize),
+    pub(crate) frames: [usize; 3],
+    pub(crate) lift: usize,
+    pub(crate) turns: usize,
+    pub(crate) right_longest: usize,
+}
 
 /// The fast-forward holds (frames, from–to, in order): each run of frames shown past `KEYS_MAX_SPEED` — runs with only
 /// a cut between are one, the frames are next to each other — of `FAST_MIN_MS` or more; and how many runs were shorter.
@@ -313,6 +363,8 @@ pub(crate) struct Plan {
     pub(crate) wind_key_steps: usize,
     /// The character's lines, met as each came in (`says`).
     pub(crate) lines: Lines,
+    /// What painting laid, where it did (`paint`).
+    pub(crate) painted: Option<Painted>,
 }
 
 /// How the character met its lines (`[mascot] says`): how many lines in how many rows; the first frame of each it
@@ -507,9 +559,11 @@ fn stretches(
     (out, unstretched)
 }
 
-/// A frame's video time, for what's said (`m:ss.s`).
+/// A frame's video time, for what's said (`m:ss.s`): its start rounded up to the tenth, so a reader who goes to that
+/// time lands on the frame or the two after it — inside what's named (a hold, a motion: 0.4 s and more), never on the
+/// frame before it (truncated, a hold from frame 4633, 2:34.433, read 2:34.4: frame 4632, still at 1×).
 pub(crate) fn secs(k: u64) -> String {
-    let ms = Program::time_of(k) / 1000;
+    let ms = Program::time_of(k).div_ceil(100_000) * 100;
     format!("{}.{}", clock(ms), ms % 1000 / 100)
 }
 
@@ -869,7 +923,106 @@ impl Plan {
             wound: false,
             wind_key_steps: 0,
             lines,
+            painted: None,
         }
+    }
+
+    /// Each picture painted as it's drawn (its pictures found, `Art::paints`; module doc, "Painting"). A frame paints
+    /// where a stroke is drawn over it — the latest of its step's strokes the frame's stretch of the step's clock meets,
+    /// so a stroke shorter than a frame still gets one — the brush taken where the frame starts on it. Only the plain
+    /// pictures (arms and a face) are painted over: a surprise, stretch or swing stays. Outside a picture's part nothing
+    /// changes.
+    pub(crate) fn paint(&mut self, prog: &Program) {
+        let mut painted = Painted::default();
+        let turn = TURN as usize;
+        for p in &prog.parts {
+            let What::Picture(n) = p.what else { continue };
+            let pic = &prog.cut.pictures[n];
+            let a = Program::frame_at(p.at);
+            let b = Program::frame_at(p.at + p.len).min(self.pics.len() as u64);
+            if b <= a {
+                continue;
+            }
+            let first = Program::time_of(a);
+            let mut brush: Vec<Option<u8>> = vec![None; (b - a) as usize];
+            for (s, &start) in pic.steps.iter().zip(&pic.starts()) {
+                painted.steps.1 += 1;
+                painted.strokes.1 += s.strokes.len();
+                let (from, to) = (first + start, first + start + s.drawing());
+                let mut met = vec![false; s.strokes.len()];
+                for k in Program::frame_at(from).max(a)..b {
+                    let v = Program::time_of(k);
+                    if v >= to {
+                        break;
+                    }
+                    let (c0, c1) = (s.clock(v - from), s.clock(Program::time_of(k + 1) - from));
+                    let on = (s.strokes.iter().enumerate())
+                        .rfind(|(_, x)| x.at * 1000 < c1 && (x.at + x.ms) * 1000 > c0);
+                    if let Some((j, x)) = on {
+                        let u = (c0 as f64 - (x.at * 1000) as f64) / (x.ms.max(1) * 1000) as f64;
+                        brush[(k - a) as usize] = Some(paint_of(x, u));
+                        met[j] = true;
+                    }
+                }
+                painted.strokes.0 += met.iter().filter(|&&m| m).count();
+                painted.steps.0 += usize::from(met.contains(&true));
+            }
+            // (the runs of frames painting, from–to, of the part's own)
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            for (i, b) in brush.iter().enumerate() {
+                match runs.last_mut() {
+                    Some(r) if b.is_some() && r.1 == i => r.1 = i + 1,
+                    _ if b.is_some() => runs.push((i, i + 1)),
+                    _ => {}
+                }
+            }
+            let mut lay: Vec<Option<Pic>> = brush.iter().map(|b| b.map(Pic::Paint)).collect();
+            let len = lay.len();
+            let into = |lay: &mut Vec<Option<Pic>>, s: usize| {
+                for (i, pic) in [(2 * turn, Pic::Swing(0)), (turn, Pic::Swing(1))] {
+                    lay[s.saturating_sub(i)..s.saturating_sub(i - turn)].fill(Some(pic));
+                }
+            };
+            let out = |lay: &mut Vec<Option<Pic>>, e: usize| {
+                for (i, pic) in [(0, Pic::Swing(1)), (turn, Pic::Swing(0))] {
+                    lay[(e + i).min(len)..(e + i + turn).min(len)].fill(Some(pic));
+                }
+            };
+            if let Some(&(s, _)) = runs.first() {
+                into(&mut lay, s);
+            }
+            for w in runs.windows(2) {
+                let (e, s) = (w[0].1, w[1].0);
+                if ((s - e) as u64) < frames(PAINT_LIFT_MS) {
+                    lay[e..s].fill(Some(Pic::PaintLift));
+                } else {
+                    out(&mut lay, e);
+                    into(&mut lay, s);
+                }
+            }
+            if let Some(&(_, e)) = runs.last() {
+                out(&mut lay, e);
+            }
+            // (laid over the plain pictures only)
+            let mut right = 0;
+            for (i, l) in lay.iter().enumerate() {
+                let k = a as usize + i;
+                let laid = match (l, self.pics[k]) {
+                    (Some(l), Some(Pic::At(..))) => Some(*l),
+                    _ => None,
+                };
+                right = if laid == Some(Pic::Paint(2)) { right + 1 } else { 0 };
+                painted.right_longest = painted.right_longest.max(right);
+                match laid {
+                    Some(Pic::Paint(m)) => painted.frames[usize::from(m)] += 1,
+                    Some(Pic::PaintLift) => painted.lift += 1,
+                    Some(_) => painted.turns += 1,
+                    None => continue,
+                }
+                self.pics[k] = laid;
+            }
+        }
+        self.painted = Some(painted);
     }
 
     /// Each fast-forward hold wound on the skein instead of held (its pictures found, `Art::winds`): the hold's own
@@ -983,6 +1136,23 @@ impl Plan {
                     FAST_MIN_MS
                 ),
             });
+        }
+        if let Some(p) = &self.painted {
+            out.push(format!(
+                "  painting: {} steps of {}, {} strokes of {}; frames: paint-1 {}, paint-2 {}, paint-3 {}, lifted {}, the \
+                 swing's two in and out {}; paint-3 at most {} frames at once; lifted between strokes under {} ms",
+                p.steps.0,
+                p.steps.1,
+                p.strokes.0,
+                p.strokes.1,
+                p.frames[0],
+                p.frames[1],
+                p.frames[2],
+                p.lift,
+                p.turns,
+                p.right_longest,
+                PAINT_LIFT_MS
+            ));
         }
         if sw.says {
             out.push(format!("  {}", self.lines.said()));

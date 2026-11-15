@@ -81,9 +81,8 @@
 //!                                         # caption's line or row over the step, each line a share of it
 //!
 //! [route]                                 # the stations on the band's rule (`route.rs`): a dot each, the part
-//! stations = ["The room", "The key"]      # travelled in ink, the rest faint, the one being worked on in the accent
-//! board = true                            # a card-less chapter's name small at the board's corner too, 2 s (way
-//!                                         # (b); the band only if left out)
+//! stations = ["The room", "The key"]      # travelled in ink, the rest faint, the one being worked on in the accent;
+//!                                         # a station's name is its card-less chapter's, in the band only
 //!
 //! [[station]]                             # in the route's order, one each: inked on the frame its picture's last
 //! picture = 1                             # stroke ends — the list's Nth [[picture]], one station a picture
@@ -1580,8 +1579,7 @@ pub(crate) enum Card {
 /// third frame's move 2 % longer than the others', a ripple through every zoom) — in the take part where in the map it
 /// is, where it ends how far into it, on its own clock; and the words over where it ends (`label.rs`), its frames only,
 /// where the opening has them; the board a picture's (`picture.rs`), in place of the screen; the route on the rule
-/// (`route.rs`, where the list has one, on every frame but a card's) and a station's name at the board's corner
-/// (which chapter, how drawn of 255, which corner — `draw.rs` moves it off the line being read).
+/// (`route.rs`, where the list has one, on every frame but a card's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
     pub(crate) screen: Option<u64>,
@@ -1596,7 +1594,6 @@ pub(crate) struct Frame {
     pub(crate) label: Option<label::Label>,
     pub(crate) picture: Option<picture::Shows>,
     pub(crate) route: Option<route::Shows>,
-    pub(crate) named: Option<(usize, u8, route::Corner)>,
 }
 
 impl Frame {
@@ -1619,7 +1616,6 @@ impl Frame {
             label: None,
             picture: None,
             route: None,
-            named: None,
         }
     }
 }
@@ -1866,12 +1862,6 @@ impl<'c> Program<'c> {
         let chapter = (self.banded.iter().find(|c| c.0 <= m && m < c.1))
             .map(|c| (c.2, envelope(m - c.0, c.1 - c.0)))
             .filter(|c| c.1 > 0 && moving);
-        // (way (b): the station's name at the board's top-left too, from the band's frame, `route::NAME_MS`)
-        let named = (self.cut.route.as_ref().filter(|r| r.board && moving))
-            .and_then(|_| self.banded.iter().find(|c| c.0 <= m && m < c.0 + route::NAME_MS * 1000))
-            .map(|c| (c.2, (label::at(m - c.0, route::NAME_MS * 1000).shown * 255.0).round() as u8))
-            .filter(|c| c.1 > 0)
-            .map(|(i, a)| (i, a, route::Corner::Left));
         Frame {
             screen: Some(t),
             card: None,
@@ -1885,7 +1875,6 @@ impl<'c> Program<'c> {
             label: None,
             picture: None,
             route: None,
-            named,
         }
     }
 

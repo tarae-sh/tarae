@@ -89,7 +89,8 @@ pub(crate) enum Face {
 
 /// Every picture the mascot can show: arms and a face (resting arms only raised, half or closed; open and wide over
 /// typing ones), or the `n`th frame of the surprise (2), the stretch (5) or the swing (5); or, pressing fast-forward,
-/// winding the skein: the loop's `n`th (3) and the in-between it starts with.
+/// winding the skein: the loop's `n`th (3) and the in-between it starts with; or, while a picture is drawn, painting it:
+/// the brush across its stroke (3: left, middle, right) and lifted between strokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Pic {
     At(Arms, Face),
@@ -98,6 +99,8 @@ pub(crate) enum Pic {
     Swing(u8),
     Wind(u8),
     WindIn,
+    Paint(u8),
+    PaintLift,
 }
 
 const ARMS: [Arms; 5] = [Arms::Up, Arms::Left, Arms::Right, Arms::Both, Arms::Rest];
@@ -105,7 +108,7 @@ const TYPING: [Arms; 4] = [Arms::Up, Arms::Left, Arms::Right, Arms::Both];
 
 impl Pic {
     /// How many there are (`index`'s range).
-    pub(crate) const COUNT: usize = 5 + 5 + 5 + 4 + 4 + 2 + 5 + 5 + 4;
+    pub(crate) const COUNT: usize = 5 + 5 + 5 + 4 + 4 + 2 + 5 + 5 + 4 + 4;
     /// The skein's loop: how many pictures round it.
     pub(crate) const WIND_STEPS: u8 = 3;
     pub(crate) const WATCH: Pic = Pic::At(Arms::Rest, Face::Raised);
@@ -138,6 +141,8 @@ impl Pic {
             Pic::Swing(n) => 30 + usize::from(n.min(4)),
             Pic::Wind(n) => 35 + usize::from(n.min(Pic::WIND_STEPS - 1)),
             Pic::WindIn => 38,
+            Pic::Paint(n) => 39 + usize::from(n.min(2)),
+            Pic::PaintLift => 42,
         }
     }
 
@@ -165,6 +170,8 @@ impl Pic {
             }
             Pic::Wind(n) => format!("wind-{}", n.min(Pic::WIND_STEPS - 1) + 1),
             Pic::WindIn => "wind-in".into(),
+            Pic::Paint(n) => format!("paint-{}", n.min(2) + 1),
+            Pic::PaintLift => "paint-lift".into(),
         }
     }
 
@@ -181,6 +188,17 @@ impl Pic {
         v.extend((0..5).map(Pic::Swing));
         v.extend((0..Pic::WIND_STEPS).map(Pic::Wind));
         v.push(Pic::WindIn);
+        v.extend((0..3).map(Pic::Paint));
+        v.push(Pic::PaintLift);
+        v
+    }
+
+    /// Painting's pictures (`Art::load`'s `optional`, where the cut has pictures): the three across a stroke, the lift,
+    /// and the swing's first two it goes in and out through. With them all, the character paints each picture as it's
+    /// drawn (`Plan::paint`); without, it watches.
+    pub(crate) fn painting() -> Vec<Pic> {
+        let mut v: Vec<Pic> = (0..3).map(Pic::Paint).collect();
+        v.extend([Pic::PaintLift, Pic::Swing(0), Pic::Swing(1)]);
         v
     }
 
@@ -206,7 +224,7 @@ impl Pic {
                 Pic::At(_, Face::Wide) | Pic::Surprise(_) => sw.surprise,
                 Pic::Stretch(_) => sw.stretch,
                 Pic::Swing(_) => sw.swing,
-                Pic::Wind(_) | Pic::WindIn => false,
+                Pic::Wind(_) | Pic::WindIn | Pic::Paint(_) | Pic::PaintLift => false,
             })
             .collect()
     }
@@ -551,6 +569,11 @@ impl Art {
             .all(|p| self.pics[p.index()].is_some())
     }
 
+    /// Whether painting's pictures all loaded (`Pic::painting`): the character paints each picture, else watches.
+    pub(crate) fn paints(&self) -> bool {
+        Pic::painting().into_iter().all(|p| self.pics[p.index()].is_some())
+    }
+
     /// A loaded picture (the plan shows only those its switches loaded).
     pub(crate) fn picture(&self, p: Pic) -> &Rgba {
         self.pics[p.index()].as_ref().unwrap_or_else(|| panic!("frame-{}.png not loaded", p.name()))
@@ -610,7 +633,12 @@ pub(crate) fn found(
         return Err("the mascot: none (mascot = false)".into());
     }
     let lane = cut.mascot.keys != Keys::Off;
-    let got = (Art::load(cut.bg, dir, s, (&Pic::needed(&cut.mascot), &Pic::winding(&cut.mascot)), lane))
+    // (painting's pictures only where the cut has pictures to paint)
+    let mut optional = Pic::winding(&cut.mascot);
+    if !cut.pictures.is_empty() {
+        optional.extend(Pic::painting());
+    }
+    let got = (Art::load(cut.bg, dir, s, (&Pic::needed(&cut.mascot), &optional), lane))
         .and_then(|a| Ok((place(&a, screen, cells_bottom, lane)?, a)));
     got.map(|(p, a)| (a, p)).map_err(|e| format!("the mascot: none — {e}; the cut is made without it"))
 }

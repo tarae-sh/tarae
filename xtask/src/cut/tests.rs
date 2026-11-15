@@ -4223,6 +4223,145 @@ fn made(
     enc.write_header().unwrap().write_image_data(&px).unwrap();
 }
 
+// ── Painting ──
+
+/// A cut whose one picture, at 30 s, has a step of 3 s standing 2 s: a wide stroke left to right 0–1.01 s, a dab of
+/// 10 ms between two frames' starts, a dab at 1.2–1.5 s (lifted between the three), a stroke narrower than its brush
+/// at 2.9–3.0 s (1.4 s after: out and in); its files names only, in `dir`.
+fn painted_cut(dir: &std::path::Path) -> Cut {
+    let m = json!({ "size": [3840, 1860], "ms": 3000, "fades": [], "strokes": [
+        { "at": 0, "ms": 1010, "r": 30, "path": [[200, 200], [2000, 200]] },
+        { "at": 1110, "ms": 10, "r": 30, "path": [[700, 500]] },
+        { "at": 1200, "ms": 300, "r": 30, "path": [[500, 500]] },
+        { "at": 2900, "ms": 100, "r": 30, "path": [[100, 100], [130, 700]] },
+    ] });
+    for f in ["p.png", "p.ink.png", "p.wash.png"] {
+        std::fs::write(dir.join(f), b"").unwrap();
+    }
+    std::fs::write(dir.join("p.json"), m.to_string()).unwrap();
+    let file = dir.join("p.png").display().to_string();
+    let pic = format!("[[picture]]\nat = \"30s\"\nsteps = [\n  {{ file = \"{file}\", for = \"2s\" }},\n]\n");
+    cut(&moving(&pic)).unwrap()
+}
+
+/// The plan over `c` (no keys), painted or not, with a surprise from frame `surprise` where given; and the frame its
+/// picture's step starts on.
+fn painting(c: &Cut, paint: bool, surprise: Option<u64>) -> (Plan, u64) {
+    let p = Program::new(c);
+    let s = sounds(&p, &[], &marks());
+    let hands = Hands::new(&s.taps).sped(&s.sped);
+    let failed = |k: u64| motions::Cause::at(Program::time_of(k), 0, "a run failed".into());
+    let causes = Causes { surprise: surprise.map(failed).into_iter().collect(), swing: Vec::new() };
+    let sw = Switches { surprise: surprise.is_some(), ..STILL };
+    let mut plan = Plan::new(&p, &hands, &causes, &[], &sw, 7);
+    if paint {
+        plan.paint(&p);
+    }
+    let part = p.parts.iter().find(|x| x.what == What::Picture(0)).unwrap();
+    let start = Program::frame_at(Program::time_of(Program::frame_at(part.at)) + c.pictures[0].starts()[0]);
+    (plan, start)
+}
+
+/// The pictures from frame `a` on, `n` of them, one letter each: `1`–`3` the brush across, `l` lifted, `a` `b` the
+/// swing's first two, `w` watching.
+fn brushed(plan: &Plan, a: u64, n: u64) -> String {
+    (a..a + n)
+        .map(|k| match plan.pic(k) {
+            Some(Pic::Paint(m)) => char::from(b'1' + m),
+            Some(Pic::PaintLift) => 'l',
+            Some(Pic::Swing(0)) => 'a',
+            Some(Pic::Swing(1)) => 'b',
+            Some(Pic::WATCH) => 'w',
+            _ => '?',
+        })
+        .collect()
+}
+
+/// While a picture's step draws the character paints it: in through the swing's first two before the first stroke;
+/// across a wide stroke paint-1, -2, -3 by where the brush is on its width, its left third, middle and right; lifted
+/// in a gap under 1 s; a dab (one shorter than a frame too) and a stroke narrower than its brush paint-2; out to
+/// watching and back in across a gap of 1 s or more; out after the last stroke — what stands after the drawing is
+/// watching, never paint-3. A surprise over it stays. Outside the picture's part, nothing changes; `cut.txt` says it.
+#[test]
+fn a_picture_is_painted_by_where_the_brush_is_across_its_stroke() {
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting");
+    let c = painted_cut(dir.path());
+    let (plan, s) = painting(&c, true, None);
+    let want = [
+        "w",
+        "aabb",
+        "11111111111",
+        "2222222222",
+        "3333333333",
+        "ll2ll",
+        "222222222",
+        "bbaa",
+        &"w".repeat(34),
+        "aabb",
+        "222",
+        "bbaa",
+        &"w".repeat(10),
+    ]
+    .concat();
+    assert_eq!(brushed(&plan, s - 5, want.len() as u64), want);
+    let p = plan.painted.as_ref().unwrap();
+    assert_eq!((p.steps, p.strokes, p.frames, p.lift, p.turns), ((1, 1), (4, 4), [11, 23, 10], 4, 16));
+    assert_eq!(p.right_longest, 10);
+    let (plain, _) = painting(&c, false, None);
+    assert!(plain.painted.is_none());
+    // (a surprise over the wide stroke: its frames stay, the painting goes on after)
+    let (surprised, _) = painting(&c, true, Some(s + 3));
+    assert!(
+        (s + 3..s + 18).all(|k| matches!(surprised.pic(k), Some(Pic::Surprise(_)))),
+        "the surprise stays"
+    );
+    assert_eq!(brushed(&surprised, s + 18, 5), "22233");
+    let part = Program::new(&c).parts.into_iter().find(|x| x.what == What::Picture(0)).unwrap();
+    let inside = Program::frame_at(part.at)..Program::frame_at(part.at + part.len);
+    let n = Program::new(&c).frames();
+    assert!(
+        (0..n).filter(|k| !inside.contains(k)).all(|k| plan.pic(k) == plain.pic(k)),
+        "outside: as it was"
+    );
+    let said = plan.said(&STILL).join("\n");
+    assert!(
+        said.contains("painting: 1 steps of 1, 4 strokes of 4; frames: paint-1 11, paint-2 23, paint-3 10"),
+        "{said}"
+    );
+}
+
+/// The brush's frame by where it is across its stroke's own width: right to left, paint-3 first; a dab and a stroke
+/// narrower than `2r` paint-2 throughout; a stroke that turns back is judged on its width, not its length.
+#[test]
+fn the_brush_is_judged_on_its_strokes_own_width() {
+    let stroke = |r: f64, path: &[(f64, f64)]| picture::Stroke { at: 0, ms: 600, r, path: path.to_vec() };
+    let back = stroke(10.0, &[(900.0, 0.0), (0.0, 0.0)]);
+    assert_eq!([0.0, 0.5, 0.9].map(|u| motions::paint_of(&back, u)), [2, 1, 0], "right to left");
+    assert_eq!(motions::paint_of(&stroke(10.0, &[(40.0, 40.0)]), 0.5), 1, "a dab");
+    let narrow = stroke(30.0, &[(100.0, 0.0), (159.0, 900.0)]);
+    assert_eq!([0.0, 1.0].map(|u| motions::paint_of(&narrow, u)), [1, 1], "narrower than 2r");
+    let turned = stroke(10.0, &[(0.0, 0.0), (900.0, 0.0), (0.0, 0.0)]);
+    assert_eq!([0.1, 0.5, 0.9].map(|u| motions::paint_of(&turned, u)), [0, 2, 0], "there and back");
+}
+
+/// A time `cut.txt` says for a frame is its start rounded up to the tenth: going to it lands on that frame or the two
+/// after, never the one before (a hold from frame 4633 is said at 2:34.5, not 2:34.4 — frame 4632, at 1×).
+#[test]
+fn a_said_time_lands_on_its_frame_never_before() {
+    assert_eq!(
+        (motions::secs(4633), motions::secs(6149), motions::secs(30)),
+        ("0:02:34.5".to_string(), "0:03:25.0".to_string(), "0:00:01.0".to_string())
+    );
+    for k in 0..40_000u64 {
+        let s = motions::secs(k);
+        let (hms, tenth) = s.rsplit_once('.').unwrap();
+        let p: Vec<u64> = hms.split(':').map(|x| x.parse().unwrap()).collect();
+        let ms = ((p[0] * 60 + p[1]) * 60 + p[2]) * 1000 + tenth.parse::<u64>().unwrap() * 100;
+        let shown = ms * video::FPS / 1000;
+        assert!((k..=k + 3).contains(&shown), "frame {k}: said {s}, shows frame {shown}");
+    }
+}
+
 /// The plan over `c`'s take with the keys `keys`, its holds wound on the skein; and the first hold.
 fn wound(c: &Cut, keys: &[Rec]) -> (Plan, (u64, u64)) {
     let p = Program::new(c);

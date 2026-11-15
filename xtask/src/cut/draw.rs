@@ -188,7 +188,6 @@ struct Key {
     label: Option<super::label::Label>,
     picture: Option<picture::Shows>,
     route: Option<route::Shows>,
-    named: Option<(usize, u8, route::Corner)>,
 }
 
 /// The screen's picture kept, by what it was drawn of: whose replay, how many screens in, the glyph (px) and the cells
@@ -464,30 +463,6 @@ impl<'a> Stage<'a> {
         self.dress(px, f, mascot, words)
     }
 
-    /// Way (b): the corner chapter `i`'s name stands at over the take's screen `s`: the top-left, else the top-right
-    /// where the line being read — the shown cursor's row, from its first cell with something in it to its last, the
-    /// cursor's own too — is under the top-left's panel; none where it's under both. Measured at the whole's cells.
-    pub(crate) fn corner(&self, words: &mut Words, i: usize, s: &vt100::Screen) -> Option<route::Corner> {
-        let corners = [route::Corner::Left, route::Corner::Right];
-        if s.hide_cursor() {
-            return Some(corners[0]);
-        }
-        let word = words.word(&self.cut.chapters[i].title, label::LINE_PX, self.look.ink, false);
-        let size = (word.0, word.1);
-        let (lay, k) = (&self.lay, self.lay.scale.k());
-        let (cw, ch) = shot::cell(words.fonts, lay.glyph);
-        let (cw, ch) = (cw * k, ch * k);
-        let ((row, col), (_, cols)) = (s.cursor_position(), s.size());
-        let filled: Vec<u16> =
-            (0..cols).filter(|&c| s.cell(row, c).is_some_and(|x| !x.contents().trim().is_empty())).collect();
-        let a = usize::from(filled.first().map_or(col, |&f| f.min(col)));
-        let b = usize::from(filled.last().map_or(col, |&l| l.max(col)));
-        let (gx, gy, row) = (lay.at.0 + lay.pad, lay.at.1 + lay.pad, usize::from(row));
-        let line = (gx + a * cw, gy + row * ch, gx + (b + 1) * cw, gy + (row + 1) * ch);
-        let meets = |r: label::Rect| r.0 < line.2 && line.0 < r.2 && r.1 < line.3 && line.1 < r.3;
-        corners.into_iter().find(|&c| !meets(label::corner_box(lay, size, c)))
-    }
-
     /// What's laid over a frame's board `px`: the words over where it ends, the band's rule, the band, the mascot.
     fn dress(
         &self,
@@ -527,11 +502,6 @@ impl<'a> Stage<'a> {
                 shows,
                 (look.ink, look.faint, look.accent),
             );
-        }
-        // (way (b): the station's name at the board's corner, over the take)
-        if let Some((i, a, at)) = f.named {
-            let word = words.word(&self.cut.chapters[i].title, label::LINE_PX, self.look.ink, false).clone();
-            label::corner(&mut px, lay, &word, self.look, f32::from(a) / 255.0, at);
         }
         band(&mut px, lay, f, self.cut, (x0, self.marks_right), self.look, words);
         if let (Some((art, place)), Some(p)) = (&self.mascot, pose) {
@@ -713,7 +683,17 @@ pub(crate) fn make(
     // (the pictures' files, checked at 2160p before any frame; their boards at the video's size, read as they come)
     let checking = Instant::now();
     let found = picture::check(cut, look.ground)?;
-    said.extend(pictures_said(cut, &found, checking.elapsed()));
+    let paints = mascot.as_ref().is_some_and(|(art, _)| art.paints());
+    let painter = match (paints, mascot) {
+        (true, _) => "the character paints each as it's drawn (the mascot's motions say how)".to_string(),
+        (false, Some((art, _))) => format!(
+            "the character watches (painting: its pictures, frame-paint-1…3.png, frame-paint-lift.png and the swing's \
+             first two, not all in {})",
+            art.dir.display()
+        ),
+        (false, None) => "no character to paint them".to_string(),
+    };
+    said.extend(pictures_said(cut, &found, checking.elapsed(), &painter));
     let mut boards = Boards::new(cut, scale, &look)?;
     let keys = match dir.join("keys.bin").exists() {
         true => crate::record::read_log(&dir.join("keys.bin"))?,
@@ -756,6 +736,10 @@ pub(crate) fn make(
         // (pressing fast-forward winds the skein where its pictures were found, else it's held as before)
         if cut.mascot.fast && winds {
             plan.wind(prog, &hands);
+        }
+        // (painting each picture as it's drawn, where its pictures were found, else watching)
+        if paints {
+            plan.paint(prog);
         }
         ((heard.taps, keyless, hands, pops), Some(plan))
     };
@@ -963,11 +947,9 @@ pub(crate) fn make(
             }
         }
     };
-    // (way (b): the chapters whose name moved to the top-right on some frame, and those left out on some)
-    let (mut righted, mut unnamed) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     for k in 0..frames {
         let v = Program::time_of(k);
-        let mut f = prog.frame(v);
+        let f = prog.frame(v);
         // (`--picks`: the frame before, not drawn, drawn now where a crossing begins from it — its screen still in the
         // replays, the crossings still at it)
         if only_picks
@@ -985,16 +967,6 @@ pub(crate) fn make(
         if let Some(t) = f.screen {
             let r = if f.ends { &mut ends } else { &mut replay };
             r.to(t);
-        }
-        // (way (b): its corner off the line being read, else left out)
-        if let Some((i, a, _)) = f.named {
-            let s = if f.ends { ends.screen() } else { replay.screen() };
-            f.named = stage.corner(&mut words, i, s).map(|c| (i, a, c));
-            match f.named {
-                None => _ = unnamed.insert(i),
-                Some((.., route::Corner::Right)) => _ = righted.insert(i),
-                Some(_) => {}
-            }
         }
         let share = crossings.at(v, last.as_ref().and_then(|l| l.1.as_deref()));
         let region = region(&f, &paths, size);
@@ -1032,7 +1004,6 @@ pub(crate) fn make(
             label: f.label,
             picture: f.picture,
             route: f.route,
-            named: f.named,
         };
         // (drawn where it differs from the frame before — with `--picks`, only where the sheet picks it or a crossing
         // begins on it, else kept to be drawn if a crossing begins from it: either way from the frame it was first met
@@ -1104,7 +1075,7 @@ pub(crate) fn make(
             ));
         }
     }
-    said.extend(route_said(&prog, (&righted, &unnamed)));
+    said.extend(route_said(&prog));
     if let (Some((art, place)), Some(plan)) = (mascot, &plan) {
         let (bw, bh) = mascot::box_at(scale);
         let of = |s: mascot::Side| {
@@ -1892,19 +1863,16 @@ fn spans_said(cut: &Cut) -> Vec<String> {
 /// `cut.txt`'s lines of the pictures: how many, their steps' drawing and standing, that `record check` doesn't scan
 /// them, the character watching; each step with what its files said (`found`, `picture::check`'s, which took
 /// `took`); the opening's picture.
-/// `cut.txt`'s route: its stations on the rule, each inked where (the picture, its step, the video's time and frame),
-/// drying or not; way (b)'s names and where they moved or were left out (`moved`: the chapters).
-fn route_said(
-    prog: &Program,
-    (righted, unnamed): (&std::collections::BTreeSet<usize>, &std::collections::BTreeSet<usize>),
-) -> Vec<String> {
+/// `cut.txt`'s route: its stations on the rule, each inked where (the picture, its step, the video's time and frame).
+fn route_said(prog: &Program) -> Vec<String> {
     let cut = prog.cut;
     let Some(r) = &cut.route else { return Vec::new() };
     let mut out = vec![format!(
-        "the route: {} stations on the band's rule, a {} px dot each (at 1080p) — the part travelled in ink, the rest \
-         faint, the station being worked on in the accent; each inked on its picture's last stroke",
+        "the route: {} stations on the band's rule, a {} px dot each (at 1080p) — the part travelled in ink, {} px \
+         thick, the rest faint, 1 px; the station being worked on in the accent; each inked on its picture's last stroke",
         r.stations.len(),
-        route::DOT_PX
+        route::DOT_PX,
+        route::TRAVELLED_PX
     )];
     for (k, ((name, &n), &v)) in r.stations.iter().zip(&r.pictures).zip(&prog.inks).enumerate() {
         let step = route::last_stroke(&cut.pictures[n]).map_or(0, |s| s.0);
@@ -1921,30 +1889,22 @@ fn route_said(
     if let Some(n) = cut.pictures.len().checked_sub(r.pictures.len()).filter(|&n| n > 0) {
         out.push(format!("  {n} picture{} ink no station", if n == 1 { "" } else { "s" }));
     }
-    if r.board {
-        let list = |s: &std::collections::BTreeSet<usize>| {
-            s.iter().map(|i| format!("{}", i + 1)).collect::<Vec<_>>().join(", ")
-        };
-        out.push(format!(
-            "  each name in the band at the board's top-left too, {:.1} s (way (b)); moved to the top-right off the \
-             line being read: chapters {}; left out, under both: chapters {}",
-            route::NAME_MS as f64 / 1e3,
-            if righted.is_empty() { "none".into() } else { list(righted) },
-            if unnamed.is_empty() { "none".into() } else { list(unnamed) },
-        ));
-    }
     out
 }
 
-fn pictures_said(cut: &Cut, found: &[Vec<picture::Found>], took: std::time::Duration) -> Vec<String> {
+fn pictures_said(
+    cut: &Cut,
+    found: &[Vec<picture::Found>],
+    took: std::time::Duration,
+    painter: &str,
+) -> Vec<String> {
     let mut out = Vec::new();
     let steps = || cut.pictures.iter().flat_map(|p| &p.steps);
     if !cut.pictures.is_empty() {
         let s = |us: u64| us as f64 / 1e6;
         out.push(format!(
             "pictures: {}, {} steps — {:.1} s drawn, {:.1} s standing, {:.1} s of video with the crossings in; not \
-             scanned by `record check` (no cells); {} strokes, {} fades; the character watches (painting: not yet); \
-             checked at 2160p in {:.1} s",
+             scanned by `record check` (no cells); {} strokes, {} fades; {painter}; checked at 2160p in {:.1} s",
             cut.pictures.len(),
             steps().count(),
             s(steps().map(|x| x.drawing()).sum()),

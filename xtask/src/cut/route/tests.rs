@@ -6,10 +6,8 @@ use std::path::Path;
 use serde_json::{Value, json};
 use tarae_testkit::scratch::Scratch;
 
-use super::super::{Cut, Marks, Program, Result, What, label};
+use super::super::{Cut, Marks, Program, Result, What};
 use super::*;
-use crate::scenes::docshots::Bg;
-use crate::video;
 
 /// A made-up take's landmarks, two minutes long.
 fn marks() -> Marks {
@@ -159,9 +157,9 @@ fn at(px: &[u8], w: usize, (x, y): (usize, usize)) -> Rgb {
     px[(y * w + x) * 3..][..3].try_into().unwrap()
 }
 
-/// The rule carries the route: a dot of `DOT_PX` a station in the middle of its share, round; the part travelled in
-/// ink to the last inked dot, the rest faint; the inked dots in ink, the one being worked on in the accent, the rest
-/// faint; at 2160p 1080p's doubled.
+/// The rule carries the route: a dot of `DOT_PX` (11) a station in the middle of its share, round; the part travelled
+/// in ink to the last inked dot, `TRAVELLED_PX` (2) thick from the rule's row down, the rest faint and 1 px; the inked
+/// dots in ink, the one being worked on in the accent, the rest faint; at 2160p 1080p's doubled.
 #[test]
 fn the_rule_carries_the_route_in_ink_faint_and_the_accent() {
     assert_eq!(dots(20, 380, 4, 1), vec![65, 155, 245, 335]);
@@ -170,79 +168,29 @@ fn the_rule_carries_the_route_in_ink_faint_and_the_accent() {
     let (px, w) = strip(1, (20, 380), 4, none);
     assert_eq!((at(&px, w, (65, 10)), at(&px, w, (155, 10))), (ACCENT, FAINT));
     assert_eq!(at(&px, w, (100, 10)), FAINT, "the rule between: as it was");
-    // (7 px across and down, round: its corner's pixels left as they were, its edge's soft)
-    let col: Vec<Rgb> = (5..16).map(|y| at(&px, w, (65, y))).collect();
-    assert_eq!(col, [vec![GROUND; 2], vec![ACCENT; 7], vec![GROUND; 2]].concat());
-    assert_eq!(at(&px, w, (62, 7)), GROUND, "its corner");
-    let edge = at(&px, w, (62, 8));
+    // (11 px across and down, round: its corner's pixels left as they were, its edge's soft)
+    let col: Vec<Rgb> = (2..19).map(|y| at(&px, w, (65, y))).collect();
+    assert_eq!(col, [vec![GROUND; 3], vec![ACCENT; 11], vec![GROUND; 3]].concat());
+    assert_eq!(at(&px, w, (60, 5)), GROUND, "its corner");
+    let edge = at(&px, w, (61, 6));
     assert!(edge != GROUND && edge != ACCENT, "its edge soft: {edge:?}");
-    // (two inked)
+    assert_eq!((at(&px, w, (100, 10)), at(&px, w, (100, 11))), (FAINT, GROUND), "none travelled: 1 px");
+    // (two inked: the travelled part 2 px, the rule's row and the one under it)
     let (px, w) = strip(1, (20, 380), 4, Shows { inked: 2 });
     let row = |px: &[u8], x: usize| at(px, w, (x, 10));
-    assert_eq!([row(&px, 20), row(&px, 100), row(&px, 154), row(&px, 200)], [INK, INK, INK, FAINT]);
+    assert_eq!([row(&px, 20), row(&px, 100), row(&px, 149), row(&px, 200)], [INK, INK, INK, FAINT]);
     assert_eq!([row(&px, 65), row(&px, 155), row(&px, 245), row(&px, 335)], [INK, INK, ACCENT, FAINT]);
-    // (at 2160p: 14 px across, the rule's two rows)
+    let col = |px: &[u8], x: usize| [9, 10, 11, 12].map(|y| at(px, w, (x, y)));
+    assert_eq!(col(&px, 100), [GROUND, INK, INK, GROUND], "travelled: 2 px, down from the rule");
+    assert_eq!(col(&px, 200), [GROUND, FAINT, GROUND, GROUND], "the rest: 1 px");
+    // (at 2160p: 22 px across, the rule's two rows, the travelled part's four)
     let (px, w) = strip(2, (40, 760), 4, none);
-    let col: Vec<Rgb> = (13..29).map(|y| at(&px, w, (130, y))).collect();
-    assert_eq!((col[0], col[15]), (GROUND, GROUND));
-    assert!(col[1..15].iter().all(|&c| c != GROUND) && col[2..14].iter().all(|&c| c == ACCENT), "{col:?}");
-}
-
-/// Way (b): with `board = true` a station's name stands at the board's corner `NAME_MS` from the frame its chapter's
-/// name comes into the band, in and out over `label::FADE_US`; at the top-left, at the top-right while the line being
-/// read is under the top-left's panel, left out where it's under both; none without `board`.
-#[test]
-fn a_stations_name_stands_at_the_boards_corner_off_the_line_being_read() {
-    use super::super::draw::{Stage, Words, layout};
-    let dir = Scratch::new("xtask-route-named");
-    pictures(dir.path());
-    let banded = "[[chapter]]\nat = \"30s\"\ntitle = \"The tunnel\"\ncard = false\n\n";
-    let text = list(&(three() + banded + &ROUTE.replace("[route]\n", "[route]\nboard = true\n")));
-    let (c, _) = read(&text, dir.path());
-    let c = c.unwrap();
-    let p = Program::new(&c);
-    let v = p.chapter_at(1);
-    assert_eq!(p.frame(v + label::FADE_US).named, Some((1, 255, Corner::Left)));
-    assert_eq!(p.frame(v + label::FADE_US).chapter.map(|c| c.0), Some(1), "and in the band");
-    let fading = p.frame(v + NAME_MS * 1000 - label::FADE_US / 2).named.unwrap();
-    assert!(fading.1 > 0 && fading.1 < 255, "{fading:?}");
-    assert_eq!(p.frame(v + NAME_MS * 1000).named, None, "gone after its 2 s");
-    assert!(p.frame(v + NAME_MS * 1000).chapter.is_some(), "the band's still there");
-    let (plain, _) = read(&text.replace("board = true\n", ""), dir.path());
-    let plain = plain.unwrap();
-    assert_eq!(Program::new(&plain).frame(v + label::FADE_US).named, None, "way (a): the band only");
-    // (its corner over the take's screen)
-    let fonts = crate::shot::Fonts::load(1).unwrap();
-    let lay = layout(&fonts, (166, 32), video::Scale::HD).unwrap();
-    let look = video::look(Bg::Dark);
-    let stage = Stage::new(lay, &look, &c, None);
-    let mut words = Words::new(&fonts, look.ground, video::Scale::HD);
-    let screen = |text: &str, col: u16, cursor: (u16, u16), shown: bool| {
-        let mut s = vt100::Parser::new(32, 166, 0);
-        s.process(format!("\x1b[1;{}H{text}\x1b[{};{}H", col + 1, cursor.0 + 1, cursor.1 + 1).as_bytes());
-        if !shown {
-            s.process(b"\x1b[?25l");
-        }
-        s
-    };
-    let mut corner = |s: vt100::Parser| stage.corner(&mut words, 1, s.screen());
-    assert_eq!(corner(screen("halil board", 0, (0, 11), false)), Some(Corner::Left), "no cursor shown");
-    assert_eq!(corner(screen("halil board", 0, (20, 4), true)), Some(Corner::Left), "read lower down");
-    assert_eq!(
-        corner(screen("halil board", 0, (0, 11), true)),
-        Some(Corner::Right),
-        "the line read under it"
-    );
-    assert_eq!(corner(screen("done", 150, (0, 154), true)), Some(Corner::Left), "read at the right");
-    assert_eq!(corner(screen(&"x".repeat(166), 0, (0, 40), true)), None, "under both: left out");
-    // (the panel only where the board has something under it)
-    let word = words.word("The tunnel", label::LINE_PX, look.ink, false).clone();
-    let mut px = look.ground.repeat(lay.dims.0 * lay.dims.1);
-    assert!(!label::corner(&mut px, &lay, &word, &look, 1.0, Corner::Left), "on the bare ground: no panel");
-    let b = label::corner_box(&lay, (word.0, word.1), Corner::Left);
-    let mut px = [200u8; 3].repeat(lay.dims.0 * lay.dims.1);
-    assert!(label::corner(&mut px, &lay, &word, &look, 1.0, Corner::Left));
-    assert_ne!(at(&px, lay.dims.0, (b.0 + 4, b.1 + 4)), [200; 3], "the panel over what's there");
+    let col: Vec<Rgb> = (9..33).map(|y| at(&px, w, (130, y))).collect();
+    assert_eq!((col[0], col[23]), (GROUND, GROUND));
+    assert!(col[1..23].iter().all(|&c| c != GROUND) && col[2..22].iter().all(|&c| c == ACCENT), "{col:?}");
+    let (px, w) = strip(2, (40, 760), 4, Shows { inked: 2 });
+    let col: Vec<Rgb> = (19..26).map(|y| at(&px, w, (200, y))).collect();
+    assert_eq!(col, [vec![GROUND], vec![INK; 4], vec![GROUND; 2]].concat(), "travelled at 2160p: 4 px");
 }
 
 /// Every refusal of `[route]` and `[[station]]`, each at its line.
@@ -270,9 +218,9 @@ fn every_refusal_of_a_route_names_its_line() {
         (
             with(&route(&format!("{two}\nnames = 1"), &["picture = 1", "picture = 2"])),
             ("names", 0),
-            "route: no key names (it takes stations, board)",
+            "route: no key names (it takes stations)",
         ),
-        (with("[route]\nboard = true\n"), ("[route]", 0), "route: no stations (stations = ["),
+        (with("[route]\n"), ("[route]", 0), "route: no stations (stations = ["),
         (
             with(&route("stations = []", &[])),
             ("stations", 0),
@@ -294,9 +242,9 @@ fn every_refusal_of_a_route_names_its_line() {
             "route: station 2's name is empty",
         ),
         (
-            with(&route(&format!("{two}\nboard = 1"), &["picture = 1", "picture = 2"])),
+            with(&route(&format!("{two}\nboard = true"), &["picture = 1", "picture = 2"])),
             ("board", 0),
-            "route: board = true or false",
+            "route: no key board (it takes stations)",
         ),
         (with("[[station]]\npicture = 1\n"), ("[[station]]", 0), "station: no [route] for it to be on"),
         (top("station = 1"), ("station =", 0), "station: tables, as [[station]]"),
@@ -363,5 +311,5 @@ fn every_refusal_of_a_route_names_its_line() {
     // (written right, it's read; picture 4 inks no station)
     let (got, _) = read(&list(&with(&route(two, &["picture = 1", "picture = 3"]))), d);
     let got = got.unwrap().route.unwrap();
-    assert_eq!((got.pictures, got.board), (vec![0, 2], false));
+    assert_eq!(got.pictures, vec![0, 2]);
 }
