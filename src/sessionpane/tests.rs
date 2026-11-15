@@ -194,6 +194,48 @@ fn the_row_gives_way_in_its_order() {
     assert_eq!(name_w, 3, "the names cut to the room, never gone");
 }
 
+/// A row's state runs on into the columns right after it the row leaves empty (`room`, the one list 2026-11-16: at 52
+/// docked `▸ asks to r…` was cut to nine cells beside an empty overlap): the row that needs you says it whole where
+/// another row's overlap keeps the column; a row with its own overlap keeps its cut; the card then says nothing more.
+#[test]
+fn a_rows_state_runs_on_into_an_empty_overlap() {
+    let asks = "▸ asks to run it";
+    // (no report nor model: gone this narrow, they'd be what the card says more)
+    let bare = |s: Shown| row(&Shown { report: String::new(), model: String::new(), ..s });
+    let rows = [
+        bare(Shown {
+            step: asks.into(),
+            overlap: Vec::new(),
+            ..full(WorkspaceId::HOME, "main", Doing::Waiting)
+        }),
+        bare(Shown {
+            step: "● editing src/sessionpane.rs 120-180".into(),
+            ..full(WorkspaceId::here(1), "fix-login", Doing::Working)
+        }),
+    ];
+    // (the widest room where the step is at its floor and the overlaps still shown)
+    let (name_w, cols) = (0..400)
+        .rev()
+        .map(|r| lay(&rows, r))
+        .find(|l| l.1.contains(&(Col::State, STATE_MIN)) && l.1.iter().any(|c| c.0 == Col::Overlap))
+        .expect("the step at its floor beside the overlaps");
+    let at = cols.iter().position(|c| c.0 == Col::State).unwrap();
+    let overlap = cols[at + 1];
+    assert_eq!(overlap.0, Col::Overlap, "{cols:?}");
+    assert!(asks.width() > STATE_MIN && asks.width() <= STATE_MIN + GAP + overlap.1, "the case: {cols:?}");
+    assert_eq!(
+        room(&rows[0], &cols, at),
+        (STATE_MIN + GAP + overlap.1, 1),
+        "into the empty overlap, no further"
+    );
+    assert_eq!(room(&rows[1], &cols, at), (STATE_MIN, 0), "its own overlap: its cut");
+    assert!(!cut_on_row(&rows[0], name_w, &cols), "whole on its row");
+    assert!(cut_on_row(&rows[1], name_w, &cols), "cut on its row");
+    // (the columns after the state are never given its room)
+    let behind = cols.iter().position(|c| c.0 == Col::Behind).unwrap();
+    assert_eq!(room(&rows[0], &cols, behind), (cols[behind].1, 0));
+}
+
 /// A child's arm (2026-11-04's, the one list L1): `├─── ` under its parent, `└─── ` for the last of its siblings; a
 /// child's child one arm further in, `│` down the line of a parent that has a sibling after it, a blank where it has
 /// none; a session nobody started none.
@@ -973,7 +1015,17 @@ fn the_list_is_three_fifths_and_widens_on_both_sides_while_centred() {
     assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (20, 40), "its least");
     feed_at(&mut ed, "<C-w><lt>", 80, 40);
     assert_eq!(list_rect(&mut ed, 80, 40).w, 40);
-    assert!(last_said(&ed).starts_with("sessions as narrow as it goes — C-w = back"), "{}", last_said(&ed));
+    assert_eq!(last_said(&ed), "sessions as narrow as it goes · C-w = automatic");
+    // (as short as its rows: no shorter, said)
+    feed_at(&mut ed, "<C-w>-", 80, 40);
+    assert_eq!(last_said(&ed), "sessions as short as it goes · C-w = automatic");
+    // One word for `C-w =` in everything the list said, as every pane's size line (`say_size`)
+    let ours = |m: &str| m.match_indices("C-w = ").all(|(i, _)| m[i..].starts_with("C-w = automatic"));
+    assert!(
+        ed.messages.iter().all(|m| ours(&m.2)),
+        "{:?}",
+        ed.messages.iter().map(|m| &m.2).collect::<Vec<_>>()
+    );
     // (as `sizes.json` keeps it)
     assert_eq!(Frame::SESSIONS.json(), serde_json::json!([null, null, 600, 0]));
     assert_eq!(Frame::of_json(&Frame::SESSIONS.json()), Some(Frame::SESSIONS));
@@ -993,6 +1045,7 @@ fn once_moved_the_lists_left_edge_stays_as_keys_size_it() {
     assert_eq!((r.x, r.y, r.w), (14, 12, 52), "moved down: still centred across, wider on both sides");
     feed_at(&mut ed, "<C-w>=<C-w>ml<ret>", 80, 40);
     assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (20, 48), "moved right");
+    assert_eq!(last_said(&ed), "moved — C-w m moves it again, C-w = automatic", "the size line's word");
     feed_at(&mut ed, "<C-w>>", 80, 40);
     assert_eq!((list_rect(&mut ed, 80, 40).x, list_rect(&mut ed, 80, 40).w), (20, 52), "its left edge stays");
     assert_eq!(last_said(&ed), "sessions 52 × 3 · C-w = automatic");
@@ -1656,15 +1709,15 @@ fn a_docked_lists_row_in_hand_has_its_card_at_the_foot_above_the_keys() {
     let n = rows_in_sight(&ed);
     let y0 = ed.screen.lists.borrow().iter().find(|l| l.0 == GroupKind::Sessions).map(|l| l.1.0).unwrap();
     assert_eq!(y0 + n, keys - 3, "its rows end over its card\n{s}");
-    // (the long name would take four of its card's rows: three over the keys, the row in hand's name on the first)
+    // (the long name would take four of its card's rows: three over the keys kept; main's card one line, at their foot)
     let blank = |l: &str| l.trim().is_empty();
     assert!(
-        leaf[keys - 3].starts_with("  main") && blank(&leaf[keys - 2]) && blank(&leaf[keys - 1]),
+        blank(&leaf[keys - 3]) && blank(&leaf[keys - 2]) && leaf[keys - 1].starts_with("  main"),
         "main's\n{s}"
     );
     feed(&mut ed, "j");
     let (leaf, keys, s) = foot(&mut ed);
-    assert!(leaf[keys - 3].starts_with(&format!("  {}", here_name(&ed))), "the next row's\n{s}");
+    assert!(leaf[keys - 1].starts_with(&format!("  {}", here_name(&ed))), "the next row's\n{s}");
     assert_eq!(rows_in_sight(&ed), n, "the rows in sight the same");
     feed(&mut ed, "G");
     let (leaf, keys, s) = foot(&mut ed);
@@ -1685,4 +1738,59 @@ fn a_docked_lists_row_in_hand_has_its_card_at_the_foot_above_the_keys() {
     feed(&mut ed, "<esc>");
     let s = frame(&mut ed, 160, 30);
     assert!(rows_in_sight(&ed) > n && !s.contains("enter switch"), "the rows have its room\n{s}");
+}
+
+/// Docked, the row in hand's card is as tall as its own lines (the design session, 2026-11-16: two lines of text in
+/// three rows of wash): its room stays the tallest card's, so `j`/`k` never changes the rows in sight, but only the
+/// card's lines are washed, at the room's foot over the keys — the rest is the pane's ground.
+#[test]
+fn a_docked_lists_card_is_as_tall_as_its_lines() {
+    crossterm::style::force_color_output(true);
+    let dir = crate::scratch::Scratch::new("sessiondockcardh");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    // (a card of two lines and one of three — more, cut to `CARD_ROWS`)
+    ed.workspace_add(dir.join("m".repeat(70)));
+    ed.workspace_add(dir.join("l".repeat(200)));
+    feed(&mut ed, " W<C-w>L");
+    let (w, h) = (160u16, 30u16);
+    // (the band over the keys: each of its rows' text, and whether it's washed — the row in hand's ground, not the
+    // keys' line's)
+    let band = |ed: &mut Editor| -> (Vec<(String, bool)>, usize, String) {
+        // (no toast over it)
+        ed.toasts.clear();
+        let mut bytes = Vec::new();
+        ed.focus_sync();
+        crate::term::render(ed, &mut bytes, w, h).unwrap();
+        let mut vt = vt100::Parser::new(h, w, 0);
+        vt.process(&bytes);
+        let s = vt.screen().contents();
+        let (_, r) = ed.dock_rect(GroupKind::Sessions).unwrap_or_else(|| panic!("docked\n{s}"));
+        let text =
+            |y: usize| vt.screen().contents_between(y as u16, r.x as u16, y as u16, (r.x + r.w) as u16);
+        let keys = (r.y..r.y + r.h).find(|&y| text(y).contains("enter switch")).expect("its keys");
+        let bg = |y: usize| vt.screen().cell(y as u16, (r.x + 1) as u16).unwrap().bgcolor();
+        let rows =
+            (keys - crate::sessionpane::CARD_ROWS..keys).map(|y| (text(y), bg(y) != bg(keys))).collect();
+        let n = ed.screen.lists.borrow().iter().find(|l| l.0 == GroupKind::Sessions).map(|l| l.1.1).unwrap();
+        (rows, n, s)
+    };
+    let mut seen = Vec::new();
+    for k in ["", "j", "j"] {
+        feed(&mut ed, k);
+        let (rows, n, s) = band(&mut ed);
+        // (the line between the code and the leaf left out)
+        let lines = rows.iter().filter(|r| !r.0.trim_start_matches('│').trim().is_empty()).count();
+        let washed: Vec<bool> = rows.iter().map(|r| r.1).collect();
+        let want: Vec<bool> = (0..rows.len()).map(|i| i >= rows.len() - lines).collect();
+        assert_eq!(
+            washed,
+            want,
+            "{} — washed as its {lines} lines, at the foot: {rows:?}\n{s}",
+            here_name(&ed)
+        );
+        seen.push((lines, n));
+    }
+    assert_eq!(seen.iter().map(|x| x.0).collect::<Vec<_>>(), [1, 2, 3], "main's, the 70's, the 200's");
+    assert!(seen.iter().all(|x| x.1 == seen[0].1), "the rows in sight the same: {seen:?}");
 }

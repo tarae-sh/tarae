@@ -6902,8 +6902,9 @@ fn draw_sessions_pane(
         }
         (text, pieces)
     };
-    // (docked: at the foot above its keys while it has them, as tall as the most rows any row's card takes, up to
-    // `CARD_ROWS` — so `j`/`k` never changes the rows in sight — while a row shows less than its card or they scroll)
+    // (docked: at the foot above its keys while it has them, its room as tall as the most rows any row's card takes, up
+    // to `CARD_ROWS` — so `j`/`k` never changes the rows in sight — while a row shows less than its card or they
+    // scroll; the card itself as tall as its own lines, at the room's foot, the rest of the room air)
     let card_w = r.w.saturating_sub(3);
     let rows_room = (end - y0).saturating_sub(usize::from(foot));
     let laid = |text: &str| {
@@ -6932,15 +6933,21 @@ fn draw_sessions_pane(
                 .map(|((a, b), s)| (crate::cut::slice(&text, a..b), Style { bg: sel.bg, ..*s }))
                 .collect()
         };
-        for k in 0..card_h {
-            let y = end - 1 - card_h + k;
+        let lines = rows_of.len().clamp(1, card_h);
+        for y in end - 1 - card_h..end - 1 - lines {
+            queue!(out, MoveTo(x0 as u16, y as u16))?;
+            apply(out, card)?;
+            queue!(out, Spaces(r.w))?;
+        }
+        for k in 0..lines {
+            let y = end - 1 - lines + k;
             queue!(out, MoveTo(x0 as u16, y as u16))?;
             apply(out, sel)?;
             queue!(out, Spaces(2))?;
             let mut used = 2;
             if let Some((at, t)) = rows_of.get(k) {
                 // (its last row with more after it: the rest cut there, whole under the mouse)
-                if k + 1 == card_h && rows_of.len() > card_h {
+                if k + 1 == lines && rows_of.len() > lines {
                     let rest = crate::cut::slice(&text, *at..);
                     let moved = (pieces.iter())
                         .filter(|p| p.0.end > *at)
@@ -7072,7 +7079,11 @@ fn draw_sessions_pane(
         apply(out, name)?;
         queue!(out, Spaces(name_w.saturating_sub(shown.width())))?;
         used += name_w + pre.width();
-        for &(c, w) in &cols {
+        // (the state runs on into the empty columns after it on this row — `sessionpane::room`)
+        let mut i = 0;
+        while let Some(&(c, _)) = cols.get(i) {
+            let (w, took) = crate::sessionpane::room(row, &cols, i);
+            i += 1 + took;
             apply(out, base)?;
             queue!(out, Print("  "))?;
             used += 2;

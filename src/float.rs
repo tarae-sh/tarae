@@ -295,13 +295,15 @@ impl Editor {
     /// Where the move left it, said — and kept with the layout (the session list's with the sizes).
     fn float_moved_said(&mut self) {
         self.float_keep();
-        self.set_status("moved — C-w m moves it again, C-w = back to the middle");
+        self.set_status("moved — C-w m moves it again, C-w = automatic");
     }
 
     /// `C-w < > - +` from a floating group's member: it narrower or wider by `STEP_COLS`, shorter or taller by
     /// `STEP_ROWS` — its left and top edges staying, within the screen. A list centred by the rule (the session list
-    /// where it was first placed — the user, 2026-11-16) narrower or wider on both sides, `CENTRED_STEP` each, so it
-    /// stays centred; once moved or dragged, its left edge stays. False: the keys aren't in a floating group.
+    /// where it was first placed — main's `.sb/decisions/collab.md`, "The floating session list's `C-w >`/`C-w <`",
+    /// the user 2026-11-16, and the 3/5 entry before it) narrower or wider on both sides, `CENTRED_STEP` each, so it
+    /// stays centred; once moved or dragged, its left edge stays. Every size it says ends `· C-w = automatic`
+    /// (`say_size`), as every pane's. False: the keys aren't in a floating group.
     pub fn float_size(&mut self, dir: crate::split::Dir, more: bool) -> bool {
         let Some(kind) = self.float_in_hand() else { return false };
         let Some(r) = self.float_rect(kind) else { return false };
@@ -313,7 +315,7 @@ impl Editor {
             let w = w.clamp(crate::pane::FLOAT_MIN_W.min(sw), sw);
             if w == r.w {
                 let how = if more { "wide" } else { "narrow" };
-                self.say_size(format!("{} as {how} as it goes — C-w = back", kind.name()));
+                self.say_size(format!("{} as {how} as it goes", kind.name()));
                 return true;
             }
             let w_of = Frame::of_rect(Rect { w, ..r }, sw, sh).w;
@@ -337,7 +339,7 @@ impl Editor {
                 let h = h.clamp(crate::pane::FLOAT_MIN_H.min(sh), sh);
                 // (a list as short as its rows: no shorter — never taller for `-`)
                 if !more && h >= r.h {
-                    self.say_size(format!("{} as short as it goes — C-w = back", kind.name()));
+                    self.say_size(format!("{} as short as it goes", kind.name()));
                     return true;
                 }
                 Rect { h, y: r.y.min(sh - h), ..r }

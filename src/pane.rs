@@ -226,8 +226,9 @@ impl Frame {
     /// tall, at 1/4 of its height — it grows and shrinks downward from there, its top never moving.
     pub const LIST: Frame = Frame { x: 200, y: Self::PLACED, w: 600, h: 0 };
 
-    /// The session list's frame: a list's 3/5, centred across by the rule (`x` placed — the user, 2026-11-16: `C-w >`
-    /// `C-w <` widen and narrow it on both sides while it's there, `float_size`), as tall as its rows.
+    /// The session list's frame: a list's 3/5, centred across by the rule (`x` placed — main's
+    /// `.sb/decisions/collab.md`, "The floating session list's `C-w >`/`C-w <`", the user 2026-11-16: `C-w >` `C-w <`
+    /// widen and narrow it on both sides while it's there, `float_size`), as tall as its rows.
     pub const SESSIONS: Frame = Frame { x: Self::PLACED, ..Self::LIST };
 
     /// A list of `n` rows this tall on a screen with `sh` rows: its rows and its frame's two lines, up to half of it.

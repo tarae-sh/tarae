@@ -439,13 +439,29 @@ pub fn card(row: &Row) -> Vec<Part> {
     parts
 }
 
+/// The cells shown column `cols[i]` takes on `row`, and how many shown columns after it it took: its own width — the
+/// state's runs on into the columns right after it this row leaves empty, `GAP` and their width each (the one list,
+/// 2026-11-16: `▸ asks to r…` cut to nine cells at 52 docked beside an empty overlap).
+pub fn room(row: &Row, cols: &[(Col, usize)], i: usize) -> (usize, usize) {
+    let (c, mut w) = cols[i];
+    let mut took = 0;
+    while c == Col::State
+        && let Some(&(next, nw)) = cols.get(i + 1 + took)
+        && row.cell(next).is_empty()
+    {
+        w += GAP + nw;
+        took += 1;
+    }
+    (w, took)
+}
+
 /// Whether `row`, laid out as `lay` lays it (the name's column `name_w`, the columns shown `cols`), shows less than its
-/// card says: its name cut, or one of `CARD`'s cells it has cut or gone.
+/// card says: its name cut, or one of `CARD`'s cells it has cut (in its `room`) or gone.
 pub fn cut_on_row(row: &Row, name_w: usize, cols: &[(Col, usize)]) -> bool {
     row.name_width() > name_w
         || CARD.iter().any(|&c| {
             let w = row.text(c).width();
-            w > 0 && cols.iter().find(|x| x.0 == c).is_none_or(|x| w > x.1)
+            w > 0 && cols.iter().position(|x| x.0 == c).is_none_or(|i| w > room(row, cols, i).0)
         })
 }
 
