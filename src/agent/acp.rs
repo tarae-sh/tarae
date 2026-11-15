@@ -46,7 +46,8 @@ pub const VERSION: u64 = 1;
 /// else `session/load` — the wire starts a new one where neither is there, said), its thinking as text. Not asked
 /// of it: a fork, per-request usage (a turn's `usage` only), a cost, the plan's limits, models and effort (step
 /// 4), a compaction on demand, who pays (ACP has no word for it), its permission asks read by tool name (an ask's
-/// name is the agent's own, its title the model's text: every ask refused, condition 1), a helper of Claude's for
+/// name is the agent's own, its title the model's text: every ask refused, condition 1, but one for a tool tarae's
+/// bridge offered — `allowed_ask`, guard 2's ask rule), a helper of Claude's for
 /// its chat's tools (`web_search`'s: a session's every model is its agent's, condition 3). Its own tools off: by its
 /// row's recipe, which a row on these caps must have (`every_acp_row_keeps_the_floor`) — tarae's hook refuses them
 /// (guard 1, `agentgate.rs`).
@@ -78,6 +79,22 @@ pub const REFUSED: &str = "refused — tarae's tools only";
 /// of the agent's own — an empty name, and the prefix alone, included.
 fn taraes(name: &str) -> Option<&str> {
     name.strip_prefix(OWN).filter(|tool| !tool.is_empty())
+}
+
+/// Guard 2's ask rule (step 4's L-B1: agy 1.5.9 asks for every call of tarae's tools, in every mode, the second
+/// probe's `.sb/agent-p4-probe/out-1794767239/`): an ask whose tool is one of tarae's (`mcp_tarae_<tool>`), `<tool>`
+/// one its bridge offered this session (`offered`: the names its `tools/list` was answered with, read by `offered`),
+/// is allowed — the call then reaches the bridge, where tarae's own gate decides as it does for Claude's. Anything
+/// else is refused: one of its own tools, the prefix alone, a tarae name not offered, no name. By the name alone,
+/// before anything reads the ask's input.
+pub fn allowed_ask(tool: &str, offered: &[String]) -> bool {
+    taraes(tool).is_some_and(|t| offered.iter().any(|o| o == t))
+}
+
+/// The tools a `tools/list` answer offers, by name (none where it's an error).
+pub fn offered(answer: &Value) -> Vec<String> {
+    let tools = answer["result"]["tools"].as_array().into_iter().flatten();
+    tools.filter_map(|t| t["name"].as_str().map(String::from)).collect()
 }
 
 /// The most characters of a tool's name tarae's own words say: past it, cut with `…`.
@@ -428,8 +445,11 @@ struct Wire {
     turn: bool,
     /// The turn's answer so far (its `Done`).
     text: String,
-    /// The permission asks still open: each its id as `Event::Permission` gives it, its JSON-RPC id and options.
-    asks: HashMap<String, (Value, Value)>,
+    /// The permission asks still open: each its id as `Event::Permission` gives it, its JSON-RPC id, options and
+    /// tool (`tool_name`).
+    asks: HashMap<String, (Value, Value, String)>,
+    /// The tools whose ask's answer the log was told: once a tool a session.
+    asks_said: HashSet<String>,
     /// tarae's own tools' calls, whose updates are dropped too.
     dropped: HashSet<String>,
     /// Streamed text or thought not yet sent, and when the last batch went (`claude::FLUSH`'s rule).
@@ -480,6 +500,7 @@ impl Wire {
             turn: false,
             text: String::new(),
             asks: HashMap::new(),
+            asks_said: HashSet::new(),
             dropped: HashSet::new(),
             pending: String::new(),
             pending_thought: false,
@@ -814,7 +835,7 @@ impl Wire {
     }
 
     fn cancel(&mut self) {
-        for (_, (id, _)) in self.asks.drain().collect::<Vec<_>>() {
+        for (_, (id, ..)) in self.asks.drain().collect::<Vec<_>>() {
             self.write(response(&id, json!({"outcome": {"outcome": "cancelled"}})));
         }
         if let Some(session) = self.session.clone().filter(|_| self.turn) {
@@ -824,9 +845,22 @@ impl Wire {
         }
     }
 
+    /// An ask answered (`outcome`), the log told: the answer, once a tool a session; one cancelled as the kind it
+    /// wanted wasn't offered, each time, with the kinds that were. The agent's strings said `shown`.
     fn answer(&mut self, key: &str, p: Permission) {
-        let Some((id, options)) = self.asks.remove(key) else { return };
-        self.write(response(&id, outcome(&options, &p)));
+        let Some((id, options, tool)) = self.asks.remove(key) else { return };
+        let answer = outcome(&options, &p);
+        let (name, tool, wanted) = (self.begin.name, shown(&tool), kind_of(&p));
+        if answer["outcome"]["outcome"] == "cancelled" {
+            let kinds = options.as_array().into_iter().flatten().filter_map(|o| o["kind"].as_str());
+            let kinds = shown(&kinds.collect::<Vec<_>>().join(" "));
+            let said = format!("its ask for {tool:?} offered no {wanted} — cancelled (it offered: {kinds})");
+            crate::log::line(name, "warn", &said);
+        } else if self.asks_said.insert(tool.clone()) {
+            let said = format!("its asks for {tool:?} answered {wanted} (said once a tool a session)");
+            crate::log::line(name, "info", &said);
+        }
+        self.write(response(&id, answer));
     }
 
     /// A message of the bridge's: a `tools/call` comes up as its call (`Tool`, named as Claude's MCP client names
@@ -976,7 +1010,7 @@ impl Wire {
             Read::Ask { id, params } => {
                 let key = id_key(&id);
                 let ev = permission(&key, &params);
-                self.asks.insert(key, (id, params["options"].clone()));
+                self.asks.insert(key, (id, params["options"].clone(), tool_name(&params["toolCall"])));
                 self.thought_over(send) && self.flush(send) && send(ev)
             }
             Read::Request { id } => {
@@ -1382,17 +1416,22 @@ fn permission(id: &str, params: &Value) -> Event {
 }
 
 /// A permission's answer: `Allow` selects the `allow_once` option, `Deny` the `reject_once` one — never an
-/// `allow_always`; with no such option, `cancelled`. `Allow`'s input and `Deny`'s message: ACP's answer carries
-/// neither.
+/// `allow_always` nor a `reject_always`, which the agent may keep as a rule nobody sees; with no such option,
+/// `cancelled`. `Allow`'s input and `Deny`'s message: ACP's answer carries neither.
 fn outcome(options: &Value, p: &Permission) -> Value {
-    let kind = match p {
-        Permission::Allow { .. } => "allow_once",
-        Permission::Deny { .. } => "reject_once",
-    };
+    let kind = kind_of(p);
     let chosen = options.as_array().into_iter().flatten().find(|o| o["kind"] == kind);
     match chosen.and_then(|o| o["optionId"].as_str()) {
         Some(id) => json!({"outcome": {"outcome": "selected", "optionId": id}}),
         None => json!({"outcome": {"outcome": "cancelled"}}),
+    }
+}
+
+/// The one option kind `p` selects (`outcome`).
+fn kind_of(p: &Permission) -> &'static str {
+    match p {
+        Permission::Allow { .. } => "allow_once",
+        Permission::Deny { .. } => "reject_once",
     }
 }
 

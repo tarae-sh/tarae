@@ -1,15 +1,18 @@
 //! A chat turn on an ACP agent, simulated (agents beside Claude, step 2's plan §5; the wire with no process,
-//! `agent::acp::Staged`): the agent's own permission ask, its call of tarae's `read` through the bridge — of a file
-//! outside the project, which waits on the read card — and its words, in any order; each event the wire makes landing
-//! on the loop when the stream says, the wire taking what the chat handed its handle when the stream says, the stop key
-//! once, the card answered, frames. The path's one ordering rule is the stop while a permission ask is open: the
-//! chat's refusal of the ask and the stop reach the wire in either order, and the ask is answered once — `cancelled`
-//! when the stop came first (the spec's MUST), the chat's refusal otherwise.
+//! `agent::acp::Staged`): the agent's own permission ask, its ask for tarae's `read` (offered: tarae's tools were
+//! listed through the bridge, as agy 1.5.9 asks for every call of them — step 4's L-B1), then its call of `read`
+//! through the bridge — of a file outside the project, which waits on the read card — and its words, in any order but
+//! the call after its ask; each event the wire makes landing on the loop when the stream says, the wire taking what
+//! the chat handed its handle when the stream says, the stop key once, the card answered, frames. The path's one
+//! ordering rule is the stop while a permission ask is open: the chat's answer to the ask and the stop reach the wire
+//! in either order, and the ask is answered once — `cancelled` when the stop came first (the spec's MUST), the
+//! chat's answer otherwise.
 //!
-//! After every step: the ask is answered at most once and never allowed (condition 1) — open when `session/cancel`
-//! went, before it; a bridged request is answered at most once. At the end (the agent's turn over: `cancelled` after
-//! a stop, else `end_turn`): the chat is idle, the ask answered once, and the read's answer — the file's text, the
-//! card said yes to — went back through the bridge once, and came up as the call's result.
+//! After every step: each ask is answered at most once — the agent's own never allowed (condition 1), the one for
+//! tarae's `read` never refused (guard 2's ask rule: `allow_once`, or `cancelled` by a stop) — and, open when
+//! `session/cancel` went, before it; a bridged request is answered at most once. At the end (the agent's turn over:
+//! `cancelled` after a stop, else `end_turn`): the chat is idle, each ask answered once, and the read's answer — the
+//! file's text, the card said yes to — went back through the bridge once, and came up as the call's result.
 //!
 //! A second scenario, `an_own_tool_trips_the_session` (step 3's guard 3): the agent runs one of its own tools to its
 //! end (`in_progress`, then `completed`), calls tarae's `read` of the file outside (its card), and the stop key and a
@@ -52,9 +55,15 @@ const LIMIT: Duration = crate::test_results::PATIENCE;
 /// What the file outside the project says.
 const WORDS: &str = "the notes outside";
 
-/// How the fixed seeds' asks were answered: the stop's `cancelled` first, the chat's refusal first.
+/// How the fixed seeds' asks were answered: its own, the stop's `cancelled` first, the chat's refusal first; tarae's
+/// `read`'s, allowed.
 static CANCELLED: AtomicUsize = AtomicUsize::new(0);
 static REFUSED: AtomicUsize = AtomicUsize::new(0);
+static ALLOWED: AtomicUsize = AtomicUsize::new(0);
+
+/// The JSON-RPC ids of the agent's own ask and of its ask for tarae's `read`.
+const OWN_ASK: u64 = 5;
+const TARAES_ASK: u64 = 6;
 
 #[test]
 fn a_turn_on_an_acp_agent_with_a_stop_and_an_ask() {
@@ -64,6 +73,7 @@ fn a_turn_on_an_acp_agent_with_a_stop_and_an_ask() {
         cancelled > 0 && refused > 0,
         "the ask answered one way only: {cancelled} cancelled, {refused} refused"
     );
+    assert!(ALLOWED.load(Ordering::SeqCst) > 0, "tarae's read never allowed");
 }
 
 struct World {
@@ -75,15 +85,16 @@ struct World {
     to_agent: RefCell<Vec<Value>>,
     /// The events the wire made, not landed yet.
     pending: RefCell<VecDeque<Event>>,
-    /// The agent's ask, its call and its words: said yet.
-    said: Cell<[bool; 3]>,
+    /// The agent's ask, its call, its words and its ask for tarae's `read`: said yet.
+    said: Cell<[bool; 4]>,
     stopped: Cell<bool>,
     /// The file outside the project its call reads.
     outside: std::path::PathBuf,
     /// The call's `ToolResult` landed.
     result: Cell<bool>,
-    /// How many lines had gone to the agent when its ask was read: one written after is open to a stop.
-    asked_at: Cell<Option<usize>>,
+    /// How many lines had gone to the agent when each ask was read (its own, tarae's `read`'s): one written after is
+    /// open to a stop.
+    asked_at: Cell<[Option<usize>; 2]>,
 }
 
 impl World {
@@ -123,6 +134,14 @@ fn run(choices: Choices) -> Vec<String> {
         land(&mut ed, ev);
     }
     let bridge = staged.link();
+    // (tarae's tools listed through the bridge, as agy lists them at the session's start: what its asks may be allowed
+    // for — the sandbox taken as looked at already, so the listing starts no look of its own)
+    ed.sandbox = crate::sandbox::Availability::Ready;
+    let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+    for ev in staged.bridged(list) {
+        land(&mut ed, ev);
+    }
+    while staged.take().is_some() {}
     assert!(crate::chat::submit(&mut ed, "read the notes outside", None, None), "the turn asked");
     let world = World {
         staged: RefCell::new(staged),
@@ -130,11 +149,11 @@ fn run(choices: Choices) -> Vec<String> {
         back: RefCell::new(Vec::new()),
         to_agent: RefCell::new(Vec::new()),
         pending: RefCell::new(VecDeque::new()),
-        said: Cell::new([false; 3]),
+        said: Cell::new([false; 4]),
         stopped: Cell::new(false),
         outside: outside.join("notes.txt"),
         result: Cell::new(false),
-        asked_at: Cell::new(None),
+        asked_at: Cell::new([None; 2]),
     };
     let check = |ed: &Editor| held(ed, &world);
     let print = |ed: &Editor| print(ed, &world);
@@ -147,8 +166,8 @@ fn run(choices: Choices) -> Vec<String> {
         if n.get() <= INPUTS {
             return input(sim, ed, &world);
         }
-        if world.said.get().contains(&false) {
-            return say(&world, world.said.get().iter().position(|s| !s).unwrap());
+        if let Some(&i) = sayable(&world).first() {
+            return say(&world, i);
         }
         if over.get() || !all_in(ed, &world) {
             return settle(ed, &world);
@@ -172,9 +191,17 @@ fn run(choices: Choices) -> Vec<String> {
             return Err("the turn's end left the chat busy".into());
         }
         let answers: Vec<&Value> =
-            to_agent.iter().filter(|v| v["id"] == 5 && v.get("method").is_none()).collect();
+            to_agent.iter().filter(|v| v["id"] == OWN_ASK && v.get("method").is_none()).collect();
         if answers.len() != 1 {
             return Err(format!("the ask answered {} times", answers.len()));
+        }
+        let taraes: Vec<&Value> =
+            to_agent.iter().filter(|v| v["id"] == TARAES_ASK && v.get("method").is_none()).collect();
+        if taraes.len() != 1 {
+            return Err(format!("the ask for tarae's read answered {} times", taraes.len()));
+        }
+        if taraes[0]["result"]["outcome"]["optionId"] == "allow" {
+            ALLOWED.fetch_add(1, Ordering::SeqCst);
         }
         let read: Vec<&Value> = back.iter().filter(|v| v["id"] == 9).collect();
         if read.len() != 1 || !read[0].to_string().contains(WORDS) {
@@ -241,15 +268,22 @@ fn settle(ed: &mut Editor, w: &World) -> String {
 }
 
 /// Whether everything of the turn is in: nothing waits to land or to be taken, no card is up, the read answered
-/// back through the bridge and its result landed, the ask answered.
+/// back through the bridge and its result landed, both asks answered.
 fn all_in(ed: &Editor, w: &World) -> bool {
     w.read_up();
     let reading = ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.reads.is_empty());
-    let asked = w.to_agent.borrow().iter().any(|v| v["id"] == 5 && v.get("method").is_none());
+    let answered = |id: u64| w.to_agent.borrow().iter().any(|v| v["id"] == id && v.get("method").is_none());
+    let asked = answered(OWN_ASK) && answered(TARAES_ASK);
     w.pending.borrow().is_empty() && !reading && ed.offers.is_empty() && w.result.get() && asked
 }
 
-/// The agent says its `i`th: its own ask, the read through the bridge, its words.
+/// What the agent may say next: what it hasn't, its call of `read` only after its ask for it (as agy 1.5.9 asks).
+fn sayable(w: &World) -> Vec<usize> {
+    let said = w.said.get();
+    (0..4).filter(|&i| !said[i] && (i != 1 || said[3])).collect()
+}
+
+/// The agent says its `i`th: its own ask, the read through the bridge, its words, its ask for tarae's `read`.
 fn say(w: &World, i: usize) -> String {
     let mut said = w.said.get();
     said[i] = true;
@@ -261,9 +295,19 @@ fn say(w: &World, i: usize) -> String {
                 "kind": "edit", "status": "pending", "rawInput": {"path": "a.txt"}});
             let params = json!({"sessionId": "s-1", "toolCall": call,
                 "options": crate::agent::acp::standin::agy_options()});
-            let ask =
-                json!({"jsonrpc": "2.0", "id": 5, "method": "session/request_permission", "params": params});
+            let ask = json!({"jsonrpc": "2.0", "id": OWN_ASK, "method": "session/request_permission",
+                "params": params});
             (staged.line(&ask), "its own ask (write_file)")
+        }
+        3 => {
+            let files = [w.outside.to_string_lossy()];
+            let call = json!({"toolCallId": "m1", "name": "mcp_tarae_read", "title": "Run mcp_tarae_read",
+                "kind": "other", "status": "pending", "rawInput": {"files": files}});
+            let params = json!({"sessionId": "s-1", "toolCall": call,
+                "options": crate::agent::acp::standin::agy_options()});
+            let ask = json!({"jsonrpc": "2.0", "id": TARAES_ASK, "method": "session/request_permission",
+                "params": params});
+            (staged.line(&ask), "its ask for tarae's read")
         }
         1 => {
             let files = [w.outside.to_string_lossy()];
@@ -279,9 +323,11 @@ fn say(w: &World, i: usize) -> String {
     };
     drop(staged);
     w.made(events);
-    if i == 0 {
+    if let Some(k) = [0, 3].iter().position(|&a| a == i) {
         w.read_up();
-        w.asked_at.set(Some(w.to_agent.borrow().len()));
+        let mut at = w.asked_at.get();
+        at[k] = Some(w.to_agent.borrow().len());
+        w.asked_at.set(at);
     }
     format!("the agent says {what}")
 }
@@ -301,7 +347,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, w: &World) -> String {
     // the read card answered 2, a frame 1)
     match c.weighted(&[3, 4, 4, 1, 2, 1]) {
         0 => {
-            let left: Vec<usize> = (0..3).filter(|&i| !w.said.get()[i]).collect();
+            let left = sayable(w);
             if left.is_empty() {
                 return "(the agent has said all)".into();
             }
@@ -338,30 +384,42 @@ fn input(sim: &mut Sim, ed: &mut Editor, w: &World) -> String {
     }
 }
 
-/// The ask answered at most once and never allowed — and, open when `session/cancel` went, answered before it (the
-/// stop's `cancelled`); a bridged request answered at most once.
+/// Each ask answered at most once — the agent's own never allowed, the one for tarae's `read` never refused — and,
+/// open when `session/cancel` went, answered before it (the stop's `cancelled`); a bridged request answered at most
+/// once.
 fn held(_: &Editor, w: &World) -> Result<(), String> {
     w.read_up();
     let to_agent = w.to_agent.borrow();
-    let answers: Vec<(usize, &Value)> =
-        to_agent.iter().enumerate().filter(|(_, v)| v["id"] == 5 && v.get("method").is_none()).collect();
-    if answers.len() > 1 {
-        return Err(format!("the ask answered {} times", answers.len()));
-    }
-    if let Some((_, a)) = answers.first()
-        && a["result"]["outcome"]["optionId"] == "allow"
-    {
-        return Err("the agent's own ask allowed".into());
-    }
-    if let Some(cancel) = to_agent.iter().position(|v| v["method"] == "session/cancel")
-        && w.asked_at.get().is_some_and(|asked| asked <= cancel)
-    {
-        match answers.first() {
-            Some((at, _)) if *at > cancel => {
-                return Err(format!("the ask, open at the cancel ({cancel}), answered after it ({at})"));
+    let asks = [(OWN_ASK, "the agent's own ask"), (TARAES_ASK, "the ask for tarae's read")];
+    for (k, (id, which)) in asks.iter().enumerate() {
+        let answers: Vec<(usize, &Value)> = to_agent
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v["id"] == *id && v.get("method").is_none())
+            .collect();
+        if answers.len() > 1 {
+            return Err(format!("{which} answered {} times", answers.len()));
+        }
+        if let Some((_, a)) = answers.first() {
+            let chosen = &a["result"]["outcome"];
+            let wrong = match *id == OWN_ASK {
+                true => chosen["optionId"] == "allow",
+                false => chosen["optionId"] != "allow" && chosen["outcome"] != "cancelled",
+            };
+            if wrong {
+                return Err(format!("{which} answered {chosen}"));
             }
-            None => return Err(format!("the ask, open at the cancel ({cancel}), left unanswered")),
-            Some(_) => {}
+        }
+        if let Some(cancel) = to_agent.iter().position(|v| v["method"] == "session/cancel")
+            && w.asked_at.get()[k].is_some_and(|asked| asked <= cancel)
+        {
+            match answers.first() {
+                Some((at, _)) if *at > cancel => {
+                    return Err(format!("{which}, open at the cancel ({cancel}), answered after it ({at})"));
+                }
+                None => return Err(format!("{which}, open at the cancel ({cancel}), left unanswered")),
+                Some(_) => {}
+            }
         }
     }
     let back = w.back.borrow();

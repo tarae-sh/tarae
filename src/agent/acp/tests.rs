@@ -315,6 +315,8 @@ struct Opts<'a> {
     cfg: LlmConfig,
     /// tarae's tools offered (the bridge).
     tools: bool,
+    /// A hook file laid over tarae's once its folder is made (`config/hooks.json`): the stand-in reads it.
+    hooks: Option<String>,
 }
 
 fn start(script: Value, o: Opts) -> Run {
@@ -327,6 +329,9 @@ fn start(script: Value, o: Opts) -> Run {
     env.insert("XDG_STATE_HOME".into(), dir.join("state").to_string_lossy().into_owned());
     // (its folder made as the chat's gate makes it, on this thread)
     let made = crate::agentgate::prepare(&STAND_IN, state(Some(&env)).as_deref()).expect("its folder made");
+    if let Some(hooks) = &o.hooks {
+        std::fs::write(made.prepared.folder().join("config/hooks.json"), hooks).unwrap();
+    }
     let s = Start {
         system: o.system,
         resume: o.resume.map(|conversation| Resume { conversation, fork: false }),
@@ -751,9 +756,10 @@ fn a_test_never_starts_a_real_agent() {
 /// `config/`), writes tarae's two files there to the byte — the hook file (0600) naming the program beside it
 /// (0700) — and names it with `--gemini-dir`, tarae's path for the hook in its environment. The stand-in runs its
 /// own `run_command` as agy does: the hook it reads there asks tarae (the program, then the test binary's
-/// `hook::child`), which refuses it, and the call comes up as a refused row (step 3's guard 3: no trip at `failed`);
-/// `mcp_tarae_search` is let through and called through the bridge, as agy calls it (its report dropped, as tarae's
-/// own tools' are, and matched with the bridge's call: no trip at the turn's end).
+/// `hook::child`), which refuses it, and the call comes up as a refused row (step 3's guard 3: no trip at `failed`),
+/// nothing asked; `mcp_tarae_search` is let through, asked for as agy 1.5.9 asks (answered `allow_once` here, as the
+/// chat's rule would), and called through the bridge, as agy calls it (its report dropped, as tarae's own tools' are,
+/// and matched with the bridge's call: no trip at the turn's end).
 #[test]
 fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
     use std::os::unix::fs::PermissionsExt;
@@ -771,7 +777,14 @@ fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
         json!({"eof": true}),
     ]);
     let run = start(json!(script), Opts { prompt: Some("run echo"), tools: true, ..Opts::default() });
-    let mut got = run.until("mcp bridge-1");
+    let mut got = run.until("ask ask-1 mcp_tarae_search");
+    assert_eq!(
+        got.iter().filter(|g| g.starts_with("ask ")).count(),
+        1,
+        "its own tool, refused, asks nothing"
+    );
+    run.agent().answer_permission("ask-1", Permission::Allow { input: Value::Null });
+    got.extend(run.until("mcp bridge-1"));
     run.agent().answer_mcp("bridge-1", json!({"jsonrpc": "2.0", "id": 1, "result": {"content": []}}));
     got.extend(run.until("done"));
     let folder = run.dir.join("state/tarae/agent-homes/stand-in");
@@ -1153,27 +1166,83 @@ fn a_completed_own_tool_stops_the_session_and_says_it() {
 
 /// Guard 3: a report of tarae's tool that the bridge never carried, `completed`, trips at the turn's end — its row
 /// first (it never had one), then the turn's end in tarae's words, then its end; a prompt waiting is never written.
+/// As agy 1.5.7 reports it (no ask), and as 1.5.9 does (L-B1): `in_progress`, an ask for it allowed as the chat's
+/// rule allows one for an offered tool (`allowed_ask`), then `completed` — the ask's allow is no call of the bridge's.
 #[test]
 fn an_unbridged_taraes_report_trips_at_the_turns_end() {
-    let (mut st, agent, _) = staged(agy_session("s-1"));
-    prompted(&mut st, &agent);
-    let _bridge = st.link();
-    let report = taraes_report("m1", "search", json!({"pattern": "x"}), "completed");
-    assert!(says(st.line(&report)).is_empty(), "held until the turn's end");
-    agent.prompt(Prompt::Text("next".into())).unwrap();
-    st.take();
-    let words = "stand-in said it ran tarae's search, which tarae never ran — stopped: it and everything it \
-                 started ended.";
-    assert_eq!(
-        turn_over(&mut st, 2),
-        [
-            r#"tool m1 mcp_tarae_search {"pattern":"x","toolSummary":"Run search"}"#.to_string(),
-            format!("failed {words}"),
-            format!("exit tripped mcp_tarae_search: {words}"),
-        ]
-    );
-    assert!(st.written().is_empty(), "the prompt waiting, never written");
-    assert!(says(st.line(&report)).is_empty(), "nothing read after it");
+    for asked in [false, true] {
+        let (mut st, agent, _) = staged(agy_session("s-1"));
+        prompted(&mut st, &agent);
+        let _bridge = st.link();
+        let report = taraes_report("m1", "search", json!({"pattern": "x"}), "completed");
+        if asked {
+            let first = taraes_report("m1", "search", json!({"pattern": "x"}), "in_progress");
+            assert!(says(st.line(&first)).is_empty(), "held until the turn's end");
+            let mut params = agy_ask(Some("mcp_tarae_search"), "Run mcp_tarae_search", "other");
+            params["toolCall"]["rawInput"] = json!({"pattern": "x"});
+            let ask =
+                json!({"jsonrpc": "2.0", "id": 7, "method": "session/request_permission", "params": params});
+            assert_eq!(says(st.line(&ask)), [r#"ask 7 mcp_tarae_search {"pattern":"x"}"#]);
+            assert!(allowed_ask("mcp_tarae_search", &["search".to_string()]), "the chat's rule allows it");
+            agent.answer_permission("7", Permission::Allow { input: Value::Null });
+            st.take();
+            let allow = json!({"outcome": {"outcome": "selected", "optionId": "allow"}});
+            assert_eq!(st.written(), [json!({"jsonrpc": "2.0", "id": 7, "result": allow})]);
+            let done = update_line(json!({"sessionUpdate": "tool_call_update", "toolCallId": "m1",
+                "status": "completed", "content": null}));
+            assert!(says(st.line(&done)).is_empty(), "held until the turn's end");
+        } else {
+            assert!(says(st.line(&report)).is_empty(), "held until the turn's end");
+        }
+        agent.prompt(Prompt::Text("next".into())).unwrap();
+        st.take();
+        let words = "stand-in said it ran tarae's search, which tarae never ran — stopped: it and everything it \
+                     started ended.";
+        assert_eq!(
+            turn_over(&mut st, 2),
+            [
+                r#"tool m1 mcp_tarae_search {"pattern":"x","toolSummary":"Run search"}"#.to_string(),
+                format!("failed {words}"),
+                format!("exit tripped mcp_tarae_search: {words}"),
+            ],
+            "asked {asked}"
+        );
+        assert!(st.written().is_empty(), "the prompt waiting, never written");
+        assert!(says(st.line(&report)).is_empty(), "nothing read after it");
+    }
+}
+
+/// The stand-in as agy 1.5.9 was measured (#5 and #13, the second probe's run A): a hook that doesn't answer within
+/// its timeout is killed and the call `failed` — it fails closed: nothing asked, the call never made. Here a hook
+/// that sleeps past a timeout of 0.3 s, in front of one of its own tools: a refused row, no ask, the hook (the pid
+/// the stand-in started) gone.
+#[test]
+fn a_hook_past_its_timeout_fails_the_call_and_nothing_asks() {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = crate::scratch::Scratch::new("acp-slow-hook");
+    let script = hooks.join("slow");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let one = json!({"type": "command", "command": script, "timeout": 0.3});
+    let file = json!({"t": {"PreToolUse": [{"matcher": "*", "hooks": [one]}]}});
+    let own = json!({"own": {"name": "run_command", "id": "t1", "args": {"CommandLine": "echo ran"}}});
+    let mut script = handshake();
+    script.extend([
+        json!({"expect": "session/prompt"}),
+        own,
+        json!({"end_turn": "end_turn"}),
+        json!({"eof": true}),
+    ]);
+    let opts = Opts { prompt: Some("go"), hooks: Some(file.to_string()), ..Opts::default() };
+    let run = start(json!(script), opts);
+    let got = run.until("done");
+    assert!(got.contains(&format!("result t1 true {REFUSED}")), "a refused row: {got:?}");
+    assert!(!got.iter().any(|g| g.starts_with("ask ")), "nothing asked: {got:?}");
+    let heard = run.heard();
+    let hook = heard.iter().find_map(|v| v.get("hook")).expect("its hook asked");
+    assert_eq!(hook["failed"], "timeout", "{hook}");
+    let pid = hook["pid"].as_u64().filter(|&p| p > 0).expect("the hook's pid");
+    assert!(gone(pid), "the hook outlived its timeout");
 }
 
 /// Guard 3's match (the design session's condition 1), in agy's real shape: a report of tarae's matches a bridge call

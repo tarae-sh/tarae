@@ -846,6 +846,10 @@ pub struct Chat {
     /// (`agentgate.rs`, guard 1).
     #[cfg(test)]
     pub(crate) agent_gate: crate::agentgate::Gate,
+    /// The tools its process's `tools/list` was answered with, by name, and that process's generation: what an ACP
+    /// agent's ask may be allowed for (`acp::allowed_ask`, guard 2's ask rule) — another process's count for nothing.
+    #[cfg(test)]
+    pub(crate) offered_tools: (u64, Vec<String>),
     /// Who pays for its claude — what the last one was started on (`billing.rs`), what its `apiKeySource` is
     /// checked against (the session's may have changed since: a restart's list coming back). None: none started.
     pub billing: Option<crate::billing::Billing>,
@@ -1315,6 +1319,8 @@ impl Chat {
             settings: Default::default(),
             #[cfg(test)]
             agent_gate: Default::default(),
+            #[cfg(test)]
+            offered_tools: (0, Vec::new()),
             billing: None,
             launched: None,
             runs_on: (None, String::new()),
@@ -3042,20 +3048,35 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
         }
         // tarae's MCP server (its tools, `tools.rs`): answered now, or (an edit) once its review ends
         Event::Mcp { id, message } => {
+            #[cfg(test)]
+            let listing = message["method"] == "tools/list";
             if let Some(response) = crate::tools::mcp(ed, generation, &id, &message)
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
             {
+                // (what an ACP agent's ask may be allowed for: what this process was offered — `acp::allowed_ask`)
+                #[cfg(test)]
+                if listing && let Some(c) = ed.workspace.claude.chat.as_mut() {
+                    c.offered_tools = (generation, crate::agent::acp::offered(&response));
+                }
                 answer_mcp(ed, &id, response);
             }
         }
         // A permission ask: a read's (`reads.rs`, maybe after its card), any other denied (`edits::request`) — and
         // every one of an agent whose asks tarae can't read by name, before anything reads it (`Caps::asks`: an ACP
-        // agent's own tools, step 2's condition 1; no chat to say whose: refused too)
+        // agent's own tools, step 2's condition 1; no chat to say whose: refused too) but one for a tool of tarae's
+        // this process was offered, let through to the bridge, where tarae's gate decides (guard 2's ask rule,
+        // `acp::allowed_ask`, by the name alone)
         Event::Permission { id, tool, input } => {
             ed.workspace.claude.usage.tally.asked(&id, &tool);
             let asks = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.agent.caps.asks);
+            #[cfg(test)]
+            let offered = ed.workspace.claude.chat.as_ref().is_some_and(|c| {
+                c.offered_tools.0 == generation && crate::agent::acp::allowed_ask(&tool, &c.offered_tools.1)
+            });
             let p = match asks {
                 true => crate::edits::request(ed, &id, &tool, input),
+                #[cfg(test)]
+                false if offered => Some(Permission::Allow { input: serde_json::Value::Null }),
                 false => Some(Permission::Deny { message: OWN_TOOLS_REFUSED.into() }),
             };
             if let Some(p) = p
@@ -6567,6 +6588,220 @@ mod tests {
         assert_eq!(answer["result"], deny, "refused: {answer}");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(c.reads.is_empty(), "reads.rs never ran");
+        ed.workspace.claude.chat = None;
+    }
+
+    /// A chat on the stand-in ACP agent playing `script`, `env` laid over its own (`stand_in_env`), started: the
+    /// editor, its scratch folder (holding `a.rs`) and the file the stand-in writes what it heard to.
+    fn stand_in_chat(
+        name: &str,
+        script: serde_json::Value,
+        env: &[(&str, &str)],
+    ) -> (Editor, crate::scratch::Scratch, std::path::PathBuf) {
+        let dir = crate::scratch::Scratch::new(name);
+        std::fs::write(dir.join("a.rs"), "fn alpha() {}\nfn beta() {}\n").unwrap();
+        let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
+        let (script_at, heard_at) = (dir.join("script.json"), dir.join("heard"));
+        std::fs::write(&script_at, script.to_string()).unwrap();
+        let mut given = stand_in_env(&dir, &script_at, &heard_at);
+        given.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        ed.claude_env = Some(given);
+        let mut c = Chat::new();
+        c.agent = &crate::agent::STAND_IN;
+        ed.workspace.claude.chat = Some(c);
+        ensure_proc(&mut ed);
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().proc.is_some());
+        (ed, dir, heard_at)
+    }
+
+    /// What the stand-in heard so far (`HEARD`), a JSON value a line.
+    fn heard_by(at: &std::path::Path) -> Vec<serde_json::Value> {
+        let text = std::fs::read_to_string(at).unwrap_or_default();
+        text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    }
+
+    /// Events handled until `done`, a read card answered `y` whenever one is up: how many were.
+    #[track_caller]
+    fn pump_until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) -> usize {
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        let mut cards = 0;
+        while !done(ed) {
+            assert!(std::time::Instant::now() < end, "never {what}");
+            if ed.offers.first().is_some_and(|o| matches!(o.what, crate::offer::What::Read { .. })) {
+                crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+                assert!(ed.offer_key(Key::plain(crate::key::Code::Char('y'))), "y on the read card");
+                cards += 1;
+                continue;
+            }
+            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(10)) {
+                ed.handle_event(ev);
+            }
+        }
+        cards
+    }
+
+    /// A turn on the stand-in calling tarae's `tool` on `arguments` as agy calls one (its `own`: reported, its hooks,
+    /// the ask as 1.5.9 makes it, or none with `NO_ASK`): tarae's tools listed through the bridge first (request 2),
+    /// the call request 3, then its words, `Done.`, and the turn's end.
+    fn taraes_call(tool: &str, arguments: serde_json::Value) -> serde_json::Value {
+        use serde_json::json;
+        let mcp = |m: serde_json::Value| json!({"mcp": m});
+        let call = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments}});
+        json!([
+            {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
+            {"expect": "session/new", "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}},
+            {"expect": "session/prompt"},
+            mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})),
+            mcp(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
+            mcp(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})),
+            {"own": {"name": format!("mcp_tarae_{tool}"), "id": "c1", "args": arguments, "mcp": call}},
+            {"say": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Done."}}},
+            {"end_turn": "end_turn"},
+            {"eof": true},
+        ])
+    }
+
+    /// The chat's turn over: idle, its words in.
+    fn said_done(ed: &Editor) -> bool {
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        c.state == State::Idle && c.msgs.iter().any(|m| m.role == Role::Assistant && m.text.contains("Done."))
+    }
+
+    /// The answers to the stand-in's own asks (`own`'s, `ask-N`) it heard.
+    fn own_asks_answered(heard: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        let ask = |v: &&serde_json::Value| v["id"].as_str().is_some_and(|i| i.starts_with("ask-"));
+        heard.iter().filter(ask).filter(|v| v.get("method").is_none()).map(|v| v["result"].clone()).collect()
+    }
+
+    /// Guard 2's ask rule (step 4's L-B1) end to end, on the stand-in as agy 1.5.9 was measured: tarae's tools listed
+    /// through the bridge, the model calls `mcp_tarae_read` of a file outside the project — reported, tarae's hook lets
+    /// it through, and agy asks (`pending`, `allow_once` and `reject_once`). The chat answers `allow_once`, an offered
+    /// tool of tarae's, with no card and no row of its own, and the call reaches the bridge once, where it meets the
+    /// read card Claude's would, answered `y`: the file's text goes back once, the report matches the bridge's call
+    /// (no trip), and the turn ends.
+    #[test]
+    fn taraes_tool_asked_for_as_agy_1_5_9_asks_runs_once() {
+        let outside = crate::scratch::Scratch::new("chat-acp-asked-outside");
+        let notes = std::fs::canonicalize(outside.path()).unwrap().join("notes.txt");
+        std::fs::write(&notes, "the notes outside\n").unwrap();
+        let script = taraes_call("read", serde_json::json!({"files": [notes]}));
+        let (mut ed, _dir, heard_at) = stand_in_chat("chat-acp-asked", script, &[]);
+        assert!(submit(&mut ed, "read the notes outside", None, None));
+        let cards = pump_until(&mut ed, "the turn over", said_done);
+        let heard = heard_by(&heard_at);
+        let allow = serde_json::json!({"outcome": {"outcome": "selected", "optionId": "allow"}});
+        assert_eq!(own_asks_answered(&heard), [allow], "asked once, allowed once: {heard:?}");
+        let answers: Vec<&serde_json::Value> =
+            heard.iter().filter_map(|v| v.get("mcp_answer").filter(|a| a["id"] == 3)).collect();
+        assert_eq!(answers.len(), 1, "the call reached the bridge once: {heard:?}");
+        assert!(answers[0].to_string().contains("the notes outside"), "tarae's read: {}", answers[0]);
+        assert_eq!(cards, 1, "its card, as Claude's read of a file outside gets");
+        assert!(ed.agents_tripped.is_empty(), "no trip");
+        ed.workspace.claude.chat = None;
+    }
+
+    /// The same call on the stand-in as agy 1.5.4 and 1.5.7 were measured (`NO_ASK`): no ask — its hook lets it
+    /// through and the call is made — and tarae's tool runs once through the bridge, the turn ending with no trip.
+    #[test]
+    fn taraes_tool_runs_once_when_agy_asks_nothing() {
+        let script = taraes_call("search", serde_json::json!({"pattern": "fn beta"}));
+        let no_ask = [(crate::agent::acp::standin::NO_ASK, "1")];
+        let (mut ed, _dir, heard_at) = stand_in_chat("chat-acp-unasked", script, &no_ask);
+        assert!(submit(&mut ed, "where is beta?", None, None));
+        pump_until(&mut ed, "the turn over", said_done);
+        let heard = heard_by(&heard_at);
+        assert!(own_asks_answered(&heard).is_empty(), "nothing asked: {heard:?}");
+        let answers: Vec<&serde_json::Value> =
+            heard.iter().filter_map(|v| v.get("mcp_answer").filter(|a| a["id"] == 3)).collect();
+        assert_eq!(answers.len(), 1, "the call reached the bridge once: {heard:?}");
+        assert!(answers[0].to_string().contains("a.rs"), "tarae's search: {}", answers[0]);
+        assert!(ed.agents_tripped.is_empty(), "no trip");
+        ed.workspace.claude.chat = None;
+    }
+
+    /// Guard 2's ask rule's refusals (L-B1): with tarae's tools listed through the bridge, an ask is refused
+    /// (`reject_once`) for one of the agent's own tools (as agy asks after a hook that said nothing, #8), the prefix
+    /// alone, a tarae name not offered, and no name; an offered tool's ask whose only allow is `allow_always` is
+    /// `cancelled` (never `allow_always`, nor a refusal in its place), and a refused one's whose only refusal is
+    /// `reject_always` too (never `reject_always`, nor its `allow_once`) — each said in the log with the kinds it
+    /// offered. An offered tool's ask with agy's two options is allowed: the control. No card, no read.
+    #[test]
+    fn an_ask_for_anything_but_an_offered_taraes_tool_is_refused() {
+        use serde_json::json;
+        let log = crate::log::capture();
+        let mcp = |m: serde_json::Value| json!({"mcp": m});
+        let call = |name: Option<&str>| {
+            let mut c = json!({"toolCallId": "t1", "title": "Run it", "status": "pending", "rawInput": {}});
+            if let Some(name) = name {
+                c["name"] = json!(name);
+                c["kind"] = json!(if name.starts_with("mcp_") { "other" } else { "execute" });
+            }
+            c
+        };
+        let opt = |id: &str, kind: &str| json!({"optionId": id, "name": id, "kind": kind});
+        let asks = [
+            (11, call(Some("run_command")), None),
+            (12, call(Some("mcp_tarae_")), None),
+            (13, call(Some("mcp_tarae_nope")), None),
+            (14, call(None), None),
+            (
+                15,
+                call(Some("mcp_tarae_search")),
+                Some(json!([opt("always", "allow_always"), opt("deny", "reject_once")])),
+            ),
+            (
+                16,
+                call(Some("mcp_tarae_nope")),
+                Some(json!([opt("allow", "allow_once"), opt("never", "reject_always")])),
+            ),
+            (17, call(Some("mcp_tarae_search")), None),
+        ];
+        let mut script = vec![
+            json!({"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}}),
+            json!({"expect": "session/new", "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}}),
+            mcp(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})),
+            mcp(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
+            mcp(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})),
+        ];
+        for (id, call, options) in &asks {
+            let mut ask = json!({"ask": call, "id": id});
+            if let Some(options) = options {
+                ask["options"] = options.clone();
+            }
+            script.extend([ask, json!({"await": id})]);
+        }
+        script.push(json!({"eof": true}));
+        let (mut ed, _dir, heard_at) = stand_in_chat("chat-acp-refused", json!(script), &[]);
+        let answered =
+            |_: &Editor| heard_by(&heard_at).iter().any(|v| v["id"] == 17 && v.get("method").is_none());
+        pump_until(&mut ed, "every ask answered", answered);
+        let heard = heard_by(&heard_at);
+        let answer = |id: u64| {
+            let a = heard.iter().find(|v| v["id"] == id && v.get("method").is_none());
+            a.map(|a| a["result"]["outcome"].clone()).unwrap_or_default()
+        };
+        let (deny, cancelled) =
+            (json!({"outcome": "selected", "optionId": "deny"}), json!({"outcome": "cancelled"}));
+        for (id, what) in
+            [(11, "its own tool"), (12, "the prefix alone"), (13, "not offered"), (14, "no name")]
+        {
+            assert_eq!(answer(id), deny, "{what} refused");
+        }
+        assert_eq!(answer(15), cancelled, "allow_always alone: cancelled");
+        assert_eq!(answer(16), cancelled, "reject_always alone: cancelled");
+        assert_eq!(answer(17), json!({"outcome": "selected", "optionId": "allow"}), "the control");
+        let lines = log.lines();
+        for said in [
+            r#"its ask for "mcp_tarae_search" offered no allow_once — cancelled (it offered: allow_always reject_once)"#,
+            r#"its ask for "mcp_tarae_nope" offered no reject_once — cancelled (it offered: allow_once reject_always)"#,
+        ] {
+            assert!(lines.iter().any(|l| l.contains(said)), "said: {said}\n{lines:?}");
+        }
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.reads.is_empty() && ed.offers.is_empty(), "no read, no card");
         ed.workspace.claude.chat = None;
     }
 

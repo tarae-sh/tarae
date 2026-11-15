@@ -24,10 +24,11 @@
 //!   that never ends by itself), heard as `{"linger_pid": pid}`.
 //! - `{"tty": true}` reads its session and group and tries to open `/dev/tty`, heard as `{"pid": pid, "pgid":
 //!   pgid, "sid": sid, "tty": "opened" or why not}`.
-//! - `{"own": {"name": …, "args": …, "id": …}}` runs one of its own tools as agy does (`own`): reported, its folder's
-//!   hook asked on agy's input (heard as `{"hook": its answer}`), then `failed` with the hook's reason or `completed`
-//!   — with `"mcp": message`, one of tarae's: once its hook lets it through, the message sent to tarae's server first
-//!   (as an `mcp` step) and its answer waited for, as agy calls a server's tool.
+//! - `{"own": {"name": …, "args": …, "id": …}}` runs a tool as agy 1.5.9 does (`own`): reported, its folder's hooks
+//!   asked on agy's input (heard as `{"hook": their answer}`), then `failed` where they refused or failed, else the
+//!   ask (`pending`, `session/request_permission`, its answer waited for) and, on `allow_once`, the call and
+//!   `completed` — with `"mcp": message`, one of tarae's: the message sent to tarae's server (as an `mcp` step) and its
+//!   answer waited for, as agy calls a server's tool. With `NO_ASK` set, no ask: agy 1.5.4 and 1.5.7.
 //!
 //! It plays agy's part, so its row takes agy's recipe (`agent::AGY_TOOLS_OFF`): its `--gemini-dir <folder>`, which
 //! libtest wouldn't take, is moved by its `sh` into `DIR` before the test binary starts.
@@ -71,6 +72,12 @@ pub const DIR: &str = "TARAE_ACP_DIR";
 pub const SCRIPT: &str = "TARAE_ACP_SCRIPT";
 /// The variable naming the file it writes what it heard to.
 pub const HEARD: &str = "TARAE_ACP_HEARD";
+/// The variable that, set (to anything), makes it play agy 1.5.4 and 1.5.7, which never asked for a call its hooks
+/// let through (`own`) — a switch of the stand-in's, as `SCRIPT` and `HEARD` are: its row's `ARGS` are every test's.
+pub const NO_ASK: &str = "TARAE_ACP_NO_ASK";
+
+/// How long a hook may take where its entry names no `timeout` (agy's own default, unmeasured).
+const HOOK_TIMEOUT: f64 = 30.0;
 
 /// agy's two options for a permission ask, as the probe saw them.
 pub fn agy_options() -> Value {
@@ -97,6 +104,8 @@ struct Agent {
     /// Its session's folder, and the last message's text (a hook's `lastUserInput`).
     cwd: String,
     last_input: String,
+    /// The asks it made of its own (`own`), for their ids.
+    asks: u64,
 }
 
 impl Agent {
@@ -238,12 +247,17 @@ impl Agent {
         self.say(json!({"jsonrpc": "2.0", "method": "session/update", "params": params}));
     }
 
-    /// One of its own tools, as agy runs one (the design session's probe, Q5): reported `in_progress`, its hook asked
-    /// first, then `failed` with the hook's reason where it refused, else `completed`. A hook that's missing, won't
-    /// run or says nothing it reads lets the tool run: it plays an agy that fails open (Q7, unmeasured).
+    /// A tool call, its own or tarae's, as agy 1.5.9 runs one (the second probe's, `.sb/agent-p4-probe/
+    /// out-1794767239/`): reported `in_progress`, its hooks asked first (`hook`); where they refused or one failed (a
+    /// refusal, past its timeout, an exit other than 0, what isn't JSON) `failed` with the reason, and nothing asked.
+    /// Else — one allowed, or none said anything (no decision, #8) — `pending` and a permission ask offering
+    /// `allow_once` and `reject_once` only, in every mode; on `allow_once` `in_progress`, the call (one of tarae's:
+    /// its `mcp` message to tarae's server, the answer waited for), then `completed`; any other answer `failed`. With
+    /// `NO_ASK` set, the call is made after the hooks, unasked (agy 1.5.4 and 1.5.7).
     fn own(&mut self, call: &Value) {
         let (id, name, args) = (&call["id"], &call["name"], &call["args"]);
-        self.update(json!({"sessionUpdate": "tool_call", "toolCallId": id, "title": name, "kind": "execute",
+        let kind = if name.as_str().is_some_and(|n| n.starts_with("mcp_")) { "other" } else { "execute" };
+        self.update(json!({"sessionUpdate": "tool_call", "toolCallId": id, "title": name, "kind": kind,
             "status": "in_progress", "name": name, "args": args, "rawInput": args, "locations": null}));
         let dir = std::env::var(DIR).unwrap_or_default();
         let brain = format!("{dir}/antigravity-cli/brain/{}", self.session);
@@ -261,20 +275,45 @@ impl Agent {
         });
         let answer = hook(&dir, &input);
         self.heard(&json!({"hook": answer}));
-        if let Some(message) = call.get("mcp").filter(|_| answer["decision"] != "deny") {
+        let failed = |reason: &Value| {
+            let content = match reason.is_null() {
+                true => Value::Null,
+                false => json!([{"type": "content", "content": {"type": "text", "text": reason}}]),
+            };
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "content": content})
+        };
+        if answer["decision"] == "deny" {
+            self.update(failed(&answer["reason"]));
+            return;
+        }
+        if std::env::var_os(NO_ASK).is_none() {
+            self.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "pending"}));
+            self.asks += 1;
+            let ask = json!(format!("ask-{}", self.asks));
+            let asked = json!({"toolCallId": id, "title": format!("Run {}", name.as_str().unwrap_or_default()),
+                "kind": kind, "status": "pending", "name": name, "args": args, "rawInput": args});
+            let params = json!({"sessionId": self.session, "toolCall": asked, "options": agy_options()});
+            self.say(
+                json!({"jsonrpc": "2.0", "id": ask, "method": "session/request_permission", "params": params}),
+            );
+            let answered = |v: &Value| v["id"] == ask && v.get("method").is_none();
+            let Some(a) = self.wait(answered) else { self.missed(&format!("the answer to {ask}")) };
+            let allowed =
+                agy_options().as_array().unwrap().iter().any(|o| {
+                    o["kind"] == "allow_once" && a["result"]["outcome"]["optionId"] == o["optionId"]
+                }) && a["result"]["outcome"]["outcome"] == "selected";
+            if !allowed {
+                self.update(failed(&Value::Null));
+                return;
+            }
+            self.update(
+                json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}),
+            );
+        }
+        if let Some(message) = call.get("mcp") {
             self.mcp(message);
         }
-        let update = match answer["decision"] == "deny" {
-            true => {
-                let reason =
-                    json!({"type": "content", "content": {"type": "text", "text": answer["reason"]}});
-                json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "content": [reason]})
-            }
-            false => {
-                json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed", "content": null})
-            }
-        };
-        self.update(update);
+        self.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed", "content": null}));
     }
 
     /// `message` to tarae's server, started first if it isn't; a request's answer waited for and heard.
@@ -320,8 +359,11 @@ impl Agent {
     }
 }
 
-/// The answer of the hooks `<dir>/config/hooks.json` names for every tool (agy's shape, `hook::file`), each run as agy
-/// runs one — its command alone, `input` on stdin — the first refusal, else the last answer, else `"none"`.
+/// The answer of the hooks `<dir>/config/hooks.json` names for every tool (agy's shape, `hook::file`) — its groups by
+/// name (serde_json's map is sorted; tarae's file has one), each group's hooks in the file's order — each run as
+/// `run_hook` runs one: the first refusal or failure (a refusal of the stand-in's own words, with
+/// `failed` saying why: agy 1.5.9 fails the call, #5 #8), which ends the chain; else the last answer naming a
+/// decision; else `"none"` (no decision: the call goes on to its ask, #8).
 fn hook(dir: &str, input: &Value) -> Value {
     let file = std::fs::read_to_string(format!("{dir}/config/hooks.json")).unwrap_or_default();
     let file: Value = serde_json::from_str(&file).unwrap_or_default();
@@ -330,26 +372,67 @@ fn hook(dir: &str, input: &Value) -> Value {
     let hooks =
         entries.filter(|e| e["matcher"] == "*").flat_map(|e| e["hooks"].as_array().into_iter().flatten());
     let mut answer = json!("none");
-    for command in hooks.filter(|h| h["type"] == "command").filter_map(|h| h["command"].as_str()) {
-        let child = std::process::Command::new(command)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let Ok(mut child) = child else { continue };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = writeln!(stdin, "{input}");
-        }
-        let out = child.wait_with_output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-        let said = out.ok().and_then(|o| serde_json::from_str::<Value>(o.lines().next()?).ok());
-        if let Some(said) = said.filter(|s| s["decision"].is_string()) {
-            if said["decision"] == "deny" {
-                return said;
+    for h in hooks.filter(|h| h["type"] == "command") {
+        let Some(command) = h["command"].as_str() else { continue };
+        let timeout =
+            std::time::Duration::from_secs_f64(h["timeout"].as_f64().unwrap_or(HOOK_TIMEOUT).max(0.0));
+        let said = match run_hook(command, timeout, input) {
+            Ok(said) => said,
+            Err((why, pid)) => {
+                let reason = format!("hook failed: {why}");
+                return json!({"decision": "deny", "reason": reason, "failed": why, "pid": pid});
             }
+        };
+        if said["decision"] == "deny" {
+            return said;
+        }
+        if said["decision"].is_string() {
             answer = said;
         }
     }
     answer
+}
+
+/// One hook run as agy 1.5.9 was seen to run one, but by its command alone (agy's goes through a shell, #6 — step 4's
+/// L-B3): `input` on stdin, its first line of output read. Err, why it failed and its pid (0: none): it couldn't be
+/// run, it ran past `timeout` (killed, as agy kills it, #5), it exited other than 0, or its line isn't JSON (#8).
+/// Nothing said is `Null`: no decision. Its output read on a thread of its own, so the wait for it is bounded with no
+/// clock read.
+fn run_hook(
+    command: &str,
+    timeout: std::time::Duration,
+    input: &Value,
+) -> Result<Value, (&'static str, u32)> {
+    use std::io::Read;
+    let child = std::process::Command::new(command)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else { return Err(("not run", 0)) };
+    let pid = child.id();
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "{input}");
+    }
+    let Some(mut stdout) = child.stdout.take() else { return Err(("not run", pid)) };
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::event::thread("tarae-standin", move || {
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        let _ = tx.send(out);
+    });
+    let Ok(out) = rx.recv_timeout(timeout) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(("timeout", pid));
+    };
+    if !child.wait().is_ok_and(|s| s.success()) {
+        return Err(("exit", pid));
+    }
+    match String::from_utf8_lossy(&out).lines().next().filter(|l| !l.trim().is_empty()) {
+        None => Ok(Value::Null),
+        Some(line) => serde_json::from_str(line).map_err(|_| ("junk", pid)),
+    }
 }
 
 /// The stand-in agent itself: run only as a test's child (`SCRIPT` set), its steps in order, then its end.
@@ -378,6 +461,7 @@ fn run() {
         children: Vec::new(),
         cwd: String::new(),
         last_input: String::new(),
+        asks: 0,
     };
     let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: a plain call filling a struct of ours.
