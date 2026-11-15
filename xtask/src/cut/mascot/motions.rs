@@ -554,8 +554,11 @@ impl Plan {
         let n = prog.frames();
         let (mut shown, mut fast) = (vec![false; n as usize], vec![false; n as usize]);
         let mut unshown = vec![0u32; n as usize + 1];
+        // (a picture's frames: shown, but no stretch there — the character watches it drawn)
+        let mut pictured = vec![false; n as usize];
         for k in 0..n {
             let f = prog.frame(Program::time_of(k));
+            pictured[k as usize] = f.picture.is_some();
             shown[k as usize] = f.card.is_none();
             fast[k as usize] = f.speed.is_some_and(|s| s > KEYS_MAX_SPEED + 1e-6);
             unshown[k as usize + 1] = unshown[k as usize] + u32::from(f.card.is_some());
@@ -673,8 +676,13 @@ impl Plan {
         if sw.stretch {
             // (holding fast-forward isn't idle: no stretch begins in a hold, its quiet counts from the lift — the
             // user's pick, 2026-11-12)
-            let shown: Vec<bool> =
-                (0..n).map(|k| shown[k as usize] && !fast_held.iter().any(|h| h.0 <= k && k < h.1)).collect();
+            let shown: Vec<bool> = (0..n)
+                .map(|k| {
+                    shown[k as usize]
+                        && !pictured[k as usize]
+                        && !fast_held.iter().any(|h| h.0 <= k && k < h.1)
+                })
+                .collect();
             let (mine, not) = stretches(&room, &shown, &placed, frames(STRETCH_QUIET_MS), &at_take);
             would_stretch = (STRETCH_TRIED_MS.iter())
                 .map(|&ms| (ms, stretches(&room, &shown, &placed, frames(ms), &at_take).0.len()))

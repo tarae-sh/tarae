@@ -29,7 +29,8 @@ pub(crate) fn shown(prog: &Program, from: u64, to: u64) -> Vec<u64> {
     let mut at = Vec::new();
     let o = &cut.opening;
     let a = from.max(o.from);
-    if a < to.min(o.from + o.len)
+    if o.picture.is_none()
+        && a < to.min(o.from + o.len)
         && let Some(p) = prog.parts.iter().find(|p| matches!(p.what, What::Ends { .. }))
     {
         at.push(p.at + (a - o.from) * 1000);

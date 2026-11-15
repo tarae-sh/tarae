@@ -30,6 +30,7 @@ use std::time::Instant;
 use super::mascot::motions::{self, Plan};
 use super::mascot::pops::{self, Pops};
 use super::mascot::{self, Art, Hands, Pic, Place};
+use super::picture::{self, Boards};
 use super::{
     Card, Cut, Frame, Marks, Pace, Program, Weight, What, clock, factor, jumped, label, opening, sped, told,
     video_time, weight,
@@ -87,7 +88,8 @@ pub(super) fn run(
         .chain(cut.captions.iter().map(|c| c.text.as_str()))
         .chain([cut.opening.name.as_str(), cut.opening.line.as_str()])
         .chain(cut.opening.code.iter().map(String::as_str))
-        .chain(cut.opening.label.iter().chain(&cut.opening.label_line).map(String::as_str));
+        .chain(cut.opening.label.iter().chain(&cut.opening.label_line).map(String::as_str))
+        .chain(cut.pictures.iter().flat_map(|p| &p.steps).flat_map(|s| &s.text).map(String::as_str));
     for w in words {
         none_of_yours(&[w.chars().map(String::from).collect()], yours.as_deref())?;
     }
@@ -183,6 +185,7 @@ struct Key {
     pops: Vec<(usize, u64)>,
     blank: Vec<Blank>,
     label: Option<super::label::Label>,
+    picture: Option<picture::Shows>,
 }
 
 /// The screen's picture kept, by what it was drawn of: whose replay, how many screens in, the glyph (px) and the cells
@@ -433,14 +436,42 @@ impl<'a> Stage<'a> {
         &self,
         screen: &Shown,
         f: &Frame,
+        mascot: (Option<Pic>, &Pops, &[(usize, u64)]),
+        words: &mut Words,
+    ) -> Vec<u8> {
+        let (w, h) = self.lay.dims;
+        let mut px = self.look.ground.repeat(w * h);
+        self.lay_screen(&mut px, screen, 0..self.lay.pic.1);
+        self.dress(px, f, mascot, words)
+    }
+
+    /// A picture's frame `f`: the `board` (the frame above the band, `picture.rs`) in place of the screen, the rest as a
+    /// take's frame has it.
+    pub(crate) fn picture_frame(
+        &self,
+        board: &[u8],
+        f: &Frame,
+        mascot: (Option<Pic>, &Pops, &[(usize, u64)]),
+        words: &mut Words,
+    ) -> Vec<u8> {
+        let (w, h) = self.lay.dims;
+        let mut px = self.look.ground.repeat(w * h);
+        px[..board.len().min(self.lay.rule * w * 3)]
+            .copy_from_slice(&board[..board.len().min(self.lay.rule * w * 3)]);
+        self.dress(px, f, mascot, words)
+    }
+
+    /// What's laid over a frame's board `px`: the words over where it ends, the band's rule, the band, the mascot.
+    fn dress(
+        &self,
+        mut px: Vec<u8>,
+        f: &Frame,
         (pose, pops, up): (Option<Pic>, &Pops, &[(usize, u64)]),
         words: &mut Words,
     ) -> Vec<u8> {
         let lay = &self.lay;
-        let (w, h) = lay.dims;
+        let w = lay.dims.0;
         let x0 = lay.at.0;
-        let mut px = self.look.ground.repeat(w * h);
-        self.lay_screen(&mut px, screen, 0..lay.pic.1);
 
         // (the words over where it ends, on the board as this frame drew it)
         if let (Some(l), Some(title)) = (f.label, &self.cut.opening.label) {
@@ -634,6 +665,11 @@ pub(crate) fn make(
     let marks_right = stage.marks_right;
     // (measured at 1080p: every width doubles at 2160p)
     captions_clear(cut, &Fonts::load(1)?, (marks_right / k, mascot.is_some()))?;
+    // (the pictures' files, checked at 2160p before any frame; their boards at the video's size, read as they come)
+    let checking = Instant::now();
+    let found = picture::check(cut, look.ground)?;
+    said.extend(pictures_said(cut, &found, checking.elapsed()));
+    let mut boards = Boards::new(cut, scale, &look)?;
     let keys = match dir.join("keys.bin").exists() {
         true => crate::record::read_log(&dir.join("keys.bin"))?,
         false => Vec::new(),
@@ -840,7 +876,8 @@ pub(crate) fn make(
         looked.elapsed().as_secs_f64()
     ));
     drop(whole);
-    let mut crossings = Crossings::new(prog.crossings(), changed);
+    let mut crossings =
+        Crossings::new(prog.crossings(), changed).confined(prog.confined(), lay.rule * dims.0 * 3);
     let (mut ends, mut replay) = (Replay::new(&take.screen, size), Replay::new(&take.screen, size));
     let mut words = Words::new(&fonts, look.ground, scale);
     let sheet_fonts = Fonts::load(1)?;
@@ -859,9 +896,13 @@ pub(crate) fn make(
     let paint = |f: &Frame,
                  key: &Key,
                  s: &vt100::Screen,
-                 pics: &mut Pictures,
+                 (pics, boards): (&mut Pictures, &mut Boards),
                  words: &mut Words<'_>|
      -> (Vec<u8>, u64) {
+        if let (None, Some(shows)) = (f.card, &f.picture) {
+            let board = boards.board(shows);
+            return (stage.picture_frame(&board, f, (key.pose, &pops, &key.pops), words), 0);
+        }
         match f.card {
             Some(Card::Intro(ms)) => match &intro {
                 Ok(i) => (i.frame(ms, &look), 0),
@@ -887,7 +928,7 @@ pub(crate) fn make(
             && let Some((key, held @ None, first)) = last.as_mut()
         {
             let s = if first.ends { ends.screen() } else { replay.screen() };
-            let (mut px, fresh) = paint(first, key, s, &mut pics, &mut words);
+            let (mut px, fresh) = paint(first, key, s, (&mut pics, &mut boards), &mut words);
             crossings.over(&mut px, look.ground, key.cross);
             (drawn, painted) = (drawn + fresh, painted + 1);
             *held = Some(px);
@@ -932,6 +973,7 @@ pub(crate) fn make(
             pops: up,
             blank,
             label: f.label,
+            picture: f.picture,
         };
         // (drawn where it differs from the frame before — with `--picks`, only where the sheet picks it or a crossing
         // begins on it, else kept to be drawn if a crossing begins from it: either way from the frame it was first met
@@ -941,14 +983,14 @@ pub(crate) fn make(
         let s = if f.ends { ends.screen() } else { replay.screen() };
         match &mut last {
             Some((was, held @ None, first)) if *was == key && needed => {
-                let (mut px, fresh) = paint(first, was, s, &mut pics, &mut words);
+                let (mut px, fresh) = paint(first, was, s, (&mut pics, &mut boards), &mut words);
                 crossings.over(&mut px, look.ground, share);
                 (drawn, painted) = (drawn + fresh, painted + 1);
                 *held = Some(px);
             }
             Some((was, ..)) if *was == key => {}
             _ if needed => {
-                let (mut px, fresh) = paint(&f, &key, s, &mut pics, &mut words);
+                let (mut px, fresh) = paint(&f, &key, s, (&mut pics, &mut boards), &mut words);
                 crossings.over(&mut px, look.ground, share);
                 (drawn, painted) = (drawn + fresh, painted + 1);
                 differ += u64::from(last.as_ref().is_none_or(|l| l.1.as_ref() != Some(&px)));
@@ -976,6 +1018,31 @@ pub(crate) fn make(
                 crate::recording::grid(&sheet, &out.join(format!("sheet-{pages:02}.png")))?;
                 sheet.clear();
             }
+        }
+    }
+    if let Some(e) = boards.failed.take() {
+        return Err(format!("a picture's files, read for its frames: {e}"));
+    }
+    if !cut.pictures.is_empty() || cut.opening.picture.is_some() {
+        said.push(format!(
+            "the pictures' boards: {} steps read at {}, the frames waiting {:.1} s for them",
+            boards.read,
+            scale.name(),
+            boards.waited.as_secs_f64()
+        ));
+        // (where each is in the video: its part's first frame, each step's)
+        for p in &prog.parts {
+            let What::Picture(n) = p.what else { continue };
+            let first = Program::time_of(Program::frame_at(p.at));
+            let steps: Vec<String> =
+                (cut.pictures[n].starts().iter()).map(|s| Program::frame_at(first + s).to_string()).collect();
+            said.push(format!(
+                "  picture {} in the video: from {} (frame {}), its steps from frames {}",
+                n + 1,
+                video_time(p.at),
+                Program::frame_at(p.at),
+                steps.join(", ")
+            ));
         }
     }
     if let (Some((art, place)), Some(plan)) = (mascot, &plan) {
@@ -1282,6 +1349,25 @@ pub(crate) fn captions_clear(cut: &Cut, fonts: &Fonts, (right, boxed): (usize, b
             ));
         }
     }
+    // (a picture's lines: no speed's mark stands under a picture)
+    let room = caption_room(fonts, right, None);
+    for (p, s) in cut.pictures.iter().flat_map(|p| p.steps.iter().map(move |s| (p, s))) {
+        let k = p.steps.iter().position(|x| std::ptr::eq(x, s)).unwrap_or(0);
+        for (j, t) in s.text.iter().enumerate() {
+            let w = letters(t, video::CAPTION_PX);
+            if w > room {
+                let what = if boxed { "the mascot's box" } else { "the screen's right edge" };
+                refused.push(format!(
+                    "{}:{}: picture, step {} ({}), line {}: {w} px wide, centred it reaches {what} — {room} px left there",
+                    cut.file,
+                    s.line,
+                    k + 1,
+                    s.name,
+                    j + 1
+                ));
+            }
+        }
+    }
     match refused.len() {
         0 => Ok(()),
         1 => Err(refused.remove(0)),
@@ -1412,11 +1498,20 @@ pub(crate) struct Crossings {
     cross: Option<(Vec<u8>, u64, bool)>,
     /// Whether the one in force began at this frame.
     fresh: bool,
+    /// The parts' crossings that cross the board alone (`Program::confined`), and the board's bytes; whether the one
+    /// in force is one.
+    board: (Vec<u64>, usize, bool),
 }
 
 impl Crossings {
     pub(crate) fn new(parts: Vec<(u64, bool)>, changes: Vec<u64>) -> Crossings {
-        Crossings { parts, changes, next: (0, 0), cross: None, fresh: false }
+        Crossings { parts, changes, next: (0, 0), cross: None, fresh: false, board: (Vec::new(), 0, false) }
+    }
+
+    /// The same, but those of the parts' at `at` crossing only a frame's first `bytes` (the board: into and out of a
+    /// picture the band never dips).
+    pub(crate) fn confined(self, at: Vec<u64>, bytes: usize) -> Crossings {
+        Crossings { board: (at, bytes, false), ..self }
     }
 
     /// Whether a crossing begins by frame `v` that `at` hasn't met yet: `at(v, …)` will take the frame before.
@@ -1437,6 +1532,7 @@ impl Crossings {
         while self.next.1 < self.changes.len() && self.changes[self.next.1] <= v {
             if let Some(px) = last {
                 (self.cross, self.fresh) = (Some((px.to_vec(), self.changes[self.next.1], false)), true);
+                self.board.2 = false;
             }
             self.next.1 += 1;
         }
@@ -1444,6 +1540,7 @@ impl Crossings {
             if let Some(px) = last {
                 let (at, through) = self.parts[self.next.0];
                 (self.cross, self.fresh) = (Some((px.to_vec(), at, through)), true);
+                self.board.2 = self.board.0.contains(&at);
             }
             self.next.0 += 1;
         }
@@ -1463,7 +1560,12 @@ impl Crossings {
             self.cross = None;
             return;
         }
-        cross_px(from, px, ground, p, *through);
+        match self.board {
+            (_, bytes, true) if bytes <= px.len() => {
+                cross_px(&from[..bytes], &mut px[..bytes], ground, p, *through)
+            }
+            _ => cross_px(from, px, ground, p, *through),
+        }
     }
 }
 
@@ -1553,6 +1655,11 @@ pub(crate) fn band(
         let p = words.get(&cut.captions[i].text, video::CAPTION_PX, look.ink);
         put(p, s.centre(w, p.0.min(w)), a);
     }
+    // (a picture's step's line, as a caption)
+    if let Some(picture::Shows { n: Some(n), k, line: Some((j, a)), .. }) = f.picture {
+        let p = words.get(&cut.pictures[n].steps[k].text[j], video::CAPTION_PX, look.ink);
+        put(p, s.centre(w, p.0.min(w)), a);
+    }
     // (a chapter with no card: its number, faint, then its title, centred as a caption is)
     if let Some((i, a)) = f.chapter {
         let n = words.get(&format!("{}   ", i + 1), video::CAPTION_PX, look.faint).clone();
@@ -1587,6 +1694,18 @@ pub(crate) fn sheet_marks(prog: &Program) -> Vec<(u64, String)> {
                 out.push((p.at + p.len / 2, format!("chapter {}: “{}”", i + 1, cut.chapters[i].title)))
             }
             What::Hold { .. } => out.push((p.at + p.len / 2, "held for the swing".into())),
+            // (each step twice: half through its strokes, and whole — its last frame)
+            What::Picture(n) => {
+                let pic = &cut.pictures[n];
+                let first = Program::time_of(Program::frame_at(p.at));
+                for (k, (s, start)) in pic.steps.iter().zip(pic.starts()).enumerate() {
+                    let what = format!("picture {}, step {} ({})", n + 1, k + 1, s.name);
+                    let half = (s.halfway() as f64 / s.speed).round() as u64;
+                    out.push((first + start + half, format!("{what}: drawing")));
+                    let last = (first + start + s.len()).saturating_sub(1_000_000 / video::FPS + 1);
+                    out.push((last, format!("{what}: whole")));
+                }
+            }
             What::Last => out.push((p.at, "the last screen held".into())),
             What::End => out.push((p.at + p.len / 2, "end card".into())),
             What::Take { .. } => {}
@@ -1653,6 +1772,7 @@ pub(crate) fn label(prog: &Program, v: u64, f: &Frame, zoomed: bool, marks: &[St
                 (false, None) => match prog.part(v).what {
                     What::Last => "held".into(),
                     What::Hold { .. } => "held for the swing".into(),
+                    What::Picture(_) => "stopped".into(),
                     _ => "1×".into(),
                 },
             });
@@ -1701,6 +1821,65 @@ fn spans_said(cut: &Cut) -> Vec<String> {
             s(gone)
         ),
     );
+    out
+}
+
+/// `cut.txt`'s lines of the pictures: how many, their steps' drawing and standing, that `record check` doesn't scan
+/// them, the character watching; each step with what its files said (`found`, `picture::check`'s, which took
+/// `took`); the opening's picture.
+fn pictures_said(cut: &Cut, found: &[Vec<picture::Found>], took: std::time::Duration) -> Vec<String> {
+    let mut out = Vec::new();
+    let steps = || cut.pictures.iter().flat_map(|p| &p.steps);
+    if !cut.pictures.is_empty() {
+        let s = |us: u64| us as f64 / 1e6;
+        let fresh = match cut.pictures.iter().filter(|p| p.fresh).count() {
+            0 => "no fresh ink".to_string(),
+            n if n == cut.pictures.len() => {
+                format!("fresh ink, dried over {:.1} s", picture::DRY_MS as f64 / 1e3)
+            }
+            n => format!("fresh ink in {n} of them"),
+        };
+        out.push(format!(
+            "pictures: {}, {} steps — {:.1} s drawn, {:.1} s standing, {:.1} s of video with the crossings in; not \
+             scanned by `record check` (no cells); {} strokes, {} fades; {fresh}; the character watches (painting: not \
+             yet); checked at 2160p in {:.1} s",
+            cut.pictures.len(),
+            steps().count(),
+            s(steps().map(|x| x.drawing()).sum()),
+            s(steps().map(|x| x.standing()).sum()),
+            s(cut.pictures.iter().map(|p| p.len()).sum()),
+            steps().map(|x| x.strokes.len()).sum::<usize>(),
+            steps().map(|x| x.fades.len()).sum::<usize>(),
+            took.as_secs_f64()
+        ));
+    }
+    let pct = |(a, b): (usize, usize)| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+    for (n, (p, found)) in cut.pictures.iter().zip(found).enumerate() {
+        for (k, (s, f)) in p.steps.iter().zip(found).enumerate() {
+            out.push(format!(
+                "  picture {} at {} (line {}), step {} ({}): drawn {:.1} s{}, standing {:.1} s; its layers miss its \
+                 picture on {} px; what came at the end: ink {} of {} px ({:.2} %), wash {} of {} px ({:.2} %)",
+                n + 1,
+                clock(p.at),
+                p.line,
+                k + 1,
+                s.name,
+                s.drawing() as f64 / 1e6,
+                if s.speed == 1.0 { String::new() } else { format!(" (×{})", s.speed) },
+                s.standing() as f64 / 1e6,
+                f.missed,
+                f.ink.0,
+                f.ink.1,
+                pct(f.ink),
+                f.wash.0,
+                f.wash.1,
+                pct(f.wash),
+            ));
+        }
+    }
+    if let Some((path, _)) = &cut.opening.picture {
+        out.push(format!("where it ends: a picture, whole — {}", path.display()));
+    }
     out
 }
 

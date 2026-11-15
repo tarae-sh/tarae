@@ -47,6 +47,8 @@
 //! label = "The result"                    # words centred over where it ends (`label.rs`): a chapter card's title,
 //! label-line = "shown in the next ten minutes"   # and a small line under it; a light crossing both, now and again;
 //!                                         # the band's `where it ends` gone while they show
+//! picture = "pictures/8-route.png"        # or where it ends is a picture, whole (`picture.rs`): in place of at
+//!                                         # and zoom, `for` its length
 //!
 //! [[span]]                                # in the take's order, apart; the rest takes `default`
 //! from = "turn 1 start - 4s"
@@ -67,6 +69,16 @@
 //! at = "mark \"room found\""               # the row ends before the next caption or chapter begins
 //! for = ["2.5s", "2.5s", "3s"]             # each line's — one length for all, or one a line
 //! text = ["One ztunnel on each node.", "It listens inside every pod.", "From inside, you can't see who."]
+//!
+//! [[picture]]                             # a drawing on the board, the take stopped (`picture.rs`): through the
+//! at = "mark \"room found\" + 8s"           # ground into it, each step drawn stroke by stroke in the order the
+//! fresh = true                            # brush made it, then standing; back to the take. The band's clock stands
+//! steps = [                               # at `at`, no key is heard. Each step's NAME.png, NAME.ink.png,
+//!   { file = "pictures/1-room-1.png", for = "2s", text = ["One ztunnel on each node.", "It listens inside."] },
+//!   { file = "pictures/1-room-2.png", for = "2s", speed = 1.2, text = "From inside, you can't see who." },
+//! ]                                       # NAME.wash.png and NAME.json beside each other; `for` how long it
+//!                                         # stands after it's drawn, `speed` its drawing's (0.5 to 3), `text` a
+//!                                         # caption's line or row over the step, each line a share of it
 //!
 //! [[zoom]]                                # the camera on what must be read, eased in and back out — in the
 //!                                         # take, never where it ends, whatever its time
@@ -129,6 +141,7 @@ mod label;
 mod mascot;
 mod mask;
 mod opening;
+mod picture;
 mod sound;
 #[cfg(test)]
 mod tests;
@@ -338,7 +351,11 @@ pub(crate) fn run_duration(d: Duration) -> String {
 /// or where it ends) — not the take's file, with the wait before the first chapter and any tail left out.
 pub(crate) fn worked(cut: &Cut) -> u64 {
     let kept = (cut.map.segs().iter()).filter(|s| s.pace != Pace::Out).map(|s| s.to).max().unwrap_or(0);
-    let last = kept.max(cut.opening.from + cut.opening.len);
+    let ends = match cut.opening.picture {
+        None => cut.opening.from + cut.opening.len,
+        Some(_) => 0,
+    };
+    let last = kept.max(ends);
     last.saturating_sub(cut.chapters.first().map_or(0, |c| c.at))
 }
 
@@ -624,12 +641,14 @@ pub(crate) struct Opening {
     pub(crate) zoom: Option<(String, usize)>,
     /// Its `[opening]`'s line in the file.
     pub(crate) line_at: usize,
+    /// Where it ends a picture, whole (its file, its line), in place of the take.
+    pub(crate) picture: Option<(std::path::PathBuf, usize)>,
 }
 
 impl Opening {
-    /// Whether the take's `t` (ms) is shown where it ends.
+    /// Whether the take's `t` (ms) is shown where it ends (never where it ends is a picture).
     pub(crate) fn ends(&self, t: u64) -> bool {
-        (self.from..self.from + self.len).contains(&t)
+        self.picture.is_none() && (self.from..self.from + self.len).contains(&t)
     }
 }
 
@@ -721,6 +740,8 @@ pub(crate) struct Cut {
     pub(crate) beds: Vec<Bed>,
     pub(crate) mix: sound::Mix,
     pub(crate) end: u64,
+    /// The pictures, in the take's order (`picture.rs`).
+    pub(crate) pictures: Vec<picture::Picture>,
 }
 
 /// The file's text by lines: where a table or a key is, for what's refused.
@@ -894,8 +915,10 @@ impl Cut {
         let root = Entry { t: &top, line: 0, src: &src, name: "the file" };
         root.keys(&[
             "bg", "default", "mascot", "opening", "span", "chapter", "caption", "zoom", "music", "sound",
-            "mask",
+            "mask", "picture",
         ])?;
+        // (a picture's files: from the list's folder, or whole paths)
+        let dir = Path::new(file).parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let mascot = match top.get("mascot") {
             None => mascot::Switches::default(),
             Some(toml::Value::Boolean(b)) => mascot::Switches { on: *b, ..Default::default() },
@@ -1049,7 +1072,7 @@ impl Cut {
         }
         let map = Map::new(segs);
 
-        let opening = Self::opening(&top, &src, marks)?;
+        let opening = Self::opening(&top, &src, marks, dir)?;
 
         let mut chapters: Vec<Chapter> = Vec::new();
         for e in list("chapter")? {
@@ -1144,6 +1167,49 @@ impl Cut {
                 m = c.end();
                 captions.push(c);
             }
+        }
+
+        // (the pictures: in the take's order, one at a point, never where a caption or a chapter in the band stands —
+        // shown before the picture and again after)
+        let mut pictures: Vec<picture::Picture> = Vec::new();
+        for e in list("picture")? {
+            let p = picture::Picture::parse(&e, marks, dir)?;
+            let at = clock(p.at);
+            if map.left_out(p.at) {
+                return Err(e.err("at", format!("picture: at {at}, inside a span left out")));
+            }
+            if let Some(b) = pictures.last()
+                && p.at <= b.at
+            {
+                return Err(e.err(
+                    "at",
+                    format!(
+                        "picture: out of the take's order — at {at}, not after the picture at line {} ({})",
+                        b.line,
+                        clock(b.at)
+                    ),
+                ));
+            }
+            let m = map.video(p.at);
+            if let Some(c) = captions.iter().find(|c| c.m < m && m < c.end()) {
+                return Err(e.err(
+                    "at",
+                    format!(
+                        "picture: at {at}, while {} stands — shown before the picture and again after; end it before \
+                         or start it there",
+                        c.said()
+                    ),
+                ));
+            }
+            if let Some((_, l)) = banded.iter().find(|(b, _)| *b < m && m < b + CHAPTER_BAND_MS * 1000) {
+                return Err(e.err(
+                    "at",
+                    format!(
+                        "picture: at {at}, while the chapter at line {l} stands in the band — one at a time"
+                    ),
+                ));
+            }
+            pictures.push(p);
         }
 
         let mut zooms: Vec<Zoom> = Vec::new();
@@ -1354,22 +1420,30 @@ impl Cut {
             masks,
             beds,
             end: marks.end,
+            pictures,
         })
     }
 
     /// The file's `[opening]`: the card's words, each one line within its longest, and where it ends — refused, naming
     /// what's missing, where it isn't there.
-    fn opening(top: &toml::Table, src: &Src, marks: &Marks) -> Result<Opening> {
-        const WHAT: &str = "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for (and zoom, label, label-line)";
+    fn opening(top: &toml::Table, src: &Src, marks: &Marks, dir: &Path) -> Result<Opening> {
+        const WHAT: &str = "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for (and zoom, label, label-line), or picture and for";
         let t = match top.get("opening") {
             Some(toml::Value::Table(t)) => t,
             Some(_) => return Err(src.at(src.key(0, "opening"), "opening: a table, as [opening]")),
             None => return Err(src.at(1, format!("no [opening]: {WHAT}"))),
         };
         let e = Entry { t, line: src.header("opening", None), src, name: "opening" };
-        e.keys(&["name", "line", "code", "at", "for", "zoom", "label", "label-line"])?;
-        let missing: Vec<&str> =
-            ["name", "line", "at", "for"].into_iter().filter(|k| !t.contains_key(*k)).collect();
+        e.keys(&["name", "line", "code", "at", "for", "zoom", "label", "label-line", "picture"])?;
+        let pictured = t.contains_key("picture");
+        if let Some(k) = ["at", "zoom"].into_iter().find(|k| pictured && t.contains_key(*k)) {
+            return Err(e.err(
+                k,
+                format!("opening: {k} and picture — where it ends is the take (at, for, zoom) or a picture (picture, for)"),
+            ));
+        }
+        let needs: &[&str] = if pictured { &["name", "line", "for"] } else { &["name", "line", "at", "for"] };
+        let missing: Vec<&str> = needs.iter().copied().filter(|k| !t.contains_key(*k)).collect();
         if !missing.is_empty() {
             return Err(src.at(e.line, format!("opening: no {} ({WHAT})", missing.join(", "))));
         }
@@ -1393,11 +1467,22 @@ impl Cut {
                 .collect::<Result<_>>()?,
             Some(_) => return Err(shape()),
         };
-        let (from, len) = (e.time("at", marks)?, e.length("for")?);
+        let picture = match e.text("picture")? {
+            None => None,
+            Some(f) => {
+                let p = picture::file_of(f.trim(), dir)
+                    .map_err(|x| e.err("picture", format!("opening: picture: {x}")))?;
+                Some((p, e.line("picture")))
+            }
+        };
+        let (from, len) = match picture {
+            None => (e.time("at", marks)?, e.length("for")?),
+            Some(_) => (0, e.length("for")?),
+        };
         if len == 0 {
             return Err(e.err("for", "opening: for = \"4s\" or so, where it ends"));
         }
-        if from + len > marks.end {
+        if picture.is_none() && from + len > marks.end {
             return Err(e.err(
                 "for",
                 format!("opening: where it ends runs past the take's end, {}", clock(marks.end)),
@@ -1417,7 +1502,7 @@ impl Cut {
                 "opening: label-line is the small line under label, and there's no label",
             ));
         }
-        Ok(Opening { name, line, code, label, label_line, from, len, zoom, line_at: e.line })
+        Ok(Opening { name, line, code, label, label_line, from, len, zoom, line_at: e.line, picture })
     }
 }
 
@@ -1425,7 +1510,7 @@ impl Cut {
 
 /// What a part of the video is: the intro, the card of what's built, where it ends (the take from its ms), a stretch of
 /// the take part (from the map's µs), a chapter's end held still for its swing (the video's µs of the frame held), a
-/// chapter's card, the take's last screen held, the end card.
+/// chapter's card, a picture (which), the take's last screen held, the end card.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum What {
     Intro,
@@ -1434,6 +1519,7 @@ pub(crate) enum What {
     Take { from: u64 },
     Hold { v: u64 },
     Chapter(usize),
+    Picture(usize),
     Last,
     End,
 }
@@ -1479,7 +1565,7 @@ pub(crate) enum Card {
 /// or a chapter with no card (which, how drawn) —; the camera's clock (µs, never whole ms: at 30 fps those make every
 /// third frame's move 2 % longer than the others', a ripple through every zoom) — in the take part where in the map it
 /// is, where it ends how far into it, on its own clock; and the words over where it ends (`label.rs`), its frames only,
-/// where the opening has them.
+/// where the opening has them; the board a picture's (`picture.rs`), in place of the screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
     pub(crate) screen: Option<u64>,
@@ -1492,13 +1578,19 @@ pub(crate) struct Frame {
     pub(crate) chapter: Option<(usize, u8)>,
     pub(crate) camera: Option<u64>,
     pub(crate) label: Option<label::Label>,
+    pub(crate) picture: Option<picture::Shows>,
 }
 
 impl Frame {
     fn card(c: Card) -> Frame {
+        Frame { card: Some(c), ..Frame::none() }
+    }
+
+    /// A frame that shows nothing and says nothing.
+    fn none() -> Frame {
         Frame {
             screen: None,
-            card: Some(c),
+            card: None,
             clock: None,
             speed: None,
             jump: None,
@@ -1507,6 +1599,7 @@ impl Frame {
             chapter: None,
             camera: None,
             label: None,
+            picture: None,
         }
     }
 }
@@ -1551,13 +1644,28 @@ impl<'c> Program<'c> {
         push(&mut parts, &mut at, What::Intro, INTRO_MS * 1000);
         push(&mut parts, &mut at, What::Built, BUILT_MS * 1000);
         push(&mut parts, &mut at, What::Ends { from: cut.opening.from }, cut.opening.len * 1000);
+        // (where the take stops: each chapter's card, each picture — at one point, the card first; a picture at the
+        // take's end after its last screen held)
+        let mut stops: Vec<(u64, What)> = (cut.chapters.iter().enumerate())
+            .filter(|(_, c)| c.card)
+            .map(|(i, c)| (map.video(c.at), What::Chapter(i)))
+            .chain((cut.pictures.iter().enumerate()).map(|(n, p)| (map.video(p.at), What::Picture(n))))
+            .collect();
+        stops.sort_by_key(|s| (s.0, matches!(s.1, What::Picture(_))));
         let mut from = 0;
-        for (i, c) in cut.chapters.iter().enumerate().filter(|(_, c)| c.card) {
-            let m = map.video(c.at);
+        for &(m, what) in stops.iter().filter(|s| s.0 < map.len() || matches!(s.1, What::Chapter(_))) {
             if m > from {
                 push(&mut parts, &mut at, What::Take { from }, m - from);
                 from = m;
             }
+            let i = match what {
+                What::Picture(n) => {
+                    push(&mut parts, &mut at, what, cut.pictures[n].len());
+                    continue;
+                }
+                What::Chapter(i) => i,
+                _ => continue,
+            };
             let after = parts.last().is_some_and(|p| matches!(p.what, What::Ends { .. } | What::Take { .. }));
             if let Some(h) = holds.iter().find(|h| h.chapter == i).filter(|_| after) {
                 // (the last frame shown before the card, held)
@@ -1570,6 +1678,11 @@ impl<'c> Program<'c> {
             push(&mut parts, &mut at, What::Take { from }, map.len() - from);
         }
         push(&mut parts, &mut at, What::Last, video::LAST_MS * 1000);
+        for &(_, what) in stops.iter().filter(|s| s.0 >= map.len()) {
+            if let What::Picture(n) = what {
+                push(&mut parts, &mut at, what, cut.pictures[n].len());
+            }
+        }
         push(&mut parts, &mut at, What::End, video::END_MS * 1000);
         let mut jumps: Vec<(u64, u64)> = Vec::new();
         for (i, s) in map.segs().iter().enumerate().filter(|(_, s)| s.pace == Pace::Out) {
@@ -1644,6 +1757,19 @@ impl<'c> Program<'c> {
         match p.what {
             What::Intro => Frame::card(Card::Intro(off / 1000)),
             What::Built => Frame::card(Card::Built),
+            What::Ends { .. } if self.cut.opening.picture.is_some() => {
+                let label = self.cut.opening.label.as_ref().map(|_| label::at(off, p.len));
+                let picture = Some(picture::Shows { n: None, k: 0, t: None, line: None });
+                Frame { ends: true, label, picture, ..Frame::none() }
+            }
+            // (the take stopped at the picture's point, its clock standing; the board from the part's first frame)
+            What::Picture(n) => {
+                let pic = &self.cut.pictures[n];
+                let first = Program::time_of(Program::frame_at(p.at));
+                let (k, t, line) = pic.at(v.saturating_sub(first));
+                let picture = Some(picture::Shows { n: Some(n), k, t, line });
+                Frame { clock: Some(pic.at.min(self.cut.end)), picture, ..Frame::none() }
+            }
             What::Ends { from } => {
                 let t = (from + off / 1000).min(self.cut.end);
                 let label = self.cut.opening.label.as_ref().map(|_| label::at(off, p.len));
@@ -1699,6 +1825,7 @@ impl<'c> Program<'c> {
             chapter,
             camera: Some(m),
             label: None,
+            picture: None,
         }
     }
 
@@ -1733,6 +1860,21 @@ impl<'c> Program<'c> {
         out.sort_unstable_by_key(|c| (c.0, !c.1));
         out.dedup_by_key(|c| c.0);
         out
+    }
+
+    /// The crossings into and out of a picture (µs, of `crossings`) — where the opening's picture is one too — but from
+    /// or to a card: those cross the board alone, the band never dips.
+    pub(crate) fn confined(&self) -> Vec<u64> {
+        let pictured = |w: What| match w {
+            What::Picture(_) => true,
+            What::Ends { .. } => self.cut.opening.picture.is_some(),
+            _ => false,
+        };
+        let card = |w: What| matches!(w, What::Intro | What::Built | What::Chapter(_) | What::End);
+        (self.parts.windows(2))
+            .filter(|w| (pictured(w[0].what) || pictured(w[1].what)) && !card(w[0].what) && !card(w[1].what))
+            .map(|w| w[1].at)
+            .collect()
     }
 
     /// YouTube's chapter list: 0:00 the opening, by the name of what's built (the intro, the card, where it ends), then

@@ -242,7 +242,7 @@ pub(crate) fn realtime(prog: &Program) -> Vec<(u64, u64)> {
     };
     for p in &prog.parts {
         match p.what {
-            What::Ends { .. } => push(p.at, p.at + p.len),
+            What::Ends { .. } if prog.cut.opening.picture.is_none() => push(p.at, p.at + p.len),
             What::Take { from } => {
                 for (i, s) in map.segs().iter().enumerate() {
                     if !matches!(s.pace, Pace::Speed(k) if k <= KEYS_MAX_SPEED + 1e-6) {
