@@ -71,7 +71,12 @@ pub(crate) enum Made {
     Drawn,
 }
 
-pub(super) fn run(file: &Path, scale: Scale, out: Option<&Path>, made: Made) -> Result<()> {
+pub(super) fn run(
+    file: &Path,
+    scale: Scale,
+    out: Option<&Path>,
+    (made, stills): (Made, &[u64]),
+) -> Result<()> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let dir = file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let take = Take::read(dir)?;
@@ -88,24 +93,31 @@ pub(super) fn run(file: &Path, scale: Scale, out: Option<&Path>, made: Made) -> 
     }
     let stem = file.file_stem().map_or("cut".into(), |s| s.to_string_lossy().into_owned());
     // (2160p beside 1080p, never over it)
+    let list = file.canonicalize().map_err(|e| format!("{}: {e}", file.display()))?;
     let out = match (out, scale) {
         (Some(o), _) => {
-            out_refused(o, dir)?;
+            out_refused(o, dir, &list)?;
             o.to_path_buf()
         }
         (None, Scale::HD) => dir.join(stem),
         (None, _) => dir.join(format!("{stem}-{}", scale.name())),
     };
-    let said = make(&cut, &take, (dir, &marks), &out, (scale, made))?;
+    let mut said = make(&cut, &take, (dir, &marks), &out, (scale, made, stills))?;
+    said.push_str(&format!("{MADE_FROM}{}\n", list.display()));
     let p = out.join("cut.txt");
     std::fs::write(&p, &said).map_err(|e| format!("{}: {e}", p.display()))?;
     print!("{said}");
     Ok(())
 }
 
+/// `cut.txt`'s last line: the list it was made from, as its real path — what `out_refused` tells a cut by.
+const MADE_FROM: &str = "made from the list ";
+
 /// `--out DIR` refused where it's the take's own folder (`take`) or a cut's in it (a `cut.txt` there): the take's
-/// records and its cuts are only read. Compared as real paths, the part not made yet named without `..`.
-pub(crate) fn out_refused(out: &Path, take: &Path) -> Result<()> {
+/// records and its cuts are only read; and where it holds a cut made from another list than `list` (its `cut.txt`
+/// naming another, or none) — a folder of this list's own earlier run stays usable. Compared as real paths, the part
+/// not made yet named without `..`.
+pub(crate) fn out_refused(out: &Path, take: &Path, list: &Path) -> Result<()> {
     let said = |why: &str| format!("--out {}: {why} — name a new folder", out.display());
     let abs = std::path::absolute(out).map_err(|e| said(&e.to_string()))?;
     // (the nearest folder there, as it really is, and the rest under it)
@@ -125,7 +137,15 @@ pub(crate) fn out_refused(out: &Path, take: &Path) -> Result<()> {
     match (real == take, real.starts_with(&take) && real.join("cut.txt").is_file()) {
         (true, _) => Err(said("the take's own folder, whose records are only read")),
         (_, true) => Err(said("a cut of the take's (its cut.txt there), only read")),
-        _ => Ok(()),
+        _ => {
+            let Ok(was) = std::fs::read_to_string(real.join("cut.txt")) else { return Ok(()) };
+            let from = was.lines().rev().find_map(|l| l.strip_prefix(MADE_FROM));
+            match from {
+                Some(f) if Path::new(f) == list => Ok(()),
+                Some(f) => Err(said(&format!("it holds a cut of another list ({f}), not written over"))),
+                None => Err(said("it holds a cut whose cut.txt names no list, not written over")),
+            }
+        }
     }
 }
 
@@ -576,7 +596,7 @@ pub(crate) fn make(
     take: &Take,
     (dir, marks): (&Path, &Marks),
     out: &Path,
-    (scale, made): (Scale, Made),
+    (scale, made, stills): (Scale, Made, &[u64]),
 ) -> Result<String> {
     let started = Instant::now();
     let only_picks = made == Made::Picks;
@@ -601,6 +621,9 @@ pub(crate) fn make(
             Ok(m) => Some(m),
             Err(none) => {
                 said.push(none);
+                if cut.mascot.says {
+                    said.push(motions::Lines::absent(cut));
+                }
                 None
             }
         };
@@ -913,7 +936,8 @@ pub(crate) fn make(
         // (drawn where it differs from the frame before — with `--picks`, only where the sheet picks it or a crossing
         // begins on it, else kept to be drawn if a crossing begins from it: either way from the frame it was first met
         // on, as the whole pass draws it)
-        let needed = !only_picks || picks.contains_key(&k) || crossings.fresh();
+        let still = stills.binary_search(&k).is_ok();
+        let needed = !only_picks || picks.contains_key(&k) || crossings.fresh() || still;
         let s = if f.ends { ends.screen() } else { replay.screen() };
         match &mut last {
             Some((was, held @ None, first)) if *was == key && needed => {
@@ -937,6 +961,9 @@ pub(crate) fn make(
             && wrote.is_ok()
         {
             wrote = w.write_all(px);
+        }
+        if still && let Some(px) = px {
+            shot::save_png(&out.join(format!("frame-{k:05}.png")), dims.0, dims.1, px)?;
         }
         if let Some(marks) = picks.get(&k) {
             let px = px.expect("a frame the sheet picks is drawn");
@@ -1230,7 +1257,7 @@ pub(crate) fn captions_clear(cut: &Cut, fonts: &Fonts, (right, boxed): (usize, b
     let letters = |t: &str, px: f32| letters(t, px, fonts);
     let mut refused = Vec::new();
     for c in &cut.captions {
-        let (m0, m1) = (map.video(c.at), map.video(c.at) + c.len * 1000);
+        let (m0, m1) = (c.m, c.end());
         let widest = (0..map.segs().len())
             .filter(|&i| map.seg_at(i) < m1 && m0 < map.seg_at(i) + map.seg_len(i))
             .filter_map(|i| match map.segs()[i].pace {
@@ -1566,7 +1593,7 @@ pub(crate) fn sheet_marks(prog: &Program) -> Vec<(u64, String)> {
         }
     }
     for c in &cut.captions {
-        if let Some(v) = prog.video_of(map.video(c.at)) {
+        if let Some(v) = prog.video_of(c.m) {
             out.push((v + super::FADE_MS * 1000, format!("caption “{}”", c.text)));
         }
     }

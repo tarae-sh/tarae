@@ -11,6 +11,8 @@
 //! - `cut FILE --picks [--size 2160p] [--out DIR]` — the same pass, the replay and the mascot's plan whole, but no MP4
 //!   and no sound: a frame drawn only where the sheet picks it or a crossing begins from it — the sheet, `picks.tsv`,
 //!   `chapters.txt` and `cut.txt` as the whole cut writes them.
+//! - `--frames 380-402,450` (with either) — those frames (from 0) drawn at full size too, each `frame-NNNNN.png` in the
+//!   cut's folder: stills for eyes, nothing else changed (`picks.tsv` the same with or without).
 //! - `cut init TAKE [--out FILE]` — a first edit list for the take by rule, from its landmarks and its screens
 //!   (`init.rs`): `TAKE/init.toml` unless FILE says.
 //!
@@ -29,6 +31,8 @@
 //! swing = true
 //! fast = true                             # pressing fast-forward: the right paw held through a stretch past 2×
 //! keys = "all"                            # the key pops beside it (`mascot/pops.rs`): "all", "commands" or false
+//! says = true                             # every caption is the character's line: as each comes in, the typing
+//!                                         # face glances up once, not again while it stands (off if left out)
 //!
 //! [opening]                               # the video's first seconds (`Program`): the intro — the brush's swing
 //!                                         # and `t a r a e`, `INTRO_MS` —, the card of what's built (`BUILT_MS`),
@@ -54,10 +58,15 @@
 //! title = "An empty folder"
 //! card = false                            # no card: its number and title stand in the band `CHAPTER_BAND_MS`
 //!
-//! [[caption]]                             # one line under the picture, ≤ `CAPTION_MAX` characters
-//! at = "turn 1 start"
-//! for = "3s"                              # of the video's time
+//! [[caption]]                             # one line under the picture, ≤ `CAPTION_MAX` characters, standing at
+//! at = "turn 1 start"                     # least `READ_FLOOR_MS` and `READ_MS_PER_CHAR` a character (the longer);
+//! for = "3s"                              # of the video's time; never across a chapter's card
 //! text = "One ask: what the tool is."
+//!
+//! [[caption]]                             # or a row of lines, back to back from `at`, each gone as the next comes;
+//! at = "mark \"room found\""               # the row ends before the next caption or chapter begins
+//! for = ["2.5s", "2.5s", "3s"]             # each line's — one length for all, or one a line
+//! text = ["One ztunnel on each node.", "It listens inside every pod.", "From inside, you can't see who."]
 //!
 //! [[zoom]]                                # the camera on what must be read, eased in and back out — in the
 //!                                         # take, never where it ends, whatever its time
@@ -134,6 +143,16 @@ pub(crate) const CHAPTER_BAND_MS: u64 = 3_000;
 /// at 1080p, 40 of `video::CAPTION_PX`'s cells (`draw::caption_room`; the design session's, 2026-11-12, after V5's lane
 /// left 43 beside a `▸▸ ×2`). Every caption is still checked against the mark under it (`draw::captions_clear`).
 pub(crate) const CAPTION_MAX: usize = 40;
+/// A caption (a row's line too) stands at least this long, and at least `READ_MS_PER_CHAR` a character, of the video
+/// (its fades inside it): about 14 characters a second, slower than streaming subtitles' 17 — the viewer reads code
+/// beside it. Take 6's 32 captions all pass, the tightest 0.28 s over (36 characters in 2.8 s).
+pub(crate) const READ_FLOOR_MS: u64 = 1_500;
+pub(crate) const READ_MS_PER_CHAR: u64 = 70;
+
+/// How long a line of `n` characters must stand to be read (ms).
+pub(crate) fn reading_ms(n: usize) -> u64 {
+    READ_FLOOR_MS.max(READ_MS_PER_CHAR * n as u64)
+}
 /// The jump's mark stands this long (then fades), and comes in and goes out over `FADE_MS` — a caption's too.
 pub(crate) const JUMP_MS: u64 = 1_000;
 /// A jump's mark is as loud as the jump is far (the design session's, 2026-11-12): under `JUMP_QUIET_MS` none — a skip
@@ -171,8 +190,7 @@ pub(crate) const CODE_LINES: usize = 2;
 pub(crate) const LABEL_MAX: usize = 24;
 pub(crate) const LABEL_LINE_MAX: usize = 48;
 
-const USAGE: &str =
-    "usage: cargo xtask cut FILE [--size 1080p|2160p] [--out DIR] [--picks] | cut init TAKE [--out FILE]";
+const USAGE: &str = "usage: cargo xtask cut FILE [--size 1080p|2160p] [--out DIR] [--picks] [--frames A-B,C] | cut init TAKE [--out FILE]";
 
 pub fn run(args: &[String]) -> Result<()> {
     if let [init, rest @ ..] = args
@@ -181,17 +199,35 @@ pub fn run(args: &[String]) -> Result<()> {
         return init::run(rest);
     }
     let (mut file, mut scale, mut out, mut made) = (None, video::Scale::HD, None, draw::Made::Video);
+    let mut stills: Vec<u64> = Vec::new();
     let mut words = args.iter();
     while let Some(w) = words.next() {
         match w.as_str() {
             "--size" => scale = video::Scale::parse(words.next().ok_or(USAGE)?)?,
             "--out" => out = Some(Path::new(words.next().ok_or(USAGE)?)),
             "--picks" => made = draw::Made::Picks,
+            "--frames" => {
+                let list = words.next().ok_or(USAGE)?;
+                let bad = || format!("--frames {list}: frames from 0, as 380-402,450");
+                for part in list.split(',') {
+                    let n = |s: &str| s.trim().parse::<u64>().map_err(|_| bad());
+                    let (a, b) = match part.split_once('-') {
+                        Some((a, b)) => (n(a)?, n(b)?),
+                        None => (n(part)?, n(part)?),
+                    };
+                    if b < a {
+                        return Err(bad());
+                    }
+                    stills.extend(a..=b);
+                }
+                stills.sort_unstable();
+                stills.dedup();
+            }
             f if !f.starts_with("--") && file.is_none() => file = Some(Path::new(f)),
             _ => return Err(USAGE.into()),
         }
     }
-    draw::run(file.ok_or(USAGE)?, scale, out, made)
+    draw::run(file.ok_or(USAGE)?, scale, out, (made, &stills))
 }
 
 // ── Times ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -607,13 +643,34 @@ pub(crate) struct Chapter {
     pub(crate) card: bool,
 }
 
-/// A caption: standing `len` ms of the video.
+/// Where the chapters stand (the map's µs, the chapter's line): those in the band, those with a card.
+type Chapters<'a> = (&'a [(u64, usize)], &'a [(u64, usize)]);
+
+/// A caption: standing `len` ms of the video from the map's `m` µs. A row's lines are captions back to back: each
+/// with its row's `at` and line, and `row` (which line, of how many; a lone caption's (0, 1)).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Caption {
     pub(crate) at: u64,
+    pub(crate) m: u64,
     pub(crate) len: u64,
     pub(crate) text: String,
     pub(crate) line: usize,
+    pub(crate) row: (usize, usize),
+}
+
+impl Caption {
+    /// Where it's gone (the map's µs).
+    pub(crate) fn end(&self) -> u64 {
+        self.m + self.len * 1000
+    }
+
+    /// "line 2 of the row at line 12", or "the caption at line 12".
+    fn said(&self) -> String {
+        match self.row {
+            (_, 1) => format!("the caption at line {}", self.line),
+            (k, n) => format!("line {} of {n} of the row at line {}", k + 1, self.line),
+        }
+    }
 }
 
 /// A zoom: held `len` ms of the video on `on`, moving in and out `camera::DRIFT_MS` each way — in the take part only
@@ -762,6 +819,75 @@ fn number(v: &toml::Value) -> Option<f64> {
 
 impl Cut {
     /// The edit list `text` (its name `file`, said in what's refused) against a take's landmarks and end (`marks`).
+    /// A caption (a row's line) refused, with its table's line: a line empty, over `CAPTION_MAX` or of two; standing
+    /// less than its reading time; shown while a chapter stands in the band (`banded`) or on both sides of a chapter's
+    /// card (`carded`: the map's µs, the chapter's line); out of the take's order or shown while the one `before` it
+    /// still stands (a row's own lines are back to back).
+    fn caption(c: &Caption, e: &Entry, chapters: Chapters, before: Option<&Caption>) -> Result<()> {
+        let (banded, carded) = chapters;
+        let who = match c.row {
+            (_, 1) => "caption".to_string(),
+            (k, n) => format!("caption, line {} of {n}", k + 1),
+        };
+        let n = c.text.chars().count();
+        if n == 0 || n > CAPTION_MAX || c.text.contains('\n') {
+            return Err(e.err("text", format!("{who}: one line of 1 to {CAPTION_MAX} characters ({n} here)")));
+        }
+        let need = reading_ms(n);
+        if c.len < need {
+            return Err(e.err(
+                "for",
+                format!(
+                    "{who}: stands {:.2} s — {n} characters need {:.2} s to be read ({:.1} s at the least, {} ms a \
+                     character)",
+                    c.len as f64 / 1e3,
+                    need as f64 / 1e3,
+                    READ_FLOOR_MS as f64 / 1e3,
+                    READ_MS_PER_CHAR
+                ),
+            ));
+        }
+        let (v0, v1) = (c.m, c.end());
+        if let Some((_, l)) = banded.iter().find(|(b, _)| v0 < b + CHAPTER_BAND_MS * 1000 && *b < v1) {
+            return Err(e.err(
+                "at",
+                format!("{who}: it shows while the chapter at line {l} stands in the band — one at a time"),
+            ));
+        }
+        // (a row's later line starting where the card stands is the row split by it too)
+        let across = |card: u64| (v0 < card || (c.row.0 > 0 && v0 == card)) && card < v1;
+        if let Some((_, l)) = carded.iter().find(|(card, _)| across(*card)) {
+            return Err(e.err(
+                "at",
+                format!(
+                    "{who}: it stands across the card of the chapter at line {l} — shown before the card and again \
+                     after; end it before the card or start it after"
+                ),
+            ));
+        }
+        let Some(b) = before.filter(|_| c.row.0 == 0) else { return Ok(()) };
+        if c.at < b.at {
+            return Err(e.err(
+                "at",
+                format!(
+                    "caption: out of the take's order — at {}, before the caption at line {} ({})",
+                    clock(c.at),
+                    b.line,
+                    clock(b.at)
+                ),
+            ));
+        }
+        // (the 11-10 rule: a caption is gone before the next shows; a row ends before it)
+        if v0 < b.end() {
+            let why = match b.row.1 {
+                1 => format!("the one at line {} still stands — one at a time", b.line),
+                _ => format!("{} still stands — a row ends before the next caption", b.said()),
+            };
+            return Err(e.err("at", format!("caption: it shows while {why}")));
+        }
+        Ok(())
+    }
+
     pub(crate) fn parse(text: &str, file: &str, marks: &Marks) -> Result<Cut> {
         let src = Src { lines: text.lines().collect(), file };
         let top: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{file}: {e}"))?;
@@ -774,7 +900,8 @@ impl Cut {
             None => mascot::Switches::default(),
             Some(toml::Value::Boolean(b)) => mascot::Switches { on: *b, ..Default::default() },
             Some(toml::Value::Table(t)) => {
-                const KEYS: [&str; 7] = ["blink", "glance", "surprise", "stretch", "swing", "fast", "keys"];
+                const KEYS: [&str; 8] =
+                    ["blink", "glance", "surprise", "stretch", "swing", "fast", "keys", "says"];
                 let e = Entry { t, line: src.header("mascot", None), src: &src, name: "mascot" };
                 e.keys(&KEYS)?;
                 let on = |key: &str| -> Result<bool> {
@@ -791,6 +918,11 @@ impl Cut {
                     Some(toml::Value::Boolean(false)) => mascot::Keys::Off,
                     Some(_) => return Err(e.err("keys", "mascot: keys = \"all\", \"commands\" or false")),
                 };
+                let says = match t.get("says") {
+                    None => false,
+                    Some(toml::Value::Boolean(b)) => *b,
+                    Some(_) => return Err(e.err("says", "mascot: says = true or false")),
+                };
                 mascot::Switches {
                     on: true,
                     blink: on("blink")?,
@@ -800,12 +932,14 @@ impl Cut {
                     swing: on("swing")?,
                     fast: on("fast")?,
                     keys,
+                    says,
                 }
             }
             Some(_) => {
                 return Err(root.err(
                     "mascot",
-                    "mascot: true or false, or a table ([mascot]: blink, glance, surprise, stretch, swing, fast, keys)",
+                    "mascot: true or false, or a table ([mascot]: blink, glance, surprise, stretch, swing, fast, keys, \
+                     says)",
                 ));
             }
         };
@@ -953,53 +1087,63 @@ impl Cut {
         let banded: Vec<(u64, usize)> =
             (chapters.iter().filter(|c| !c.card)).map(|c| (map.video(c.at), c.line)).collect();
 
+        // (where a chapter's card stands, of the map's µs: no caption is shown on both sides of it)
+        let carded: Vec<(u64, usize)> =
+            (chapters.iter().filter(|c| c.card)).map(|c| (map.video(c.at), c.line)).collect();
+
         let mut captions: Vec<Caption> = Vec::new();
         for e in list("caption")? {
             e.keys(&["at", "for", "text"])?;
-            let (at, len, text) =
-                (e.time("at", marks)?, e.length("for")?, e.needed("text")?.trim().to_string());
-            let n = text.chars().count();
-            if n == 0 || n > CAPTION_MAX || text.contains('\n') {
-                return Err(
-                    e.err("text", format!("caption: one line of 1 to {CAPTION_MAX} characters ({n} here)"))
-                );
-            }
+            let at = e.time("at", marks)?;
+            let texts: Vec<String> = match e.t.get("text") {
+                None => return Err(src.at(e.line, "caption: no text")),
+                Some(toml::Value::String(s)) => vec![s.trim().to_string()],
+                Some(toml::Value::Array(a)) if a.is_empty() => {
+                    return Err(e.err("text", "caption: text = [] — a row has a line at least"));
+                }
+                Some(toml::Value::Array(a)) => (a.iter().enumerate())
+                    .map(|(k, v)| match v.as_str() {
+                        Some(s) => Ok(s.trim().to_string()),
+                        None => Err(e.err("text", format!("caption: the row's line {}: a string", k + 1))),
+                    })
+                    .collect::<Result<_>>()?,
+                Some(_) => {
+                    return Err(e.err("text", "caption: text = a line, or a row of lines [\"…\", \"…\"]"));
+                }
+            };
+            let rows = texts.len();
+            let lens: Vec<u64> = match e.t.get("for") {
+                Some(toml::Value::Array(a)) if a.len() != rows => {
+                    return Err(e.err(
+                        "for",
+                        format!(
+                            "caption: for has {} lengths for {rows} lines — one length for all, or one a line",
+                            a.len()
+                        ),
+                    ));
+                }
+                Some(toml::Value::Array(a)) => (a.iter().enumerate())
+                    .map(|(k, v)| match v.as_str() {
+                        Some(s) => {
+                            length(s).map_err(|m| e.err("for", format!("caption: for, line {}: {m}", k + 1)))
+                        }
+                        None => {
+                            Err(e.err("for", format!("caption: for, line {}: a length (\"2.5s\")", k + 1)))
+                        }
+                    })
+                    .collect::<Result<_>>()?,
+                _ => vec![e.length("for")?; rows],
+            };
             if map.left_out(at) {
                 return Err(e.err("at", format!("caption: at {}, inside a span left out", clock(at))));
             }
-            let (v0, v1) = (map.video(at), map.video(at) + len * 1000);
-            if let Some((_, l)) = banded.iter().find(|(c, _)| v0 < c + CHAPTER_BAND_MS * 1000 && *c < v1) {
-                return Err(e.err(
-                    "at",
-                    format!(
-                        "caption: it shows while the chapter at line {l} stands in the band — one at a time"
-                    ),
-                ));
+            let mut m = map.video(at);
+            for (k, (text, len)) in texts.into_iter().zip(lens).enumerate() {
+                let c = Caption { at, m, len, text, line: e.line, row: (k, rows) };
+                Self::caption(&c, &e, (&banded, &carded), captions.last())?;
+                m = c.end();
+                captions.push(c);
             }
-            if let Some(b) = captions.last() {
-                if at < b.at {
-                    return Err(e.err(
-                        "at",
-                        format!(
-                            "caption: out of the take's order — at {}, before the caption at line {} ({})",
-                            clock(at),
-                            b.line,
-                            clock(b.at)
-                        ),
-                    ));
-                }
-                // (the 11-10 rule: a caption is gone before the next shows)
-                if map.video(at) < map.video(b.at) + b.len * 1000 {
-                    return Err(e.err(
-                        "at",
-                        format!(
-                            "caption: it shows while the one at line {} still stands — one at a time",
-                            b.line
-                        ),
-                    ));
-                }
-            }
-            captions.push(Caption { at, len, text, line: e.line });
         }
 
         let mut zooms: Vec<Zoom> = Vec::new();
@@ -1434,8 +1578,7 @@ impl<'c> Program<'c> {
                 _ => jumps.push((map.seg_at(i), s.to - s.from)),
             }
         }
-        let captions =
-            cut.captions.iter().map(|c| (map.video(c.at), map.video(c.at) + c.len * 1000)).collect();
+        let captions = cut.captions.iter().map(|c| (c.m, c.end())).collect();
         let banded = (cut.chapters.iter().enumerate().filter(|(_, c)| !c.card))
             .map(|(i, c)| (map.video(c.at), map.video(c.at) + CHAPTER_BAND_MS * 1000, i))
             .collect();

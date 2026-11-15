@@ -38,6 +38,10 @@
 //!   strength, the paw reaching), then the loop, a step every `WIND_EVERY` frames (`WIND_EVERY_FAST` past
 //!   ×`WIND_FAST_PAST`), a key shown in it stepping it at once (keys closer than `WIND_KEY_GAP` share a step); back to
 //!   the keys where the hold ends. Not found: held as above.
+//! - **The character's lines** (`Lines`, `[mascot] says`, Z3's E1): every caption is the character's. As a line comes
+//!   in, the face on the keys glances up to it — `GLANCE_MS` while the hands keep tapping, the turns as any glance's —
+//!   once, and no seeded glance while that line stands. A face already up (watching, fast-forward) meets it as it is
+//!   (the nod is the motions' to come); a whole-body motion goes on.
 //! - Every switch off: V4's mascot, picture for picture (no turn either).
 
 use super::{Arms, Face, Hands, Pic, Pose, QUIET_MS, Switches};
@@ -307,6 +311,48 @@ pub(crate) struct Plan {
     /// Whether the holds wind the skein (`wind`), and how many of its steps a key made.
     pub(crate) wound: bool,
     pub(crate) wind_key_steps: usize,
+    /// The character's lines, met as each came in (`says`).
+    pub(crate) lines: Lines,
+}
+
+/// How the character met its lines (`[mascot] says`): how many lines in how many rows; the first frame of each it
+/// glanced up to from the keys; how many it met with its face already up (watching, fast-forward: no nod yet), and how
+/// many in a whole-body motion or never shown.
+#[derive(Debug, Default)]
+pub(crate) struct Lines {
+    pub(crate) n: usize,
+    pub(crate) rows: usize,
+    pub(crate) glanced: Vec<u64>,
+    pub(crate) watching: usize,
+    pub(crate) other: usize,
+}
+
+impl Lines {
+    fn counted(cut: &crate::cut::Cut) -> Lines {
+        Lines {
+            n: cut.captions.len(),
+            rows: cut.captions.iter().filter(|c| c.row.0 == 0).count(),
+            ..Lines::default()
+        }
+    }
+
+    /// `cut.txt`'s line where the list says but no mascot is drawn.
+    pub(crate) fn absent(cut: &crate::cut::Cut) -> String {
+        let l = Lines::counted(cut);
+        format!("the character's lines (says): {} in {} rows — no mascot to meet them", l.n, l.rows)
+    }
+
+    fn said(&self) -> String {
+        format!(
+            "the character's lines (says): {} in {} rows — {} glanced, {} met while watching (no nod yet), {} in a \
+             motion or not shown",
+            self.n,
+            self.rows,
+            self.glanced.len(),
+            self.watching,
+            self.other
+        )
+    }
 }
 
 /// What a whole-body motion's frames must be clear of.
@@ -700,7 +746,36 @@ impl Plan {
             pics[k as usize] = Some(pic);
         }
 
-        // (the glances: seeded in each typing streak of `GLANCE_STREAK_MS` or more, inside it, clear of a surprise)
+        // (the character's lines: as each comes in, the face on the keys raised `GLANCE_MS` — once; the seeded glances
+        // kept off while it stands. A face up already meets it as it is; a motion goes on)
+        let mut lines = Lines::default();
+        let mut met: Vec<(u64, u64)> = Vec::new();
+        let mut standing: Vec<(u64, u64)> = Vec::new();
+        if sw.says {
+            lines = Lines::counted(prog.cut);
+            let typing = |k: u64| matches!(pics[k as usize], Some(Pic::At(a, Face::Open)) if a != Arms::Rest);
+            for c in &prog.cut.captions {
+                let Some(k) = prog.video_of(c.m).map(Program::frame_at).filter(|&k| k < n) else {
+                    lines.other += 1;
+                    continue;
+                };
+                let end = prog.video_of(c.end()).map_or(n, Program::frame_at).min(n);
+                standing.push((k, end));
+                match pics[k as usize] {
+                    _ if typing(k) => {
+                        let to = (k + frames(GLANCE_MS)).min(end);
+                        let j = (k..to).find(|&j| !typing(j)).unwrap_or(to);
+                        met.push((k, j));
+                        lines.glanced.push(k);
+                    }
+                    Some(Pic::At(_, Face::Raised | Face::Half)) => lines.watching += 1,
+                    _ => lines.other += 1,
+                }
+            }
+        }
+
+        // (the glances: seeded in each typing streak of `GLANCE_STREAK_MS` or more, inside it, clear of a surprise —
+        // and of a line standing)
         let mut glanced: Vec<(u64, u64)> = Vec::new();
         if sw.glance {
             let mut rng = Rng::new(seed, GLANCES);
@@ -726,17 +801,18 @@ impl Plan {
                 let ms = |r: &mut Rng, lo: u64, hi: u64| frames(r.range(lo as f64, hi as f64) as u64);
                 let mut g = first + ms(&mut rng, GLANCE_FIRST_MS.0, GLANCE_FIRST_MS.1);
                 while g + len <= last {
-                    if (g..g + len).all(&typing) {
+                    if (g..g + len).all(&typing) && !standing.iter().any(|s| g < s.1 && s.0 < g + len) {
                         glanced.push((g, g + len));
                     }
                     g += frames(GLANCE_EVERY_MS) + ms(&mut rng, 0, GLANCE_MORE_MS);
                 }
             }
-            for &(a, b) in &glanced {
-                for j in a..b {
-                    if let Some(Pic::At(arms, Face::Open)) = pics[j as usize] {
-                        pics[j as usize] = Some(Pic::At(arms, Face::Raised));
-                    }
+        }
+        let raised: Vec<(u64, u64)> = glanced.iter().chain(&met).copied().collect();
+        for &(a, b) in &raised {
+            for j in a..b {
+                if let Some(Pic::At(arms, Face::Open)) = pics[j as usize] {
+                    pics[j as usize] = Some(Pic::At(arms, Face::Raised));
                 }
             }
         }
@@ -755,7 +831,7 @@ impl Plan {
             while k + BLINK_FRAMES <= n {
                 let plain = (k..k + BLINK_FRAMES).all(|j| {
                     matches!(pics[j as usize], Some(Pic::At(_, Face::Open)) | Some(Pic::WATCH))
-                        && !glanced.iter().any(|g| g.0 <= j && j < g.1)
+                        && !raised.iter().any(|g| g.0 <= j && j < g.1)
                 });
                 if plain {
                     for j in k..k + BLINK_FRAMES {
@@ -784,6 +860,7 @@ impl Plan {
             fast_short,
             wound: false,
             wind_key_steps: 0,
+            lines,
         }
     }
 
@@ -898,6 +975,16 @@ impl Plan {
                     FAST_MIN_MS
                 ),
             });
+        }
+        if sw.says {
+            out.push(format!("  {}", self.lines.said()));
+            if !self.lines.glanced.is_empty() {
+                let at: Vec<String> =
+                    self.lines.glanced.iter().take(GLANCES_SAID).map(|&k| secs(k)).collect();
+                let more = self.lines.glanced.len().saturating_sub(GLANCES_SAID);
+                let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+                out.push(format!("    glanced at {}{more}", at.join(", ")));
+            }
         }
         if !self.unstretched.is_empty() {
             out.push(format!(

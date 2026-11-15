@@ -210,7 +210,7 @@ fn a_file_out_of_the_takes_order_is_refused_with_its_line() {
             "cut.toml:6: chapter: out of the take's order",
         ),
         (
-            "default = 4\n[[caption]]\nat = \"30s\"\nfor = \"1s\"\ntext = \"b\"\n[[caption]]\nat = \"10s\"\nfor = \"1s\"\ntext = \"a\"\n",
+            "default = 4\n[[caption]]\nat = \"30s\"\nfor = \"2s\"\ntext = \"b\"\n[[caption]]\nat = \"10s\"\nfor = \"2s\"\ntext = \"a\"\n",
             "cut.toml:7: caption: out of the take's order",
         ),
         (
@@ -219,7 +219,7 @@ fn a_file_out_of_the_takes_order_is_refused_with_its_line() {
         ),
         // (the 11-10 rule: one caption at a time)
         (
-            "default = 1\n[[caption]]\nat = \"10s\"\nfor = \"3s\"\ntext = \"a\"\n[[caption]]\nat = \"12s\"\nfor = \"1s\"\ntext = \"b\"\n",
+            "default = 1\n[[caption]]\nat = \"10s\"\nfor = \"3s\"\ntext = \"a\"\n[[caption]]\nat = \"12s\"\nfor = \"2s\"\ntext = \"b\"\n",
             "cut.toml:7: caption: it shows while the one at line 2 still stands",
         ),
         (
@@ -717,8 +717,9 @@ fn the_sheets_picks_alone_are_the_frames_the_whole_pass_draws() {
     let take = Take::read(&dir).unwrap();
     let marks = Marks::read(&dir, take.ms()).unwrap();
     let c = Cut::parse(&text, "cut.toml", &marks).unwrap();
-    make(&c, &take, (&dir, &marks), &every, (video::Scale::HD, Made::Drawn)).unwrap();
-    run(&[arg(&list), "--picks".into(), "--out".into(), arg(&picked)]).unwrap();
+    make(&c, &take, (&dir, &marks), &every, (video::Scale::HD, Made::Drawn, &[])).unwrap();
+    run(&[arg(&list), "--picks".into(), "--out".into(), arg(&picked), "--frames".into(), "3-4,9".into()])
+        .unwrap();
     let read = |d: &std::path::Path, f: &str| std::fs::read(d.join(f)).unwrap_or_else(|e| panic!("{f}: {e}"));
     let tsv = String::from_utf8(read(&picked, "picks.tsv")).unwrap();
     assert!(tsv.starts_with("frame\tvideo_us\tfnv1a64\n") && tsv.lines().count() > 15, "{tsv}");
@@ -739,6 +740,15 @@ fn the_sheets_picks_alone_are_the_frames_the_whole_pass_draws() {
     let said = String::from_utf8(read(&picked, "cut.txt")).unwrap();
     assert!(said.contains("the sheet's frames only (--picks), no MP4 and no sound"), "{said}");
     assert!(!picked.join("cut.mp4").exists() && !picked.join("cut.wav").exists());
+    // (`--frames`: those drawn whole beside, and the picks the same with them — above)
+    let stills: Vec<bool> =
+        [2, 3, 4, 5, 9].map(|k| picked.join(format!("frame-{k:05}.png")).is_file()).to_vec();
+    assert_eq!(stills, [false, true, true, false, true]);
+    let png = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(picked.join("frame-00009.png")).unwrap(),
+    ));
+    let info = png.read_info().unwrap();
+    assert_eq!((info.info().width, info.info().height), (video::W as u32, video::H as u32));
 
     // (`--out`: never the take's folder nor a cut's in it — by any name of theirs; a new folder in it is one)
     let out = |d: &std::path::Path| run(&[arg(&list), "--picks".into(), "--out".into(), arg(d)]);
@@ -756,7 +766,23 @@ fn the_sheets_picks_alone_are_the_frames_the_whole_pass_draws() {
     assert!(e.contains("made: a cut of the take's (its cut.txt there), only read"), "{e}");
     let e = out(&dir.join("new").join("..").join("made")).unwrap_err();
     assert!(e.contains("a `..` in the part not made yet"), "{e}");
-    assert!(super::draw::out_refused(&dir.join("new"), &dir).is_ok());
+    assert!(super::draw::out_refused(&dir.join("new"), &dir, &list).is_ok());
+
+    // (a folder holding another list's cut: refused, nothing written; this list's own earlier run: written again)
+    let other = dir.join("other.toml");
+    std::fs::write(&other, &text).unwrap();
+    let e = run(&[arg(&other), "--picks".into(), "--out".into(), arg(&picked)]).unwrap_err();
+    assert!(
+        e.contains("picked: it holds a cut of another list (") && e.contains("cut.toml), not written over"),
+        "{e}"
+    );
+    assert!(String::from_utf8(read(&picked, "cut.txt")).unwrap().contains("cut.toml\n"), "left as it was");
+    let anon = s.join("anon");
+    std::fs::create_dir(&anon).unwrap();
+    std::fs::write(anon.join("cut.txt"), "a cut\n").unwrap();
+    let e = out(&anon).unwrap_err();
+    assert!(e.contains("anon: it holds a cut whose cut.txt names no list"), "{e}");
+    run(&[arg(&list), "--picks".into(), "--out".into(), arg(&picked)]).unwrap();
 }
 
 /// A take with no chapter said: by the front, counting only a workspace that stays ten seconds or more — the start
@@ -2548,11 +2574,12 @@ fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_
     // `CAPTION_MAX` anywhere)
     let boxed = (laned.marks_right, true);
     assert_eq!(super::draw::captions_clear(&c, &fonts, boxed), Ok(()));
+    // (each standing its 40 characters' reading time, 2.8 s; the last inside the fit span at ×2)
     let caption =
-        |at: &str| format!("[[caption]]\nat = \"{at}\"\nfor = \"1s\"\ntext = \"{}\"\n", "x".repeat(40));
+        |at: &str| format!("[[caption]]\nat = \"{at}\"\nfor = \"2.8s\"\ntext = \"{}\"\n", "x".repeat(40));
     let text = (CUT.replacen("[[caption]]", &format!("{}\n[[caption]]", caption("2s")), 1)).replacen(
         "text = \"A card.\"\n",
-        &format!("text = \"A card.\"\n\n{}", caption("52s")),
+        &format!("text = \"A card.\"\n\n{}", caption("50.2s")),
         1,
     );
     let two = cut(&text).unwrap();
@@ -2578,7 +2605,13 @@ fn the_band_s_marks_and_captions_stay_clear_of_the_mascot_and_it_never_covers_a_
 /// A caption is one line of `CAPTION_MAX` (40) characters at most: a 41st is refused at its line as the file is read.
 #[test]
 fn a_caption_of_41_characters_is_refused_at_its_line() {
-    let of = |n: usize| CUT.replacen("text = \"A card.\"", &format!("text = \"{}\"", "x".repeat(n)), 1);
+    let of = |n: usize| {
+        (CUT.replacen("text = \"A card.\"", &format!("text = \"{}\"", "x".repeat(n)), 1)).replacen(
+            "for = \"2s\"\ntext",
+            "for = \"3s\"\ntext",
+            1,
+        )
+    };
     assert!(cut(&of(40)).is_ok());
     let text = of(41);
     let line = text.lines().position(|l| l.starts_with("text = \"xxx")).unwrap() + 1;
@@ -2645,6 +2678,7 @@ const STILL: Switches = Switches {
     swing: false,
     fast: false,
     keys: Keys::All,
+    says: false,
 };
 
 /// Seconds as µs.
@@ -4404,4 +4438,232 @@ fn the_big_v_stays_clear_of_the_marks_the_cells_and_the_rule() {
     // (the made-up V's ink starts at the lane's column 80 on the rule's row)
     assert_eq!(place.rule_end, left + 80 - 26, "the rule stops short of the V's ink");
     assert_eq!(without.rule_end, without.x + 60 - 26, "without it, short of the box's");
+}
+
+// ── The character's lines (Z3's E1) ──
+
+/// The line (from 1) of `text`'s `nth` line (from 0) that starts with `start`.
+fn line_of(text: &str, start: &str, nth: usize) -> usize {
+    (text.lines().enumerate())
+        .filter(|(_, l)| l.starts_with(start))
+        .nth(nth)
+        .map(|(i, _)| i + 1)
+        .unwrap_or_else(|| panic!("no line {nth} starting {start:?} in:\n{text}"))
+}
+
+const ROW: &str = "[[caption]]\nat = \"10s\"\nfor = \"2.5s\"\ntext = [\"One ztunnel on each node.\", \"It listens inside every pod.\", \
+                   \"From inside, you can't see who.\"]\n";
+
+/// A row's lines are captions back to back from its `at`, each its `for` (one for all, or one a line): line k shown
+/// alone, in and out over `FADE_MS`, gone as the next comes; each a mark of the sheet's. A lone caption is a row of one.
+#[test]
+fn a_row_of_lines_stands_back_to_back_each_gone_before_the_next_shows() {
+    let text = moving(ROW);
+    let c = cut(&text).unwrap();
+    let m0 = c.map.video(10_000);
+    let got: Vec<(u64, u64, (usize, usize))> = c.captions.iter().map(|x| (x.m, x.len, x.row)).collect();
+    assert_eq!(got, [(m0, 2_500, (0, 3)), (m0 + s(2_500), 2_500, (1, 3)), (m0 + s(5_000), 2_500, (2, 3))]);
+    let header = line_of(&text, "[[caption]]", 0);
+    assert!(c.captions.iter().all(|x| x.at == 10_000 && x.line == header), "{:?}", c.captions);
+    let each = cut(&moving(&ROW.replace("for = \"2.5s\"", "for = [\"2s\", \"2.5s\", \"3s\"]"))).unwrap();
+    let got: Vec<(u64, u64)> = each.captions.iter().map(|x| (x.m, x.len)).collect();
+    assert_eq!(got, [(m0, 2_000), (m0 + s(2_000), 2_500), (m0 + s(4_500), 3_000)]);
+
+    // (every frame of the row: one line at most, the lines in their order, each dipping to nothing before the next)
+    let p = Program::new(&c);
+    let (from, to) = (p.video_of(m0).unwrap(), p.video_of(c.captions[2].end()).unwrap());
+    let shown: Vec<Option<(usize, u8)>> = (Program::frame_at(from)..=Program::frame_at(to))
+        .map(|k| p.frame(Program::time_of(k)).caption)
+        .collect();
+    for (k, x) in c.captions.iter().enumerate() {
+        let mid = p.video_of(x.m + x.len * 500).unwrap();
+        assert_eq!(p.frame(mid).caption, Some((k, 255)), "line {k} whole in its middle");
+        assert_eq!(p.frame(p.video_of(x.m).unwrap()).caption, None, "line {k} comes in from nothing");
+    }
+    let order: Vec<usize> = shown.iter().flatten().map(|c| c.0).collect();
+    assert!(order.windows(2).all(|w| w[0] <= w[1]) && order.contains(&2), "{order:?}");
+    let marks: Vec<String> = (super::draw::sheet_marks(&p).into_iter())
+        .filter(|m| m.1.starts_with("caption"))
+        .map(|m| m.1)
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            "caption “One ztunnel on each node.”",
+            "caption “It listens inside every pod.”",
+            "caption “From inside, you can't see who.”"
+        ]
+    );
+    assert_eq!(cut(CUT).unwrap().captions[0].row, (0, 1));
+}
+
+/// The reading rule: a line stands `READ_FLOOR_MS` (1.5 s) at the least and `READ_MS_PER_CHAR` (70 ms) a character.
+#[test]
+fn a_line_needs_a_second_and_a_half_and_70_ms_a_character_to_be_read() {
+    assert_eq!((READ_FLOOR_MS, READ_MS_PER_CHAR), (1_500, 70));
+    let need: Vec<u64> = [1, 21, 22, 25, 31, 36, 40].map(reading_ms).to_vec();
+    assert_eq!(need, [1_500, 1_500, 1_540, 1_750, 2_170, 2_520, 2_800]);
+    // (exactly its reading time is read; a millisecond less isn't)
+    let lone = |len: &str| {
+        moving(&format!("[[caption]]\nat = \"10s\"\nfor = \"{len}\"\ntext = \"{}\"\n", "x".repeat(36)))
+    };
+    assert!(cut(&lone("2520ms")).is_ok());
+    assert!(cut(&lone("2519ms")).unwrap_err().contains("stands 2.52 s — 36 characters need 2.52 s"));
+}
+
+/// Every way a caption or a row is refused, each at its line: what the row is written as, a line, its length, its
+/// reading time, running into the next caption or a chapter in the band, across a chapter's card; `says` itself.
+#[test]
+fn every_refusal_of_a_line_or_a_row_names_its_line() {
+    let row =
+        |at: &str, len: &str, text: &str| format!("[[caption]]\nat = \"{at}\"\nfor = {len}\ntext = {text}\n");
+    let two = r#"["One.", "Two."]"#;
+    let three = r#"["One.", "Two.", "Three."]"#;
+    let long = format!("[\"One.\", \"{}\"]", "x".repeat(41));
+    let card = |text: &str| line_of(text, "[[chapter]]", 1);
+    // (the list's text, the line refused as (its start, which of them), the words after `cut.toml:N: `)
+    type Line = (&'static str, usize);
+    let cases: Vec<(String, Line, String)> = vec![
+        (row("10s", r#""2s""#, "[]"), ("text", 0), "caption: text = [] — a row has a line at least".into()),
+        (row("10s", r#""2s""#, r#"["One.", 3]"#), ("text", 0), "caption: the row's line 2: a string".into()),
+        (row("10s", r#""2s""#, "3"), ("text", 0), "caption: text = a line, or a row of lines".into()),
+        (
+            row("10s", r#""2s""#, r#"["One.", ""]"#),
+            ("text", 0),
+            "caption, line 2 of 2: one line of 1 to 40 characters (0 here)".into(),
+        ),
+        (row("10s", r#""3s""#, &long), ("text", 0), "caption, line 2 of 2: one line of 1 to 40 characters (41 here)".into()),
+        (
+            row("10s", r#"["2s"]"#, two),
+            ("for", 0),
+            "caption: for has 1 lengths for 2 lines — one length for all, or one a line".into(),
+        ),
+        (row("10s", r#"["2s", 2]"#, two), ("for", 0), "caption: for, line 2: a length (\"2.5s\")".into()),
+        (row("10s", r#"["2s", "soon"]"#, two), ("for", 0), "caption: for, line 2: ".into()),
+        (
+            row("10s", r#""1s""#, r#""abc""#),
+            ("for", 0),
+            "caption: stands 1.00 s — 3 characters need 1.50 s to be read (1.5 s at the least, 70 ms a character)"
+                .into(),
+        ),
+        (
+            row("10s", r#""2s""#, r#"["One.", "From inside, you can't see who."]"#),
+            ("for", 0),
+            "caption, line 2 of 2: stands 2.00 s — 31 characters need 2.17 s".into(),
+        ),
+        // (a row ends before the next caption: the next is refused at its line, the row's named)
+        (
+            row("10s", r#""2s""#, three) + &row("15s", r#""2s""#, r#""Four.""#),
+            ("at", 1),
+            "caption: it shows while line 3 of 3 of the row at line 2 still stands — a row ends before the next \
+             caption"
+                .into(),
+        ),
+        // (never across a chapter's card: a caption, or a row's later line starting where the card is)
+        (
+            row("49s", r#""2s""#, r#""Five.""#),
+            ("at", 0),
+            "caption: it stands across the card of the chapter at line {card} — shown before the card and again after; \
+             end it before the card or start it after"
+                .into(),
+        ),
+        (
+            row("48s", r#""2s""#, two),
+            ("at", 0),
+            "caption, line 2 of 2: it stands across the card of the chapter at line {card}".into(),
+        ),
+        ("[mascot]\nsays = 1\n".into(), ("says", 0), "mascot: says = true or false".into()),
+    ];
+    for (rest, (start, nth), want) in cases {
+        let text = moving(&rest);
+        let want = format!(
+            "cut.toml:{}: {}",
+            line_of(&text, start, nth),
+            want.replace("{card}", &card(&text).to_string())
+        );
+        let e = cut(&text).unwrap_err();
+        assert!(e.starts_with(&want), "{want}\n  got: {e}");
+    }
+    // (a row runs into a chapter that stands in the band: its line that does is refused, the chapter named)
+    let text = format!(
+        "default = 1\n[[chapter]]\nat = \"start\"\ntitle = \"One\"\n[[chapter]]\nat = \"14s\"\ntitle = \"Two\"\ncard = false\n{}",
+        row("10s", r#""2s""#, three)
+    );
+    let e = cut(&text).unwrap_err();
+    let want = format!(
+        "cut.toml:{}: caption, line 3 of 3: it shows while the chapter at line 5 stands in the band — one at a time",
+        line_of(&text, "at = \"10s\"", 0)
+    );
+    assert!(e.starts_with(&want), "{want}\n  got: {e}");
+    // (and each of those, written to fit, is read)
+    for rest in [
+        row("10s", r#""2s""#, three) + &row("16s", r#""2s""#, r#""Four.""#),
+        row("48s", r#""2s""#, r#""Five.""#),
+        row("50s", r#""2s""#, two),
+        "[mascot]\nsays = true\n".into(),
+    ] {
+        let text = moving(&rest);
+        assert!(cut(&text).is_ok(), "{text}\n{:?}", cut(&text).err());
+    }
+}
+
+/// With `says`, as each line comes in the face on the keys glances up — turning at the line's first frame, raised
+/// while the hands tap, back down within `GLANCE_MS` — once, and no seeded glance while it stands; a line that comes
+/// while it watches is met as it is (no nod yet). Off: no line is met.
+#[test]
+fn the_character_glances_up_once_as_each_line_comes_in_and_not_again_while_it_stands() {
+    let rest = format!(
+        "[mascot]\nsays = true\n\n{}\n[[caption]]\nat = \"30s\"\nfor = \"2s\"\ntext = \"Nothing typed here.\"\n",
+        ROW.replace("\"10s\"", "\"4s\"")
+    );
+    let c = cut(&moving(&rest)).unwrap();
+    assert!(c.mascot.says && !Switches::default().says, "on only where the list says");
+    let p = Program::new(&c);
+    let v0 = take_at(&p, 0);
+    // (typing from 2 s to 14 s of the take, at 1×: through the row, none at 30 s)
+    let taps: Vec<u64> = (0..80).map(|i| v0 + s(2_000) + s(150) * i).collect();
+    let hands = Hands::new(&taps.iter().map(|&v| (v, Side::Left, Press::Key)).collect::<Vec<_>>());
+    let plan = |sw: Switches| Plan::new(&p, &hands, &Causes::default(), &[], &sw, 7);
+    let frame = |m: u64| Program::frame_at(p.video_of(m).unwrap());
+    let starts: Vec<u64> = c.captions.iter().map(|x| frame(x.m)).collect();
+    let ends: Vec<u64> = c.captions.iter().map(|x| frame(x.end())).collect();
+    let says = Switches { says: true, ..STILL };
+    let said = plan(says);
+    assert_eq!(said.lines.glanced, starts[..3]);
+    assert_eq!((said.lines.n, said.lines.rows, said.lines.watching, said.lines.other), (4, 2, 1, 0));
+    let len = motions::frames(motions::GLANCE_MS);
+    let up = |pl: &Plan, k: u64| matches!(pl.pic(k), Some(Pic::At(a, Face::Raised | Face::Half)) if a != Arms::Rest);
+    for i in 0..3 {
+        let k = starts[i];
+        assert!(!up(&said, k - 1), "line {i}: on the keys before it");
+        assert!(
+            matches!(said.pic(k), Some(Pic::At(Arms::Left | Arms::Up, Face::Half))),
+            "line {i}: {:?}",
+            said.pic(k)
+        );
+        let raised = (k + motions::TURN..k + len - motions::TURN)
+            .all(|j| matches!(said.pic(j), Some(Pic::At(a, Face::Raised)) if a != Arms::Rest));
+        assert!(raised, "line {i}: raised while the hands tap");
+        assert!((k + len..ends[i]).all(|j| !up(&said, j)), "line {i}: once, not again while it stands");
+    }
+    assert_eq!(said.pic(starts[3]), Some(Pic::WATCH), "met as it watches");
+    let words = said.said(&says).join("\n");
+    assert!(
+        words.contains(
+            "the character's lines (says): 4 in 2 rows — 3 glanced, 1 met while watching (no nod yet), 0 in a motion \
+             or not shown"
+        ),
+        "{words}"
+    );
+    // (the seeded glances: some inside the row's lines with `says` off, none with it on; off, no line met)
+    let inside = |pl: &Plan| {
+        pl.glanced.iter().filter(|&&g| (0..3).any(|i| g + len > starts[i] && g < ends[i])).count()
+    };
+    let seeded = plan(Switches { glance: true, ..STILL });
+    assert!(inside(&seeded) > 0, "the made-up streak glances inside the row: {:?}", seeded.glanced);
+    assert!(seeded.lines.glanced.is_empty() && seeded.lines.n == 0);
+    assert!(!seeded.said(&STILL.with(|s| s.glance = true)).join("\n").contains("the character's lines"));
+    let both = plan(Switches { glance: true, says: true, ..STILL });
+    assert_eq!(inside(&both), 0, "{:?}", both.glanced);
+    assert_eq!(both.lines.glanced, starts[..3]);
 }

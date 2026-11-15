@@ -201,8 +201,8 @@ impl Pic {
                 Pic::At(_, Face::Open) | Pic::At(Arms::Rest, Face::Raised) => true,
                 Pic::At(_, Face::Half) => sw.moves(),
                 Pic::At(_, Face::Closed) => sw.blink,
-                Pic::At(Arms::Right | Arms::Both, Face::Raised) => sw.glance || sw.fast,
-                Pic::At(_, Face::Raised) => sw.glance,
+                Pic::At(Arms::Right | Arms::Both, Face::Raised) => sw.glance || sw.fast || sw.says,
+                Pic::At(_, Face::Raised) => sw.glance || sw.says,
                 Pic::At(_, Face::Wide) | Pic::Surprise(_) => sw.surprise,
                 Pic::Stretch(_) => sw.stretch,
                 Pic::Swing(_) => sw.swing,
@@ -233,6 +233,9 @@ pub(crate) struct Switches {
     /// Pressing fast-forward: the right paw held down through a stretch too fast for its keys (`motions::fast_holds`).
     pub(crate) fast: bool,
     pub(crate) keys: Keys,
+    /// Every caption is the character's line (`[mascot] says`, off if left out): as each comes in, the typing face
+    /// glances up once (`motions::Plan`'s lines).
+    pub(crate) says: bool,
 }
 
 impl Default for Switches {
@@ -246,6 +249,7 @@ impl Default for Switches {
             swing: true,
             fast: true,
             keys: Keys::All,
+            says: false,
         }
     }
 }
@@ -261,20 +265,21 @@ impl Switches {
     /// Whether any motion is on — the face's turn through its half-raised picture with them: every one off is V4's
     /// mascot, picture for picture.
     pub(crate) fn moves(&self) -> bool {
-        self.blink || self.glance || self.surprise || self.stretch || self.swing || self.fast
+        self.blink || self.glance || self.surprise || self.stretch || self.swing || self.fast || self.says
     }
 
     /// The switches in words, for `cut.txt`.
     pub(crate) fn said(&self) -> String {
         let on = |b: bool| if b { "on" } else { "off" };
         format!(
-            "blink {}, glance {}, surprise {}, stretch {}, swing {}, fast-forward {}",
+            "blink {}, glance {}, surprise {}, stretch {}, swing {}, fast-forward {}, says {}",
             on(self.blink),
             on(self.glance),
             on(self.surprise),
             on(self.stretch),
             on(self.swing),
-            on(self.fast)
+            on(self.fast),
+            on(self.says)
         )
     }
 }
