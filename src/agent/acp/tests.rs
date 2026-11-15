@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::standin::{HEARD, SCRIPT};
 use super::*;
+use crate::agent::hook;
 use crate::agent::{Resume, Role, STAND_IN};
 use crate::llm::LlmConfig;
 
@@ -316,11 +317,14 @@ fn start(script: Value, o: Opts) -> Run {
     let mut env = o.env;
     env.insert(SCRIPT.into(), dir.join("script.json").to_string_lossy().into_owned());
     env.insert(HEARD.into(), dir.join("heard").to_string_lossy().into_owned());
-    // (where a test's bridge binds: its own state folder)
+    // (where a test's bridge binds and its agent's folder is: its own state folder)
     env.insert("XDG_STATE_HOME".into(), dir.join("state").to_string_lossy().into_owned());
+    // (its folder made as the chat's gate makes it, on this thread)
+    let made = crate::agentgate::prepare(&STAND_IN, state(Some(&env)).as_deref()).expect("its folder made");
     let s = Start {
         system: o.system,
         resume: o.resume.map(|conversation| Resume { conversation, fork: false }),
+        prepared: Some(&made.prepared),
         ..Start::on(&STAND_IN, Role::Chat, &o.cfg)
     };
     let at = crate::agent::Place { dir: dir.path(), given: Some(&env), cred: None };
@@ -717,6 +721,7 @@ fn a_test_never_starts_a_real_agent() {
             command: program,
             args: &["--acp"],
             caps: CAPS,
+            own_tools: None,
         }));
         let s = Start::on(row, Role::Chat, &cfg);
         let refused = std::panic::catch_unwind(|| command(&s, &std::env::temp_dir(), None).map(|_| ()));
@@ -724,8 +729,78 @@ fn a_test_never_starts_a_real_agent() {
         let why = why.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(why.contains("a test started a real agent"), "{program}: {why}");
     }
-    // (and the stand-in's own isn't refused)
-    assert!(command(&Start::on(&STAND_IN, Role::Chat, &cfg), &std::env::temp_dir(), None).is_ok());
+    // (and the stand-in's own isn't refused, its folder made)
+    let dir = crate::scratch::Scratch::new("acp-real-agent");
+    let made = crate::agentgate::prepare(&STAND_IN, Some(dir.path())).unwrap();
+    let s = Start { prepared: Some(&made.prepared), ..Start::on(&STAND_IN, Role::Chat, &cfg) };
+    assert!(command(&s, &std::env::temp_dir(), None).is_ok());
+}
+
+// ── Guard 1: its own tools off ─────────────────────────────────────────────────────
+
+/// Step 3's guard 1, end to end on the stand-in: a start makes its folder (`$state/agent-homes/<row>/`, 0700 down to
+/// `config/`), writes tarae's two files there to the byte — the hook file (0600) naming the program beside it
+/// (0700) — and names it with `--gemini-dir`, tarae's path for the hook in its environment. The stand-in runs its
+/// own `run_command` as agy does: the hook it reads there asks tarae (the program, then the test binary's
+/// `hook::child`), which refuses it, and the call comes up failed with tarae's reason; `mcp_tarae_search` is let
+/// through (its report dropped, as tarae's own tools' are).
+#[test]
+fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
+    use std::os::unix::fs::PermissionsExt;
+    let own = |name: &str, id: &str| json!({"own": {"name": name, "id": id, "args": {"CommandLine": "echo probe-ran"}}});
+    let mut script = handshake();
+    script.extend([
+        json!({"expect": "session/prompt"}),
+        own("run_command", "t1"),
+        own("mcp_tarae_search", "t2"),
+        json!({"end_turn": "end_turn"}),
+        json!({"eof": true}),
+    ]);
+    let run = start(json!(script), Opts { prompt: Some("run echo"), ..Opts::default() });
+    let got = run.until("done");
+    let folder = run.dir.join("state/tarae/agent-homes/stand-in");
+    let mode = |p: &std::path::Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777;
+    for dir in [folder.parent().unwrap(), &folder, &folder.join("config")] {
+        assert_eq!(mode(dir), 0o700, "{}", dir.display());
+    }
+    let (hooks, program) = (folder.join("config/hooks.json"), folder.join("config").join(hook::SCRIPT_NAME));
+    assert_eq!((mode(&hooks), mode(&program)), (0o600, 0o700));
+    let want = hook::file(crate::agent::AGY_TOOLS_OFF.hook, program.to_str().unwrap());
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), want);
+    assert_eq!(std::fs::read_to_string(&program).unwrap(), hook::SCRIPT);
+    let heard = run.heard();
+    assert_eq!(heard[0]["dir"], json!(folder.to_str().unwrap()), "--gemini-dir names it");
+    assert!(heard[0]["env"].as_array().unwrap().contains(&json!(hook::ENV)), "{}", heard[0]);
+    let hooks: Vec<&Value> = heard.iter().filter_map(|v| v.get("hook")).collect();
+    assert_eq!(
+        hooks,
+        [&json!({"decision": "deny", "reason": hook::DENY}), &json!({"decision": "allow"})],
+        "{heard:?}"
+    );
+    assert!(got.contains(&r#"tool t1 run_command {"CommandLine":"echo probe-ran"}"#.to_string()), "{got:?}");
+    assert!(got.contains(&format!("result t1 true {}", hook::DENY)), "refused, tarae's reason: {got:?}");
+    assert!(!got.iter().any(|g| g.contains("t2")), "tarae's own, dropped: {got:?}");
+}
+
+/// A row that turns its own tools off isn't started without its folder made: the start ends with its words, and
+/// no process was started (the stand-in heard nothing).
+#[test]
+fn a_row_with_a_recipe_isnt_started_without_its_folder() {
+    let dir = crate::scratch::Scratch::new("acp-no-folder");
+    let env = Env::from([
+        (SCRIPT.to_string(), dir.join("script.json").to_string_lossy().into_owned()),
+        (HEARD.to_string(), dir.join("heard").to_string_lossy().into_owned()),
+    ]);
+    std::fs::write(dir.join("script.json"), json!([{"eof": true}]).to_string()).unwrap();
+    let cfg = LlmConfig::default();
+    let s = Start::on(&STAND_IN, Role::Chat, &cfg);
+    let at = crate::agent::Place { dir: dir.path(), given: Some(&env), cred: None };
+    let first = First { tools: false, prompt: None };
+    let ed = crate::editor::Editor::new(crate::config::Config::default());
+    let started = crate::agent::start(&s, at, first, false, ed.events.sender(), |_| None);
+    let Err(e) = started else { panic!("started without its folder") };
+    assert_eq!(e.said("sh", true), "stand-in: not started without tarae's folder");
+    assert!(!dir.join("heard").exists(), "a process started");
 }
 
 // ── The bridge ───────────────────────────────────────────────────────────────────────

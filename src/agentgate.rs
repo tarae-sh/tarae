@@ -1,0 +1,315 @@
+//! Guard 1's folder (agents beside Claude, step 3): an agent whose own tools tarae turns off (its row's `Recipe`) is
+//! started on a config folder of tarae's own, `$state/agent-homes/<row>/`, made and checked before every start, on a
+//! worker, and its two files written there again — the hook file and the program it names (`agent::hook`), the same
+//! bytes from every tarae and every start (the design session's condition 2).
+//!
+//! - The folder holds the agent's conversations, so it outlives a session; it's in tarae's state, which no run and no
+//!   `read` of Claude's reaches (`sandbox::taraes_own`), and never the user's own `~/.gemini`.
+//! - `$state`, `agent-homes/`, `<row>/` and its `config/` are each this user's, a real folder (never a link), and
+//!   nobody else's to write (condition 4) — `agent-homes/` and below 0700, as made. One that isn't ends the start,
+//!   said; nothing is repaired in place.
+//! - Each file goes to a new name in `config/` and is renamed over its own: never seen half written, and a link
+//!   put in its place is replaced, never written through. One that was there and differs is said once.
+//! - The rest of the folder is the agent's (its conversations, its own `config/` files): tarae doesn't remove what
+//!   it wrote (Q3). But a server of `config/` named as tarae's would pass the hook as tarae's tools, so the agent
+//!   isn't started while one is there, said (condition 3).
+//!
+//! The chat's start waits for it (`Gate`, after `claudetrust::Gate`): its result, on the main loop, starts the agent
+//! (`chat::gate_opened`) or says why not.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+use crate::agent::Row;
+use crate::editor::Editor;
+
+/// Where the agents' folders are, in tarae's state folder.
+pub const HOMES: &str = "agent-homes";
+
+/// The most of a file of the agent's own `config/` read for its servers.
+pub const READ_MAX: u64 = 1 << 20;
+
+/// An agent's folder made and its files written, for one start: only `prepare` makes one.
+#[derive(Debug)]
+pub struct Prepared {
+    folder: PathBuf,
+    program: PathBuf,
+}
+
+impl Prepared {
+    /// The folder, absolute: what its row's `folder_arg` names.
+    pub fn folder(&self) -> &Path {
+        &self.folder
+    }
+
+    /// tarae's own path as the hook asks it (`hook::ENV` in the agent's environment).
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+}
+
+/// What `prepare` made: the folder, and each file of tarae's that was there and differed (its path from the folder,
+/// its size) — written again.
+#[derive(Debug)]
+pub struct Made {
+    pub prepared: Prepared,
+    pub changed: Vec<(String, u64)>,
+}
+
+/// `row`'s folder under `state` (`$state`) made and checked, its own `config/` looked through, and its files written.
+/// Err: why it isn't started, in the chat's words.
+pub fn prepare(row: &Row, state: Option<&Path>) -> Result<Made, String> {
+    let name = row.name;
+    let off = |why: String| format!("{name}: its own tools can't be turned off — {why}");
+    let Some(recipe) = row.own_tools else { return Err(off("its row has no recipe for it".into())) };
+    let state = state.ok_or_else(|| off("no state folder (neither XDG_STATE_HOME nor HOME)".into()))?;
+    let say = |what: &str, p: &Path, e: std::io::Error| off(format!("{what} {}: {e}", p.display()));
+    std::fs::create_dir_all(state).map_err(|e| say("can't make", state, e))?;
+    alone(name, state, 0o022)?;
+    let folder = state.join(HOMES).join(name);
+    let hook_file = folder.join(recipe.hook_file);
+    let config = hook_file.parent().unwrap_or(&folder).to_path_buf();
+    let mut dir = state.to_path_buf();
+    for part in config.strip_prefix(state).unwrap_or(Path::new("")).components() {
+        use std::os::unix::fs::DirBuilderExt;
+        dir.push(part);
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(say("can't make", &dir, e));
+            }
+            _ => {}
+        }
+        alone(name, &dir, 0o077)?;
+    }
+    let script = config.join(crate::agent::hook::SCRIPT_NAME);
+    let Some(script_text) = script.to_str() else {
+        return Err(off(format!("{} isn't text", script.display())));
+    };
+    let ours = [script.as_path(), hook_file.as_path()];
+    servers_named_as_taraes(name, &folder, &config, &ours)?;
+    let mut changed = Vec::new();
+    let file = crate::agent::hook::file(recipe.hook, script_text);
+    for (path, bytes, mode) in
+        [(&script, crate::agent::hook::SCRIPT.as_bytes(), 0o700), (&hook_file, file.as_bytes(), 0o600)]
+    {
+        let rel = path.strip_prefix(&folder).unwrap_or(path).display().to_string();
+        match put(path, bytes, mode) {
+            Ok(Some(size)) => changed.push((rel, size)),
+            Ok(None) => {}
+            Err(e) => return Err(off(format!("can't write {rel}: {e}"))),
+        }
+    }
+    let program = program(state).map_err(|e| off(format!("can't tell where this tarae is: {e}")))?;
+    Ok(Made { prepared: Prepared { folder, program }, changed })
+}
+
+/// Err unless `dir` is this user's, a real folder (not a link), with none of `mask`'s mode bits.
+fn alone(name: &str, dir: &Path, mask: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid only reads.
+    let me = unsafe { libc::geteuid() };
+    let ok =
+        std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir() && m.uid() == me && m.mode() & mask == 0);
+    match ok {
+        true => Ok(()),
+        false => Err(format!("{name}: {} isn't yours alone — not started", dir.display())),
+    }
+}
+
+/// `bytes` written to `path` with `mode`: to a new name beside it, then renamed over it. Some: what was there
+/// differed (its size; a link, a folder or another file's mode are a difference too).
+fn put(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<Option<u64>> {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let before = match std::fs::symlink_metadata(path) {
+        Err(_) => None,
+        Ok(m) if !m.is_file() || m.mode() & 0o7777 != mode => Some(m.len()),
+        Ok(m) => {
+            let mut was = Vec::new();
+            let read =
+                std::fs::File::open(path).and_then(|f| f.take(bytes.len() as u64 + 1).read_to_end(&mut was));
+            (read.is_err() || was != bytes).then_some(m.len())
+        }
+    };
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let temp = path.with_file_name(format!(".{name}.{}-{n}.tarae", std::process::id()));
+    let written = (|| {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&temp)?;
+        f.write_all(bytes)?;
+        f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map(|_| before)
+}
+
+/// The agent's own `config/` looked through for a server named as tarae's (condition 3): its tools would be
+/// `mcp_tarae_<tool>`, which the hook lets through as tarae's. Each `.json` file there but tarae's own (`ours`), and
+/// any other that reads as JSON, read by key (`taraes_server`); a `.json` file that isn't JSON counts if it holds
+/// the word anywhere, and one that can't be read (a link, past `READ_MAX`) ends the start too — at worst a false
+/// refusal, said.
+fn servers_named_as_taraes(name: &str, folder: &Path, config: &Path, ours: &[&Path]) -> Result<(), String> {
+    use std::io::Read;
+    let Ok(entries) = std::fs::read_dir(config) else { return Ok(()) };
+    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    paths.sort();
+    for path in paths.iter().filter(|p| !ours.contains(&p.as_path())) {
+        let rel = path.strip_prefix(folder).unwrap_or(path).display().to_string();
+        let json = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+        let unread =
+            |why: String| format!("{name}: {rel} can't be read for its MCP servers — {why}; not started");
+        let Ok(meta) = std::fs::symlink_metadata(path) else { continue };
+        if meta.is_dir() || (!json && !meta.is_file()) {
+            continue;
+        }
+        if !meta.is_file() {
+            return Err(unread("not a plain file (a link is never read through)".into()));
+        }
+        let mut text = Vec::new();
+        let read = std::fs::File::open(path).and_then(|f| f.take(READ_MAX + 1).read_to_end(&mut text));
+        match read {
+            Err(e) if json => return Err(unread(e.to_string())),
+            Ok(n) if json && n as u64 > READ_MAX => return Err(unread("too big to read".into())),
+            Err(_) => continue,
+            Ok(_) => {}
+        }
+        let named = match serde_json::from_slice::<Value>(&text) {
+            Ok(v) => taraes_server(&v),
+            Err(_) if json => {
+                String::from_utf8_lossy(&text).to_lowercase().contains("tarae").then(|| "tarae".into())
+            }
+            Err(_) => None,
+        };
+        if let Some(server) = named {
+            return Err(format!(
+                "{name}: {rel} names an MCP server \"{server}\" — its tools would pass for tarae's; not started"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A server's name that would pass for tarae's: `tarae`, any case, alone or before a mark that isn't a letter or a
+/// digit (`tarae_x`'s tools are `mcp_tarae_x_<tool>`).
+fn as_taraes(server: &str) -> bool {
+    let lower = server.to_lowercase();
+    lower.strip_prefix("tarae").is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+}
+
+/// The first server `v` names as tarae's: under any key that says `mcp` or `server` (any case), an object's keys or
+/// an array's `name`s, wherever it is.
+pub fn taraes_server(v: &Value) -> Option<String> {
+    match v {
+        Value::Object(m) => m.iter().find_map(|(k, v)| {
+            let lower = k.to_lowercase();
+            let names: Vec<&str> = match v {
+                _ if !lower.contains("mcp") && !lower.contains("server") => Vec::new(),
+                Value::Object(servers) => servers.keys().map(String::as_str).collect(),
+                Value::Array(servers) => servers.iter().filter_map(|s| s["name"].as_str()).collect(),
+                _ => Vec::new(),
+            };
+            names.into_iter().find(|n| as_taraes(n)).map(String::from).or_else(|| taraes_server(v))
+        }),
+        Value::Array(a) => a.iter().find_map(taraes_server),
+        _ => None,
+    }
+}
+
+/// tarae's own path as the hook asks it (`hook::ENV`). A test build's: a program in its state folder that re-runs
+/// the test binary on `hook::child`, answering on descriptor 3 as the stand-in and the bridge's relay do.
+fn program(state: &Path) -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    if !cfg!(test) {
+        return Ok(exe);
+    }
+    let path = state.join("agent-hook-test");
+    let exe = crate::packs::sh_quote(&exe.to_string_lossy());
+    let text = format!(
+        "#!/bin/sh\nexec {exe} --exact agent::hook::child --ignored --nocapture \"$@\" 3>&1 >/dev/null\n"
+    );
+    put(&path, text.as_bytes(), 0o700)?;
+    Ok(path)
+}
+
+// ── The chat's gate ──────────────────────────────────────────────────────────────
+
+/// A chat's gate for an agent whose own tools tarae turns off: it starts once its folder is made (`prepare`).
+pub struct Gate {
+    /// The folder being made: since when (the chat says it's starting meanwhile).
+    reading: Option<std::time::Instant>,
+    /// Made, for the next start — taken by it: each start makes it again.
+    prepared: Option<Prepared>,
+    /// This gate's: a closed chat's late result isn't another chat's.
+    id: u64,
+}
+
+impl Default for Gate {
+    fn default() -> Gate {
+        static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Gate { reading: None, prepared: None, id }
+    }
+}
+
+impl Gate {
+    /// Since when its agent has waited for the folder.
+    pub fn waiting_since(&self) -> Option<std::time::Instant> {
+        self.reading
+    }
+}
+
+/// The chat's agent may start (`chat::ensure_proc`): its folder made — None while it's made on a worker (it starts
+/// once it is, `made`).
+pub fn ready(ed: &mut Editor) -> Option<Prepared> {
+    let state = crate::agent::acp::state(ed.claude_env.as_ref());
+    let c = ed.workspace.claude.chat.as_mut()?;
+    if let Some(p) = c.agent_gate.prepared.take() {
+        return Some(p);
+    }
+    if c.agent_gate.reading.is_none() {
+        c.agent_gate.reading = Some(crate::clock::now());
+        let (id, row) = (c.agent_gate.id, c.agent);
+        ed.events.jobs().spawn(move || {
+            let made = prepare(row, state.as_deref());
+            move |ed: &mut Editor| made_now(ed, id, made)
+        });
+    }
+    None
+}
+
+/// The folder made: what differed said, and the agent started (`chat::gate_opened`) — or why not, said, and nothing
+/// started (a message that waited stays, for the next try).
+fn made_now(ed: &mut Editor, id: u64, made: Result<Made, String>) {
+    let log = ed.workspace.log();
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.agent_gate.id == id) else { return };
+    c.agent_gate.reading = None;
+    let name = c.agent.name;
+    match made {
+        Ok(Made { prepared, changed }) => {
+            for (rel, size) in changed {
+                log.line(
+                    "agent",
+                    "warn",
+                    &format!("{name}'s {rel} was changed outside tarae ({size} bytes)"),
+                );
+                c.note(&format!("{name}'s {rel} was changed outside tarae — written again"));
+            }
+            c.agent_gate.prepared = Some(prepared);
+            crate::chat::gate_opened(ed);
+        }
+        Err(said) => {
+            log.line("agent", "warn", &said);
+            c.note(&said);
+            let at = c.msgs.len() - 1;
+            crate::chat::said_here(ed, at);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

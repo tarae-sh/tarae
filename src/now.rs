@@ -67,7 +67,7 @@ pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
     if crate::compaction::under_way(l) {
         return Some(Step::new(Sign::Working, "compacting", "", "compact"));
     }
-    if c.settings.waiting() {
+    if c.starting() {
         return Some(Step::new(Sign::Working, "starting", "", format!("start{turn}")));
     }
     // (its newest call with no result yet, as its row says it)

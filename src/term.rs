@@ -21163,7 +21163,7 @@ fn draw_chat(
     let left = lw / 2;
     let status: Vec<Span> = match c.state {
         // (its claude not up yet: the project's settings read first — frictions29 #67, a send then waits for it)
-        State::Idle if let Some(t) = c.settings.waiting_since() => {
+        State::Idle if let Some(t) = c.starting_since() => {
             let t = timer(crate::clock::since(t), !editor.moving());
             let sign = wave_here(editor, true, ("chat top", 0)).unwrap_or_else(|| crate::shimmer::mark(""));
             vec![sp(rule_through(sign), accent), sp(format!(" starting {t}"), dim)]
@@ -21203,7 +21203,7 @@ fn draw_chat(
     let right: Vec<(String, Style)> = status.into_iter().map(|s| (s.text, s.style)).collect();
     let right_w: usize = right.iter().map(|s| s.0.width()).sum();
     // (a turn's time stands; the model's name gives way to what's on)
-    let keep_right = c.busy() || c.settings.waiting_since().is_some();
+    let keep_right = c.busy() || c.starting();
     // (the names' room: the line's, less what stands at its right end while it's kept)
     let names_room =
         lw.saturating_sub(TOP_LINE_OWN + if right_w > 0 && keep_right { right_w + 3 } else { 0 });
@@ -21257,7 +21257,7 @@ fn draw_chat(
     let key = Style { bold: true, ..dim };
     // (its right end pressed: the turn's word follows Claude's place, the model's name is `C-t`'s)
     let right_press = match c.state {
-        State::Idle if c.settings.waiting_since().is_some() => None,
+        State::Idle if c.starting() => None,
         State::Idle => crate::models::label(editor).map(|_| Press::Model),
         _ => Some(Press::Now),
     };

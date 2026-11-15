@@ -2,6 +2,9 @@
 #[cfg(test)]
 pub mod acp;
 pub mod claude;
+/// `tarae agent-hook`: guard 1's hook, under the gate with the ACP wire.
+#[cfg(test)]
+pub mod hook;
 mod process;
 
 #[cfg(test)]
@@ -168,7 +171,42 @@ pub struct Row {
     pub args: &'static [&'static str],
     /// What it can do, before it runs too.
     pub caps: Caps,
+    /// How its own tools go off (guard 1). None: it has none of its own to turn off (Claude: `--tools ""`), or it
+    /// can't — and then an ACP row's `caps.own_tools_off` is false (`every_acp_row_keeps_the_floor`), and `llm::held`
+    /// refuses to start it.
+    #[cfg(test)]
+    pub own_tools: Option<Recipe>,
 }
+
+/// A config folder of tarae's own (`$state/agent-homes/<row>/`, `agentgate.rs`), and the files tarae writes there
+/// before every start: the agent's own tools turned off by tarae's hook (guard 1).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub struct Recipe {
+    /// The argument that names the folder, its absolute path after it, after the row's `args`: `--gemini-dir`.
+    pub folder_arg: &'static str,
+    /// The hook file, from the folder: `config/hooks.json`. The program it names is beside it (`hook::SCRIPT_NAME`).
+    pub hook_file: &'static str,
+    /// What the hook file says, and how the hook's input and answer are shaped.
+    pub hook: Hook,
+}
+
+/// A hook's file and speech, by the agent family that reads it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub enum Hook {
+    /// agy 1.5.4 and 1.5.7, as the design session's probe saw them take it: one `PreToolUse` group, `matcher` `*`,
+    /// one hook of `type` `command` — a bare absolute path, no arguments — and its `timeout` (its unit unmeasured:
+    /// step 4's probe). Its stdin is a JSON object with `toolCall.name`; its answer `{"decision":"allow"}` or
+    /// `{"decision":"deny","reason":…}`.
+    Agy { timeout: u32 },
+}
+
+/// agy's recipe (the design session's probe, Q1): `--gemini-dir <folder>`, its `config/hooks.json`. The stand-in
+/// plays agy's part, so it takes it too.
+#[cfg(test)]
+pub const AGY_TOOLS_OFF: Recipe =
+    Recipe { folder_arg: "--gemini-dir", hook_file: "config/hooks.json", hook: Hook::Agy { timeout: 10 } };
 
 /// The protocol an agent speaks, its wire's: each its own module below `agent`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -187,13 +225,21 @@ pub static CLAUDE: Row = Row {
     command: "claude",
     args: claude::DEFAULT_ARGS,
     caps: claude::CAPS,
+    #[cfg(test)]
+    own_tools: None,
 };
 
 /// The stand-in ACP agent's row (`acp::standin`): the test binary re-run on its one test, speaking ACP on
 /// descriptor 3. Tests' only: no config reaches it, nor is a kept conversation's name looked up in it.
 #[cfg(test)]
-pub static STAND_IN: Row =
-    Row { name: "stand-in", wire: Wire::Acp, command: "sh", args: acp::standin::ARGS, caps: acp::CAPS };
+pub static STAND_IN: Row = Row {
+    name: "stand-in",
+    wire: Wire::Acp,
+    command: "sh",
+    args: acp::standin::ARGS,
+    caps: acp::CAPS,
+    own_tools: Some(AGY_TOOLS_OFF),
+};
 
 /// Every row tarae has: what a kept conversation's name is looked up in (`row_named`).
 static ROWS: &[&Row] = &[&CLAUDE];
@@ -247,6 +293,10 @@ pub struct Start<'a> {
     pub again: Option<Again>,
     /// What only Claude's wire reads.
     pub claude: ClaudeStart<'a>,
+    /// Its folder made and its hook written (`agentgate::prepare`), where its row turns its own tools off: none, and
+    /// such a row isn't started (`acp::command`).
+    #[cfg(test)]
+    pub prepared: Option<&'a crate::agentgate::Prepared>,
 }
 
 impl<'a> Start<'a> {
@@ -274,6 +324,8 @@ impl<'a> Start<'a> {
                 keep_env_key: cfg.keep_env_key,
                 settings: None,
             },
+            #[cfg(test)]
+            prepared: None,
         }
     }
 }
@@ -800,5 +852,39 @@ mod tests {
         let acp = [("agent/acp.rs".to_string(), "Agent::Acp(Proc(in_tx))".to_string())];
         assert!(matching(&acp).is_empty());
         assert_eq!(matching(&code("std::ptr::eq(a.caps(), &crate::agent::claude::CAPS)")), ["chat.rs"]);
+    }
+
+    /// Whether `row` keeps the floor every ACP row stands on, as what it breaks: every permission ask refused
+    /// (guard 2 — the rule, not a row's choice), and its own tools said off only where a recipe turns them off
+    /// (guard 1).
+    fn floor(row: &super::Row) -> Vec<&'static str> {
+        let mut broken = Vec::new();
+        if row.wire != super::Wire::Acp {
+            return broken;
+        }
+        if row.caps.asks {
+            broken.push("its asks read");
+        }
+        if row.caps.own_tools_off != row.own_tools.is_some() {
+            broken.push("its own tools said off with no recipe, or a recipe said not off");
+        }
+        broken
+    }
+
+    /// Agents beside Claude, step 3 (plan §1): every row on the ACP wire — `ROWS` and the stand-in's — keeps the
+    /// floor: its asks refused, and its own tools off only by a recipe (`acp::CAPS` says off; a row copying it with
+    /// no recipe would pass `llm::held` with nothing turned off).
+    #[test]
+    fn every_acp_row_keeps_the_floor() {
+        use super::{ROWS, Row, STAND_IN, Wire};
+        for row in ROWS.iter().copied().chain([&STAND_IN]) {
+            assert!(floor(row).is_empty(), "{}: {:?}", row.name, floor(row));
+        }
+        // (and it sees each: a row on `acp::CAPS` with no recipe, and one whose asks are read)
+        let row =
+            |caps, own_tools| Row { name: "x", wire: Wire::Acp, command: "x", args: &[], caps, own_tools };
+        let asks = super::Caps { asks: true, ..super::acp::CAPS };
+        assert_eq!(floor(&row(super::acp::CAPS, None)).len(), 1);
+        assert_eq!(floor(&row(asks, Some(super::AGY_TOOLS_OFF))), ["its asks read"]);
     }
 }

@@ -24,9 +24,14 @@
 //!   that never ends by itself), heard as `{"linger_pid": pid}`.
 //! - `{"tty": true}` reads its session and group and tries to open `/dev/tty`, heard as `{"pid": pid, "pgid":
 //!   pgid, "sid": sid, "tty": "opened" or why not}`.
+//! - `{"own": {"name": …, "args": …, "id": …}}` runs one of its own tools as agy does (`own`): reported, its folder's
+//!   hook asked on agy's input (heard as `{"hook": its answer}`), then `failed` with the hook's reason or `completed`.
 //!
-//! What it heard: first `{"env": [its environment's names], "nofile": its soft descriptor limit}`, then each line
-//! tarae wrote, as it came.
+//! It plays agy's part, so its row takes agy's recipe (`agent::AGY_TOOLS_OFF`): its `--gemini-dir <folder>`, which
+//! libtest wouldn't take, is moved by its `sh` into `DIR` before the test binary starts.
+//!
+//! What it heard: first `{"env": [its environment's names], "nofile": its soft descriptor limit, "dir": its folder}`,
+//! then each line tarae wrote, as it came.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
@@ -39,9 +44,26 @@ pub const SELF: &str = "@self";
 /// The test the stand-in is (`run`).
 pub const TEST: &str = "agent::acp::standin::run";
 
-/// The stand-in's row's arguments to `sh`.
-pub const ARGS: &[&str] =
-    &["-c", "exec \"$@\" 3>&1 >/dev/null", "sh", SELF, "--exact", TEST, "--ignored", "--nocapture"];
+/// The stand-in's row's arguments to `sh`: `--gemini-dir <folder>` taken out of what follows and put in `DIR`, the
+/// rest exec'd.
+pub const ARGS: &[&str] = &[
+    "-c",
+    concat!(
+        "d=; for a in \"$@\"; do shift; ",
+        "if [ \"$d\" = 1 ]; then TARAE_ACP_DIR=$a; export TARAE_ACP_DIR; d=; ",
+        "elif [ \"$a\" = --gemini-dir ]; then d=1; else set -- \"$@\" \"$a\"; fi; done; ",
+        "exec \"$@\" 3>&1 >/dev/null"
+    ),
+    "sh",
+    SELF,
+    "--exact",
+    TEST,
+    "--ignored",
+    "--nocapture",
+];
+
+/// The variable its `sh` puts its folder in (`ARGS`).
+pub const DIR: &str = "TARAE_ACP_DIR";
 
 /// The variable naming its script.
 pub const SCRIPT: &str = "TARAE_ACP_SCRIPT";
@@ -70,6 +92,9 @@ struct Agent {
     server: Option<(std::process::ChildStdin, std::io::Lines<std::io::BufReader<std::process::ChildStdout>>)>,
     /// What it started, never waited for: its group's end is tarae's to make (condition 4).
     children: Vec<std::process::Child>,
+    /// Its session's folder, and the last message's text (a hook's `lastUserInput`).
+    cwd: String,
+    last_input: String,
 }
 
 impl Agent {
@@ -121,6 +146,12 @@ impl Agent {
             if v["params"]["mcpServers"].is_array() {
                 self.servers = v["params"]["mcpServers"].clone();
             }
+            if let Some(cwd) = v["params"]["cwd"].as_str() {
+                self.cwd = cwd.to_string();
+            }
+            if let Some(text) = v["params"]["prompt"].as_array().and_then(|p| p.last()?["text"].as_str()) {
+                self.last_input = text.to_string();
+            }
             if let Some(id) = v.get("id").filter(|i| !i.is_null()) {
                 if let Some(s) = v["params"]["sessionId"].as_str() {
                     self.session = s.to_string();
@@ -139,8 +170,9 @@ impl Agent {
                 }
             }
         } else if let Some(update) = step.get("say") {
-            let params = json!({"sessionId": self.session, "update": update});
-            self.say(json!({"jsonrpc": "2.0", "method": "session/update", "params": params}));
+            self.update(update.clone());
+        } else if let Some(call) = step.get("own") {
+            self.own(call);
         } else if let Some(call) = step.get("ask") {
             let options = step.get("options").cloned().unwrap_or_else(agy_options);
             let params = json!({"sessionId": self.session, "toolCall": call, "options": options});
@@ -199,6 +231,47 @@ impl Agent {
         }
     }
 
+    fn update(&mut self, update: Value) {
+        let params = json!({"sessionId": self.session, "update": update});
+        self.say(json!({"jsonrpc": "2.0", "method": "session/update", "params": params}));
+    }
+
+    /// One of its own tools, as agy runs one (the design session's probe, Q5): reported `in_progress`, its hook asked
+    /// first, then `failed` with the hook's reason where it refused, else `completed`. A hook that's missing, won't
+    /// run or says nothing it reads lets the tool run: it plays an agy that fails open (Q7, unmeasured).
+    fn own(&mut self, call: &Value) {
+        let (id, name, args) = (&call["id"], &call["name"], &call["args"]);
+        self.update(json!({"sessionUpdate": "tool_call", "toolCallId": id, "title": name, "kind": "execute",
+            "status": "in_progress", "name": name, "args": args, "rawInput": args, "locations": null}));
+        let dir = std::env::var(DIR).unwrap_or_default();
+        let brain = format!("{dir}/antigravity-cli/brain/{}", self.session);
+        let input = json!({
+            "artifactDirectoryPath": brain,
+            "conversationId": self.session,
+            "cwd": self.cwd,
+            "hookEventName": "PreToolUse",
+            "lastUserInput": self.last_input,
+            "modelName": "stand-in",
+            "stepIdx": 1,
+            "toolCall": {"args": args, "id": id, "name": name},
+            "transcriptPath": format!("{brain}/.system_generated/logs/transcript_full.jsonl"),
+            "workspacePaths": [self.cwd],
+        });
+        let answer = hook(&dir, &input);
+        self.heard(&json!({"hook": answer}));
+        let update = match answer["decision"] == "deny" {
+            true => {
+                let reason =
+                    json!({"type": "content", "content": {"type": "text", "text": answer["reason"]}});
+                json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed", "content": [reason]})
+            }
+            false => {
+                json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed", "content": null})
+            }
+        };
+        self.update(update);
+    }
+
     /// `message` to tarae's server, started first if it isn't; a request's answer waited for and heard.
     fn mcp(&mut self, message: &Value) {
         if self.server.is_none() {
@@ -242,6 +315,38 @@ impl Agent {
     }
 }
 
+/// The answer of the hooks `<dir>/config/hooks.json` names for every tool (agy's shape, `hook::file`), each run as agy
+/// runs one — its command alone, `input` on stdin — the first refusal, else the last answer, else `"none"`.
+fn hook(dir: &str, input: &Value) -> Value {
+    let file = std::fs::read_to_string(format!("{dir}/config/hooks.json")).unwrap_or_default();
+    let file: Value = serde_json::from_str(&file).unwrap_or_default();
+    let groups = file.as_object().into_iter().flat_map(|g| g.values());
+    let entries = groups.flat_map(|g| g["PreToolUse"].as_array().into_iter().flatten());
+    let hooks =
+        entries.filter(|e| e["matcher"] == "*").flat_map(|e| e["hooks"].as_array().into_iter().flatten());
+    let mut answer = json!("none");
+    for command in hooks.filter(|h| h["type"] == "command").filter_map(|h| h["command"].as_str()) {
+        let child = std::process::Command::new(command)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else { continue };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = writeln!(stdin, "{input}");
+        }
+        let out = child.wait_with_output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let said = out.ok().and_then(|o| serde_json::from_str::<Value>(o.lines().next()?).ok());
+        if let Some(said) = said.filter(|s| s["decision"].is_string()) {
+            if said["decision"] == "deny" {
+                return said;
+            }
+            answer = said;
+        }
+    }
+    answer
+}
+
 /// The stand-in agent itself: run only as a test's child (`SCRIPT` set), its steps in order, then its end.
 #[test]
 #[ignore = "the ACP stand-in agent: a test's child, never run alone"]
@@ -266,13 +371,15 @@ fn run() {
         servers: Value::Null,
         server: None,
         children: Vec::new(),
+        cwd: String::new(),
+        last_input: String::new(),
     };
     let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: a plain call filling a struct of ours.
     unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) };
     let mut names: Vec<String> = std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).collect();
     names.sort();
-    a.heard(&json!({"env": names, "nofile": l.rlim_cur}));
+    a.heard(&json!({"env": names, "nofile": l.rlim_cur, "dir": std::env::var(DIR).ok()}));
     for step in &script {
         a.step(step);
     }

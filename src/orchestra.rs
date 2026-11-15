@@ -549,7 +549,7 @@ fn to_child(ed: &mut Editor, (from, conversation, wake): (&str, Option<&str>, bo
     let Some(c) = ed.workspace.claude.chat.as_ref() else {
         return format!("not sent — {name} has no chat");
     };
-    let (busy, starting) = (c.busy(), c.settings.waiting() || !c.running());
+    let (busy, starting) = (c.busy(), c.starting() || !c.running());
     let yours = c.sends.iter().filter(|l| matches!(l, crate::chat::Later::Parent { .. })).count();
     // (at once only with nothing waiting before it — the user's queued message, or one sent earlier still held: a
     // turn refused for money, or put back as its claude ended)

@@ -41,8 +41,9 @@ pub const VERSION: u64 = 1;
 /// of it: a fork, per-request usage (a turn's `usage` only), a cost, the plan's limits, models and effort (step
 /// 4), a compaction on demand, who pays (ACP has no word for it), its permission asks read by tool name (an ask's
 /// name is the agent's own, its title the model's text: every ask refused, condition 1), a helper of Claude's for
-/// its chat's tools (`web_search`'s: a session's every model is its agent's, condition 3). Its own tools off: the
-/// stand-in has none but what its script asks for (a real agent's are step 3's).
+/// its chat's tools (`web_search`'s: a session's every model is its agent's, condition 3). Its own tools off: by its
+/// row's recipe, which a row on these caps must have (`every_acp_row_keeps_the_floor`) — tarae's hook refuses them
+/// (guard 1, `agentgate.rs`).
 pub const CAPS: Caps = Caps {
     interrupt: true,
     resume: true,
@@ -82,14 +83,25 @@ pub fn left_out(name: &str, signed_in: &[crate::web::signed::Wiki]) -> bool {
         || signed_in.iter().any(|w| w.token_env == name)
 }
 
-/// `s`'s arguments: its row's, as they are (no setting reaches them in step 2), none after.
+/// `s`'s arguments: its row's, as they are (no setting reaches them), then its folder's where its row turns its own
+/// tools off (`folder_arg <folder>`), none after.
 pub fn args(s: &Start) -> Args {
-    Args { args: s.row.args.iter().map(|a| a.to_string()).collect(), extra: Vec::new() }
+    let folder = folder(s).map(|(arg, f)| [arg.to_string(), f.to_string_lossy().into_owned()]);
+    let args = s.row.args.iter().map(|a| a.to_string()).chain(folder.into_iter().flatten()).collect();
+    Args { args, extra: Vec::new() }
+}
+
+/// The argument naming `s`'s folder, and the folder (`agentgate::prepare`'s), where its row has a recipe.
+fn folder<'a>(s: &Start<'a>) -> Option<(&'static str, &'a Path)> {
+    let recipe = s.row.own_tools.as_ref()?;
+    Some((recipe.folder_arg, s.prepared?.folder()))
 }
 
 /// `s`'s process, not started: its row's program on its row's arguments, run in `dir`, with tarae's environment
 /// less what `left_out` says (`given`: a test's stand-in for it, laid over the process's). A plain `Command`: `spawn`
-/// starts it, and the shim for the descriptor limit is that start's.
+/// starts it, and the shim for the descriptor limit is that start's. A row that turns its own tools off is refused
+/// without its folder made (`Start.prepared`): no start goes around guard 1. Its folder after its arguments, and
+/// tarae's own path for its hook to ask (`hook::ENV`).
 pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, SpawnError> {
     let program = s.row.command;
     // (tests never start a real agent — the stand-in answers for one; nor its help)
@@ -112,6 +124,12 @@ pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, Sp
         }
         cmd.arg(a);
     }
+    if s.row.own_tools.is_some() && s.prepared.is_none() {
+        return Err(SpawnError::Args(format!("{}: not started without tarae's folder", s.row.name)));
+    }
+    if let Some((arg, folder)) = folder(s) {
+        cmd.arg(arg).arg(folder);
+    }
     let mut names = crate::llm::process_names();
     if let Some(given) = given {
         cmd.envs(given);
@@ -119,6 +137,9 @@ pub fn command(s: &Start, dir: &Path, given: Option<&Env>) -> Result<Command, Sp
     }
     for name in names.iter().filter(|n| left_out(n, s.signed_in)) {
         cmd.env_remove(name);
+    }
+    if let Some(p) = s.prepared {
+        cmd.env(super::hook::ENV, p.program());
     }
     Ok(cmd)
 }
@@ -202,9 +223,9 @@ struct Begin {
     tools: Option<(Option<PathBuf>, u32, Sender<In>)>,
 }
 
-/// Where a bridge binds: `$state` (`config::state_dir`) — a test's own, its `given` `XDG_STATE_HOME` (a folder of its
+/// Where a bridge binds, and an agent's folder is (`agentgate`): `$state` (`config::state_dir`) — a test's own, its `given` `XDG_STATE_HOME` (a folder of its
 /// scratch's, as the real one is outside the sandbox).
-fn state(given: Option<&Env>) -> Option<PathBuf> {
+pub(crate) fn state(given: Option<&Env>) -> Option<PathBuf> {
     match cfg!(test) {
         true => given.and_then(|g| g.get("XDG_STATE_HOME")).map(|s| PathBuf::from(s).join("tarae")),
         false => crate::config::state_dir(),

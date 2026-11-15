@@ -214,7 +214,9 @@ impl Drop for Gate {
 }
 
 impl Gate {
-    /// claude can't start yet: the settings are being read (milliseconds — a card waiting doesn't hold it).
+    /// claude can't start yet: the settings are being read (milliseconds — a card waiting doesn't hold it). Tests'
+    /// own: the chat asks `Chat::starting`, which is this or its agent's folder made.
+    #[cfg(test)]
     pub fn waiting(&self) -> bool {
         self.reading.is_some()
     }

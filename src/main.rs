@@ -5,6 +5,9 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests: not in the release binary"))]
 
 mod agent;
+/// Guard 1's folder, made before an agent's start (agents beside Claude, step 3): under the gate with the ACP wire.
+#[cfg(test)]
+mod agentgate;
 #[cfg(test)]
 mod allocs;
 mod allow;
@@ -297,6 +300,12 @@ config: $XDG_CONFIG_HOME/tarae/config.toml (default ~/.config/tarae/config.toml)
         inside tarae: :set <path> [value], :set! (also saves), :toggle, :config-show";
 
 fn main() -> Result<()> {
+    // An agent's hook (`tarae agent-hook`, `agent::hook`): its answer before anything else — no config, no state, no
+    // grammar. Under the gate with the rest of the ACP wire until step 4
+    #[cfg(test)]
+    if std::env::args_os().nth(1).is_some_and(|a| a == agent::hook::ARG) {
+        agent::hook::cli();
+    }
     // The shim (`tarae --nofile N <path> <argv0> args…`, `nofile`): a child of tarae's given back the descriptor limit
     // tarae started with, then exec'd — before anything of the editor reads its environment or config
     nofile::shim_main();

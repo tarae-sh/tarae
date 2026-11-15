@@ -842,6 +842,10 @@ pub struct Chat {
     /// The project's Claude settings, read before its claude starts and answered on a card when they run
     /// commands or set its environment (`claudetrust.rs`).
     pub settings: crate::claudetrust::Gate,
+    /// Its agent's own folder, made and its hook written before each start, where its row turns its own tools off
+    /// (`agentgate.rs`, guard 1).
+    #[cfg(test)]
+    pub(crate) agent_gate: crate::agentgate::Gate,
     /// Who pays for its claude — what the last one was started on (`billing.rs`), what its `apiKeySource` is
     /// checked against (the session's may have changed since: a restart's list coming back). None: none started.
     pub billing: Option<crate::billing::Billing>,
@@ -1309,6 +1313,8 @@ impl Chat {
             reruns: Vec::new(),
             rules_said: (None, Default::default()),
             settings: Default::default(),
+            #[cfg(test)]
+            agent_gate: Default::default(),
             billing: None,
             launched: None,
             runs_on: (None, String::new()),
@@ -1326,7 +1332,22 @@ impl Chat {
     /// Its claude starts later, so what's sent waits for it: the project's Claude settings being read (`claudetrust.rs`),
     /// or none until the config reads (`held`, `llm::held`).
     pub(crate) fn starts_later(&self) -> bool {
-        self.settings.waiting() || (self.held && !self.running())
+        self.starting() || (self.held && !self.running())
+    }
+
+    /// Since when its agent has waited to start: the project's Claude settings being read (`claudetrust.rs`), or its
+    /// own folder made (`agentgate.rs`, an agent whose own tools tarae turns off).
+    pub(crate) fn starting_since(&self) -> Option<std::time::Instant> {
+        #[cfg(test)]
+        if let Some(t) = self.agent_gate.waiting_since() {
+            return Some(t);
+        }
+        self.settings.waiting_since()
+    }
+
+    /// Its agent waits to start (`starting_since`): what's sent meanwhile waits for it.
+    pub(crate) fn starting(&self) -> bool {
+        self.starting_since().is_some()
     }
 
     /// Its claude, while it runs.
@@ -2240,7 +2261,7 @@ pub fn column_in_sight(ed: &Editor) -> bool {
 
 /// Something said only in the conversation (`Role::Note`, message `i`): news (`◂ new`), and the reader opening by
 /// itself while the conversation is out of sight (`read_by_itself`).
-fn said_here(ed: &mut Editor, i: usize) {
+pub(crate) fn said_here(ed: &mut Editor, i: usize) {
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.news = Some(i);
     }
@@ -2618,6 +2639,18 @@ fn ensure_proc(ed: &mut Editor) {
         (c.session_tools, c.web_search, c.code) = crate::tools::chat_gets(c.agent, parent, web_search, code);
         return;
     }
+    // (an agent whose own tools tarae turns off: its folder made and its hook written first, on a worker — guard 1,
+    // `agentgate.rs`; it starts once they are, or says why not)
+    #[cfg(test)]
+    let prepared = match c.agent.own_tools.is_some() {
+        true => match crate::agentgate::ready(ed) {
+            Some(p) => Some(p),
+            None => return,
+        },
+        false => None,
+    };
+    #[cfg(test)]
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     // (its conversation's agent, and what it can do)
     let row = c.agent;
     let caps = &row.caps;
@@ -2634,6 +2667,10 @@ fn ensure_proc(ed: &mut Editor) {
         ..crate::agent::Start::on(row, crate::agent::Role::Chat, &cfg)
     };
     start.claude.settings = settings.as_ref().map(|(s, sources)| (s.as_str(), sources.as_str()));
+    #[cfg(test)]
+    {
+        start.prepared = prepared.as_ref();
+    }
     // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
     let generation = crate::tools::generation();
     // Who pays (`billing.rs`), where its agent lets tarae choose: an API session's key helper goes into its
@@ -3510,12 +3547,7 @@ pub(crate) fn send_queued(ed: &mut Editor) {
             || crate::fork::holds_sends(ed, ed.workspace.id)
             || (!ed.config_unread.is_empty()
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.running()))
-            || ed
-                .workspace
-                .claude
-                .chat
-                .as_ref()
-                .is_some_and(|c| c.busy() || (c.settings.waiting() && !c.running()))
+            || ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy() || (c.starting() && !c.running()))
     };
     if held(ed) {
         return;
@@ -3762,7 +3794,7 @@ fn send_from(ed: &mut Editor, slash: bool) {
     // hold it: claude runs held back meanwhile): sent once it starts — and while no claude starts until the config
     // reads (`llm::held`, said where it would start)
     let held = unread && !c.running();
-    if (c.busy() || c.settings.waiting() || moving || held) && !question.is_empty() {
+    if (c.busy() || c.starting() || moving || held) && !question.is_empty() {
         // (`/compact` waits alone, as it goes — joined to a message it would be that message's text, never run;
         // what's over the input stays there for a message)
         let waits = c.queued.as_deref();
@@ -6258,7 +6290,8 @@ mod tests {
     /// words, calls `search` through the bridge — tarae's own tool, its answer tarae's — and ends. The transcript shows
     /// the call's row, what it found, and the answer; `web_search` isn't among the tools the agent is offered (its
     /// helper is Claude's: condition 3). The chat closed, the agent's process group goes with it, the bridge's relay
-    /// included, and the bridge's socket (condition 4).
+    /// included, and the bridge's socket (condition 4). Step 3: it starts once its folder is made, on a worker, its
+    /// hook file changed since the last start written again and said.
     #[test]
     fn a_chat_turn_on_an_acp_agent_calls_a_tool_through_the_bridge() {
         let dir = crate::scratch::Scratch::new("chat-acp-turn");
@@ -6299,8 +6332,16 @@ mod tests {
                 ed.handle_key(key);
             }
         };
+        // (its folder's hook file changed since the last start: written again, said — step 3's guard 1)
+        let state = crate::agent::acp::state(ed.claude_env.as_ref());
+        let made = crate::agentgate::prepare(&crate::agent::STAND_IN, state.as_deref()).unwrap();
+        std::fs::write(made.prepared.folder().join("config/hooks.json"), "{}").unwrap();
         feed(&mut ed, " l");
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().proc.is_some(), "space l started the stand-in");
+        // (once its folder is made, on a worker — step 3's guard 1)
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().starting(), "space l starts making its folder");
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().proc.is_some());
+        let said = "stand-in's config/hooks.json was changed outside tarae — written again";
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == said));
         feed(&mut ed, "where is beta?<ret>");
         let answered = |ed: &Editor| {
             let c = ed.workspace.claude.chat.as_ref().unwrap();
@@ -6383,9 +6424,7 @@ mod tests {
         c.agent = &crate::agent::STAND_IN;
         ed.workspace.claude.chat = Some(c);
         ensure_proc(&mut ed);
-        let c = ed.workspace.claude.chat.as_ref().unwrap();
-        let said: Vec<&str> = c.msgs.iter().map(|m| m.text.as_str()).collect();
-        assert!(c.proc.is_some(), "the stand-in started: {said:?} held {}", c.held);
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().proc.is_some());
         let answered = |heard: &str| {
             let mut lines = heard.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
             lines.find(|v| v["id"] == 1 && v.get("method").is_none())
