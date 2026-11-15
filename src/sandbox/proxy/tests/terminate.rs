@@ -752,9 +752,9 @@ fn the_idle_limits_close_a_terminated_tunnel() {
     let first = Duration::from_secs(1);
     let limits = Limits { head_time: first, keep_alive: short, stalled: short, ..limits() };
     let (f, rules, ca) = terminating_kept(&o, SESSION + 16, limits);
-    // No head
-    let (mut t, d) = tunnel_tls(&f, SESSION + 16, 1, &rules, &ca);
+    // No head (each limit timed from before what starts it: a test thread held up by the load after it only adds)
     let since = Instant::now();
+    let (mut t, d) = tunnel_tls(&f, SESSION + 16, 1, &rules, &ca);
     assert!(closed(&mut t), "closed without a head");
     assert!(since.elapsed() >= first / 2, "not before its limit: {:?}", since.elapsed());
     assert_eq!(
@@ -765,10 +765,10 @@ fn the_idle_limits_close_a_terminated_tunnel() {
     let (mut t, _d) = tunnel_tls(&f, SESSION + 16, 2, &rules, &ca);
     t.write_all(format!("GET /slow HTTP/1.1\r\nHost: {NAME}\r\n\r\n").as_bytes()).unwrap();
     std::thread::sleep(short * 4);
+    let since = Instant::now();
     o.go.send(()).unwrap();
     let (head, _) = answer_of(&mut t);
     assert!(head.starts_with("HTTP/1.1 200 "), "{head}");
-    let since = Instant::now();
     assert!(closed(&mut t), "closed at rest");
     assert!(since.elapsed() >= short / 2, "not before its limit: {:?}", since.elapsed());
     // Part-way through a body
@@ -841,6 +841,49 @@ fn a_truncation_on_the_hosts_leg_reaches_the_run_as_one() {
         }
         terminate::forget(session);
     }
+}
+
+/// A tunnel let go with no end said (`Out::abandon`) is a truncation to the run's TLS even while a copy of the bridge's
+/// end lives on: a child forked that moment by any thread's spawn holds every descriptor until its exec closes them, in
+/// an order of its own — the pair's end closed first read as the relay's close, and the run read a clean end (#605:
+/// case 2 above, under load). The stand-in for that child: copies of the pair's end and of the life line, the pair's
+/// let go first and the line's held until the run's read is over — the worst order, every time.
+#[test]
+fn a_bridge_let_go_with_no_end_said_is_a_truncation_whatever_holds_a_copy_of_its_ends() {
+    use std::os::fd::BorrowedFd;
+    let public = authority("tarae test public CA");
+    let l = TcpListener::bind((LO, 0)).unwrap();
+    let s = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+    let (server, _) = l.accept().unwrap();
+    let config = issued(&public, &[NAME]);
+    let shake = crate::event::thread("tarae-p1b-test", move || {
+        let mut sc = rustls::ServerConnection::new(config).unwrap();
+        let mut server = server;
+        while sc.is_handshaking() {
+            sc.complete_io(&mut server).unwrap();
+        }
+        (sc, server)
+    });
+    s.set_read_timeout(Some(WAIT)).unwrap();
+    let name = rustls::pki_types::ServerName::try_from(NAME).unwrap();
+    let mut t =
+        rustls::StreamOwned::new(rustls::ClientConnection::new(trusting(&[&public.der]), name).unwrap(), s);
+    while t.conn.is_handshaking() {
+        t.conn.complete_io(&mut t.sock).unwrap();
+    }
+    let (sc, server) = shake.join().unwrap();
+    let out = super::super::bridge::start(sc.into(), super::super::bridge::Out::Tcp(server)).unwrap();
+    (&out).write_all(OPEN).unwrap();
+    let mut got = vec![0; OPEN.len()];
+    t.read_exact(&mut got).unwrap();
+    // SAFETY: the bridge's end and its life line, both open while `out` lives: duplicated before it's let go.
+    let copy = |fd| unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned().unwrap();
+    let (pair, line) = (copy(out.as_raw_fd()), copy(out.life_line().unwrap()));
+    out.abandon();
+    drop(pair);
+    let end = t.read_to_end(&mut Vec::new()).map_err(|e| e.kind());
+    drop(line);
+    assert_eq!(end, Err(std::io::ErrorKind::UnexpectedEof), "a clean end where the stage let go with none");
 }
 
 /// The same truncation as the run's own curl reads it, through a session's port with its token: the answer that runs

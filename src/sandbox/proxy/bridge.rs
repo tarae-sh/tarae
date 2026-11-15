@@ -17,7 +17,8 @@ const CHUNK: usize = 16 * 1024;
 const PENDING_MAX: usize = 64 * 1024;
 
 /// The way out: a connection made, or the bridge's end — with the writing end of a pipe the bridge watches, closed
-/// as the relay lets its end go (its life line: the pair alone can't tell a relay gone from one only half-closed).
+/// as the relay lets its end go, a byte on it first where it lets go with no end said (its life line: the pair alone
+/// can't tell a relay gone from one only half-closed).
 #[derive(Debug)]
 pub enum Out {
     Tcp(TcpStream),
@@ -71,14 +72,19 @@ impl Out {
         }
     }
 
-    /// Let go with no end said: a bridge's life line first — its thread then ends both sides with no close_notify, the
-    /// TLS's reader seeing a truncation — before the pair, whose end alone would read as the relay's close.
+    /// Let go with no end said: a byte on a bridge's life line first — its thread then ends both sides with no
+    /// close_notify, the TLS's reader seeing a truncation — before the pair, whose end alone would read as the
+    /// relay's close. Said by the byte, not by the line's close: a child forked this moment (any thread's spawn)
+    /// holds a copy of both until its exec closes them, in an order of its own — the pair's end first was a clean
+    /// end to the run's TLS (#605).
     pub fn abandon(self) {
         match self {
             Out::Tcp(s) => {
                 let _ = s.shutdown(Shutdown::Both);
             }
-            Out::Bridged(s, line) => {
+            Out::Bridged(s, mut line) => {
+                // (one byte into a pipe nothing else writes: never blocks)
+                let _ = line.write_all(&[0]);
                 drop(line);
                 drop(s);
             }
@@ -252,7 +258,7 @@ pub fn ended(at: std::net::SocketAddr) -> bool {
 /// The bridge's loop (`poll` on both): what the relay writes goes to the upstream encrypted, what the upstream
 /// sends to the relay decrypted. The relay's end closed → close_notify, then the upstream's writing shut down; the
 /// upstream's close_notify (or its end) → the relay's reading end shut down once what's decrypted — all of it, what
-/// rustls still holds too — is written. The relay gone (`alive` says its end, never written to) ends both: nobody
+/// rustls still holds too — is written. The relay gone (`alive` says it: `abandon`'s byte, or its end) ends both: nobody
 /// reads what the upstream would still send, and an upstream that keeps its side open can't hold the thread.
 /// Anything else that fails ends both: the relay sees its side end. A record that doesn't decrypt is never passed on.
 /// `ending` (a terminated leg's): set clean at the upstream's close_notify alone.
@@ -353,7 +359,7 @@ fn run(
             }
             return end();
         }
-        // (nothing is ever written to the life line: anything there says the relay's end is gone)
+        // (anything on the life line — `abandon`'s byte, or its end — says the relay let its end go)
         if fds[2].revents != 0 || fds.iter().any(|f| f.revents & (libc::POLLERR | libc::POLLNVAL) != 0) {
             return end();
         }
