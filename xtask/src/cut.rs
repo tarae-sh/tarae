@@ -1,11 +1,16 @@
 //! `cargo xtask cut` — a take (`record`'s) made a video by the edit list beside it, a `cut.toml` (the full video's V1,
 //! main's `.sb/full-video-plan.md` "How it's cut"): an hour and a half into about ten minutes, honest about time.
 //!
-//! - `cut FILE [--size 2160p]` — the take in FILE's folder cut by FILE, into `<folder>/<stem>/` (`<stem>-2160p/`):
-//!   `cut.mp4` (1920×1080; 3840×2160 the same picture drawn at twice its scale, `video::Scale`; its sound
-//!   tarae's keys where the picture runs in real time and the beds the file names — `sound.rs`; `cut.wav` beside it), its
-//!   sheet `sheet-NN.png` (every picture says its video time, its take time and its speed), YouTube's chapter list
-//!   `chapters.txt` (video times) and what was made, `cut.txt`.
+//! - `cut FILE [--size 2160p] [--out DIR]` — the take in FILE's folder cut by FILE, into `<folder>/<stem>/`
+//!   (`<stem>-2160p/`), or DIR — never the take's own folder nor a cut's in it (`cut.txt` there): its records and cuts
+//!   are only read —: `cut.mp4` (1920×1080; 3840×2160 the same picture drawn at twice its scale, `video::Scale`; its
+//!   sound tarae's keys where the picture runs in real time and the beds the file names — `sound.rs`; `cut.wav` beside
+//!   it), its sheet `sheet-NN.png` (every picture says its video time, its take time and its speed), `picks.tsv` (each
+//!   frame the sheet picks: its number, its video time in µs and the FNV-1a of its raw RGB — what the cut is compared by
+//!   after a change), YouTube's chapter list `chapters.txt` (video times) and what was made, `cut.txt`.
+//! - `cut FILE --picks [--size 2160p] [--out DIR]` — the same pass, the replay and the mascot's plan whole, but no MP4
+//!   and no sound: a frame drawn only where the sheet picks it or a crossing begins from it — the sheet, `picks.tsv`,
+//!   `chapters.txt` and `cut.txt` as the whole cut writes them.
 //! - `cut init TAKE [--out FILE]` — a first edit list for the take by rule, from its landmarks and its screens
 //!   (`init.rs`): `TAKE/init.toml` unless FILE says.
 //!
@@ -166,17 +171,27 @@ pub(crate) const CODE_LINES: usize = 2;
 pub(crate) const LABEL_MAX: usize = 24;
 pub(crate) const LABEL_LINE_MAX: usize = 48;
 
-const USAGE: &str = "usage: cargo xtask cut FILE [--size 1080p|2160p] | cut init TAKE [--out FILE]";
+const USAGE: &str =
+    "usage: cargo xtask cut FILE [--size 1080p|2160p] [--out DIR] [--picks] | cut init TAKE [--out FILE]";
 
 pub fn run(args: &[String]) -> Result<()> {
-    match args {
-        [init, rest @ ..] if init == "init" => init::run(rest),
-        [file] => draw::run(Path::new(file), video::Scale::HD),
-        [file, flag, size] | [flag, size, file] if flag == "--size" => {
-            draw::run(Path::new(file), video::Scale::parse(size)?)
-        }
-        _ => Err(USAGE.into()),
+    if let [init, rest @ ..] = args
+        && init == "init"
+    {
+        return init::run(rest);
     }
+    let (mut file, mut scale, mut out, mut made) = (None, video::Scale::HD, None, draw::Made::Video);
+    let mut words = args.iter();
+    while let Some(w) = words.next() {
+        match w.as_str() {
+            "--size" => scale = video::Scale::parse(words.next().ok_or(USAGE)?)?,
+            "--out" => out = Some(Path::new(words.next().ok_or(USAGE)?)),
+            "--picks" => made = draw::Made::Picks,
+            f if !f.starts_with("--") && file.is_none() => file = Some(Path::new(f)),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    draw::run(file.ok_or(USAGE)?, scale, out, made)
 }
 
 // ── Times ──────────────────────────────────────────────────────────────────────────────────────────────────────────────

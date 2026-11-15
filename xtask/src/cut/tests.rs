@@ -680,6 +680,85 @@ fn cut_init_on_a_take_writes_a_list_the_cut_refuses_only_for_the_openings_words(
     );
 }
 
+/// `cut FILE --picks` draws only the frames the sheet picks and those a crossing begins from or on, yet each picked frame
+/// is the one the whole pass draws: `picks.tsv` and the sheet's pages byte for byte those of every frame drawn — on a
+/// take whose screen changes whole every 1.1 s, each change a crossing some picks fall inside; and `--out` is refused
+/// into the take's own folder or a cut's in it, however it's named.
+#[test]
+fn the_sheets_picks_alone_are_the_frames_the_whole_pass_draws() {
+    use super::draw::{Made, make};
+    let s = tarae_testkit::scratch::Scratch::new("xtask-cut-picks");
+    let dir = s.join("take");
+    std::fs::create_dir(&dir).unwrap();
+    let about = json!({ "v": 1, "size": [40, 10], "ms": 30_000, "started_unix_ms": 0, "made_up": true });
+    std::fs::write(dir.join("take.json"), about.to_string()).unwrap();
+    let full = |ch: char| {
+        let row: String = std::iter::repeat_n(ch, 40).collect();
+        format!("\x1b[H\x1b[2J\x1b[?25l{}", vec![row; 10].join("\r\n"))
+    };
+    let mut screen = Vec::new();
+    crate::record::put(&mut screen, 0, SCREEN, full('a').as_bytes()).unwrap();
+    for i in 0..14u64 {
+        let ch = if i % 2 == 0 { 'b' } else { 'c' };
+        crate::record::put(&mut screen, (6_000 + i * 1_100) * 1000, SCREEN, full(ch).as_bytes()).unwrap();
+    }
+    std::fs::write(dir.join("screen.bin"), screen).unwrap();
+    std::fs::write(dir.join("check.txt"), "").unwrap();
+    let text = format!(
+        "default = 1\nmascot = false\n\n[[chapter]]\nat = \"start\"\ntitle = \"One\"\n\n[[chapter]]\nat = \"14s\"\n\
+         title = \"Two\"\n{OPENING}"
+    );
+    let list = dir.join("cut.toml");
+    std::fs::write(&list, &text).unwrap();
+    let arg = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+    // (every frame drawn, as the video's are; then the picks alone, into a folder of their own)
+    let (every, picked) = (s.join("every"), s.join("picked"));
+    let take = Take::read(&dir).unwrap();
+    let marks = Marks::read(&dir, take.ms()).unwrap();
+    let c = Cut::parse(&text, "cut.toml", &marks).unwrap();
+    make(&c, &take, (&dir, &marks), &every, (video::Scale::HD, Made::Drawn)).unwrap();
+    run(&[arg(&list), "--picks".into(), "--out".into(), arg(&picked)]).unwrap();
+    let read = |d: &std::path::Path, f: &str| std::fs::read(d.join(f)).unwrap_or_else(|e| panic!("{f}: {e}"));
+    let tsv = String::from_utf8(read(&picked, "picks.tsv")).unwrap();
+    assert!(tsv.starts_with("frame\tvideo_us\tfnv1a64\n") && tsv.lines().count() > 15, "{tsv}");
+    assert_eq!(
+        tsv,
+        String::from_utf8(read(&every, "picks.tsv")).unwrap(),
+        "the picks' frames as the whole pass's"
+    );
+    let pages = (1..).take_while(|n| every.join(format!("sheet-{n:02}.png")).exists()).count();
+    assert!(pages > 2, "{pages} pages");
+    for n in 1..=pages + 1 {
+        let page = format!("sheet-{n:02}.png");
+        assert_eq!(every.join(&page).exists(), picked.join(&page).exists(), "{page}");
+        if n <= pages {
+            assert!(read(&every, &page) == read(&picked, &page), "{page} differs");
+        }
+    }
+    let said = String::from_utf8(read(&picked, "cut.txt")).unwrap();
+    assert!(said.contains("the sheet's frames only (--picks), no MP4 and no sound"), "{said}");
+    assert!(!picked.join("cut.mp4").exists() && !picked.join("cut.wav").exists());
+
+    // (`--out`: never the take's folder nor a cut's in it — by any name of theirs; a new folder in it is one)
+    let out = |d: &std::path::Path| run(&[arg(&list), "--picks".into(), "--out".into(), arg(d)]);
+    let e = out(&dir).unwrap_err();
+    assert!(
+        e.ends_with("take: the take's own folder, whose records are only read — name a new folder"),
+        "{e}"
+    );
+    let e = out(&dir.join("..").join("take")).unwrap_err();
+    assert!(e.contains("the take's own folder"), "{e}");
+    let cut_there = dir.join("made");
+    std::fs::create_dir(&cut_there).unwrap();
+    std::fs::write(cut_there.join("cut.txt"), "").unwrap();
+    let e = out(&cut_there).unwrap_err();
+    assert!(e.contains("made: a cut of the take's (its cut.txt there), only read"), "{e}");
+    let e = out(&dir.join("new").join("..").join("made")).unwrap_err();
+    assert!(e.contains("a `..` in the part not made yet"), "{e}");
+    assert!(super::draw::out_refused(&dir.join("new"), &dir).is_ok());
+}
+
 /// A take with no chapter said: by the front, counting only a workspace that stays ten seconds or more — the start
 /// first, by the first such one's name, then each by another name: a switch away and back within ten seconds isn't one.
 #[test]

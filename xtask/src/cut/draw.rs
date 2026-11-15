@@ -60,7 +60,18 @@ const SHEET_EVERY_US: u64 = 2_000_000;
 const SHEET_REGULAR: u64 = 120;
 const PAGE: usize = 6;
 
-pub(super) fn run(file: &Path, scale: Scale) -> Result<()> {
+/// What a cut makes: the video — `cut.mp4` and its sound, the sheet, `picks.tsv` —, or (`--picks`) the sheet and
+/// `picks.tsv` alone, a frame drawn only where the sheet picks it or a crossing begins from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Made {
+    Video,
+    Picks,
+    /// Every frame drawn as the video's are, nothing encoded: what `Picks`' frames are held to in its test.
+    #[cfg(test)]
+    Drawn,
+}
+
+pub(super) fn run(file: &Path, scale: Scale, out: Option<&Path>, made: Made) -> Result<()> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let dir = file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let take = Take::read(dir)?;
@@ -77,15 +88,50 @@ pub(super) fn run(file: &Path, scale: Scale) -> Result<()> {
     }
     let stem = file.file_stem().map_or("cut".into(), |s| s.to_string_lossy().into_owned());
     // (2160p beside 1080p, never over it)
-    let out = match scale {
-        Scale::HD => dir.join(stem),
-        _ => dir.join(format!("{stem}-{}", scale.name())),
+    let out = match (out, scale) {
+        (Some(o), _) => {
+            out_refused(o, dir)?;
+            o.to_path_buf()
+        }
+        (None, Scale::HD) => dir.join(stem),
+        (None, _) => dir.join(format!("{stem}-{}", scale.name())),
     };
-    let said = make(&cut, &take, (dir, &marks), &out, scale)?;
+    let said = make(&cut, &take, (dir, &marks), &out, (scale, made))?;
     let p = out.join("cut.txt");
     std::fs::write(&p, &said).map_err(|e| format!("{}: {e}", p.display()))?;
     print!("{said}");
     Ok(())
+}
+
+/// `--out DIR` refused where it's the take's own folder (`take`) or a cut's in it (a `cut.txt` there): the take's
+/// records and its cuts are only read. Compared as real paths, the part not made yet named without `..`.
+pub(crate) fn out_refused(out: &Path, take: &Path) -> Result<()> {
+    let said = |why: &str| format!("--out {}: {why} — name a new folder", out.display());
+    let abs = std::path::absolute(out).map_err(|e| said(&e.to_string()))?;
+    // (the nearest folder there, as it really is, and the rest under it)
+    let (mut there, mut rest) = (abs.as_path(), Vec::new());
+    let real = loop {
+        if let Ok(r) = there.canonicalize() {
+            break r;
+        }
+        match (there.file_name(), there.parent()) {
+            (Some(n), Some(up)) => (rest.push(n), there = up),
+            (None, Some(_)) => return Err(said("a `..` in the part not made yet")),
+            (None, None) | (Some(_), None) => return Err(said("no part of it is there")),
+        };
+    };
+    let real = rest.iter().rev().fold(real, |r, n| r.join(n));
+    let take = take.canonicalize().map_err(|e| format!("{}: {e}", take.display()))?;
+    match (real == take, real.starts_with(&take) && real.join("cut.txt").is_file()) {
+        (true, _) => Err(said("the take's own folder, whose records are only read")),
+        (_, true) => Err(said("a cut of the take's (its cut.txt there), only read")),
+        _ => Ok(()),
+    }
+}
+
+/// The FNV-1a (64) of a frame's raw RGB: `picks.tsv`'s.
+pub(crate) fn fnv1a(px: &[u8]) -> u64 {
+    px.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
 /// A zoom's window for `target` on a screen of `cols`×`rows`: the target at its middle, widened to the screen's shape
@@ -522,15 +568,18 @@ pub(crate) fn moving(take: &Take, windows: &[(u64, u64)]) -> Vec<Option<String>>
 }
 
 /// The cut of `take` (in `dir`, its landmarks `marks`) as `cut` says, at `scale`, into `out`: `cut.mp4` with its sound
-/// (`sound.rs`, `cut.wav` beside it), the sheet's pages, `chapters.txt`. What was made, said.
+/// (`sound.rs`, `cut.wav` beside it), the sheet's pages, `picks.tsv`, `chapters.txt` — as `made` says: with
+/// `Made::Picks` no MP4 and no sound, a frame drawn only where the sheet picks it or a crossing begins from it (the frame
+/// before a crossing drawn as it begins, its screen still in the replays). What was made, said.
 pub(crate) fn make(
     cut: &Cut,
     take: &Take,
     (dir, marks): (&Path, &Marks),
     out: &Path,
-    scale: Scale,
+    (scale, made): (Scale, Made),
 ) -> Result<String> {
     let started = Instant::now();
+    let only_picks = made == Made::Picks;
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let size = take.size;
     let k = scale.k();
@@ -735,7 +784,10 @@ pub(crate) fn make(
     let picks = sheet_picks(&prog);
 
     let mp4 = out.join("cut.mp4");
-    let ffmpeg = video::ffmpeg();
+    let ffmpeg = match made {
+        Made::Video => video::ffmpeg(),
+        _ => None,
+    };
     // (the sound first: ffmpeg reads it beside the frames)
     let wav = out.join("cut.wav");
     let heard = match &ffmpeg {
@@ -770,22 +822,60 @@ pub(crate) fn make(
     let mut words = Words::new(&fonts, look.ground, scale);
     let sheet_fonts = Fonts::load(1)?;
     let mut pics = Pictures::default();
-    let mut last: Option<(Key, Vec<u8>)> = None;
-    let (mut differ, mut drawn, mut wrote) = (0u64, 0u64, Ok(()));
+    // (the frame in force: what it looks like, its picture — with `--picks` none where it wasn't needed yet — and the
+    // frame it was first met on, what it's drawn from if it's needed after)
+    let mut last: Option<(Key, Option<Vec<u8>>, Frame)> = None;
+    let (mut differ, mut drawn, mut painted, mut wrote) = (0u64, 0u64, 0u64, Ok(()));
+    let mut hashes: Vec<(u64, u64, u64)> = Vec::new();
     let mut sheet: Vec<Picture> = Vec::new();
     let mut pages = 0;
     let all = Region::all(size);
     let mut posed: HashMap<Pic, u64> = HashMap::new();
+    // (a frame's picture: the card it is, else the take's screen `s` as the frame shows it — the crossing in force laid
+    // over after; how many screens were drawn for it)
+    let paint = |f: &Frame,
+                 key: &Key,
+                 s: &vt100::Screen,
+                 pics: &mut Pictures,
+                 words: &mut Words<'_>|
+     -> (Vec<u8>, u64) {
+        match f.card {
+            Some(Card::Intro(ms)) => match &intro {
+                Ok(i) => (i.frame(ms, &look), 0),
+                Err(still) => (still.clone(), 0),
+            },
+            Some(Card::Built) => (built_card.clone(), 0),
+            Some(Card::End) => (end_card.clone(), 0),
+            Some(Card::Chapter(i)) => (chapter_cards[i].clone(), 0),
+            None => {
+                let camera = (key.region, drawn_at(f, &glyphs));
+                let (shown, fresh) = stage.shown(pics, (s, key.screen), camera, size, &key.blank, &fonts);
+                (stage.take_frame(&shown, f, (key.pose, &pops, &key.pops), words), fresh)
+            }
+        }
+    };
     for k in 0..frames {
         let v = Program::time_of(k);
         let f = prog.frame(v);
+        // (`--picks`: the frame before, not drawn, drawn now where a crossing begins from it — its screen still in the
+        // replays, the crossings still at it)
+        if only_picks
+            && crossings.begins(v)
+            && let Some((key, held @ None, first)) = last.as_mut()
+        {
+            let s = if first.ends { ends.screen() } else { replay.screen() };
+            let (mut px, fresh) = paint(first, key, s, &mut pics, &mut words);
+            crossings.over(&mut px, look.ground, key.cross);
+            (drawn, painted) = (drawn + fresh, painted + 1);
+            *held = Some(px);
+        }
         // (the screen in force; where most of it changed at once between two that stand, a crossing from the frame
         // before)
         if let Some(t) = f.screen {
             let r = if f.ends { &mut ends } else { &mut replay };
             r.to(t);
         }
-        let share = crossings.at(v, last.as_ref().map(|l| l.1.as_slice()));
+        let share = crossings.at(v, last.as_ref().and_then(|l| l.1.as_deref()));
         let region = region(&f, &paths, size);
         let screen = match f.ends {
             true => (true, ends.shown),
@@ -820,35 +910,37 @@ pub(crate) fn make(
             blank,
             label: f.label,
         };
-        if last.as_ref().is_none_or(|l| l.0 != key) {
-            let mut px = match f.card {
-                Some(Card::Intro(ms)) => match &intro {
-                    Ok(i) => i.frame(ms, &look),
-                    Err(still) => still.clone(),
-                },
-                Some(Card::Built) => built_card.clone(),
-                Some(Card::End) => end_card.clone(),
-                Some(Card::Chapter(i)) => chapter_cards[i].clone(),
-                None => {
-                    let s = if f.ends { ends.screen() } else { replay.screen() };
-                    let camera = (region, drawn_at(&f, &glyphs));
-                    let (shown, fresh) =
-                        stage.shown(&mut pics, (s, screen), camera, size, &key.blank, &fonts);
-                    drawn += fresh;
-                    stage.take_frame(&shown, &f, (pose, &pops, &key.pops), &mut words)
-                }
-            };
-            crossings.over(&mut px, look.ground, share);
-            differ += u64::from(last.as_ref().is_none_or(|l| l.1 != px));
-            last = Some((key, px));
+        // (drawn where it differs from the frame before — with `--picks`, only where the sheet picks it or a crossing
+        // begins on it, else kept to be drawn if a crossing begins from it: either way from the frame it was first met
+        // on, as the whole pass draws it)
+        let needed = !only_picks || picks.contains_key(&k) || crossings.fresh();
+        let s = if f.ends { ends.screen() } else { replay.screen() };
+        match &mut last {
+            Some((was, held @ None, first)) if *was == key && needed => {
+                let (mut px, fresh) = paint(first, was, s, &mut pics, &mut words);
+                crossings.over(&mut px, look.ground, share);
+                (drawn, painted) = (drawn + fresh, painted + 1);
+                *held = Some(px);
+            }
+            Some((was, ..)) if *was == key => {}
+            _ if needed => {
+                let (mut px, fresh) = paint(&f, &key, s, &mut pics, &mut words);
+                crossings.over(&mut px, look.ground, share);
+                (drawn, painted) = (drawn + fresh, painted + 1);
+                differ += u64::from(last.as_ref().is_none_or(|l| l.1.as_ref() != Some(&px)));
+                last = Some((key, Some(px), f));
+            }
+            _ => last = Some((key, None, f)),
         }
-        let px = &last.as_ref().expect("a frame").1;
-        if let Some(w) = stdin.as_mut()
+        let px = last.as_ref().and_then(|l| l.1.as_deref());
+        if let (Some(w), Some(px)) = (stdin.as_mut(), px)
             && wrote.is_ok()
         {
             wrote = w.write_all(px);
         }
         if let Some(marks) = picks.get(&k) {
+            let px = px.expect("a frame the sheet picks is drawn");
+            hashes.push((k, v, fnv1a(px)));
             let label = label(&prog, v, &f, region != all, marks);
             let cols = W / 2 / shot::cell(&sheet_fonts, 15.0).0;
             sheet.push(crate::recording::labelled(sheet_picture(px, &lay), &label, cols, &sheet_fonts));
@@ -952,6 +1044,11 @@ pub(crate) fn make(
         pages += 1;
         crate::recording::grid(&sheet, &out.join(format!("sheet-{pages:02}.png")))?;
     }
+    let tsv: String = std::iter::once("frame\tvideo_us\tfnv1a64\n".to_string())
+        .chain(hashes.iter().map(|(k, v, h)| format!("{k}\t{v}\t{h:016x}\n")))
+        .collect();
+    let p = out.join("picks.tsv");
+    std::fs::write(&p, tsv).map_err(|e| format!("{}: {e}", p.display()))?;
     // (pages an earlier, longer cut left: gone)
     for k in pages + 1.. {
         if std::fs::remove_file(out.join(format!("sheet-{k:02}.png"))).is_err() {
@@ -960,6 +1057,7 @@ pub(crate) fn make(
     }
     drop(stdin);
     let encoded = match child {
+        None if made != Made::Video => Ok(()),
         None => Err(format!(
             "no ffmpeg on PATH nor at {}: the sheet is written, the MP4 isn't",
             video::FFMPEG_AT.join(" or ")
@@ -980,15 +1078,27 @@ pub(crate) fn make(
     said.extend(warned);
 
     let s = |us: u64| us as f64 / 1e6;
-    let mut head = vec![format!(
-        "{}: {:.1} s of video from {} of take ({}), glyphs {glyph} px; {frames} frames ({differ} differ), {drawn} screens \
-         drawn; the sheet {} pictures in {pages} pages",
-        mp4.display(),
-        s(prog.total),
-        clock(cut.end),
-        cut.file,
-        picks.len(),
-    )];
+    let mut head = vec![match only_picks {
+        false => format!(
+            "{}: {:.1} s of video from {} of take ({}), glyphs {glyph} px; {frames} frames ({differ} differ), {drawn} \
+             screens drawn; the sheet {} pictures in {pages} pages",
+            mp4.display(),
+            s(prog.total),
+            clock(cut.end),
+            cut.file,
+            picks.len(),
+        ),
+        true => format!(
+            "{}: the sheet's frames only (--picks), no MP4 and no sound — {:.1} s of video from {} of take ({}), glyphs \
+             {glyph} px; {frames} frames, {painted} drawn (those picked, and those a crossing begins from or on), \
+             {drawn} screens drawn; the sheet {} pictures in {pages} pages",
+            out.join("picks.tsv").display(),
+            s(prog.total),
+            clock(cut.end),
+            cut.file,
+            picks.len(),
+        ),
+    }];
     head.extend(spans_said(cut));
     head.push(prog.jumps_said());
     // (the masks, each with the frames it covered — one that matched none loudly —; then every place `record check`
@@ -1280,6 +1390,17 @@ pub(crate) struct Crossings {
 impl Crossings {
     pub(crate) fn new(parts: Vec<(u64, bool)>, changes: Vec<u64>) -> Crossings {
         Crossings { parts, changes, next: (0, 0), cross: None, fresh: false }
+    }
+
+    /// Whether a crossing begins by frame `v` that `at` hasn't met yet: `at(v, …)` will take the frame before.
+    pub(crate) fn begins(&self, v: u64) -> bool {
+        self.changes.get(self.next.1).is_some_and(|&c| c <= v)
+            || self.parts.get(self.next.0).is_some_and(|p| p.0 <= v)
+    }
+
+    /// Whether the crossing in force began at the frame `at` last met.
+    pub(crate) fn fresh(&self) -> bool {
+        self.fresh
     }
 
     /// Frame `v` comes: each crossing begun by then, from the frame before as drawn (`last`; none before the first); how
