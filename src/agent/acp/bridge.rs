@@ -48,6 +48,10 @@ static BOUND: AtomicU64 = AtomicU64::new(0);
 /// slack. Past it the connection is refused — a peer that never sends a newline holds nothing of the bridge's.
 pub const FIRST_MAX: usize = 128;
 
+/// The token comes within this, or the connection goes (as attach's `Hello`): a peer that passed the user and ancestry
+/// checks and never says it holds no thread of the bridge's.
+pub const TOKEN_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The most a message of the live connection's is read to, its newline in it. Past it the connection ends: the peer
 /// passed the checks, so this is the agent's relay, but one line never takes all the memory there is.
 pub const LINE_MAX: usize = 16 << 20;
@@ -330,12 +334,15 @@ fn line(r: &mut impl BufRead, max: usize) -> Line {
 /// one, and the agent's restarted MCP server be refused as a second.
 fn connection(n: u64, stream: &UnixStream, r: impl Read, s: &Shared) {
     let _ = crate::readagain::timed(stream);
-    let mut lines = BufReader::new(crate::readagain::ReadAgain::new(r));
+    let until = crate::clock::now() + TOKEN_WITHIN;
+    let mut lines = BufReader::new(crate::readagain::ReadAgain::until(r, until));
     match line(&mut lines, FIRST_MAX) {
         Line::Got(first) if same(first.trim_ascii_end(), s.token.as_bytes()) => {}
         Line::Long => return s.refused(Refused::FirstLong),
         Line::Got(_) | Line::End => return s.refused(Refused::Token),
     }
+    // (the live one's messages come when they come)
+    lines.get_mut().endless();
     {
         let mut live = s.live.lock().unwrap_or_else(|e| e.into_inner());
         if live.is_some() {
@@ -428,13 +435,23 @@ fn carry(
     Ok(())
 }
 
-/// `tarae agent-tools <socket>` (`main.rs`, under the gate with the rest of the wire): `relay` on stdin and stdout,
-/// stdin timed first as the attach relay's is (a pipe stays as it is; a socket's end is read again for).
+/// `tarae agent-tools <socket>` (`main.rs`, under the gate with the rest of the wire): `relay_from` stdin to stdout.
 pub fn cli(args: &[String]) -> anyhow::Result<()> {
     let [socket] = args else { anyhow::bail!("usage: tarae agent-tools <socket>") };
     let token = std::env::var(TOKEN).map_err(|_| anyhow::anyhow!("no {TOKEN}"))?;
-    let _ = crate::readagain::timed(&std::io::stdin());
-    relay(Path::new(socket), &token, std::io::stdin(), std::io::stdout()).map_err(anyhow::Error::msg)
+    relay_from(Path::new(socket), &token, std::io::stdin(), std::io::stdout()).map_err(anyhow::Error::msg)
+}
+
+/// `relay` with `input` timed first, as the attach relay's stdin is (a pipe stays as it is; a socket's end is read
+/// again for) — `cli`'s, on stdin.
+fn relay_from(
+    socket: &Path,
+    token: &str,
+    input: impl Read + std::os::fd::AsRawFd + Send + 'static,
+    output: impl Write + Send + 'static,
+) -> Result<(), String> {
+    let _ = crate::readagain::timed(&input);
+    relay(socket, token, input, output)
 }
 
 /// The relay as a test build's `server` starts it (the test binary re-run on this one test, the socket its last

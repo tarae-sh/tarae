@@ -289,16 +289,7 @@ const QUIET: std::time::Duration =
 /// connection unlinked (else it stays the live one, and a restarted MCP server is refused as a second).
 #[test]
 fn a_connections_end_is_seen_through_a_sleeping_read_and_a_quiet_one_stays() {
-    let (tx, rx) = channel();
-    let shared = std::sync::Arc::new(Shared {
-        agent: std::process::id(),
-        token: "t0ken".into(),
-        stop: std::sync::atomic::AtomicBool::new(false),
-        live: std::sync::Mutex::new(None),
-        open: std::sync::Mutex::new(Vec::new()),
-        logged: std::sync::Mutex::new(std::collections::HashSet::new()),
-        to: std::sync::Mutex::new(tx),
-    });
+    let (shared, rx) = shared();
     let (bridge_side, mut relay_side) = UnixStream::pair().unwrap();
     let (reader, ended) = asleep(&bridge_side);
     let s = shared.clone();
@@ -311,6 +302,149 @@ fn a_connections_end_is_seen_through_a_sleeping_read_and_a_quiet_one_stays() {
     drop(relay_side);
     assert_eq!(next(&rx), "unlinked 1", "the relay's end seen through the sleeping read");
     assert!(shared.live.lock().unwrap().is_none(), "no longer the live one");
+}
+
+/// A bridge's shared state with no socket, its agent the test's own process and its token `t0ken`, and what it hands
+/// the wire's thread.
+fn shared() -> (std::sync::Arc<Shared>, Receiver<In>) {
+    let (tx, rx) = channel();
+    let shared = std::sync::Arc::new(Shared {
+        agent: std::process::id(),
+        token: "t0ken".into(),
+        stop: std::sync::atomic::AtomicBool::new(false),
+        live: std::sync::Mutex::new(None),
+        open: std::sync::Mutex::new(Vec::new()),
+        logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+        to: std::sync::Mutex::new(tx),
+    });
+    (shared, rx)
+}
+
+/// A socket's reader whose thread's clock moves past `TOKEN_WITHIN` as its `at`-th read begins.
+struct Late {
+    s: UnixStream,
+    at: usize,
+    reads: usize,
+}
+
+impl Read for Late {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reads += 1;
+        if self.reads == self.at {
+            crate::clock::advance(TOKEN_WITHIN * 2);
+        }
+        self.s.read(buf)
+    }
+}
+
+/// The bridge landing's leftover: a peer that passed the user and ancestry checks and never sends its token is closed
+/// once `TOKEN_WITHIN` has passed (its read bounded in time, as attach's `Hello`), nothing reaching the wire and the
+/// live slot left free — and once the token came, the live connection has no such bound: quiet past it, it stays.
+#[test]
+fn a_token_that_never_comes_holds_no_thread_and_the_live_one_has_no_bound() {
+    let (shared, rx) = shared();
+    let (bridge_side, mut peer) = UnixStream::pair().unwrap();
+    timed(&peer);
+    let s = shared.clone();
+    let reader = Late { s: bridge_side.try_clone().unwrap(), at: 1, reads: 0 };
+    let (done, ended) = channel();
+    std::thread::spawn(move || {
+        connection(1, &bridge_side, reader, &s);
+        let _ = done.send(());
+    });
+    ended.recv_timeout(PATIENCE).expect("a silent peer's thread ended once its time passed");
+    assert!(closed(&mut peer), "closed");
+    assert!(rx.try_recv().is_err(), "nothing reached the wire");
+    assert!(shared.live.lock().unwrap().is_none(), "the live slot free");
+    let (bridge_side, mut peer) = UnixStream::pair().unwrap();
+    writeln!(peer, "t0ken").unwrap();
+    let s = shared.clone();
+    let reader = Late { s: bridge_side.try_clone().unwrap(), at: 2, reads: 0 };
+    std::thread::spawn(move || connection(2, &bridge_side, reader, &s));
+    assert_eq!(next(&rx), "linked 2");
+    assert!(rx.recv_timeout(QUIET).is_err(), "quiet past the token's time: still live");
+    drop(peer);
+    assert_eq!(next(&rx), "unlinked 2");
+}
+
+/// A peer under the agent that connects and says nothing never takes the live slot: while it waits for its token (its
+/// thread's clock held, so its time can't pass while the test looks), a right connection is linked and live; the
+/// silent one's end unlinks nothing and leaves the live one live.
+#[test]
+fn the_live_slot_stays_free_while_a_peer_says_nothing() {
+    let (shared, rx) = shared();
+    let (silent_side, silent) = UnixStream::pair().unwrap();
+    let s = shared.clone();
+    let (done, ended) = channel();
+    let (begun, waits) = channel();
+    let reader = Told { s: silent_side.try_clone().unwrap(), told: Some(begun) };
+    std::thread::spawn(move || {
+        crate::clock::hold();
+        connection(1, &silent_side, reader, &s);
+        let _ = done.send(());
+    });
+    waits.recv_timeout(PATIENCE).expect("the silent one's read begun");
+    assert!(shared.live.lock().unwrap().is_none(), "the slot free while it waits");
+    let (live_side, mut live) = UnixStream::pair().unwrap();
+    writeln!(live, "t0ken").unwrap();
+    let s = shared.clone();
+    std::thread::spawn(move || connection(2, &live_side, &live_side, &s));
+    assert_eq!(next(&rx), "linked 2", "linked while the silent one waits");
+    assert!(ended.try_recv().is_err(), "the silent one still waiting");
+    drop(silent);
+    ended.recv_timeout(PATIENCE).expect("the silent one's thread ended with its peer");
+    assert!(rx.try_recv().is_err(), "its end unlinked nothing");
+    assert!(shared.live.lock().unwrap().is_some(), "the live one still live");
+    drop(live);
+    assert_eq!(next(&rx), "unlinked 2");
+}
+
+/// A socket's reader that says when its first read begins.
+struct Told {
+    s: UnixStream,
+    told: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl Read for Told {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(t) = self.told.take() {
+            let _ = t.send(());
+        }
+        self.s.read(buf)
+    }
+}
+
+/// A socket's receive timeout, as `readagain::timed` sets it.
+fn read_timeout_of(s: &UnixStream) -> std::time::Duration {
+    use std::os::fd::AsRawFd;
+    let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
+    let mut len = std::mem::size_of::<libc::timeval>() as libc::socklen_t;
+    // SAFETY: one timeval of ours and its size; getsockopt writes at most that.
+    let r = unsafe {
+        libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVTIMEO, (&raw mut tv).cast(), &mut len)
+    };
+    assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
+    std::time::Duration::from_secs(tv.tv_sec as u64) + std::time::Duration::from_micros(tv.tv_usec as u64)
+}
+
+/// The bridge landing's leftover: `cli`'s stdin timed (`relay_from`, which `cli` runs on stdin), so an agent whose stdio
+/// is a socketpair has the relay's end read again for. The input's socket has no timeout before, and
+/// `readagain::EVERY` once the relay runs; the relay links and ends with its input.
+#[test]
+fn the_relays_input_is_timed_as_cli_starts_it() {
+    let dir = crate::scratch::Scratch::new("acp-bridge-cli-input");
+    let (tx, rx) = channel();
+    let b = Bridge::listen(dir.path(), std::process::id(), tx).unwrap();
+    let (input, agent_in) = UnixStream::pair().unwrap();
+    let kept = input.try_clone().unwrap();
+    assert_eq!(read_timeout_of(&kept), std::time::Duration::ZERO, "untimed before");
+    let (path, token) = (b.path().to_path_buf(), b.token().to_string());
+    let relayed = std::thread::spawn(move || relay_from(&path, &token, input, std::io::sink()));
+    let In::Linked(n, _) = rx.recv_timeout(PATIENCE).expect("linked") else { panic!("linked first") };
+    assert_eq!(read_timeout_of(&kept), crate::readagain::EVERY, "its input timed");
+    drop((agent_in, kept));
+    assert_eq!(within("the relay's end, its input closed", move || relayed.join().unwrap()), Ok(()));
+    assert_eq!(next(&rx), format!("unlinked {n}"));
 }
 
 /// Item 6: the bridge's relay reads its socket (`down`) and its input timed, read again at each timeout — quiet, it

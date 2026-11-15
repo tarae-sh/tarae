@@ -47,6 +47,12 @@ impl<R> ReadAgain<R> {
     pub fn until(r: R, until: Instant) -> ReadAgain<R> {
         ReadAgain { r, until: Some(until) }
     }
+
+    /// From now on, read until bytes or the end come: its time was a first message's (the bridge's token).
+    #[cfg(test)]
+    pub fn endless(&mut self) {
+        self.until = None;
+    }
 }
 
 impl<R: Read> Read for ReadAgain<R> {
