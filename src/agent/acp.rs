@@ -83,6 +83,13 @@ fn taraes(name: &str) -> Option<&str> {
 /// The most characters of a tool's name tarae's own words say: past it, cut with `…`.
 const NAME_SHOWN: usize = 40;
 
+/// The most times a turn sets the mode back (guard 2): left once more, the session is stopped.
+const MODE_BACKS: usize = 3;
+
+/// The most calls of its own still running the tripwire keeps (by id, its name cut to what's said, no input): past it,
+/// the oldest is let go — its `completed` then trips as one with no name, as an update with no `tool_call` does.
+const OWN_OPEN: usize = 64;
+
 /// A tool's name as tarae's own words say it where a trip is made (its words, so the turn's end, the toast and the
 /// status line; `Ended::Tripped`; the log): the agent's string, as long as it likes, cut to `NAME_SHOWN` characters,
 /// and every character but a plain printable one (ASCII's, the space) made `?` — no newline, escape or bidi mark of
@@ -208,6 +215,8 @@ enum In {
     Bridged(Value),
     /// tarae's MCP server's answer to bridged message `key` (`Agent::answer_mcp`).
     Mcp(String, Value),
+    /// tarae stops it, these its words (`Agent::stop_with`).
+    Stop(String),
 }
 
 /// A running ACP agent, as `Agent::Acp` holds it: each call a message to its conversation's thread, never a wait.
@@ -231,6 +240,11 @@ impl Proc {
     /// Back through the bridge, and — a call's — its `ToolResult`.
     pub(super) fn answer_mcp(&self, key: &str, response: Value) {
         let _ = self.0.send(In::Mcp(key.to_string(), response));
+    }
+
+    /// Stopped by tarae with `said` (`Wire::stop`, as a trip). False: its thread has ended.
+    pub(super) fn stop_with(&self, said: String) -> bool {
+        self.0.send(In::Stop(said)).is_ok()
     }
 }
 
@@ -435,8 +449,10 @@ struct Wire {
     reports: HashMap<String, Report>,
     calls: Vec<Called>,
     reports_n: u64,
-    /// It tripped: nothing after it is read, no prompt written.
+    /// It tripped, or tarae stopped it (`In::Stop`): nothing after it is read, no prompt written.
     tripped: bool,
+    /// Its mode set back this turn (guard 2): past `MODE_BACKS`, it's stopped.
+    mode_backs: usize,
     /// tarae's tools' bridge, once bound (dropped: its socket and folder go).
     bridge: Option<bridge::Bridge>,
     /// Its live connection: its number and its writes.
@@ -476,6 +492,7 @@ impl Wire {
             calls: Vec::new(),
             reports_n: 0,
             tripped: false,
+            mode_backs: 0,
             bridge: None,
             link: None,
             bridged: HashMap::new(),
@@ -593,21 +610,28 @@ impl Wire {
     }
 
     /// Guard 2 mid-session: a `current_mode_update` to a mode not the row's is set back (`session/set_mode`); one it
-    /// won't take back stops it (`Asked::Mode(None)`'s error).
-    fn mode_moved(&mut self, u: &Value) {
-        let Some(mode) = self.begin.mode else { return };
-        let Some(session) = self.session.clone() else { return };
-        if u["currentModeId"].as_str() != Some(mode) {
-            self.request(
-                "session/set_mode",
-                json!({"sessionId": session, "modeId": mode}),
-                Asked::Mode(None),
-            );
+    /// won't take back stops it (`Asked::Mode(None)`'s error), and so does one left again past `MODE_BACKS` set-backs
+    /// in a turn (L3 note 4: never set back without end). False: the editor's gone.
+    fn mode_moved(&mut self, u: &Value, send: &dyn Fn(Event) -> bool) -> bool {
+        let Some(mode) = self.begin.mode else { return true };
+        let Some(session) = self.session.clone() else { return true };
+        if u["currentModeId"].as_str() == Some(mode) {
+            return true;
         }
+        if self.mode_backs >= MODE_BACKS {
+            let name = self.begin.name;
+            let said = format!(
+                "{name} keeps leaving mode {mode} — set back {MODE_BACKS} times this turn, then stopped"
+            );
+            return self.stop(said, Ended::Exited, None, send);
+        }
+        self.mode_backs += 1;
+        self.request("session/set_mode", json!({"sessionId": session, "modeId": mode}), Asked::Mode(None));
+        true
     }
 
-    /// Stopped by tarae (a trip, a mode it won't keep): its group ended at once, before anything is said — whatever it
-    /// runs ends with it; the bridge let go (a bridged call still open gets no answer), nothing queued written; what
+    /// Stopped by tarae (a trip, a mode it won't keep, the watch's `In::Stop`): its group ended at once, before anything
+    /// is said — whatever it runs ends with it; the bridge let go (a bridged call still open gets no answer), nothing queued written; what
     /// streamed sent, `row` (a call's row it never had), and `said` ending the turn if one runs. Its end's kind and
     /// words are `ended_as`, told once it's reaped.
     fn stop(&mut self, said: String, kind: Ended, row: Option<Event>, send: &dyn Fn(Event) -> bool) -> bool {
@@ -671,9 +695,11 @@ impl Wire {
         if first {
             r.name = tool_name(u);
         }
+        // (only tarae's are matched by their arguments: its own keep none — L3 note 4)
         match input_of(u) {
             Value::Null => {}
-            input => r.input = input,
+            input if taraes(&r.name).is_some() => r.input = input,
+            _ => r.input = Value::Null,
         }
         match u["status"].as_str() {
             Some("completed") => r.done = Some(true),
@@ -689,7 +715,22 @@ impl Wire {
         match r.done {
             Some(true) => Watch::Trip(r.name.clone(), first),
             Some(false) => Watch::Refused,
-            None => Watch::Pass,
+            None => {
+                // (still running: kept by what its words say of it, and so many at most)
+                r.name = r.name.chars().take(NAME_SHOWN + 1).collect();
+                self.own_open_bounded();
+                Watch::Pass
+            }
+        }
+    }
+
+    /// Its own calls still running past `OWN_OPEN`: the oldest let go.
+    fn own_open_bounded(&mut self) {
+        let open = |r: &Report| taraes(&r.name).is_none() && r.done.is_none();
+        while self.reports.values().filter(|r| open(r)).count() > OWN_OPEN {
+            let oldest = self.reports.iter().filter(|(_, r)| open(r)).min_by_key(|(_, r)| r.seq);
+            let Some(id) = oldest.map(|(id, _)| id.clone()) else { return };
+            self.reports.remove(&id);
         }
     }
 
@@ -767,6 +808,7 @@ impl Wire {
             Prompt::Parts(parts) => blocks.extend(parts.into_iter().map(|p| text_block(p.text))),
         }
         self.turn = true;
+        self.mode_backs = 0;
         self.text.clear();
         self.request("session/prompt", json!({"sessionId": session, "prompt": blocks}), Asked::Prompt);
     }
@@ -879,6 +921,11 @@ impl Wire {
             }
             In::Bridged(msg) => self.bridged(msg, send),
             In::Mcp(key, answer) => self.mcp_answered(&key, answer, send),
+            // (as a trip stops it: nothing after it is read)
+            In::Stop(said) => {
+                self.tripped = true;
+                self.stop(said, Ended::Exited, None, send)
+            }
         }
     }
 
@@ -951,8 +998,7 @@ impl Wire {
             return false;
         }
         if kind == "current_mode_update" {
-            self.mode_moved(u);
-            return true;
+            return self.mode_moved(u, send);
         }
         let refused = match kind {
             "tool_call" | "tool_call_update" => match self.watch(u) {
@@ -1254,6 +1300,7 @@ impl Staged {
             In::Answer(id, _) => format!("the answer to ask {id}"),
             In::Mcp(key, _) => format!("the answer to {key}"),
             In::Closed => "the handle dropped".into(),
+            In::Stop(_) => "tarae's stop".into(),
             _ => "another".into(),
         };
         Some((said, self.run(|w, send| _ = w.take(m, send))))

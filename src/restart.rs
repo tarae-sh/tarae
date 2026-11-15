@@ -2353,6 +2353,8 @@ mod tests {
             // (auto cards' reviewer's, in `Editor.auto_cards`: the same)
             ("Folder", "autocards.rs"),
             ("Gate", "claudetrust.rs"),
+            // (an agent's gate, in `Chat.agent_gate`, as Claude settings' is: its drop wakes its watch's thread to end)
+            ("Gate", "agentgate.rs"),
             ("Held", "warm.rs"),
             ("HeldBack", "recovery/tests.rs"),
             ("Helper", "sim.rs"),

@@ -1069,6 +1069,57 @@ fn a_mode_left_midway_is_set_back() {
     assert_eq!(got[got.len() - 2..], [format!("failed {words}"), format!("exit {words}")], "{got:?}");
 }
 
+/// Guard 2's bound (L3 note 4): a mode left and taken back is set back `MODE_BACKS` times in a turn; left once more, the
+/// session stops, said — its turn's end and its end — and nothing more is written. A new turn counts from none.
+#[test]
+fn a_mode_left_again_and_again_in_a_turn_stops_it() {
+    let left = update_line(json!({"sessionUpdate": "current_mode_update", "currentModeId": "plan"}));
+    let back = |st: &mut Staged, times: usize| {
+        for _ in 0..times {
+            assert!(says(st.line(&left)).is_empty());
+            let w = st.written();
+            assert_eq!((w.len(), &w[0]["method"]), (1, &json!("session/set_mode")), "{w:?}");
+            assert!(says(st.line(&json!({"jsonrpc": "2.0", "id": w[0]["id"], "result": {}}))).is_empty());
+        }
+    };
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    back(&mut st, MODE_BACKS);
+    assert_eq!(turn_over(&mut st, 2), ["done "]);
+    // (a new turn: set back as many times again)
+    let written = prompted(&mut st, &agent);
+    assert_eq!(written[0]["method"], "session/prompt");
+    back(&mut st, MODE_BACKS);
+    let words = "stand-in keeps leaving mode default — set back 3 times this turn, then stopped";
+    assert_eq!(says(st.line(&left)), [format!("failed {words}"), format!("exit {words}")]);
+    assert!(st.written().is_empty(), "nothing written after the stop");
+}
+
+/// The tripwire's bound (L3 note 4): a call of its own still running keeps no input and its name only as far as it's
+/// said, `OWN_OPEN` of them at most — the oldest let go. Its `completed` still trips, as one with no name.
+#[test]
+fn an_own_call_that_never_ends_keeps_no_input_and_so_many_at_most() {
+    let name = format!("run_command{}", "x".repeat(4096));
+    let call = |id: String| {
+        update_line(json!({"sessionUpdate": "tool_call", "toolCallId": id, "name": name, "kind": "execute",
+            "status": "in_progress", "rawInput": {"CommandLine": "y".repeat(1 << 16)}}))
+    };
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    for n in 0..=OWN_OPEN {
+        st.line(&call(format!("t{n}")));
+    }
+    assert_eq!(st.w.reports.len(), OWN_OPEN, "so many at most");
+    assert!(!st.w.reports.contains_key("t0"), "the oldest let go");
+    let kept = |r: &Report| r.input.is_null() && r.name.chars().count() == NAME_SHOWN + 1;
+    assert!(st.w.reports.values().all(kept), "no input, the name as far as it's said");
+    let done =
+        update_line(json!({"sessionUpdate": "tool_call_update", "toolCallId": "t0", "status": "completed"}));
+    let words = "stand-in ran a tool of its own, one with no name — stopped: it and everything it started ended. Only \
+                 tarae's tools may run; its hook should have refused this.";
+    assert_eq!(says(st.line(&done)).last(), Some(&format!("exit tripped one with no name: {words}")));
+}
+
 /// Guard 3 on the stand-in: one of its own tools reported `completed` stops the session at once — never at its
 /// `in_progress` before (Q5) — its group ended (a process of its own that would outlive it included), the turn
 /// ended in tarae's words, its end a trip naming the tool; a prompt after it is never written.

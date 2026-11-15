@@ -71,6 +71,17 @@ impl Agent {
         }
     }
 
+    /// Stopped by tarae with `said` (an agent's watch, `agentgate`), as the tripwire stops one: its group ended at once,
+    /// its turn ended with those words, nothing it says after read, its end an `Exited` saying them. False: its wire
+    /// can't (Claude's) or it's gone already — the caller ends its process.
+    #[cfg(test)]
+    pub fn stop_with(&self, said: String) -> bool {
+        match self {
+            Agent::Claude(_) => false,
+            Agent::Acp(a) => a.stop_with(said),
+        }
+    }
+
     /// The conversation goes on on `model` (an alias or id, `default` its own). Whether it was told — never where
     /// its capabilities say no (`Caps::models`).
     pub fn set_model(&self, model: &str) -> bool {

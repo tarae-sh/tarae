@@ -16,6 +16,15 @@
 //! second message of yours come, in any order. After every step: nothing is written to the agent after the trip, nor
 //! sent back through the bridge; the trip is said once in the transcript; once its end lands, no read card is up. At
 //! the end: the chat is idle, the trip said once, and its row held until you quit.
+//!
+//! A third, `an_untrusted_projects_agent_waits_for_its_card` (step 3's guard 4 and its watch, L5): an untrusted
+//! project's held file holds the agent on its gate (`agentgate.rs`), each start a staged handle in place of a process
+//! (`agentgate::Stage`). The gate's read, the user's first message, the chat opened and the card's answer land in any
+//! order; in a run answering `y`, once its prompt went, a held file is added and the watch looks (its round a job,
+//! `agentgate::look_again`), and the agent's wire takes the stop. After every step: no start before its `y` (none at
+//! all in a run answering `n`), a second only after the first's end landed, the message sent once, the stop said once.
+//! At the end, a `y` run: started twice, the card answered twice (it asked again), the message sent once, to the first
+//! start; an `n` run: nothing started, nothing written, the hold said.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -675,6 +684,364 @@ fn trip_print(ed: &Editor, w: &Trip) -> String {
         w.back.borrow().len(),
         w.tripped_at.get().is_some(),
         !ed.agents_tripped.is_empty(),
+        w.pending.borrow().len()
+    )
+}
+
+// ── An untrusted project's agent waits for its card ──────────────────────────────────────────────────
+
+const CARD: &str = "an_untrusted_projects_agent_waits_for_its_card";
+
+const CARD_INPUTS: usize = 40;
+
+/// The steps after them that see it through: the message, the card's answers, each start's handshake, the change and
+/// the watch's look, every event landed (most of them frames while a job runs between).
+const CARD_ENDING: usize = 80;
+
+/// The watch's stop, in the chat.
+const STOPPED: &str = "stand-in's files in this project changed while it ran — stopped: it and everything it started \
+                       ended. Their card asks again.";
+
+const HELD_BACK: &str = "Held back — stand-in isn't started in this project until you quit";
+
+/// How the fixed seeds answered the card.
+static YES_RUNS: AtomicUsize = AtomicUsize::new(0);
+static NO_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn an_untrusted_projects_agent_waits_for_its_card() {
+    super::seeds(CARD, SEEDS, card_run);
+    let (yes, no) = (YES_RUNS.load(Ordering::SeqCst), NO_RUNS.load(Ordering::SeqCst));
+    assert!(yes > 0 && no > 0, "the card answered one way only: {yes} yes, {no} no");
+}
+
+struct Card {
+    /// Each start's handle, in order (`agentgate::Stage`), and what each was written.
+    staged: [RefCell<Staged>; 2],
+    to_agent: [RefCell<Vec<Value>>; 2],
+    /// Its handshake's answers given: `initialize`, then its session.
+    shook: [Cell<usize>; 2],
+    /// Its turn answered.
+    over: [Cell<bool>; 2],
+    /// The events its wires made, each with its process's generation, not landed yet.
+    pending: RefCell<VecDeque<(u64, Event)>>,
+    /// This run answers the card `y` (else `n`).
+    yes: bool,
+    sent: Cell<bool>,
+    answers: Cell<usize>,
+    /// A held file added (once the first start was written its prompt), and the watch's look since.
+    changed: Cell<bool>,
+    looked: Cell<bool>,
+    /// The first start's end has landed.
+    ended: Cell<bool>,
+    added: std::path::PathBuf,
+}
+
+impl Card {
+    fn read_up(&self) {
+        for (staged, to) in self.staged.iter().zip(&self.to_agent) {
+            to.borrow_mut().extend(staged.borrow().written());
+        }
+    }
+
+    /// Start `k`'s events, kept with its generation.
+    fn made(&self, ed: &Editor, k: usize, events: Vec<Event>) {
+        let g = generation(ed, k).unwrap_or(0);
+        self.pending.borrow_mut().extend(events.into_iter().map(|e| (g, e)));
+    }
+
+    /// How many prompts carrying the message went, to start `k`.
+    fn hello(&self, k: usize) -> usize {
+        let to = self.to_agent[k].borrow();
+        to.iter().filter(|v| v["method"] == "session/prompt" && v.to_string().contains("hello")).count()
+    }
+}
+
+fn stage(ed: &Editor) -> Option<&crate::agentgate::Stage> {
+    ed.workspace.claude.chat.as_ref()?.agent_gate.stage.as_ref()
+}
+
+fn starts(ed: &Editor) -> usize {
+    stage(ed).map_or(0, |s| s.starts)
+}
+
+fn generation(ed: &Editor, k: usize) -> Option<u64> {
+    stage(ed)?.generations.get(k).copied()
+}
+
+/// The start running now.
+fn live(ed: &Editor) -> Option<usize> {
+    let running = ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::running);
+    (running && starts(ed) > 0).then(|| starts(ed) - 1)
+}
+
+fn card_run(choices: Choices) -> Vec<String> {
+    let scratch = crate::scratch::Scratch::new("sim-acp-card");
+    let root = std::fs::canonicalize(scratch.path()).unwrap();
+    let project = root.join("project");
+    std::fs::create_dir_all(project.join(".stand-in")).unwrap();
+    std::fs::write(project.join(".stand-in/hooks.json"), "{}").unwrap();
+    let mut sim = Sim::new(CARD, choices, LIMIT);
+    let yes = sim.choices.below(2) == 0;
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.root = project.clone();
+    let state = root.join("state").to_string_lossy().into_owned();
+    ed.claude_env = Some(crate::llm::Env::from([("XDG_STATE_HOME".into(), state)]));
+    let ((first, a), (second, b)) = (Staged::new(&project), Staged::new(&project));
+    let mut c = crate::chat::Chat::new();
+    c.agent = &crate::agent::STAND_IN;
+    c.hidden = false;
+    let agents = [a, b].into_iter().collect();
+    c.agent_gate.stage = Some(crate::agentgate::Stage { agents, ..Default::default() });
+    ed.workspace.claude.chat = Some(c);
+    let world = Card {
+        staged: [RefCell::new(first), RefCell::new(second)],
+        to_agent: Default::default(),
+        shook: Default::default(),
+        over: Default::default(),
+        pending: RefCell::new(VecDeque::new()),
+        yes,
+        sent: Cell::new(false),
+        answers: Cell::new(0),
+        changed: Cell::new(false),
+        looked: Cell::new(false),
+        ended: Cell::new(false),
+        added: project.join(".stand-in/added.json"),
+    };
+    let check = |ed: &Editor| card_held(ed, &world);
+    let print = |ed: &Editor| card_print(ed, &world);
+    let n = Cell::new(0);
+    let step = |sim: &mut Sim, ed: &mut Editor| {
+        n.set(n.get() + 1);
+        match n.get() <= CARD_INPUTS {
+            true => card_input(sim, ed, &world),
+            false => card_through(ed, &world),
+        }
+    };
+    sim.walk(&mut ed, CARD_INPUTS + CARD_ENDING, step, check, print);
+    world.read_up();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let (running, busy) = (c.running(), c.busy());
+    let stopped = c.msgs.iter().filter(|m| m.text == STOPPED).count();
+    let (starts, answers, card) = (starts(&ed), world.answers.get(), ed.offers.iter().any(files_card));
+    let hello = [world.hello(0), world.hello(1)];
+    let prompts =
+        world.to_agent.iter().flat_map(|t| t.borrow().clone()).filter(|v| v["method"] == "session/prompt");
+    let prompts = prompts.count();
+    let held_said = ed.messages.iter().any(|m| m.2 == HELD_BACK);
+    sim.at_end(|| {
+        if card {
+            return Err("a card left up".into());
+        }
+        match yes {
+            true => {
+                YES_RUNS.fetch_add(1, Ordering::SeqCst);
+                if (starts, answers) != (2, 2) {
+                    return Err(format!("{starts} starts, {answers} answers: not asked again and started"));
+                }
+                if hello != [1, 0] {
+                    return Err(format!("the message sent {hello:?} times, to each start"));
+                }
+                if stopped != 1 || !running || busy {
+                    return Err(format!("stop said {stopped} times, running {running}, busy {busy}"));
+                }
+            }
+            false => {
+                NO_RUNS.fetch_add(1, Ordering::SeqCst);
+                if (starts, answers, prompts) != (0, 1, 0) || !held_said {
+                    return Err(format!(
+                        "after n: {starts} starts, {answers} answers, {prompts} prompts, said {held_said}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    });
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    ed.workspace.claude.chat = None;
+    drop(ed);
+    trace
+}
+
+fn files_card(o: &crate::offer::Offer) -> bool {
+    matches!(o.what, crate::offer::What::AgentFiles { .. })
+}
+
+/// The files' card in front answered as this run answers it. Whether one was.
+fn card_answer(ed: &mut Editor, w: &Card) -> bool {
+    if !ed.offers.first().is_some_and(files_card) {
+        return false;
+    }
+    crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+    let key = if w.yes { 'y' } else { 'n' };
+    let answered = ed.offer_key(crate::key::Key::plain(crate::key::Code::Char(key)));
+    w.answers.set(w.answers.get() + usize::from(answered));
+    answered
+}
+
+/// The live start's next handshake answer: `initialize`, then its session. None: none left to give.
+fn card_shake(ed: &Editor, w: &Card) -> Option<String> {
+    let k = live(ed)?;
+    let line = match w.shook[k].get() {
+        0 => json!({"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 1}}),
+        1 => {
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}})
+        }
+        _ => return None,
+    };
+    w.shook[k].set(w.shook[k].get() + 1);
+    w.made(ed, k, w.staged[k].borrow_mut().line(&line));
+    Some(format!("start {k} answers its handshake ({})", w.shook[k].get()))
+}
+
+/// What the chat handed any start's handle, taken. None: nothing waits.
+fn card_take(ed: &Editor, w: &Card) -> Option<String> {
+    (0..2).find_map(|k| {
+        let (what, events) = w.staged[k].borrow_mut().take()?;
+        w.made(ed, k, events);
+        Some(format!("start {k}'s wire takes {what}"))
+    })
+}
+
+/// An event landed, with its process's generation — the first start's end noted.
+fn card_land(ed: &mut Editor, w: &Card) -> Option<String> {
+    let (g, ev) = w.pending.borrow_mut().pop_front()?;
+    if matches!(ev, Event::Exit(_)) && generation(ed, 0) == Some(g) {
+        w.ended.set(true);
+    }
+    ed.handle_event(crate::event::Event::Job(Box::new(move |ed: &mut Editor| {
+        crate::chat::stream_event(ed, g, ev)
+    })));
+    Some("an event lands".into())
+}
+
+fn card_send(ed: &mut Editor, w: &Card) -> String {
+    w.sent.set(true);
+    ed.workspace.claude.chat.as_mut().unwrap().input.set("hello");
+    crate::chat::send(ed);
+    "the user's message".into()
+}
+
+/// A held file added — once the first start was written its prompt.
+fn card_change(w: &Card) -> Option<String> {
+    w.read_up();
+    if w.changed.get() || w.hello(0) == 0 {
+        return None;
+    }
+    w.changed.set(true);
+    super::write(&w.added, "{\"pulled\": true}");
+    Some("a held file added (a pull)".into())
+}
+
+/// The watch looks (a job), whatever has changed.
+fn card_look(ed: &mut Editor, w: &Card) -> Option<String> {
+    if !crate::agentgate::look_again(ed) {
+        return None;
+    }
+    w.looked.set(w.looked.get() || w.changed.get());
+    Some("the watch looks".into())
+}
+
+/// The live start's turn answered, once its prompt went.
+fn card_turn_over(ed: &Editor, w: &Card) -> Option<String> {
+    let k = live(ed)?;
+    w.read_up();
+    let prompt =
+        w.to_agent[k].borrow().iter().find(|v| v["method"] == "session/prompt").map(|v| v["id"].clone())?;
+    if w.over[k].replace(true) {
+        return None;
+    }
+    let line = json!({"jsonrpc": "2.0", "id": prompt, "result": {"stopReason": "end_turn"}});
+    w.made(ed, k, w.staged[k].borrow_mut().line(&line));
+    Some(format!("start {k}'s turn over"))
+}
+
+fn card_input(sim: &mut Sim, ed: &mut Editor, w: &Card) -> String {
+    let skip = |what: &str| format!("({what})");
+    // (by arm: the message 1, the chat opened 1, the card answered 2, a handshake 2, a take 3, a landing 4, the turn's
+    // answer 1, the change 1, the watch's look 1, a frame 1)
+    match sim.choices.weighted(&[1, 1, 2, 2, 3, 4, 1, 1, 1, 1]) {
+        0 if !w.sent.get() => card_send(ed, w),
+        0 => skip("sent already"),
+        1 => {
+            crate::chat::gate_opened(ed);
+            "the chat opened".into()
+        }
+        2 => match card_answer(ed, w) {
+            true => format!("{} on the card", if w.yes { 'y' } else { 'n' }),
+            false => skip("no card"),
+        },
+        3 => card_shake(ed, w).unwrap_or_else(|| skip("no handshake to answer")),
+        4 => card_take(ed, w).unwrap_or_else(|| skip("nothing handed")),
+        5 => card_land(ed, w).unwrap_or_else(|| skip("no event")),
+        6 => card_turn_over(ed, w).unwrap_or_else(|| skip("no turn to answer")),
+        7 => card_change(w).unwrap_or_else(|| skip("no change now")),
+        8 => card_look(ed, w).unwrap_or_else(|| skip("no watch")),
+        _ => {
+            crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+            "a frame".into()
+        }
+    }
+}
+
+/// The end's next step: the message, the card, the live start's handshake, what's handed and what's made, then (a `y`
+/// run) the change and the watch's look — else a frame while a job runs.
+fn card_through(ed: &mut Editor, w: &Card) -> String {
+    if !w.sent.get() {
+        return card_send(ed, w);
+    }
+    if card_answer(ed, w) {
+        return "the card answered".into();
+    }
+    let next = card_shake(ed, w)
+        .or_else(|| card_take(ed, w))
+        .or_else(|| card_land(ed, w))
+        .or_else(|| card_change(w))
+        .or_else(|| {
+            (w.changed.get() && !w.looked.get() && live(ed) == Some(0)).then(|| card_look(ed, w)).flatten()
+        });
+    next.unwrap_or_else(|| {
+        crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+        "a frame".into()
+    })
+}
+
+/// No start before its `y` (none after `n`); a second only after the first's end landed; the message sent once; the
+/// stop said once.
+fn card_held(ed: &Editor, w: &Card) -> Result<(), String> {
+    w.read_up();
+    let (starts, ys) = (starts(ed), if w.yes { w.answers.get() } else { 0 });
+    if starts > ys {
+        return Err(format!("{starts} starts after {ys} yes"));
+    }
+    if starts > 1 && !w.ended.get() {
+        return Err("a second start before the first one's end landed".into());
+    }
+    let hello = w.hello(0) + w.hello(1);
+    if hello > 1 {
+        return Err(format!("the message sent {hello} times"));
+    }
+    let c = ed.workspace.claude.chat.as_ref().ok_or("the chat's gone")?;
+    let stopped = c.msgs.iter().filter(|m| m.text == STOPPED).count();
+    if stopped > 1 {
+        return Err(format!("the stop said {stopped} times"));
+    }
+    Ok(())
+}
+
+fn card_print(ed: &Editor, w: &Card) -> String {
+    let c = ed.workspace.claude.chat.as_ref();
+    format!(
+        "starts {} · running {} · busy {} · card {} · answers {} · hello {}+{} · changed {} · waiting {}",
+        starts(ed),
+        c.is_some_and(crate::chat::Chat::running),
+        c.is_some_and(|c| c.busy()),
+        ed.offers.iter().any(files_card),
+        w.answers.get(),
+        w.hello(0),
+        w.hello(1),
+        w.changed.get(),
         w.pending.borrow().len()
     )
 }

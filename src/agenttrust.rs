@@ -87,8 +87,7 @@ fn gather(root: &Path, path: &Path, depth: usize, found: &mut Vec<Found>) -> Res
             return Err((rel(), TOO_MANY.into()));
         }
         let entries = std::fs::read_dir(path).map_err(|e| (rel(), e.to_string()))?;
-        let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-        paths.sort();
+        let paths = listed(entries.map(|e| e.map(|e| e.path()))).map_err(|e| (rel(), e.to_string()))?;
         return paths.iter().try_for_each(|p| gather(root, p, depth + 1, found));
     }
     if found.len() >= FILES_MAX {
@@ -118,6 +117,14 @@ fn gather(root: &Path, path: &Path, depth: usize, found: &mut Vec<Found>) -> Res
             Ok(())
         }
     }
+}
+
+/// A folder's entries, sorted. Err: the first that couldn't be read — never dropped: a file left unlisted would go
+/// unhashed while the agent may still load it (the design session's L4 note 6).
+fn listed(entries: impl Iterator<Item = std::io::Result<PathBuf>>) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths = entries.collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
+    Ok(paths)
 }
 
 /// `to`, the target of a link in folder `from` (from the root), resolved without reading the disk: its path from the

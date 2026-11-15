@@ -173,6 +173,56 @@ fn a_yes_starts_it_and_is_kept_for_the_repository() {
     second.workspace.claude.chat = None;
 }
 
+/// The watch (L5): a file added under the held folder while the agent runs (a `git pull`) stops it — said once — and
+/// their card asks again as its end lands, naming the file; `y` starts it again, with no second stop.
+#[test]
+fn a_file_added_while_it_runs_stops_it_and_asks() {
+    let dir = Scratch::new("agenttrust-added");
+    let root = project(&dir, "p", &[("hooks.json", "{}")]);
+    let seen = look(&STAND_IN, &root, None).unwrap();
+    let store = dir.join("trust.json");
+    crate::trust::record(store, crate::trust::Kind::Agent, seen.file.clone(), seen.hash, true).unwrap();
+    let script = json!([
+        {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
+        {"expect": "session/new", "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}},
+        {"eof": true},
+    ]);
+    let mut ed = editor(&dir, &root, "a");
+    std::fs::write(dir.join("a.json"), script.to_string()).unwrap();
+    crate::chat::gate_opened(&mut ed);
+    let d = &dir;
+    let new = move || heard(d, "a").iter().filter(|v| v["method"] == "session/new").count();
+    let started = |n: usize| move |ed: &Editor| chat(ed).running() && new() == n;
+    settle_until(&mut ed, started(1));
+    assert!(card(&ed).is_none(), "trusted: no card");
+    std::fs::write(root.join(".stand-in/added.json"), "{\"pulled\": true}").unwrap();
+    settle_until(&mut ed, |ed| card(ed).is_some());
+    let words = "stand-in's files in this project changed while it ran — stopped: it and everything it started ended. \
+                 Their card asks again.";
+    let n = |ed: &Editor| chat(ed).msgs.iter().filter(|m| m.text == words).count();
+    assert_eq!(n(&ed), 1, "said once");
+    assert!(!chat(&ed).running(), "stopped");
+    let lines: Vec<String> = card(&ed).unwrap().question.lines().map(String::from).collect();
+    assert_eq!(lines[2..], ["  .stand-in/added.json", "  .stand-in/hooks.json"]);
+    ed.offer_accept();
+    settle_until(&mut ed, started(2));
+    assert_eq!(n(&ed), 1, "no second stop");
+    ed.workspace.claude.chat = None;
+}
+
+/// L4 note 6: a folder's entry that can't be read refuses the folder, as any unreadable thing does — never dropped
+/// from the listing (its file would go unhashed while the agent may still load it). A made listing, as the OS's
+/// entry errors (EIO and the like) can't be made on demand; `gather` lists every folder through it.
+#[test]
+fn a_folder_entry_that_cant_be_read_is_never_trusted() {
+    use std::path::PathBuf;
+    let made = |e: Vec<std::io::Result<&str>>| listed(e.into_iter().map(|r| r.map(PathBuf::from)));
+    let failed = made(vec![Ok("b.json"), Err(std::io::Error::other("an entry unreadable")), Ok("a.json")]);
+    assert_eq!(failed.map_err(|e| e.to_string()), Err("an entry unreadable".to_string()));
+    let read = made(vec![Ok("b.json"), Ok("a.json")]).unwrap();
+    assert_eq!(read, [PathBuf::from("a.json"), PathBuf::from("b.json")], "sorted");
+}
+
 /// `n`: not started in this project until you quit — never kept, a new chat in this tarae not started either (said,
 /// no card), and a new tarae asks again.
 #[test]

@@ -1,5 +1,5 @@
 //! Guard 1's folder: its checks from `$state` down, its files written again when changed, and its own `config/`'s
-//! servers.
+//! servers; the watch while the agent runs, judging bytes.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -73,6 +73,150 @@ fn a_folder_not_yours_alone_isnt_started_in() {
     });
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(!c.running() && !c.starting(), "started, or still waiting");
+}
+
+/// The stand-in's script: its handshake — `session/new`, or `session/resume` where it continues the conversation —
+/// then it reads until stdin closes.
+fn script(dir: &crate::scratch::Scratch, open: &str) {
+    let caps = json!({"sessionCapabilities": {"resume": {}}});
+    let script = json!([
+        {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": caps}},
+        {"expect": open, "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}},
+        {"eof": true},
+    ]);
+    std::fs::write(dir.join("script.json"), script.to_string()).unwrap();
+}
+
+/// An editor in `root` whose chat is the stand-in's (`script`, a new session), its state and store in `dir`.
+fn running_editor(dir: &crate::scratch::Scratch, root: &Path) -> Editor {
+    use crate::agent::acp::standin::{HEARD, SCRIPT};
+    script(dir, "session/new");
+    let path = |p: &Path| p.to_string_lossy().into_owned();
+    let mut ed = Editor::with_root(crate::config::Config::default(), root.to_path_buf());
+    ed.claude_env = Some(crate::llm::Env::from([
+        (SCRIPT.into(), path(&dir.join("script.json"))),
+        (HEARD.into(), path(&dir.join("heard"))),
+        ("XDG_STATE_HOME".into(), path(&dir.join("state"))),
+    ]));
+    ed.trust_path = Some(dir.join("trust.json"));
+    let mut c = crate::chat::Chat::new();
+    c.agent = &STAND_IN;
+    ed.workspace.claude.chat = Some(c);
+    ed
+}
+
+/// How many times the stand-in heard `method`.
+fn heard_n(dir: &crate::scratch::Scratch, method: &str) -> usize {
+    let text = std::fs::read_to_string(dir.join("heard")).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["method"] == method)
+        .count()
+}
+
+fn chat(ed: &Editor) -> &crate::chat::Chat {
+    ed.workspace.claude.chat.as_ref().unwrap()
+}
+
+fn said_n(ed: &Editor, words: &str) -> usize {
+    chat(ed).msgs.iter().filter(|m| m.text == words).count()
+}
+
+#[track_caller]
+fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
+    crate::test_results::settle_saying(ed, done, |ed| {
+        let msgs: Vec<_> =
+            ed.workspace.claude.chat.iter().flat_map(|c| c.msgs.iter().map(|m| &m.text)).collect();
+        let said: Vec<_> = ed.messages.iter().map(|m| &m.2).collect();
+        format!("the chat: {msgs:?}; said: {said:?}")
+    });
+}
+
+/// `bytes` put at `path` as a start of tarae's puts them: to a new name, renamed over it (the new name a folder up: in
+/// a held folder, a file of its own is a change).
+fn renamed_over(path: &Path, bytes: &[u8]) {
+    let temp = path.parent().and_then(Path::parent).unwrap().join(".renamed");
+    std::fs::write(&temp, bytes).unwrap();
+    let mode = std::fs::metadata(path).unwrap().permissions().mode();
+    chmod(&temp, mode & 0o7777);
+    std::fs::rename(&temp, path).unwrap();
+}
+
+/// The watch (L5): the hook file changed while the agent runs stops it — its turn and group ended, said once in the
+/// transcript and in a toast, its watch over. A message after it starts it again on the conversation, the file written
+/// again, said.
+#[test]
+fn a_hook_file_changed_while_it_runs_stops_it() {
+    let dir = crate::scratch::Scratch::new("agentgate-watch-hook");
+    let root = dir.join("p");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut ed = running_editor(&dir, &root);
+    crate::chat::gate_opened(&mut ed);
+    settle_until(&mut ed, |ed| chat(ed).running() && heard_n(&dir, "session/new") == 1);
+    let state = crate::agent::acp::state(ed.claude_env.as_ref()).unwrap();
+    let hooks = state.join(HOMES).join("stand-in/config/hooks.json");
+    let was = std::fs::read(&hooks).unwrap();
+    std::fs::write(&hooks, "{}").unwrap();
+    settle_until(&mut ed, |ed| !chat(ed).running());
+    let words = "stand-in's config/hooks.json changed while it ran — stopped: it and everything it started ended. \
+                 tarae writes it again at its next start.";
+    assert_eq!(said_n(&ed, words), 1, "said once");
+    assert!(
+        ed.messages.iter().any(|m| m.2 == "stand-in stopped — its config/hooks.json changed"),
+        "the toast"
+    );
+    let c = chat(&ed);
+    assert!(c.agent_gate.watch.is_none() && !c.agent_gate.stopping() && !c.starting(), "its watch over");
+    script(&dir, "session/resume");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.input.set("again");
+    crate::chat::send(&mut ed);
+    settle_until(&mut ed, |_| heard_n(&dir, "session/prompt") == 1);
+    assert_eq!(
+        (heard_n(&dir, "session/new"), heard_n(&dir, "session/resume")),
+        (1, 1),
+        "started again on it"
+    );
+    assert_eq!(std::fs::read(&hooks).unwrap(), was, "written again");
+    assert_eq!(said_n(&ed, "stand-in's config/hooks.json was changed outside tarae — written again"), 1);
+    assert_eq!(said_n(&ed, words), 1, "no second stop");
+    ed.workspace.claude.chat = None;
+}
+
+/// Bytes, not events (L2 note 2): another tarae's start renames the same bytes over tarae's two files, and a held file
+/// is renamed over with its own bytes — nothing stops. A held file truly changed after them stops it, said as the held
+/// files' change, never the hook's.
+#[test]
+fn the_same_bytes_renamed_over_its_files_stop_nothing() {
+    let dir = crate::scratch::Scratch::new("agentgate-watch-same");
+    let root = dir.join("p");
+    let rules = root.join(".stand-in/rules.md");
+    std::fs::create_dir_all(rules.parent().unwrap()).unwrap();
+    std::fs::write(&rules, "be brief").unwrap();
+    let seen = crate::agenttrust::look(&STAND_IN, &root, None).unwrap();
+    let kind = crate::trust::Kind::Agent;
+    crate::trust::record(dir.join("trust.json"), kind, seen.file.clone(), seen.hash, true).unwrap();
+    let mut ed = running_editor(&dir, &root);
+    crate::chat::gate_opened(&mut ed);
+    settle_until(&mut ed, |ed| chat(ed).running() && heard_n(&dir, "session/new") == 1);
+    // (another tarae's start: the same bytes renamed over both)
+    let state = crate::agent::acp::state(ed.claude_env.as_ref()).unwrap();
+    let config = state.join(HOMES).join("stand-in/config");
+    let inode = |f: &str| std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(config.join(f)).unwrap());
+    let was = (inode("hooks.json"), inode(crate::agent::hook::SCRIPT_NAME));
+    let again = prepare(&STAND_IN, Some(&state)).unwrap();
+    assert!(again.changed.is_empty(), "{:?}", again.changed);
+    let now = (inode("hooks.json"), inode(crate::agent::hook::SCRIPT_NAME));
+    assert!(was.0 != now.0 && was.1 != now.1, "both renamed over: {was:?} {now:?}");
+    renamed_over(&rules, b"be brief");
+    std::fs::write(&rules, "be long").unwrap();
+    settle_until(&mut ed, |ed| !chat(ed).running());
+    let held = "stand-in's files in this project changed while it ran — stopped: it and everything it started ended. \
+                Their card asks again.";
+    let msgs: Vec<_> = chat(&ed).msgs.iter().map(|m| m.text.clone()).collect();
+    assert_eq!(said_n(&ed, held), 1, "{msgs:?}");
+    assert!(!msgs.iter().any(|m| m.contains("hooks.json") || m.contains("tarae-hook.sh")), "{msgs:?}");
+    ed.workspace.claude.chat = None;
 }
 
 fn homes_of(state: &Path) -> String {

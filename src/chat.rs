@@ -2652,6 +2652,20 @@ fn ensure_proc(ed: &mut Editor) {
     };
     #[cfg(test)]
     let Some(c) = &mut ed.workspace.claude.chat else { return };
+    // (a simulation's start through its gate: a staged handle in place of the process, counted — `agentgate::Stage`)
+    #[cfg(test)]
+    if let Some(stage) = c.agent_gate.stage.as_mut() {
+        stage.starts += 1;
+        let Some(agent) = stage.agents.pop_front() else { return };
+        c.generation = crate::tools::generation();
+        stage.generations.push(c.generation);
+        c.proc = Some(Proc { agent, pid: 0 });
+        (c.session_tools, c.web_search, c.code) = crate::tools::chat_gets(c.agent, parent, web_search, code);
+        if let Some(p) = &prepared {
+            crate::agentgate::running(ed, p);
+        }
+        return;
+    }
     // (its conversation's agent, and what it can do)
     let row = c.agent;
     let caps = &row.caps;
@@ -2726,6 +2740,11 @@ fn ensure_proc(ed: &mut Editor) {
     crate::limits::ask_chat(ed);
     // (a session's instruction files: the main checkout's changes since its copy — #27)
     crate::instructions::follow(ed);
+    // (watched while it runs: tarae's files in its folder and the project's held files — `agentgate::running`)
+    #[cfg(test)]
+    if let Some(p) = &prepared {
+        crate::agentgate::running(ed, p);
+    }
 }
 
 /// `on_event` for other modules' tests: an event of chat process `generation`'s stream, as `claude::pump` sends it.
@@ -3223,6 +3242,10 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                     crate::orchestra::turn_ended(ed, &Err(err.clone()), crate::orchestra::Stop::No);
                 }
             }
+            // (stopped by its watch — `agentgate::changed_now`: said once, its watch ended with it; its gate opens again
+            // below where the held files changed or a message waits)
+            #[cfg(test)]
+            let reopen = crate::agentgate::ended(ed);
             #[cfg(test)]
             let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
             // The conversation is gone from claude (its own cleanup took it, or you deleted it): a fresh one, the
@@ -3350,6 +3373,10 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             // meanwhile goes to it)
             if settings_again(ed) {
                 send_queued(ed);
+            }
+            #[cfg(test)]
+            if reopen {
+                gate_opened(ed);
             }
         }
     }
@@ -3572,6 +3599,11 @@ pub(crate) fn send_queued(ed: &mut Editor) {
             || ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy() || (c.starting() && !c.running()))
     };
     if held(ed) {
+        return;
+    }
+    // (nor while its agent's watch stops it: what waits goes to the next start, as its end lands — `agentgate::ended`)
+    #[cfg(test)]
+    if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.agent_gate.stopping()) {
         return;
     }
     // (what waits besides a message goes first, one a turn — frictions29 18; one that sends nothing now, its
@@ -3811,6 +3843,14 @@ fn send_from(ed: &mut Editor, slash: bool) {
         let names: Vec<&str> = begun.iter().map(|&n| SLASH[n].name).collect();
         return ed.set_status(format!("{question} begins {} — tab completes it", names.join(", ")));
     }
+    // (an agent whose every start waits on its gate's job — `agentgate.rs`: begun now, so the message waits for the
+    // start as it does behind the card, never left in the input)
+    #[cfg(test)]
+    if !question.is_empty() && !c.running() && !c.starting() && c.agent.own_tools.is_some() {
+        ensure_proc(ed);
+    }
+    #[cfg(test)]
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     // Claude is working: it waits its turn (#23) — said over the input, sent when this turn ends; a second
     // one joins it. So it does while the project's settings are read (`claudetrust.rs` — their card doesn't
     // hold it: claude runs held back meanwhile): sent once it starts — and while no claude starts until the config

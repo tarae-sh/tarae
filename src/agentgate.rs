@@ -17,6 +17,17 @@
 //! The chat's start waits for it (`Gate`, after `claudetrust::Gate`): its result, on the main loop, starts the agent
 //! (`chat::gate_opened`) or says why not. The same job reads the project's files the row holds until trusted (guard 4,
 //! `agenttrust.rs`): the start waits for both, and for the card's answer when those files ask one.
+//!
+//! While the agent runs, one watch (`running`, an `fswatch` thread as `claudetrust::watch`) looks at tarae's two files
+//! and the project's held files whenever they may have changed, and at once as it starts — so a change made between
+//! the gate's read and the agent loading the files is seen too. It judges bytes, never events: every start of every
+//! tarae renames the same bytes over the two files, and that's no change (two taraes never stop each other's agents).
+//! - tarae's files not the bytes and mode tarae writes (`ours`), or not a plain file: the agent is stopped, said.
+//! - The held files' digest not the one the start was trusted for (a file changed, added — a `git pull` — or gone),
+//!   or past what's ever trusted: stopped, said; for another digest its card asks again as its end lands (`ended`).
+//! - The stop is the tripwire's (`acp::Wire::stop`): its group ended at once, its turn ended with the words, nothing it
+//!   says after read. What's sent meanwhile waits for the next start.
+//! - The window that stays: from a write until the watch has read it (a burst settles: ≥ 50 ms, at most about 0.5 s).
 
 use std::path::{Path, PathBuf};
 
@@ -24,6 +35,7 @@ use serde_json::Value;
 
 use crate::agent::Row;
 use crate::editor::Editor;
+use crate::trust::Digest;
 
 /// Where the agents' folders are, in tarae's state folder.
 pub const HOMES: &str = "agent-homes";
@@ -83,19 +95,13 @@ pub fn prepare(row: &Row, state: Option<&Path>) -> Result<Made, String> {
         }
         alone(name, &dir, 0o077)?;
     }
-    let script = config.join(crate::agent::hook::SCRIPT_NAME);
-    let Some(script_text) = script.to_str() else {
-        return Err(off(format!("{} isn't text", script.display())));
-    };
-    let ours = [script.as_path(), hook_file.as_path()];
-    servers_named_as_taraes(name, &folder, &config, &ours)?;
+    let files = ours(&recipe, &folder).map_err(|script| off(format!("{} isn't text", script.display())))?;
+    let paths = [files[0].0.as_path(), files[1].0.as_path()];
+    servers_named_as_taraes(name, &folder, &config, &paths)?;
     let mut changed = Vec::new();
-    let file = crate::agent::hook::file(recipe.hook, script_text);
-    for (path, bytes, mode) in
-        [(&script, crate::agent::hook::SCRIPT.as_bytes(), 0o700), (&hook_file, file.as_bytes(), 0o600)]
-    {
+    for (path, bytes, mode) in &files {
         let rel = path.strip_prefix(&folder).unwrap_or(path).display().to_string();
-        match put(path, bytes, mode) {
+        match put(path, bytes, *mode) {
             Ok(Some(size)) => changed.push((rel, size)),
             Ok(None) => {}
             Err(e) => return Err(off(format!("can't write {rel}: {e}"))),
@@ -103,6 +109,17 @@ pub fn prepare(row: &Row, state: Option<&Path>) -> Result<Made, String> {
     }
     let program = program(state).map_err(|e| off(format!("can't tell where this tarae is: {e}")))?;
     Ok(Made { prepared: Prepared { folder, program }, changed })
+}
+
+/// tarae's two files in the agent's `folder` for `recipe`: the program, then the hook file naming it, each with the
+/// bytes and mode tarae writes — the same from every tarae and every start. Err: the program's path, which isn't text.
+fn ours(recipe: &crate::agent::Recipe, folder: &Path) -> Result<[(PathBuf, Vec<u8>, u32); 2], PathBuf> {
+    let hook_file = folder.join(recipe.hook_file);
+    let script = hook_file.parent().unwrap_or(folder).join(crate::agent::hook::SCRIPT_NAME);
+    let Some(text) = script.to_str() else { return Err(script) };
+    let file = crate::agent::hook::file(recipe.hook, text).into_bytes();
+    let program = crate::agent::hook::SCRIPT.as_bytes().to_vec();
+    Ok([(script, program, 0o700), (hook_file, file, 0o600)])
 }
 
 /// Err unless `dir` is this user's, a real folder (not a link), with none of `mask`'s mode bits.
@@ -257,20 +274,72 @@ pub struct Gate {
     pub(crate) files: Option<crate::agenttrust::Seen>,
     /// Their card up, or its yes being kept: since when — what's sent meanwhile waits for the start.
     pub(crate) asked: Option<std::time::Instant>,
+    /// Its running agent's watch (`running`).
+    watch: Option<Watching>,
+    /// Its agent stopped by the watch, its end not landed yet (`changed_now`): what's sent meanwhile waits.
+    stopping: Option<Stopping>,
+    /// A simulation's starts: staged handles in place of processes (`sim/acp.rs`); None: real ones.
+    pub(crate) stage: Option<Stage>,
+}
+
+/// A running agent's watch: what it compares, and its thread's waker (None: a staged start's, no thread).
+struct Watching {
+    watched: Watched,
+    waker: Option<crate::fswatch::Waker>,
+}
+
+/// An agent the watch stopped: its words, whether the held files changed (its gate opens again as its end lands, so
+/// their card asks), and since when.
+struct Stopping {
+    said: String,
+    again: bool,
+    since: std::time::Instant,
+}
+
+/// A simulation's starts (`chat::ensure_proc`): each takes the next handle, counted, its process's generation kept.
+#[derive(Default)]
+pub(crate) struct Stage {
+    pub agents: std::collections::VecDeque<crate::agent::Agent>,
+    pub starts: usize,
+    pub generations: Vec<u64>,
 }
 
 impl Default for Gate {
     fn default() -> Gate {
         static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let id = IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Gate { reading: None, prepared: None, id, files: None, asked: None }
+        Gate {
+            reading: None,
+            prepared: None,
+            id,
+            files: None,
+            asked: None,
+            watch: None,
+            stopping: None,
+            stage: None,
+        }
+    }
+}
+
+impl Drop for Gate {
+    /// The chat gone: its agent's watch ends.
+    fn drop(&mut self) {
+        if let Some(w) = self.watch.take().and_then(|w| w.waker) {
+            w.wake();
+        }
     }
 }
 
 impl Gate {
-    /// Since when its agent has waited for the folder and the files, or for their card's answer.
+    /// Since when its agent has waited for the folder and the files, or for their card's answer, or for its stop to
+    /// land.
     pub fn waiting_since(&self) -> Option<std::time::Instant> {
-        self.reading.or(self.asked)
+        self.reading.or(self.asked).or(self.stopping.as_ref().map(|s| s.since))
+    }
+
+    /// Its agent is being stopped by the watch: nothing is sent to it.
+    pub(crate) fn stopping(&self) -> bool {
+        self.stopping.is_some()
     }
 }
 
@@ -375,6 +444,194 @@ pub(crate) fn forgotten(ed: &mut Editor, place: &crate::trust::Place) {
             s.state = crate::trust::State::Ask;
         }
     }
+}
+
+// ── The watch while it runs ──────────────────────────────────────────────────────
+
+/// What a running agent's watch compares, and against what: tarae's two files in its folder against what tarae writes
+/// (`ours`), the project's held files against the digest its start was trusted for.
+#[derive(Clone)]
+pub(crate) struct Watched {
+    row: &'static Row,
+    root: PathBuf,
+    folder: PathBuf,
+    ours: Vec<(PathBuf, Vec<u8>, u32)>,
+    /// None: no digest at its start — any look is a change.
+    hash: Option<Digest>,
+    /// The chat's process it watches (`Chat.generation`): a later one isn't stopped by it.
+    generation: u64,
+}
+
+/// What the watch found.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Change {
+    /// One of tarae's files isn't what tarae writes (its bytes, its mode, or not a plain file): its path from the folder.
+    Ours(String),
+    /// The held files aren't what the start was trusted for: another digest, or (Err) past what's ever trusted — why,
+    /// in `agenttrust::look`'s words.
+    Held(Result<Digest, String>),
+}
+
+/// What's changed since the start, judged by bytes: tarae's files first, then the held files. Reads the disk.
+fn changed(w: &Watched) -> Option<Change> {
+    for (path, bytes, mode) in &w.ours {
+        if !holds(path, bytes, *mode) {
+            return Some(Change::Ours(path.strip_prefix(&w.folder).unwrap_or(path).display().to_string()));
+        }
+    }
+    match crate::agenttrust::look(w.row, &w.root, None) {
+        Ok(seen) if Some(seen.hash) == w.hash => None,
+        Ok(seen) => Some(Change::Held(Ok(seen.hash))),
+        Err(why) => Some(Change::Held(Err(why))),
+    }
+}
+
+/// `path` is a plain file with `mode` holding `bytes` — never read through a link, nor held by a FIFO.
+fn holds(path: &Path, bytes: &[u8], mode: u32) -> bool {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let plain = std::fs::symlink_metadata(path)
+        .is_ok_and(|m| m.is_file() && m.mode() & 0o7777 == mode && m.len() == bytes.len() as u64);
+    let mut was = Vec::new();
+    let opened = || {
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
+    };
+    plain
+        && opened().and_then(|f| f.take(bytes.len() as u64 + 1).read_to_end(&mut was)).is_ok()
+        && was == bytes
+}
+
+/// `w`'s files and folders watched: tarae's two, each held path (made, replaced or gone — not there yet: the closest
+/// folder above it), and every folder under one, as deep as `agenttrust::look` reads, for its files added, removed or
+/// written.
+fn arm(watcher: &mut crate::fswatch::Watcher, w: &Watched) {
+    use crate::agenttrust::{DEPTH_MAX, FILES_MAX};
+    w.ours.iter().for_each(|(p, ..)| watcher.file(p));
+    let mut folders = 0;
+    for h in w.row.held {
+        let top = w.root.join(h.trim_end_matches('/'));
+        watcher.file(&top);
+        let mut next = vec![(top, 0)];
+        while let Some((dir, depth)) = next.pop() {
+            if folders >= FILES_MAX || !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            watcher.folder(&dir);
+            folders += 1;
+            if depth < DEPTH_MAX {
+                let entries = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+                next.extend(entries.map(|e| (e.path(), depth + 1)));
+            }
+        }
+    }
+}
+
+/// The chat's agent started on `prepared` (`chat::ensure_proc`, a start its gate opened): watched while it runs, from
+/// now — on a thread of its own (a simulation's staged start has none: its scenario takes the rounds, `look_again`).
+pub(crate) fn running(ed: &mut Editor, prepared: &Prepared) {
+    let (root, tx) = (ed.workspace.root.clone(), ed.events.sender());
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let (row, folder) = (c.agent, prepared.folder.clone());
+    // (`prepare` made these very files: its row has a recipe and their paths are text)
+    let Some(ours) = row.own_tools.and_then(|r| ours(&r, &folder).ok()) else { return };
+    let hash = c.agent_gate.files.as_ref().map(|s| s.hash);
+    let w = Watched { row, root, folder, ours: ours.into(), hash, generation: c.generation() };
+    let waker = c.agent_gate.stage.is_none().then(crate::fswatch::Waker::new);
+    let old = c.agent_gate.watch.replace(Watching { watched: w.clone(), waker: waker.clone() });
+    if let Some(old) = old.and_then(|o| o.waker) {
+        old.wake();
+    }
+    let Some(waker) = waker else { return };
+    crate::event::thread("tarae-agentwch", move || {
+        loop {
+            // Armed before looking, so a change made while we look still ends the wait below
+            let mut watcher = crate::fswatch::Watcher::with_waker(waker.clone());
+            arm(&mut watcher, &w);
+            if let Some(change) = changed(&w) {
+                let generation = w.generation;
+                let apply = move |ed: &mut Editor| changed_now(ed, generation, change);
+                let _ = tx.send(crate::event::Event::Job(Box::new(apply)));
+                break;
+            }
+            if watcher.wait() == crate::fswatch::Woke::Cancelled {
+                break;
+            }
+        }
+    });
+}
+
+/// The watch's round as a job, for a staged start's scenario (`sim/acp.rs`): what it finds applied as the thread's
+/// is. Whether a watch was there to look.
+pub(crate) fn look_again(ed: &mut Editor) -> bool {
+    let c = ed.workspace.claude.chat.as_ref();
+    let Some(w) = c.and_then(|c| c.agent_gate.watch.as_ref()).map(|w| w.watched.clone()) else {
+        return false;
+    };
+    ed.events.jobs().spawn(move || {
+        let change = changed(&w);
+        move |ed: &mut Editor| match change {
+            Some(change) => changed_now(ed, w.generation, change),
+            None => ed.unchanged = true,
+        }
+    });
+    true
+}
+
+/// The watch found `change` while process `generation` ran: it's stopped as the tripwire stops one (`Agent::stop_with`:
+/// its group ended at once, its turn ended with the words), said in the log and a toast; the transcript says it once its
+/// end lands (`ended`). A later process, one ended or one already being stopped: nothing.
+fn changed_now(ed: &mut Editor, generation: u64, change: Change) {
+    let log = ed.workspace.log();
+    let chat = ed.workspace.claude.chat.as_mut();
+    let ours =
+        |c: &crate::chat::Chat| c.generation() == generation && c.running() && !c.agent_gate.stopping();
+    let Some(c) = chat.filter(|c| ours(c)) else { return };
+    let name = c.agent.name;
+    let ended = "stopped: it and everything it started ended";
+    let (said, toast, again) = match change {
+        Change::Ours(rel) => (
+            format!(
+                "{name}'s {rel} changed while it ran — {ended}. tarae writes it again at its next start."
+            ),
+            format!("{name} stopped — its {rel} changed"),
+            false,
+        ),
+        Change::Held(Ok(_)) => (
+            format!("{name}'s files in this project changed while it ran — {ended}. Their card asks again."),
+            format!("{name} stopped — its files in this project changed"),
+            true,
+        ),
+        Change::Held(Err(why)) => (
+            format!("{name}'s files in this project changed while it ran — {ended}. {why}"),
+            format!("{name} stopped — its files in this project changed"),
+            false,
+        ),
+    };
+    log.line("agent", "warn", &said);
+    let since = crate::clock::now();
+    c.agent_gate.stopping = Some(Stopping { said: said.clone(), again, since });
+    if !c.agent().is_some_and(|a| a.stop_with(said)) {
+        c.stop_process();
+    }
+    ed.set_error(toast);
+}
+
+/// The chat's agent ended (`chat`'s `Exit`): its watch with it. Stopped by the watch: its words said once in the
+/// transcript (the turn's end said them, if one ran), the conversation to go on at the next start. Whether its gate
+/// opens again now: the held files changed (their card asks again), or a message waits for the start.
+pub(crate) fn ended(ed: &mut Editor) -> bool {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
+    if let Some(w) = c.agent_gate.watch.take().and_then(|w| w.waker) {
+        w.wake();
+    }
+    let Some(stop) = c.agent_gate.stopping.take() else { return false };
+    if !c.msgs.iter().any(|m| m.text == stop.said) {
+        c.note(&stop.said);
+    }
+    if let Some(id) = c.conversation.clone() {
+        c.resume = Some(id);
+    }
+    stop.again || c.queued.is_some()
 }
 
 #[cfg(test)]
