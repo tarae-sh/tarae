@@ -8,6 +8,9 @@ mod agent;
 /// Guard 1's folder, made before an agent's start (agents beside Claude, step 3): under the gate with the ACP wire.
 #[cfg(test)]
 mod agentgate;
+/// Guard 4, a project's files an agent loads held until trusted (agents beside Claude, step 3): under the gate too.
+#[cfg(test)]
+mod agenttrust;
 #[cfg(test)]
 mod allocs;
 mod allow;

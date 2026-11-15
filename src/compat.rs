@@ -1118,6 +1118,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "in fn with_root: claude_lines",
         "stays off: only a simulation's chat has a stand-in claude (`sim/claudestart.rs`, `sim/quota.rs`) — no run is a chat's",
     ),
+    ("src/editor.rs", "in fn with_root: agent_files_held", NOT_RUNS),
     ("src/editor.rs", "in fn with_root: agents_tripped", NOT_RUNS),
     (
         "src/editor.rs",

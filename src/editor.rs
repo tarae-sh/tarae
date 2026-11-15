@@ -1426,6 +1426,10 @@ pub struct Editor {
     /// quit (`llm::chat_held`) — one of their sessions running elsewhere goes on, and trips on its own.
     #[cfg(test)]
     pub agents_tripped: Vec<&'static str>,
+    /// Where an agent's files were held back on their card (guard 4, `agenttrust.rs`), by the answer's place: no agent
+    /// starts there until you quit — a no is never kept, as code trust's.
+    #[cfg(test)]
+    pub agent_files_held: Vec<crate::trust::Place>,
     /// Tests: `space i`'s claude is no process — its stdin's lines go here (`ask.rs`; a simulation's stand-in, apart
     /// from the chat's).
     #[cfg(test)]
@@ -1822,6 +1826,8 @@ impl Editor {
             claude_lines: None,
             #[cfg(test)]
             agents_tripped: Vec::new(),
+            #[cfg(test)]
+            agent_files_held: Vec::new(),
             #[cfg(test)]
             ask_lines: None,
             #[cfg(test)]

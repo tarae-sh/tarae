@@ -270,6 +270,9 @@ pub enum Kind {
     Hook,
     /// A repository's code its language servers run (`codetrust.rs`, G13).
     Code,
+    /// A project's files an agent loads that run as you, its row's held paths (`agenttrust.rs`, guard 4).
+    #[cfg(test)]
+    Agent,
 }
 
 impl Kind {
@@ -282,10 +285,18 @@ impl Kind {
     ];
 
     fn word(self) -> &'static str {
+        #[cfg(test)]
+        if self == Kind::Agent {
+            return "agent";
+        }
         Kind::WORDS.iter().find(|(k, _)| *k == self).map_or("", |(_, w)| w)
     }
 
     fn of_word(w: &str) -> Option<Kind> {
+        #[cfg(test)]
+        if w == "agent" {
+            return Some(Kind::Agent);
+        }
         Kind::WORDS.iter().find(|(_, x)| *x == w).map(|(k, _)| *k)
     }
 }
@@ -370,7 +381,8 @@ fn top_of(common: &Path) -> Option<&Path> {
 
 /// The folder a folder's answer of `kind` for `file` (a `Place::File`'s) is about, and the file from it — its
 /// place in a repository made there: tarae's settings and the code at the folder itself, Claude's settings in its
-/// `.claude`. Git's and the hooks' answers are a repository's from the start: never carried.
+/// `.claude`, an agent's files at its row's held path. Git's and the hooks' answers are a repository's from the start:
+/// never carried.
 fn carried_rel(kind: Kind, file: &Path) -> Option<(PathBuf, PathBuf)> {
     let (name, dir) = (file.file_name()?, file.parent()?);
     match kind {
@@ -378,6 +390,13 @@ fn carried_rel(kind: Kind, file: &Path) -> Option<(PathBuf, PathBuf)> {
         Kind::Claude if dir.file_name() == Some(".claude".as_ref()) => {
             Some((dir.parent()?.to_path_buf(), Path::new(".claude").join(name)))
         }
+        #[cfg(test)]
+        Kind::Agent => crate::agent::held_paths().find_map(|h| {
+            let rel = Path::new(h.trim_end_matches('/'));
+            let up = rel.components().count();
+            let top = file.ancestors().nth(up).filter(|_| file.ends_with(rel) && up > 0)?;
+            Some((top.to_path_buf(), rel.to_path_buf()))
+        }),
         _ => None,
     }
 }

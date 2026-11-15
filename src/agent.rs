@@ -180,6 +180,16 @@ pub struct Row {
     /// it moves (`acp::Wire`'s mode). None: it has no modes.
     #[cfg(test)]
     pub mode: Option<&'static str>,
+    /// What a project can make it load that runs as you, from the project's root (guard 4, `agenttrust.rs`): held until
+    /// you trust it on a card, the agent not started before. A path ending in `/` is a folder: every file under it.
+    #[cfg(test)]
+    pub held: &'static [&'static str],
+}
+
+/// Every row's held paths (`Row.held`): what a folder's answer of `trust::Kind::Agent` is about (`trust::carried_rel`).
+#[cfg(test)]
+pub fn held_paths() -> impl Iterator<Item = &'static str> {
+    ROWS.iter().copied().chain([&STAND_IN]).flat_map(|r| r.held.iter().copied())
 }
 
 /// A config folder of tarae's own (`$state/agent-homes/<row>/`, `agentgate.rs`), and the files tarae writes there
@@ -233,6 +243,9 @@ pub static CLAUDE: Row = Row {
     own_tools: None,
     #[cfg(test)]
     mode: None,
+    // (its own gate is `claudetrust.rs`)
+    #[cfg(test)]
+    held: &[],
 };
 
 /// The stand-in ACP agent's row (`acp::standin`): the test binary re-run on its one test, speaking ACP on
@@ -246,6 +259,7 @@ pub static STAND_IN: Row = Row {
     caps: acp::CAPS,
     own_tools: Some(AGY_TOOLS_OFF),
     mode: Some("default"),
+    held: &[".stand-in/"],
 };
 
 /// Every row tarae has: what a kept conversation's name is looked up in (`row_named`).
@@ -905,6 +919,7 @@ mod tests {
             caps,
             own_tools,
             mode: Some("default"),
+            held: &[],
         };
         let asks = super::Caps { asks: true, ..super::acp::CAPS };
         assert_eq!(floor(&row(super::acp::CAPS, None)).len(), 1);

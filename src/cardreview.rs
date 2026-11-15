@@ -482,6 +482,8 @@ pub const AUTO: &[(&str, Auto)] = &[
     ("outside", Auto::Never),
     ("project-trust", Auto::Own),
     ("claude-settings", Auto::Own),
+    #[cfg(test)]
+    ("agent-files", Auto::Own),
     ("git-trust", Auto::Own),
     ("repo-trust", Auto::Own),
     ("code-trust", Auto::Own),

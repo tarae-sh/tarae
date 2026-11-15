@@ -158,6 +158,8 @@ fn kind_heading(k: Kind) -> &'static str {
         Kind::Git => "git's own commands",
         Kind::Hook => "git hooks",
         Kind::Code => "code language servers run",
+        #[cfg(test)]
+        Kind::Agent => "an agent's files in the project",
     }
 }
 
@@ -511,6 +513,11 @@ impl Editor {
     /// quit. Each card asks again at the next look — `:project-trust`, `:claude-settings`, `:git-trust` ask now.
     pub(crate) fn trust_take(&mut self, kind: Kind, place: Place) {
         let given = self.trust_taking_given(place.clone());
+        // (an agent's files' yes in hand asks again — the store's goes below)
+        #[cfg(test)]
+        if kind == Kind::Agent {
+            crate::agentgate::forgotten(self, &place);
+        }
         // (a git resolve from now on reads it held, and one kept or under way isn't used: N8)
         if kind == Kind::Git {
             crate::gitrepo::trust_changed();
@@ -572,6 +579,8 @@ impl Editor {
             Kind::Git => "Taken back — tarae's git holds this repository's commands; its card asks again",
             Kind::Hook => "Taken back — the hook is asked about before it runs again",
             Kind::Code => "Taken back — its language servers stopped; its card asks before they start again",
+            #[cfg(test)]
+            Kind::Agent => "Taken back — its card asks before the agent starts here again",
         });
     }
 }

@@ -15,7 +15,8 @@
 //!   isn't started while one is there, said (condition 3).
 //!
 //! The chat's start waits for it (`Gate`, after `claudetrust::Gate`): its result, on the main loop, starts the agent
-//! (`chat::gate_opened`) or says why not.
+//! (`chat::gate_opened`) or says why not. The same job reads the project's files the row holds until trusted (guard 4,
+//! `agenttrust.rs`): the start waits for both, and for the card's answer when those files ask one.
 
 use std::path::{Path, PathBuf};
 
@@ -178,20 +179,25 @@ fn servers_named_as_taraes(name: &str, folder: &Path, config: &Path, ours: &[&Pa
             Err(_) => continue,
             Ok(_) => {}
         }
-        let named = match serde_json::from_slice::<Value>(&text) {
-            Ok(v) => taraes_server(&v),
-            Err(_) if json => {
-                String::from_utf8_lossy(&text).to_lowercase().contains("tarae").then(|| "tarae".into())
-            }
-            Err(_) => None,
-        };
-        if let Some(server) = named {
+        if let Some(server) = named_in(json, &text) {
             return Err(format!(
                 "{name}: {rel} names an MCP server \"{server}\" — its tools would pass for tarae's; not started"
             ));
         }
     }
     Ok(())
+}
+
+/// The server `text` names as tarae's: by key where it reads as JSON (`taraes_server`); a `.json` file (`json`) that
+/// doesn't, by the word anywhere in it — at worst a false refusal.
+pub fn named_in(json: bool, text: &[u8]) -> Option<String> {
+    match serde_json::from_slice::<Value>(text) {
+        Ok(v) => taraes_server(&v),
+        Err(_) if json => {
+            String::from_utf8_lossy(text).to_lowercase().contains("tarae").then(|| "tarae".into())
+        }
+        Err(_) => None,
+    }
 }
 
 /// A server's name that would pass for tarae's: `tarae`, any case, alone or before a mark that isn't a letter or a
@@ -238,58 +244,85 @@ fn program(state: &Path) -> std::io::Result<PathBuf> {
 
 // ── The chat's gate ──────────────────────────────────────────────────────────────
 
-/// A chat's gate for an agent whose own tools tarae turns off: it starts once its folder is made (`prepare`).
+/// A chat's gate for an agent whose own tools tarae turns off: it starts once its folder is made (`prepare`) and the
+/// project's files it holds are trusted (`agenttrust`).
 pub struct Gate {
-    /// The folder being made: since when (the chat says it's starting meanwhile).
+    /// The folder being made and the files read: since when (the chat says it's starting meanwhile).
     reading: Option<std::time::Instant>,
     /// Made, for the next start — taken by it: each start makes it again.
     prepared: Option<Prepared>,
     /// This gate's: a closed chat's late result isn't another chat's.
-    id: u64,
+    pub(crate) id: u64,
+    /// The project's held files as last read, and the answer in hand for them (the store may not have it yet).
+    pub(crate) files: Option<crate::agenttrust::Seen>,
+    /// Their card up, or its yes being kept: since when — what's sent meanwhile waits for the start.
+    pub(crate) asked: Option<std::time::Instant>,
 }
 
 impl Default for Gate {
     fn default() -> Gate {
         static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let id = IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Gate { reading: None, prepared: None, id }
+        Gate { reading: None, prepared: None, id, files: None, asked: None }
     }
 }
 
 impl Gate {
-    /// Since when its agent has waited for the folder.
+    /// Since when its agent has waited for the folder and the files, or for their card's answer.
     pub fn waiting_since(&self) -> Option<std::time::Instant> {
-        self.reading
+        self.reading.or(self.asked)
     }
 }
 
-/// The chat's agent may start (`chat::ensure_proc`): its folder made — None while it's made on a worker (it starts
-/// once it is, `made`).
+/// The chat's agent may start (`chat::ensure_proc`): its folder made and the project's files it holds trusted — None
+/// while that's done on a worker (it starts once it is, `made_now`) or their card waits.
 pub fn ready(ed: &mut Editor) -> Option<Prepared> {
     let state = crate::agent::acp::state(ed.claude_env.as_ref());
+    let (root, store) = (ed.workspace.root.clone(), ed.trust_path.clone());
     let c = ed.workspace.claude.chat.as_mut()?;
     if let Some(p) = c.agent_gate.prepared.take() {
         return Some(p);
     }
-    if c.agent_gate.reading.is_none() {
+    if c.agent_gate.reading.is_none() && c.agent_gate.asked.is_none() {
         c.agent_gate.reading = Some(crate::clock::now());
         let (id, row) = (c.agent_gate.id, c.agent);
         ed.events.jobs().spawn(move || {
+            let (looked, since, carried) = crate::agenttrust::look_since(row, &root, store.as_deref());
             let made = prepare(row, state.as_deref());
-            move |ed: &mut Editor| made_now(ed, id, made)
+            move |ed: &mut Editor| {
+                ed.trust_carried(carried);
+                made_now(ed, id, made, looked, since)
+            }
         });
     }
     None
 }
 
-/// The folder made: what differed said, and the agent started (`chat::gate_opened`) — or why not, said, and nothing
-/// started (a message that waited stays, for the next try).
-fn made_now(ed: &mut Editor, id: u64, made: Result<Made, String>) {
+/// The folder made and the files read: what differed said, and the agent started (`chat::gate_opened`) where its files
+/// are trusted — else their card up, or why not said, nothing started (a message that waited stays, for the start).
+fn made_now(
+    ed: &mut Editor,
+    id: u64,
+    made: Result<Made, String>,
+    looked: Result<crate::agenttrust::Seen, String>,
+    (key, at): (String, u64),
+) {
+    use crate::trust::State;
     let log = ed.workspace.log();
+    // (read before a take-back there given since: not trusted, whatever the store said then — F11)
+    let taken = ed.trust_path.as_deref().is_some_and(|t| crate::storewrite::since(t, &key, at).1);
+    let held = looked.as_ref().is_ok_and(|s| ed.agent_files_held.contains(&s.place));
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.agent_gate.id == id) else { return };
     c.agent_gate.reading = None;
     let name = c.agent.name;
-    match made {
+    let refused = |ed: &mut Editor, said: &str| {
+        log.line("agent", "warn", said);
+        let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+        c.note(said);
+        let at = c.msgs.len() - 1;
+        crate::chat::said_here(ed, at);
+    };
+    let prepared = match made {
         Ok(Made { prepared, changed }) => {
             for (rel, size) in changed {
                 log.line(
@@ -299,14 +332,47 @@ fn made_now(ed: &mut Editor, id: u64, made: Result<Made, String>) {
                 );
                 c.note(&format!("{name}'s {rel} was changed outside tarae — written again"));
             }
-            c.agent_gate.prepared = Some(prepared);
-            crate::chat::gate_opened(ed);
+            prepared
         }
-        Err(said) => {
-            log.line("agent", "warn", &said);
-            c.note(&said);
-            let at = c.msgs.len() - 1;
-            crate::chat::said_here(ed, at);
+        Err(said) => return refused(ed, &said),
+    };
+    let mut seen = match looked {
+        Ok(seen) => seen,
+        Err(said) => return refused(ed, &said),
+    };
+    // (the answer in hand: a yes the store may not have yet — for these very files)
+    let in_hand = c.agent_gate.files.as_ref().is_some_and(|s| s.hash == seen.hash && s.place == seen.place);
+    if in_hand && c.agent_gate.files.as_ref().is_some_and(|s| s.state == State::Trusted) {
+        seen.state = State::Trusted;
+    }
+    if taken {
+        seen.state = State::Ask;
+    }
+    if seen.files.is_empty() || seen.state == State::Trusted {
+        c.agent_gate.files = Some(seen);
+        c.agent_gate.prepared = Some(prepared);
+        return crate::chat::gate_opened(ed);
+    }
+    if held {
+        seen.state = State::Ignored;
+        c.agent_gate.files = Some(seen);
+        return refused(ed, &format!("Held back — {name} isn't started in this project until you quit"));
+    }
+    seen.state = State::Ask;
+    c.agent_gate.asked = Some(crate::clock::now());
+    c.note(&format!("{name} waits for your answer on the card — your message goes once it starts"));
+    let card = crate::agenttrust::card(name, &seen);
+    c.agent_gate.files = Some(seen);
+    ed.trust_offer(card);
+}
+
+/// `:granted`'s `d` on an agent's files at `place`: an answer in hand there asks again (the store's is being taken
+/// back) — in every session.
+pub(crate) fn forgotten(ed: &mut Editor, place: &crate::trust::Place) {
+    let workspaces = std::iter::once(&mut ed.workspace).chain(ed.workspaces.iter_mut());
+    for c in workspaces.filter_map(|w| w.claude.chat.as_mut()) {
+        if let Some(s) = c.agent_gate.files.as_mut().filter(|s| s.place == *place) {
+            s.state = crate::trust::State::Ask;
         }
     }
 }

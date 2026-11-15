@@ -730,6 +730,7 @@ fn a_test_never_starts_a_real_agent() {
             caps: CAPS,
             own_tools: None,
             mode: None,
+            held: &[],
         }));
         let s = Start::on(row, Role::Chat, &cfg);
         let refused = std::panic::catch_unwind(|| command(&s, &std::env::temp_dir(), None).map(|_| ()));
