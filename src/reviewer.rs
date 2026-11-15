@@ -820,7 +820,11 @@ pub fn pump(ed: &mut Editor) {
         let room = read();
         move |ed: &mut Editor| {
             ed.reviewer_pumping = false;
+            // (critical, its retry says nothing changed — but the memory read may have moved a reviewer's row in the
+            // session list to `waits to review`: then it did, the one list L4)
+            let before = crate::sessionpane::helpers_drawn(ed);
             pump_with(ed, room.pressure);
+            crate::sessionpane::redraw_if_moved(ed, before);
         }
     });
 }
@@ -4085,7 +4089,9 @@ mod tests {
         assert_eq!(st.json()["workspaces"][0]["reviewer"], "waits to review");
         assert!(st.text().contains("s0 author (front) · idle · waits to review"), "{}", st.text());
         assert!(tabs(&mut ed).contains("author ¶ waits ·"));
-        assert_eq!(crate::worktree::Shown::reviewer_of(&ed, &ed.workspace), "¶ waits to review");
+        let rows = ed.sessions_rows();
+        let row = rows.iter().find(|r| r.helper == Some(crate::sessionpane::Kind::Review)).expect("its row");
+        assert_eq!(row.text(crate::sessionpane::Col::State), "waits to review");
         // The retry lands, still critical: the next one armed; memory back: it reads, its time from there
         settle_until(&mut ed, |ed| !ed.reviewer_retry);
         settle_until(&mut ed, |ed| ed.reviewer_retry);

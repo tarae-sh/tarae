@@ -659,9 +659,13 @@ impl Sim {
                 Next::Land(from) => {
                     let (site, ev) =
                         self.h.lock().inbox.get_mut(&from).and_then(VecDeque::pop_front).unwrap();
+                    // (each result judged on its own, as the main loop's batch of one: `term::handle_noting`)
                     let land = |ed: &mut Editor| match self.frames {
                         Some(_) => self.batch(ed, ev),
-                        None => ed.handle_event(ev),
+                        None => {
+                            ed.unchanged = false;
+                            ed.handle_event(ev)
+                        }
                     };
                     if let Err(p) = caught(|| land(ed)) {
                         self.trace.push(format!("lands from {site}"));

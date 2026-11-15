@@ -35,7 +35,13 @@ use super::fetch::Fetched;
 use crate::agent::{self, Agent, Event, Prompt};
 use crate::editor::Editor;
 use crate::llm;
+use crate::sessionpane::{Ink, Kind};
 use crate::tools::Call;
+
+/// A query's words in quotes, as its row in the session list says what it was asked.
+fn quoted(q: &Query) -> String {
+    format!("\"{}\"", q.words)
+}
 
 /// `llm.web-search-model`'s default.
 pub const MODEL: &str = "haiku";
@@ -488,6 +494,10 @@ fn landed(ed: &mut Editor, id: u64, found: Found) {
     let (call, query, summary) = (s.call.clone(), s.query.clone(), s.summary);
     let took = crate::clock::since(s.started);
     let now = crate::clock::now();
+    // (its row in the session list stands so until its session's next turn — the one list L4)
+    let n = pages(&found).len().min(RESULTS_MAX);
+    let said = (if n == 1 { "1 page".to_string() } else { format!("{n} pages") }, Ink::Accent);
+    crate::sessionpane::ended(ed, Kind::Search, said, quoted(&query));
     let page = page_of(&query, &found, summary, took);
     let url = page.url.clone();
     let gone = ed.workspace.pages.keep(Arc::new(page), now, false);
@@ -511,6 +521,8 @@ fn ended(ed: &mut Editor, id: u64, r: Result<String, String>) {
                 Err("the web search didn't run: its model answered without searching".into())
             }
         };
+        let row = if said.is_ok() { ("found nothing", Ink::Faint) } else { ("failed", Ink::Warn) };
+        crate::sessionpane::ended(ed, Kind::Search, (row.0.into(), row.1), quoted(&s.query));
         crate::tools::answer(ed, s.call, said);
     }
     next(ed);
@@ -544,6 +556,7 @@ pub fn turn_over(ed: &mut Editor) {
     let left: Vec<u64> = ed.workspace.claude.searches.iter().filter(|s| !s.answered).map(|s| s.id).collect();
     for id in left {
         if let Some(s) = gone(ed, id) {
+            crate::sessionpane::ended(ed, Kind::Search, ("stopped".into(), Ink::Warn), quoted(&s.query));
             crate::log::line("claude", "info", &format!("web search {id} stopped before its cost came"));
             crate::event::drop_later(s);
         }

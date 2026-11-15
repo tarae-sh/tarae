@@ -32,8 +32,9 @@ use crate::reviewer::{Role, State};
 /// reviewpanel's before it): 0 a board started without its card · 3 a refuted claim pinned, no stagger · 6 a
 /// review closed stopping its reviewer · 7 a stop that leaves members waiting, the line ignoring the memory · 18 a
 /// finding not placed on the lines now · 169 a same failure pinned apart (its skeptic's `same_as` landing on a
-/// claim it confirmed — none of the first 168 catch it).
-const SEEDS: &[u64] = &[0, 3, 6, 7, 18, 169];
+/// claim it confirmed — none of the first 168 catch it) · 23 the memory read critical moving the board's row in the
+/// session list to `waits to review` while its retry says nothing changed (the one list L4: none of 0–22 does).
+const SEEDS: &[u64] = &[0, 3, 6, 7, 18, 23, 169];
 
 /// The scenario's own steps a run (the jobs' and results' come between them).
 const INPUTS: usize = 40;
@@ -62,6 +63,8 @@ struct Seen {
     edits: Vec<usize>,
     moved: Option<String>,
     step: usize,
+    /// The reviewer's row in the session list as the last step left it (the one list L4).
+    row: Option<Vec<crate::sessionpane::Helper>>,
 }
 
 fn room() -> crate::share::Room {
@@ -106,6 +109,10 @@ fn run(choices: Choices) -> Vec<String> {
     ed.config.review_board_at_once = AT_ONCE;
     // (as shipped, not the tests' none: the other angles wait for the first one's prompt — a timer stepped)
     ed.reviewer_stagger = STAGGER;
+    // (the session list up, the keys back on the code: the reviewer's row in sight — a frame each time it moves, the
+    // stagger's and the retry's timers too, which change nothing else on screen; none while it stands — the one list L4)
+    ed.float_list_open(crate::pane::GroupKind::Sessions, ed.workspace.id.n, None);
+    ed.float_list_leave(crate::pane::GroupKind::Sessions);
     let (shown, seen) = (dir.display().to_string(), std::cell::RefCell::new(Seen::default()));
     let check = |ed: &Editor| held(ed, &repo, &mut seen.borrow_mut());
     let step = |sim: &mut Sim, ed: &mut Editor| input(sim, ed, &repo, &mut seen.borrow_mut());
@@ -120,6 +127,8 @@ fn run(choices: Choices) -> Vec<String> {
 fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &mut Seen) -> String {
     let n = sim.steps;
     seen.step = n;
+    // (as a key's batch begins: `term::handle_noting`)
+    ed.unchanged = false;
     let c = &mut sim.choices;
     // (by arm: a board or its card's answer 3, the one pass 1, a member says something 12, one ends 6, one fails 1,
     // a stop 1, a review opened, closed or replaced 2, the memory 1, time passing 2, a frame 1, you editing the file
@@ -296,6 +305,11 @@ fn held(ed: &Editor, repo: &std::path::Path, seen: &mut Seen) -> Result<(), Stri
     use crate::share::Pressure;
     if let Some(m) = seen.moved.take() {
         return Err(m);
+    }
+    // (the reviewer's row moved since the last step, and what moved it said nothing changed on screen: no frame shows it)
+    let row = crate::sessionpane::helpers_drawn(ed);
+    if std::mem::replace(&mut seen.row, row.clone()) != row && ed.unchanged {
+        return Err(format!("the reviewer's row moved to {row:?}, no frame drawn for it"));
     }
     placed(ed, repo, seen)?;
     let started = &mut seen.started;

@@ -126,10 +126,11 @@ impl Editor {
         }
     }
 
-    /// Its rows' ids, in its order (the session list's: its workspaces' numbers — all this machine's).
+    /// Its rows' ids, in its order (the session list's: its workspaces' numbers — all this machine's — and its helpers',
+    /// `sessionpane::RowId`).
     pub fn float_list_ids(&self, kind: GroupKind) -> Vec<u64> {
         match kind {
-            GroupKind::Sessions => self.sessions_by_parent().iter().map(|l| l.id.n).collect(),
+            GroupKind::Sessions => self.sessions_row_ids(),
             GroupKind::Messages => self.message_ids(),
             GroupKind::Folders => self.folder_ids(),
             _ => Vec::new(),
@@ -234,11 +235,15 @@ impl Editor {
             && !self.float_list_keys(kind)
     }
 
-    /// The row the list's selection is on (by its id, else its first row).
+    /// The row the list's selection is on (by its id — a helper's gone, its session's — else its first row).
     pub fn float_list_here(&self, kind: GroupKind) -> Option<u64> {
         let p = self.float_list(kind)?;
         let ids = self.float_list_ids(kind);
-        ids.contains(&p.selected).then_some(p.selected).or_else(|| ids.first().copied())
+        let session = || {
+            let id = crate::sessionpane::RowId::of(p.selected).session().n;
+            (kind == GroupKind::Sessions && ids.contains(&id)).then_some(id)
+        };
+        ids.contains(&p.selected).then_some(p.selected).or_else(session).or_else(|| ids.first().copied())
     }
 
     /// The selection on row `i` (in the list's order), `top` its first row in sight.

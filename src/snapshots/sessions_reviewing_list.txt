@@ -4,13 +4,13 @@
 01   1                                                                                             │  ▎ Ask Claude
 02                                                                                                 │
 03                                                                                                 │  It reads the whole project,
-04                                 ╭─ sessions ── 3 sessions · 1 working ─────────────────────────────────────────────────────────╮
-05                                 │▎ main                 ¶ reviewing                                                            │
-06                                 │  fix-login  thinking  ¶ reviewing                                                            │
-07                                 │  docs                 ¶ reviewer done                                                        │
-08                                 ╰──────────────────────── enter switch  / search  o new  $ billing  esc code  q close  O fork ─╯he project?
-09                                                                                                 │  › Why is this diagnostic happening?
-10                                                                                                 │
+04                                 ╭─ sessions ── 3 sessions · 3 helpers · 3 working ─────────────────────────────────────────────╮
+05                                 │▎ main                                                                                       ▎│
+06                                 │  └─ reviewer  reviewing · 0 reads  uncommitted                                              ▎│
+07                                 │  fix-login    thinking                                                                      ▎│
+08                                 │  └─ reviewer  reviewing · 0 reads  uncommitted                                              ▎│he project?
+09                                 │  docs                                                                                       ▎│ening?
+10                                 ╰──────────────────────── enter switch  / search  o new  $ billing  esc code  q close  O fork ─╯
 11                                                                                                 │  C-t for another model
 12                                                                                                 │  ───────────────────────────────────────────────────────────
 13                                                                                                 │  › Ask about [scratch]…
@@ -38,13 +38,13 @@
 01   A                                                                                             f  a TTT TTTTTT
 02                                                                                                 f
 03                                                                                                 f  dd ddddd ddd ddddd dddddddd
-04                                 aa TTTTTTTT aa d dddddddd f f fffffff aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-05                                 aa BBBB                 d ddddddddd                                                            a
-06                                 a             ffffffff  d ddddddddd                                                            a
-07                                 a                       d dddddddd dddd                                                        a
-08                                 aaaaaaaaaaaaaaaaaaaaaaaaa BBBBB ffffff  B ffffff  B fff  B fffffff  BBB ffff  B fffff  B ffff aadd dddddddd
-09                                                                                                 f  f ddd dd dddd dddddddddd dddddddddd
-10                                                                                                 f
+04                                 aa TTTTTTTT aa d dddddddd f f fffffff f f fffffff aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+05                                 aa BBBB                                                                                       fa
+06                                 a  ff           fffffffff f f fffff  fffffffffff                                              fa
+07                                 a               ffffffff                                                                      fa
+08                                 a  ff           fffffffff f f fffff  fffffffffff                                              fadd dddddddd
+09                                 a                                                                                             fadddddd
+10                                 aaaaaaaaaaaaaaaaaaaaaaaaa BBBBB ffffff  B ffffff  B fff  B fffffff  BBB ffff  B fffff  B ffff aa
 11                                                                                                 f  DDD fff fffffff fffff
 12                                                                                                 f  fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 13                                                                                                 f  f fff fffff ffffffffff

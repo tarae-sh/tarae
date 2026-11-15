@@ -253,6 +253,13 @@ impl Replay {
         self.turns.get_mut(t)?.stops.get_mut(s)
     }
 
+    /// Where the newest stop showing the page at `url` is — a web search's list (`web::search::page_url`).
+    pub fn place_of_page(&self, url: &str) -> Option<(usize, usize)> {
+        self.turns.iter().enumerate().rev().find_map(|(t, turn)| {
+            turn.stops.iter().rposition(|s| s.page.as_ref().is_some_and(|p| p.url == url)).map(|s| (t, s))
+        })
+    }
+
     /// Where the stop of `call` is — its first, a call of several places.
     pub fn place_of(&self, call: &str) -> Option<(usize, usize)> {
         self.turns.iter().enumerate().rev().find_map(|(t, turn)| {

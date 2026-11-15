@@ -6858,8 +6858,12 @@ fn draw_sessions_pane(
     // Its top line: its name, how many work (who waits is each row's `▲`, what waits the card stack's — never a count
     // here too: polish landing 1); its keys are its bottom line's floating, its foot's docked (the one list L2)
     let working = rows.iter().filter(|r| r.working).count();
-    // (the details fold from the last)
-    let mut details = vec![(crate::nav::count(rows.len(), "session"), dim)];
+    let helpers = rows.iter().filter(|r| r.helper.is_some()).count();
+    // (the details fold from the last; digits count the sessions, helpers said apart — the one list L4)
+    let mut details = vec![(crate::nav::count(rows.len() - helpers, "session"), dim)];
+    if helpers > 0 {
+        details.push((format!(" · {}", crate::nav::count(helpers, "helper")), faint));
+    }
     if working > 0 {
         details.push((format!(" · {working} working"), faint));
     }
@@ -6882,8 +6886,8 @@ fn draw_sessions_pane(
     let foot = !framed && has && end > y0 + 1;
     let room = r.w.saturating_sub(2 * side + 2 + 1);
     let (name_w, cols) = crate::sessionpane::lay(rows, room);
-    let here = editor.sessions_here();
-    let selected = rows.iter().position(|row| Some(row.id) == here).unwrap_or(0);
+    let here = editor.float_list_here(crate::pane::GroupKind::Sessions);
+    let selected = rows.iter().position(|row| Some(row.key()) == here).unwrap_or(0);
     let sel = selected_row(ui, editor, card);
     let ink = |i: Ink, base: Style| match i {
         Ink::Text => Style { fg: ui.virt.fg, ..base },
@@ -6986,7 +6990,7 @@ fn draw_sessions_pane(
     let p = editor.float_list(crate::pane::GroupKind::Sessions);
     let shown = end - y0 - usize::from(foot) - card_h;
     // (an ask coming over its foot: fewer rows in sight, the selection brought above it once — the wheel's after)
-    let ids: Vec<u64> = rows.iter().map(|row| row.id.n).collect();
+    let ids: Vec<u64> = rows.iter().map(crate::sessionpane::Row::key).collect();
     let top = crate::floatlist::top_drawn(p, &ids, selected, shown);
     // (its rows in sight: those above the stack — the moves page by them, the row under the card air)
     let inner = shown;
@@ -7027,8 +7031,20 @@ fn draw_sessions_pane(
     for (k, row) in rows.iter().enumerate().skip(top).take(inner) {
         let y = y0 + k - top;
         let on = k == selected;
-        // (a session a Claude started, just come: its row whole dries from the flash's — §6, `motion::arrivals`)
-        let base = arrived_style(ui, editor, &crate::motion::Place::Row(row.id), if on { sel } else { card });
+        // (a session a Claude started, just come: its row whole dries from the flash's — §6, `motion::arrivals`; its
+        // helpers' rows are no arrivals)
+        let base = match row.helper {
+            None => {
+                arrived_style(ui, editor, &crate::motion::Place::Row(row.id), if on { sel } else { card })
+            }
+            Some(_) => {
+                if on {
+                    sel
+                } else {
+                    card
+                }
+            }
+        };
         queue!(out, MoveTo(x0 as u16, y as u16))?;
         apply(out, Style { fg: ui.accent.fg, ..base })?;
         queue!(out, Print(if on { "▎ " } else { "  " }))?;
@@ -7068,7 +7084,7 @@ fn draw_sessions_pane(
             used += 2;
             // (its state word just changed: its ground dries from the flash's — §6, `motion::arrivals`; its words only,
             // never the column's room after them)
-            let words = match c == Col::State {
+            let words = match c == Col::State && row.helper.is_none() {
                 true => arrived_style(ui, editor, &crate::motion::Place::State(row.id), base),
                 false => base,
             };

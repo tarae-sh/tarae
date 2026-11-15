@@ -2929,7 +2929,6 @@ mod tests {
             rebasing: None,
             reloaded: 0,
             compacted: false,
-            reviewer: String::new(),
             claude: None,
             step: String::new(),
             model: String::new(),

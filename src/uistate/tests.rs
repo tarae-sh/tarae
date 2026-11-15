@@ -810,6 +810,15 @@ pub(crate) const SCENES: &[Scene] = &[
         feed(ed, &["<C-w>", "m", "<C-w>"]);
     }),
     ("list:sessions, the session list floating", |ed| ed.session_list()),
+    // (the one list L4: a helper's row in hand — `enter` goes where its work is, a session's letter refused in words)
+    ("list:sessions, a helper's row in hand", |ed| {
+        let root = ed.workspace.root.clone();
+        let r = crate::reviewer::Reviewer::for_test(root, crate::reviewer::State::Done, Vec::new(), "");
+        ed.workspace.reviewer = Some(r);
+        ed.session_list();
+        frame(ed);
+        feed(ed, &["j"]);
+    }),
     ("the session list, a prompt opened over it (its own `/`)", |ed| {
         ed.session_list();
         frame(ed);

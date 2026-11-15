@@ -1833,6 +1833,16 @@ pub fn replay_stop(ed: &mut Editor, call: &str) -> bool {
     true
 }
 
+/// `enter` on a search's row in the session list (the one list L4): the newest stop showing the page at `url`, its
+/// list. False: none has it.
+pub fn replay_page(ed: &mut Editor, url: &str) -> bool {
+    let Some(at) = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.replay.place_of_page(url)) else {
+        return false;
+    };
+    show_stop(ed, at);
+    true
+}
+
 /// A click on a chat row of a call, or `C-]` there: that call's stop. False: it has none.
 pub fn replay_call(ed: &mut Editor, call: &str) -> bool {
     let Some(at) = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.replay.place_of(call)) else {

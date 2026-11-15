@@ -110,6 +110,9 @@ pub struct Session {
     pub searches_queued: std::collections::VecDeque<crate::web::search::Ask>,
     /// `s` on a web search's card: its Claude searches unasked until you quit — the searches' answer alone.
     pub searches_ok: bool,
+    /// Its helpers that ended (`ask`, the searches, the commit draft; one a kind): their rows in the session list stand
+    /// so until its next turn begins (`sessionpane::Ended`, the one list L4).
+    pub helpers_ended: Vec<crate::sessionpane::Ended>,
     /// What its Claude may do past the defaults by the user's `s` on a card (this session — every grant but a
     /// host's, `hosts`), kept with its workspace in `$state/sessions` until it ends or `:sandbox-disallow` takes it
     /// back — but a masked variable and a name for a secret, never written: until you quit (`Grant::written`).
@@ -199,6 +202,7 @@ impl Session {
             searches: Vec::new(),
             searches_queued: Default::default(),
             searches_ok: false,
+            helpers_ended: Vec::new(),
             allowed: Default::default(),
             parent: None,
             starting: Vec::new(),

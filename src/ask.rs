@@ -26,6 +26,7 @@ use crate::agent::{self, Agent, Event, Permission, Prompt};
 use crate::document::DocId;
 use crate::editor::Editor;
 use crate::llm;
+use crate::sessionpane::Ink;
 use crate::tools::Call;
 
 /// What goes before the instruction, after the quotes (the wording Q1's A/B measured).
@@ -352,10 +353,20 @@ fn stop(ed: &mut Editor, generation: u64, said: &str) {
     match w {
         Some(w) if waiting(ed, generation).is_some() => llm::stop_waiting(ed, Some(w), said),
         _ => {
-            let what = gone(ed, generation).map(|a| a.instruction).unwrap_or_default();
+            let a = gone(ed, generation);
+            let what = a.as_ref().map(|a| a.instruction.clone()).unwrap_or_default();
+            if let Some(a) = &a {
+                over(ed, a, "stopped", Ink::Warn);
+            }
             ed.set_warning(format!("Claude's {what}: {said}"));
         }
     }
+}
+
+/// Its row in the session list stands as it ended (`said`, in `ink`) until its session's next turn (the one list L4).
+fn over(ed: &mut Editor, a: &Ask, said: &str, ink: Ink) {
+    let what = format!("\"{}\"", a.instruction.split_whitespace().collect::<Vec<_>>().join(" "));
+    crate::sessionpane::ended(ed, crate::sessionpane::Kind::Ask, (said.into(), ink), what);
 }
 
 /// The ask of `generation` gone from the session: its process killed (one still running), its cards dropped (no
@@ -381,9 +392,15 @@ fn ended(ed: &mut Editor, generation: u64, r: Result<String, String>) {
         ed.workspace.claude.review = None;
     }
     match r {
-        Err(e) => ed.set_error(format!("claude: {e}")),
-        Ok(_) if !a.reviewed && a.edits.sets.is_empty() => ed.set_status("claude: no changes"),
-        Ok(_) => {}
+        Err(e) => {
+            over(ed, &a, "failed", Ink::Warn);
+            ed.set_error(format!("claude: {e}"))
+        }
+        Ok(_) if !a.reviewed && a.edits.sets.is_empty() => {
+            over(ed, &a, "no changes", Ink::Faint);
+            ed.set_status("claude: no changes")
+        }
+        Ok(_) => over(ed, &a, "done", Ink::Accent),
     }
 }
 
@@ -392,15 +409,18 @@ fn ended(ed: &mut Editor, generation: u64, r: Result<String, String>) {
 pub fn closed(ed: &mut Editor, review: u64) {
     if let Some(g) =
         ed.workspace.claude.ask.as_ref().filter(|a| a.waiting == Some(review)).map(|a| a.generation)
+        && let Some(a) = gone(ed, g)
     {
-        gone(ed, g);
+        over(ed, &a, "stopped", Ink::Warn);
     }
 }
 
 /// `:ask-cancel`: whatever ask runs, stopped.
 pub fn cancel(ed: &mut Editor) {
-    if let Some(g) = ed.workspace.claude.ask.as_ref().map(|a| a.generation) {
-        gone(ed, g);
+    if let Some(g) = ed.workspace.claude.ask.as_ref().map(|a| a.generation)
+        && let Some(a) = gone(ed, g)
+    {
+        over(ed, &a, "stopped", Ink::Warn);
     }
 }
 

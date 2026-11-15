@@ -784,10 +784,16 @@ pub fn stop_waiting(ed: &mut Editor, generation: Option<u64>, said: &str) {
         ed.unchanged = true;
         return;
     };
+    // (a draft's: its row stands stopped — `space i`'s says so as its ask goes, `ask::closed`)
+    let draft = ed.workspace.claude.ask.is_none();
     if let Some(pid) = ed.llm_pid.take() {
         kill(pid);
     }
     close_review(ed);
+    if draft {
+        let said = ("stopped".to_string(), crate::sessionpane::Ink::Warn);
+        crate::sessionpane::ended(ed, crate::sessionpane::Kind::Draft, said, what.clone());
+    }
     ed.llm_generation += 1;
     ed.set_warning(format!("Claude's {what}: {said}"));
 }
@@ -1069,16 +1075,24 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
     };
     ed.llm_pid = None;
     let took = rev.started.elapsed();
+    // (the draft's row in the session list stands as it ended until its session's next turn — the one list L4)
+    let what = rev.instruction.clone();
+    let draft = |ed: &mut Editor, said: &str, ink| {
+        crate::sessionpane::ended(ed, crate::sessionpane::Kind::Draft, (said.into(), ink), what.clone())
+    };
+    use crate::sessionpane::Ink;
     let replies = match result {
         Ok(r) => r,
         Err(e) => {
             ed.workspace.claude.review = None;
+            draft(ed, "failed", Ink::Warn);
             ed.set_error(format!("claude: {e}"));
             return;
         }
     };
     let Some(doc_idx) = ed.docs.iter().position(|d| d.id == rev.doc_id) else {
         ed.workspace.claude.review = None;
+        draft(ed, "failed", Ink::Warn);
         ed.set_error("claude: buffer was closed");
         return;
     };
@@ -1103,6 +1117,7 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
             "claude: no changes"
         };
         ed.workspace.claude.review = None;
+        draft(ed, "no changes", Ink::Faint);
         ed.set_status(msg);
         return;
     }
@@ -1110,6 +1125,7 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
     rev.current =
         rev.hunks.iter().position(|h| h.decision == Decision::Undecided && !h.conflict).unwrap_or(0);
     let yours = rev.asked_by.is_some() && rev.asked_by == Some(ed.input_seq);
+    draft(ed, "done", Ink::Accent);
     ed.current = doc_idx;
     ed.set_status(format!("claude answered in {}", crate::term::run_duration(took)));
     // (asked by your key, nothing typed since: focused as it lands — else it waits for `C-q`, #528)

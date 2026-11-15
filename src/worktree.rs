@@ -1661,9 +1661,6 @@ pub struct Shown {
     pub reloaded: usize,
     /// Its Claude compacted its conversation while it was behind (`Compacted.unseen`).
     pub compacted: bool,
-    /// Its reviewer (`reviewer.rs`): `¶ reviewing` while it reads, `¶ reviewer done` · `¶ reviewer stopped`
-    /// once it ended behind, not looked at (`Reviewer.unseen`) — empty else.
-    pub reviewer: String,
     /// Its Claude's cache (`warm until 14:32` · `cold` · `cache not reported`) and what its turns cost so far
     /// (`usage.rs`) — None: nothing reported.
     pub claude: Option<(String, String)>,
@@ -1696,18 +1693,6 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// `reviewer` for session `l`.
-    pub fn reviewer_of(ed: &crate::editor::Editor, l: &crate::workspace::Workspace) -> String {
-        use crate::reviewer::State;
-        match l.reviewer.as_ref() {
-            Some(r) if r.reading() && crate::reviewer::waits(ed, l) => "¶ waits to review".into(),
-            Some(r) if r.reading() => "¶ reviewing".into(),
-            Some(r) if r.unseen && r.state == State::Done => "¶ reviewer done".into(),
-            Some(r) if r.unseen => "¶ reviewer stopped".into(),
-            _ => String::new(),
-        }
-    }
-
     /// `claude` for a session's usage at `now_ms`, and when it compacts if it stays idle (`idlecompact::next_at`).
     pub fn claude_of(
         u: &crate::usage::Usage,
@@ -2978,7 +2963,6 @@ impl Editor {
                 rebasing: self.bring_progress(l),
                 reloaded: l.reloaded,
                 compacted: l.claude.compacted.unseen,
-                reviewer: Shown::reviewer_of(self, l),
                 // (what it cost, its children's too, only while money is on the screen — `llm.cost`)
                 claude: Shown::claude_of(
                     &l.claude.usage,
@@ -3016,6 +3000,18 @@ impl Editor {
             return;
         }
         let here = self.sessions_here();
+        // (a helper's row: a session's own keys refused in words — `enter` goes where its work is, the one list L4)
+        if let Some(crate::sessionpane::RowId::Helper { of, kind }) = self.sessions_hand()
+            && matches!(c, 'O' | 'd' | 'b' | 'm' | 'x' | 'v' | 'f' | '$')
+        {
+            let owner =
+                self.sessions_in_order().into_iter().find(|l| l.id == of).map(|l| l.label().to_string());
+            let owner = crate::workspace::possessive(&owner.unwrap_or_default());
+            return self.set_status(format!(
+                "{c} is a session's key — this row is {owner} helper, no session: enter goes to {}",
+                kind.enter()
+            ));
+        }
         match c {
             '1'..='9' => {
                 let row = c as usize - '1' as usize;

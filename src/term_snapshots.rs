@@ -3664,9 +3664,21 @@ fn snapshot_sessions_with_the_reviewer_reading() {
     let row = |name: &str| {
         rows.iter().find(|r| r.contains(name) && !r.contains(" · +")).cloned().unwrap_or_default()
     };
-    // (its state the step its turn is at — the one list L1)
-    assert!(row("fix-login").contains("thinking") && row("fix-login").contains("¶ reviewing"), "{rows:#?}");
-    assert!(row("docs").contains("¶ reviewer done"), "{rows:#?}");
+    // (its state the step its turn is at — the one list L1; each reviewer a row of its own under its session, L4: two
+    // reading, docs' ended behind and not looked at)
+    assert!(row("fix-login").contains("thinking"), "{rows:#?}");
+    let helpers: Vec<&String> = rows.iter().filter(|r| r.contains("└─ reviewer ")).collect();
+    assert_eq!(helpers.len(), 2, "{rows:#?}");
+    assert!(helpers.iter().all(|r| r.contains("reviewing · 0 reads")), "{rows:#?}");
+    assert!(rows[4].contains("3 sessions · 3 helpers · 3 working"), "{rows:#?}");
+    // (docs' under the frame's half of the screen: its row as the list has it)
+    let list = s.ed.sessions_rows();
+    let docs = list.last().unwrap();
+    assert_eq!((docs.arm.as_str(), docs.name.as_str()), ("└─ ", "reviewer"));
+    assert_eq!(
+        docs.cell(crate::sessionpane::Col::State),
+        [("done · 0 findings".into(), crate::sessionpane::Ink::Accent)]
+    );
     s.check("sessions_reviewing_list");
 }
 

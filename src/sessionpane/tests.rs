@@ -17,7 +17,6 @@ fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
         rebasing: None,
         reloaded: 1,
         compacted: true,
-        reviewer: "¶ reviewing".into(),
         claude: Some(("● warm until 14:32".into(), "$0.42".into())),
         billing: crate::billing::Billing::Api,
         build: Some((2 << 20, true)),
@@ -1100,8 +1099,223 @@ fn hand_card(ed: &mut Editor, w: u16, h: u16) -> (Option<String>, String) {
 
 /// The name of the row in hand.
 fn here_name(ed: &Editor) -> String {
-    let here = ed.sessions_here();
-    ed.sessions_rows().into_iter().find(|r| Some(r.id) == here).expect("a row in hand").name
+    let here = ed.float_list_here(GroupKind::Sessions);
+    ed.sessions_rows().into_iter().find(|r| Some(r.key()) == here).expect("a row in hand").name
+}
+
+/// An editor in `dir` with a chat (a stand-in's) and a file open, `main` in front, and `fix` behind — helpers start here.
+fn helped(dir: &crate::scratch::Scratch) -> Editor {
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let mut c = crate::chat::Chat::new();
+    (c.web_search, c.model) = (true, "claude-opus-5-5".into());
+    std::mem::forget(crate::chat::stand_in(&mut c));
+    ed.workspace.claude.chat = Some(c);
+    std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+    ed.open(&dir.join("a.txt")).unwrap();
+    let fix = ed.workspace_add(dir.join("fix"));
+    ed.workspace_by_id(fix).unwrap().name = "fix".into();
+    ed
+}
+
+/// A web search of `words` started in the session in front, its helper a stand-in.
+fn searching(ed: &mut Editor, n: u64, words: &str) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::mem::forget(rx);
+    (ed.search_lines, ed.workspace.claude.searches_ok) = (Some(tx), true);
+    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    let call = crate::tools::Call::of(generation, "", serde_json::json!(n));
+    crate::web::search::call(ed, call, &serde_json::json!({ "query": words })).unwrap();
+}
+
+/// `space i` started in the session in front, its claude a stand-in.
+fn asking(ed: &mut Editor, instruction: &str) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::mem::forget(rx);
+    ed.ask_lines = Some(tx);
+    crate::ask::start(ed, instruction).unwrap();
+}
+
+/// Each row's arm and name, a helper's state after it.
+fn named(ed: &Editor) -> Vec<String> {
+    let rows = ed.sessions_rows();
+    let said = |r: &Row| match r.helper {
+        Some(_) => format!("{}{} · {}", r.arm, r.name, r.text(Col::State)),
+        None => format!("{}{}", r.arm, r.name),
+    };
+    rows.iter().map(said).collect()
+}
+
+/// The one list L4: a session's helpers each a row under it on a helper's arm (`├─ `, half a child's) — the reviewer,
+/// `space i`, its searches in one row (`search ×2`) — their step without its time, what each was asked in the report's
+/// column; the top line counts the sessions and the helpers apart; the digits count sessions only; on a helper's row
+/// the bottom line says where `enter` goes, and a session's key is refused in words.
+#[test]
+fn helper_rows_hang_under_their_session_and_digits_skip_them() {
+    let dir = crate::scratch::Scratch::new("sessionhelpers");
+    let mut ed = helped(&dir);
+    let reviewer =
+        crate::reviewer::Reviewer::for_test(dir.to_path_buf(), crate::reviewer::State::Reading, vec![], "");
+    ed.workspace.reviewer = Some(reviewer);
+    asking(&mut ed, "upper it");
+    searching(&mut ed, 1, "tokio release");
+    searching(&mut ed, 2, "node  lts");
+    assert_eq!(
+        named(&ed),
+        [
+            "main",
+            "├─ reviewer · reviewing · 0 reads",
+            "├─ ask · ◦ thinking",
+            "└─ search ×2 · • searching",
+            "fix"
+        ]
+    );
+    let rows = ed.sessions_rows();
+    assert_eq!(rows[2].text(Col::Report), "\"upper it\"");
+    assert_eq!(rows[3].text(Col::Report), "\"node lts\"", "the newest's words, on one line");
+    assert_eq!(rows[3].text(Col::Model), "haiku", "the search's own model, the one that differs");
+    assert!(rows.iter().all(|r| r.colour == rows[0].colour || r.id != rows[0].id), "its session's colour");
+    feed(&mut ed, " W");
+    let s = frame(&mut ed, 160, 40);
+    assert!(s.contains("2 sessions · 3 helpers · 3 working"), "{s}");
+    assert!(s.contains("├─ reviewer ") && s.contains("└─ search ×2 "), "{s}");
+    // (a helper's row in hand: no session there, its keys where its work is)
+    feed(&mut ed, "j");
+    assert_eq!(ed.sessions_here(), None);
+    let main = ed.workspace.id;
+    assert_eq!(ed.sessions_hand(), Some(RowId::Helper { of: main, kind: Kind::Review }));
+    let s = frame(&mut ed, 160, 40);
+    assert!(s.contains("enter its notes and verdict  / search  esc code  q close"), "{s}");
+    assert!(!s.contains("o new"), "none of a session's keys:\n{s}");
+    for c in ["d", "b", "m", "f", "$", "O"] {
+        feed(&mut ed, c);
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert_eq!(
+            said,
+            format!(
+                "{c} is a session's key — this row is main's helper, no session: enter goes to its notes and verdict"
+            )
+        );
+    }
+    assert_eq!(ed.workspaces.len(), 1, "nothing ended");
+    feed(&mut ed, "jj");
+    let s = frame(&mut ed, 160, 40);
+    assert!(s.contains("enter its results  / search"), "{s}");
+    feed(&mut ed, "2");
+    assert_eq!(ed.workspace.name, "fix", "2: the second session, not the second row");
+}
+
+/// An ended helper's row stands as it ended until its session's next turn begins (the one list L4) — `space i`
+/// stopped beside a search that runs; the reviewer's done too, and past that turn while its end is unseen. A row in hand
+/// that goes leaves its session's in hand.
+#[test]
+fn an_ended_helpers_row_stands_until_its_sessions_next_turn() {
+    let dir = crate::scratch::Scratch::new("sessionended");
+    let mut ed = helped(&dir);
+    let done =
+        crate::reviewer::Reviewer::for_test(dir.to_path_buf(), crate::reviewer::State::Done, vec![1, 2], "");
+    ed.workspace.reviewer = Some(done);
+    asking(&mut ed, "upper it");
+    crate::llm::cancel(&mut ed);
+    searching(&mut ed, 1, "tokio release");
+    assert_eq!(
+        named(&ed),
+        ["main", "├─ reviewer · done · 2 findings", "├─ ask · stopped", "└─ search · • searching", "fix"]
+    );
+    let rows = ed.sessions_rows();
+    assert_eq!(rows[2].cell(Col::State), [("stopped".to_string(), Ink::Warn)]);
+    assert_eq!(rows[1].cell(Col::State)[0].1, Ink::Accent);
+    // (the search ends without its list: its row says so, in place of the one running)
+    let id = ed.workspace.claude.searches[0].id;
+    crate::web::search::on_event(&mut ed, id, crate::agent::Event::Exit(crate::agent::Exit::exited("")));
+    assert_eq!(named(&ed)[3], "└─ search · failed");
+    feed(&mut ed, " Wj");
+    assert_eq!(ed.sessions_hand(), Some(RowId::Helper { of: ed.workspace.id, kind: Kind::Review }));
+    // The next turn: they go — the reviewer's stays while its end is unseen
+    assert!(crate::chat::submit(&mut ed, "and the tests", None, None), "a turn began");
+    assert_eq!(named(&ed), ["main", "fix"]);
+    assert_eq!(ed.sessions_here(), Some(ed.workspace.id), "its session's row in hand");
+    ed.workspace.reviewer.as_mut().unwrap().unseen = true;
+    assert_eq!(named(&ed), ["main", "└─ reviewer · done · 2 findings", "fix"]);
+    // (fix's row in hand as its reviewer's goes — not the first row)
+    let fix = ed.workspaces[0].id;
+    let r = crate::reviewer::Reviewer::for_test(dir.join("fix"), crate::reviewer::State::Done, vec![], "");
+    ed.workspaces[0].reviewer = Some(r);
+    ed.session_list();
+    feed(&mut ed, "G");
+    assert_eq!(ed.sessions_hand(), Some(RowId::Helper { of: fix, kind: Kind::Review }));
+    ed.workspaces[0].reviewer = None;
+    assert_eq!(ed.sessions_here(), Some(fix));
+}
+
+/// `enter` on a helper's row goes where its work is (the one list L4), its session to the front first: a reviewer's
+/// to its notes and verdict (`space v r`'s buffer), `space i`'s to its edit review (its buffer in front, the keys the
+/// code's — waiting, its card's peek there), a search's to its stop — its list, as `]r` shows it; a stop gone, the chat and words.
+#[test]
+fn enter_on_a_helper_row_goes_where_its_work_is() {
+    let dir = crate::scratch::Scratch::new("sessionenter");
+    let mut ed = helped(&dir);
+    let fix = ed.workspaces[0].id;
+    let r = crate::reviewer::Reviewer::for_test(dir.join("fix"), crate::reviewer::State::Done, vec![], "");
+    ed.workspaces[0].reviewer = Some(r);
+    // (fix's reviewer: fix to the front, its verdict)
+    feed(&mut ed, " W");
+    let at = ed
+        .sessions_row_ids()
+        .iter()
+        .position(|&n| RowId::of(n) == RowId::Helper { of: fix, kind: Kind::Review });
+    assert_eq!(at, Some(2), "under fix");
+    feed(&mut ed, "jj<ret>");
+    assert_eq!(ed.workspace.id, fix);
+    assert!(ed.sessions_pane.is_none(), "the list used");
+    assert_eq!(ed.doc().title.as_deref(), Some("reviewer"), "its verdict's buffer");
+    // (main's `space i`: its buffer in front, the code with the keys)
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
+    let file = ed.doc().id;
+    asking(&mut ed, "upper it");
+    ed.open_virtual("elsewhere", "x\n");
+    ed.workspace.set_at(Here::Chat);
+    ed.session_list();
+    feed(&mut ed, "j<ret>");
+    assert_eq!((ed.doc().id, ed.keys_to().region), (file, crate::uistate::Region::Code));
+    assert!(ed.workspace.claude.review.is_some(), "its review there");
+    // (a search: its stop)
+    crate::llm::cancel(&mut ed);
+    searching(&mut ed, 1, "tokio release");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.follow.new_turn();
+    let url = crate::web::search::page_url("tokio release");
+    let page = Some(crate::replay::PageAt { url, copy: None });
+    let look = crate::chat::Look {
+        verb: "web search",
+        what: "tokio release".into(),
+        pattern: false,
+        range: String::new(),
+        link: None,
+    };
+    let (path, lines, hunks, why, map) = (None, None, Vec::new(), String::new(), Default::default());
+    c.follow.replay.add(crate::replay::Stop { call: "s1".into(), look, path, lines, hunks, why, page, map });
+    let search = |ed: &Editor| {
+        let ids = ed.sessions_row_ids();
+        ids.iter().position(|&n| RowId::of(n) == RowId::Helper { of: WorkspaceId::HOME, kind: Kind::Search })
+    };
+    feed(&mut ed, " Wgg");
+    for _ in 0..search(&ed).unwrap() {
+        feed(&mut ed, "j");
+    }
+    feed(&mut ed, "<ret>");
+    let at = ed.workspace.claude.chat.as_ref().unwrap().follow.replay.at;
+    assert!(at.is_some(), "its stop shown");
+    // (its stop gone: the chat, said)
+    ed.workspace.claude.chat.as_mut().unwrap().follow.new_turn();
+    ed.workspace.claude.chat.as_mut().unwrap().follow.replay = Default::default();
+    feed(&mut ed, " Wgg");
+    for _ in 0..search(&ed).unwrap() {
+        feed(&mut ed, "j");
+    }
+    feed(&mut ed, "<ret>");
+    let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+    assert_eq!(said, "its search's stop is gone — the chat has its call");
 }
 
 /// Floating, the row in hand's card stands just outside the frame, below (the one list L3): while its row shows less
