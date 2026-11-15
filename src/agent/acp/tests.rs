@@ -1184,3 +1184,76 @@ fn a_failed_own_tool_is_a_refused_row_not_a_trip() {
     assert_eq!(says(st.line(&failed)), [format!("result t1 true {REFUSED}")]);
     assert_eq!(turn_over(&mut st, 2), ["done "]);
 }
+
+/// The L3 notes' 3: one of its own refused in its first report (`tool_call` already `failed`, the other shape of
+/// agy's two) gets its row and the refused result in tarae's words, as one refused in its update does.
+#[test]
+fn a_call_refused_in_its_first_report_gets_its_row_and_the_refused_result() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    let reason = json!({"type": "content", "content": {"type": "text", "text": hook::DENY}});
+    let refused = update_line(
+        json!({"sessionUpdate": "tool_call", "toolCallId": "t1", "name": "run_command", "title": "echo ran",
+        "kind": "execute", "status": "failed", "rawInput": {"CommandLine": "echo ran"}, "content": [reason]}),
+    );
+    assert_eq!(
+        says(st.line(&refused)),
+        [
+            r#"tool t1 run_command {"CommandLine":"echo ran"}"#.to_string(),
+            format!("result t1 true {REFUSED}")
+        ]
+    );
+    assert_eq!(turn_over(&mut st, 2), ["done "]);
+}
+
+/// The L3 notes' 2: a tool named the prefix alone (`mcp_tarae_`) is one of its own everywhere — its row shows, and
+/// at `failed` its refused result; `update` asks `taraes`, as the tripwire does.
+#[test]
+fn a_tool_named_the_prefix_alone_is_its_own_and_its_refused_row_shows() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    let running = update_line(json!({"sessionUpdate": "tool_call", "toolCallId": "t1", "name": OWN,
+        "title": "Run", "kind": "other", "status": "in_progress", "rawInput": {}}));
+    let failed =
+        update_line(json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed"}));
+    assert_eq!(says(st.line(&running)), ["tool t1 mcp_tarae_ {}"]);
+    assert_eq!(says(st.line(&failed)), [format!("result t1 true {REFUSED}")]);
+    assert_eq!(turn_over(&mut st, 2), ["done "]);
+    let mut dropped = HashSet::new();
+    assert!(update(&running["params"]["update"], &mut dropped).is_some() && dropped.is_empty());
+}
+
+/// The L3 notes' 1: a tripping tool's name is the agent's string, as long as it likes — where the trip is made it's
+/// cut to `NAME_SHOWN` characters and made plain (a newline, an escape, a bidi mark: `?`), in its words (the turn's
+/// end, so the chat's transcript, toast and status line, which say `Ended::Tripped`'s) and its end.
+#[test]
+fn a_tripping_tools_name_is_cut_and_made_plain() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    let long = format!("run\u{1b}[2J\ncommand{}\n\u{202e}", "x".repeat(4096));
+    assert!(long.len() > 4096);
+    let ran = update_line(json!({"sessionUpdate": "tool_call", "toolCallId": "t1", "name": long,
+        "title": "Run", "kind": "execute", "status": "completed", "rawInput": {}}));
+    let events = st.line(&ran);
+    let shown = format!("run?[2J?command{}…", "x".repeat(24));
+    assert_eq!(shown.chars().count(), NAME_SHOWN);
+    let mut words = Vec::new();
+    for ev in events {
+        match ev {
+            Event::Done(Err(w)) => words.push(w),
+            Event::Exit(Exit { said, kind: Ended::Tripped { tool } }) => {
+                assert_eq!(tool, shown, "the end's tool");
+                words.push(said);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(words.len(), 2, "the turn's end and the exit: {words:?}");
+    for w in &words {
+        assert!(w.contains(&format!("a tool of its own, {shown} — stopped")), "{w}");
+        assert!(w.chars().all(|c| !c.is_control() && c != '\u{202e}'), "plain: {w:?}");
+        assert!(w.len() < 300, "cut: {} bytes", w.len());
+    }
+    assert_eq!(super::shown("run_command"), "run_command", "a plain short name as it is");
+    assert_eq!(super::shown("é\t"), "??");
+}

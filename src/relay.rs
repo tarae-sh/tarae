@@ -64,8 +64,12 @@ fn relay(from: impl Read + Send + 'static, mut to: impl Write, stream: std::os::
     let _ = copy(&mut crate::readagain::ReadAgain::new(&stream), &mut to);
 }
 
-/// `from` into `to` until `from` ends, each read written and flushed as it comes.
-fn copy(from: &mut impl Read, to: &mut impl Write) -> io::Result<()> {
+/// `from` into `to` until `from` ends, each read written and flushed as it comes. Never `std::io::copy`: on Linux,
+/// between a socket and a pipe it splices, and a splice from a socket into a pipe waits for the socket's next bytes
+/// holding the pipe's lock — what it already put in the pipe can't be read meanwhile, so a line stays in the pipe until
+/// the socket says something more (the ACP bridge's relay, 9a54bc194: its test hung, and the agent's MCP server never
+/// answered). Both relays copy with it: this one, and the bridge's (`agent::acp::bridge::relay`).
+pub(crate) fn copy(from: &mut impl Read, to: &mut impl Write) -> io::Result<()> {
     let mut buf = vec![0u8; 64 << 10];
     loop {
         let n = match from.read(&mut buf) {

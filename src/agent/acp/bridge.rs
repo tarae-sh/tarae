@@ -293,7 +293,7 @@ fn accept(listener: UnixListener, s: Arc<Shared>) {
         s.open.lock().unwrap_or_else(|e| e.into_inner()).push((n, kept));
         let s = s.clone();
         crate::event::thread("tarae-bridge-in", move || {
-            connection(n, &stream, &s);
+            connection(n, &stream, &stream, &s);
             s.open.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, _)| *k != n);
         });
     }
@@ -323,10 +323,14 @@ fn line(r: &mut impl BufRead, max: usize) -> Line {
     }
 }
 
-/// Connection `n`: its token, then — the one live — its messages to the wire's thread until it ends. Each line read
-/// to its bound (`FIRST_MAX`, `LINE_MAX`), never past.
-fn connection(n: u64, stream: &UnixStream, s: &Shared) {
-    let mut lines = BufReader::new(stream);
+/// Connection `n` (`stream`, read from `r`: the stream itself, or a test's reader over it): its token, then — the one
+/// live — its messages to the wire's thread until it ends. Each line read to its bound (`FIRST_MAX`, `LINE_MAX`),
+/// never past. Its reads are timed and read again at each timeout, as attach's are (`readagain`, #392): a relay's end
+/// macOS didn't wake the read for is seen within `readagain::EVERY` — else that dead connection would stay the live
+/// one, and the agent's restarted MCP server be refused as a second.
+fn connection(n: u64, stream: &UnixStream, r: impl Read, s: &Shared) {
+    let _ = crate::readagain::timed(stream);
+    let mut lines = BufReader::new(crate::readagain::ReadAgain::new(r));
     match line(&mut lines, FIRST_MAX) {
         Line::Got(first) if same(first.trim_ascii_end(), s.token.as_bytes()) => {}
         Line::Long => return s.refused(Refused::FirstLong),
@@ -380,29 +384,43 @@ fn writer(mut out: UnixStream) -> Sender<String> {
 const RELAY_TEST: &str = "agent::acp::bridge::relay_test";
 
 /// `tarae agent-tools <socket>`: connects (a path past `sun_path` from its folder), writes the token from its
-/// environment, then passes `input` to the socket and the socket to `output` (`pass`), two threads, until either
-/// side closes. No config read, no state touched.
+/// environment, then passes `input` to the socket and the socket to `output` (`carry`) until either side closes. No
+/// config read, no state touched.
 pub fn relay(
     socket: &Path,
     token: &str,
-    mut input: impl Read + Send + 'static,
-    mut output: impl Write + Send + 'static,
+    input: impl Read + Send + 'static,
+    output: impl Write + Send + 'static,
 ) -> Result<(), String> {
     let stream = crate::uisocket::at(socket, |p: &Path| UnixStream::connect(p))
         .map_err(|e| format!("can't reach {}: {e}", socket.display()))?;
-    let (mut up, mut down) = match (stream.try_clone(), stream.try_clone()) {
-        (Ok(up), Ok(down)) => (up, down),
-        (Err(e), _) | (_, Err(e)) => return Err(e.to_string()),
-    };
+    let down = stream.try_clone().map_err(|e| e.to_string())?;
+    carry(stream, down, token, input, output)
+}
+
+/// `relay` on its connected `stream`, the socket's side read from `down` (a clone of it — a test's own reader over
+/// one): the token written, then two threads, `input` to the socket and the socket to `output`, each with
+/// `relay::copy` (never `std::io::copy` — its doc says why), until either side ends. The socket's reads are timed and
+/// each side read again at its timeout, as the attach relay's (`readagain`, #392): an end macOS didn't wake a read for
+/// would leave this relay running with nothing to relay, its connection still the bridge's live one.
+fn carry(
+    stream: UnixStream,
+    down: impl Read + Send + 'static,
+    token: &str,
+    input: impl Read + Send + 'static,
+    mut output: impl Write + Send + 'static,
+) -> Result<(), String> {
+    let _ = crate::readagain::timed(&stream);
+    let mut up = stream.try_clone().map_err(|e| e.to_string())?;
     writeln!(up, "{token}").map_err(|e| e.to_string())?;
     let (ended, end) = std::sync::mpsc::channel::<()>();
     let up_ended = ended.clone();
     crate::event::thread("tarae-relay-up", move || {
-        pass(&mut input, &mut up);
+        let _ = crate::relay::copy(&mut crate::readagain::ReadAgain::new(input), &mut up);
         let _ = up_ended.send(());
     });
     crate::event::thread("tarae-relay-dn", move || {
-        pass(&mut down, &mut output);
+        let _ = crate::relay::copy(&mut crate::readagain::ReadAgain::new(down), &mut output);
         let _ = ended.send(());
     });
     let _ = end.recv();
@@ -410,31 +428,12 @@ pub fn relay(
     Ok(())
 }
 
-/// `r` to `w` until `r` ends or `w` fails, each read written and flushed as it comes. Never `std::io::copy`: on Linux,
-/// between a socket and a pipe it splices, and a splice from a socket into a pipe waits for the socket's next bytes
-/// holding the pipe's lock — what it already put in the pipe can't be read meanwhile, so tarae's answer stayed in
-/// the agent's stdout pipe until the socket said something more (the relay's test: a hang; the agent's: its MCP
-/// server never answering).
-fn pass(r: &mut impl Read, w: &mut impl Write) {
-    let mut buf = [0u8; 8192];
-    loop {
-        match r.read(&mut buf) {
-            Ok(0) => return,
-            Ok(n) => {
-                if w.write_all(&buf[..n]).and_then(|_| w.flush()).is_err() {
-                    return;
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return,
-        }
-    }
-}
-
-/// `tarae agent-tools <socket>` (`main.rs`, under the gate with the rest of the wire): `relay` on stdin and stdout.
+/// `tarae agent-tools <socket>` (`main.rs`, under the gate with the rest of the wire): `relay` on stdin and stdout,
+/// stdin timed first as the attach relay's is (a pipe stays as it is; a socket's end is read again for).
 pub fn cli(args: &[String]) -> anyhow::Result<()> {
     let [socket] = args else { anyhow::bail!("usage: tarae agent-tools <socket>") };
     let token = std::env::var(TOKEN).map_err(|_| anyhow::anyhow!("no {TOKEN}"))?;
+    let _ = crate::readagain::timed(&std::io::stdin());
     relay(Path::new(socket), &token, std::io::stdin(), std::io::stdout()).map_err(anyhow::Error::msg)
 }
 

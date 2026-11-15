@@ -252,3 +252,95 @@ fn the_relay_carries_both_ways_and_ends_with_either_side() {
     assert_eq!(next(&rx), format!("unlinked {n}"));
     assert!(relay(Path::new("/nonexistent/0.sock"), "t", std::io::empty(), std::io::sink()).is_err());
 }
+
+/// A socket's reader that sleeps through its peer's end, as macOS can (#390/#392, attach's test's model): a read that
+/// began before `ended` and found the end is woken only by its socket's timeout — untimed, it sleeps past the
+/// patience — and then says nothing came; a read begun after it sees the end.
+struct Asleep {
+    s: UnixStream,
+    ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Read for Asleep {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let (before, began) = (self.ended.load(std::sync::atomic::Ordering::SeqCst), crate::clock::now());
+        let got = self.s.read(buf);
+        if before || !matches!(got, Ok(0)) {
+            return got;
+        }
+        let woken = self.s.read_timeout().unwrap().unwrap_or(PATIENCE * 2);
+        crate::event::sleep(woken.saturating_sub(began.elapsed()));
+        Err(std::io::ErrorKind::WouldBlock.into())
+    }
+}
+
+/// `s` asleep through its end, and the flag that says the end is coming.
+fn asleep(s: &UnixStream) -> (Asleep, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    (Asleep { s: s.try_clone().unwrap(), ended: ended.clone() }, ended)
+}
+
+/// Past a timeout of `readagain`'s, as attach's test waits.
+const QUIET: std::time::Duration =
+    crate::readagain::EVERY.saturating_add(std::time::Duration::from_millis(500));
+
+/// Item 6 of the L2 notes: tarae's side of a connection has its reads timed and reads again at each timeout — a quiet
+/// live connection stays live past a timeout or two, and a relay's end that a read slept through is seen, the
+/// connection unlinked (else it stays the live one, and a restarted MCP server is refused as a second).
+#[test]
+fn a_connections_end_is_seen_through_a_sleeping_read_and_a_quiet_one_stays() {
+    let (tx, rx) = channel();
+    let shared = std::sync::Arc::new(Shared {
+        agent: std::process::id(),
+        token: "t0ken".into(),
+        stop: std::sync::atomic::AtomicBool::new(false),
+        live: std::sync::Mutex::new(None),
+        open: std::sync::Mutex::new(Vec::new()),
+        logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+        to: std::sync::Mutex::new(tx),
+    });
+    let (bridge_side, mut relay_side) = UnixStream::pair().unwrap();
+    let (reader, ended) = asleep(&bridge_side);
+    let s = shared.clone();
+    std::thread::spawn(move || connection(1, &bridge_side, reader, &s));
+    writeln!(relay_side, "t0ken").unwrap();
+    assert_eq!(next(&rx), "linked 1");
+    assert!(rx.recv_timeout(QUIET).is_err(), "a quiet connection stays live past a timeout");
+    assert!(shared.live.lock().unwrap().is_some());
+    ended.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(relay_side);
+    assert_eq!(next(&rx), "unlinked 1", "the relay's end seen through the sleeping read");
+    assert!(shared.live.lock().unwrap().is_none(), "no longer the live one");
+}
+
+/// Item 6: the bridge's relay reads its socket (`down`) and its input timed, read again at each timeout — quiet, it
+/// keeps relaying past a timeout or two; tarae's end, slept through by its socket's read, ends it.
+#[test]
+fn the_relay_sees_taraes_end_through_a_sleeping_read_and_stays_while_quiet() {
+    let (relay_side, tarae) = UnixStream::pair().unwrap();
+    let (input, mut agent_in) = UnixStream::pair().unwrap();
+    // (the relay's input timed as `cli` times its stdin)
+    crate::readagain::timed(&input).unwrap();
+    let (agent_out, output) = std::io::pipe().unwrap();
+    let (down, ended) = asleep(&relay_side);
+    let (input, _input_ended) = asleep(&input);
+    let (done, end) = channel();
+    std::thread::spawn(move || {
+        let r = carry(relay_side, down, "t0ken", input, output);
+        let _ = done.send(r);
+    });
+    tarae.set_read_timeout(Some(PATIENCE)).unwrap();
+    let mut first = String::new();
+    BufReader::new(&tarae).read_line(&mut first).unwrap();
+    assert_eq!(first, "t0ken\n");
+    assert!(end.recv_timeout(QUIET).is_err(), "a quiet relay keeps relaying past a timeout");
+    writeln!(agent_in, "up").unwrap();
+    let mut got = String::new();
+    BufReader::new(&tarae).read_line(&mut got).unwrap();
+    assert_eq!(got, "up\n", "still carrying after its timeouts");
+    ended.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(tarae);
+    let ended = end.recv_timeout(PATIENCE).expect("tarae's end, slept through, ends the relay");
+    assert_eq!(ended, Ok(()));
+    drop(agent_out);
+}

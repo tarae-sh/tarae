@@ -80,6 +80,23 @@ fn taraes(name: &str) -> Option<&str> {
     name.strip_prefix(OWN).filter(|tool| !tool.is_empty())
 }
 
+/// The most characters of a tool's name tarae's own words say: past it, cut with `…`.
+const NAME_SHOWN: usize = 40;
+
+/// A tool's name as tarae's own words say it where a trip is made (its words, so the turn's end, the toast and the
+/// status line; `Ended::Tripped`; the log): the agent's string, as long as it likes, cut to `NAME_SHOWN` characters,
+/// and every character but a plain printable one (ASCII's, the space) made `?` — no newline, escape or bidi mark of
+/// the agent's reaches the screen or the log.
+fn shown(name: &str) -> String {
+    let plain = |c: char| if c == ' ' || c.is_ascii_graphic() { c } else { '?' };
+    let mut s: String = name.chars().take(NAME_SHOWN + 1).map(plain).collect();
+    if s.len() > NAME_SHOWN {
+        s.truncate(NAME_SHOWN - 1);
+        s.push('…');
+    }
+    s
+}
+
 // ── Its environment ─────────────────────────────────────────────────────
 
 /// tarae's own sockets, named in its environment: the UI socket (`TARAE_UI`, the terminal panel's and your tasks'),
@@ -614,8 +631,9 @@ impl Wire {
 
     /// Guard 3's trip (plan §6): it ran `tool` itself — `own`: one of its own it reported completed; else one of
     /// tarae's that the bridge never carried. Stopped (`stop`), the log told its name and the agent's version, never
-    /// its input.
+    /// its input. Its name, the agent's string, is said `shown` from here on.
     fn trip(&mut self, tool: String, own: bool, row: Option<Event>, send: &dyn Fn(Event) -> bool) -> bool {
+        let tool = shown(&tool);
         let name = self.begin.name;
         let version = self.version.as_deref().unwrap_or("its version unsaid");
         crate::log::line(name, "warn", &format!("tripped: it ran {tool:?} itself ({version}) — stopped"));
@@ -951,6 +969,11 @@ impl Wire {
         match update(u, &mut self.dropped) {
             Some(Event::ToolResult { id, error: true, .. }) if refused => {
                 self.flush(send) && send(Event::ToolResult { id, text: REFUSED.into(), error: true })
+            }
+            // (refused in its first report: its row, then the refused result)
+            Some(Event::Tool { id, name, input }) if refused => {
+                let result = Event::ToolResult { id: id.clone(), text: REFUSED.into(), error: true };
+                self.flush(send) && send(Event::Tool { id, name, input }) && send(result)
             }
             Some(Event::Text(t)) => {
                 self.text.push_str(&t);
@@ -1378,8 +1401,8 @@ fn cut(mut text: String) -> String {
 /// `locations` (§9.1: the places come from tarae's tools' inputs), a call's `diff` and a read's null content, the
 /// commands, config options and title it offers (`available_commands_update`, `config_option_update`,
 /// `session_info_update`: step 4), `usage_update` (no per-request usage to read it with), a compaction's summary, a
-/// `notice`. tarae's own tools' calls (`OWN`, by agy's `name`) are dropped and kept in `dropped`, so their updates go
-/// too. Its mode (`current_mode_update`) and what its calls came to are the wire's to read first (`Wire::update`:
+/// `notice`. tarae's own tools' calls (`taraes`, by agy's `name`: the prefix alone is the agent's own, as everywhere)
+/// are dropped and kept in `dropped`, so their updates go too. Its mode (`current_mode_update`) and what its calls came to are the wire's to read first (`Wire::update`:
 /// guards 2 and 3).
 fn update(u: &Value, dropped: &mut HashSet<String>) -> Option<Event> {
     let id = || u["toolCallId"].as_str().unwrap_or_default().to_string();
@@ -1388,7 +1411,7 @@ fn update(u: &Value, dropped: &mut HashSet<String>) -> Option<Event> {
         "agent_thought_chunk" => text_of(&u["content"]).map(Event::Thought),
         "tool_call" => {
             let name = tool_name(u);
-            if name.starts_with(OWN) {
+            if taraes(&name).is_some() {
                 dropped.insert(id());
                 return None;
             }
