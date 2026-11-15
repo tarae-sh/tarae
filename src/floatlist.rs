@@ -70,6 +70,10 @@ pub struct FloatList {
     pub hl: bool,
     /// A `/`·`?` it opened is its until it closes: the row selected as it opened (`esc` goes back to it).
     pub prompt: Option<u64>,
+    /// The most cells its rows needed since it opened (the session list's, `sessionpane::need`; the one list L2): its
+    /// frame as wide as that (`Frame::rows_w`) — it widens as rows need more and never narrows while it's up, so
+    /// nothing jumps; the next opening starts from that moment's rows.
+    pub wide: std::cell::Cell<usize>,
 }
 
 /// The kinds that are floating lists.
@@ -78,6 +82,15 @@ pub const KINDS: [GroupKind; 3] = [GroupKind::Sessions, GroupKind::Messages, Gro
 /// Kind `kind` is a floating list of the viewer's.
 pub fn is_list(kind: GroupKind) -> bool {
     KINDS.contains(&kind)
+}
+
+/// Kind `kind`'s frame before you set one: the session list as wide as its rows (`Frame::ROWS`, the one list L2),
+/// `:messages` and `:folders` a list's 3/5 (`Frame::LIST`).
+pub fn list_frame(kind: GroupKind) -> crate::pane::Frame {
+    match kind {
+        GroupKind::Sessions => crate::pane::Frame::ROWS,
+        _ => crate::pane::Frame::LIST,
+    }
 }
 
 /// What a list is called where a key it doesn't take is said.
@@ -137,6 +150,7 @@ impl Editor {
             search: None,
             hl: false,
             prompt: None,
+            wide: Default::default(),
         });
         if let Some(id) = select {
             p.selected = id;
@@ -257,8 +271,8 @@ impl Editor {
         }
     }
 
-    /// The list's frame: the one you set (moved or sized, kept with the sizes), else a list's (`Frame::LIST`) — `h` 0
-    /// while it's as tall as its rows.
+    /// The list's frame: the one you set (moved or sized, kept with the sizes), else its kind's (`list_frame`) — `h` 0
+    /// while it's as tall as its rows, `w` 0 while it's as wide as them.
     pub fn float_list_frame(&self, kind: GroupKind) -> Option<crate::pane::Frame> {
         self.float_list(kind)?;
         let kept = match kind {
@@ -266,16 +280,32 @@ impl Editor {
             GroupKind::Folders => self.sizes.folders,
             _ => self.sizes.sessions,
         };
-        Some(kept.unwrap_or(crate::pane::Frame::LIST))
+        Some(kept.unwrap_or(list_frame(kind)))
     }
 
-    /// The list's cells on a screen `w` wide with `h` rows above the status line (`Frame::rect_rows`).
+    /// The list's cells on a screen `w` wide with `h` rows above the status line (`Frame::rect_rows`), as wide as its
+    /// rows have needed while it's up (`FloatList.wide`) where its width isn't set.
     pub fn float_list_rect(&self, kind: GroupKind, w: usize, h: usize) -> Option<crate::split::Rect> {
         // (docked in sight: a leaf of the tree, not a frame; docked with no room and no keys: nothing)
         if self.docked_in_sight(kind) || self.list_unshown(kind) {
             return None;
         }
-        Some(self.float_list_frame(kind)?.rect_rows(w, h, self.float_list_ids(kind).len()))
+        let wide = self.float_list(kind)?.wide.get();
+        Some(self.float_list_frame(kind)?.rect_rows(w, h, self.float_list_ids(kind).len(), wide))
+    }
+
+    /// The session list's rows as this frame lays them out, its high-water width raised to what they need
+    /// (`FloatList.wide`) — once a frame (`term`'s layout), before its rect is found; none while it isn't drawn (not
+    /// up, or docked with no room and no keys).
+    pub fn sessions_laid(&self) -> Vec<crate::sessionpane::Row> {
+        let kind = GroupKind::Sessions;
+        let Some(p) = self.float_list(kind) else { return Vec::new() };
+        if !self.docked_in_sight(kind) && self.list_unshown(kind) {
+            return Vec::new();
+        }
+        let rows = self.sessions_rows();
+        p.wide.set(p.wide.get().max(crate::sessionpane::need(&rows)));
+        rows
     }
 
     /// The list's kept frame (`Sizes`): set, or back to a list's (None).

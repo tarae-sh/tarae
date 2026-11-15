@@ -55,9 +55,15 @@ fn messages_is_a_floating_list_at_the_newest() {
     );
     let lines: Vec<&str> = s.lines().skip(r.y).take(r.h).collect();
     assert!(
-        lines[0].contains("╭─ messages ── 4 messages · 1 warning") && lines[0].contains("y copy"),
-        "{}",
+        lines[0].contains("╭─ messages ── 4 messages · 1 warning") && !lines[0].contains("y copy"),
+        "its name and counts on top: {}",
         lines[0]
+    );
+    assert!(lines[5].starts_with("╰") || lines[5].contains("╰"), "{}", lines[5]);
+    assert!(
+        lines[5].contains("y copy") && lines[5].contains("q close"),
+        "its keys in its bottom line: {}",
+        lines[5]
     );
     assert!(lines[1].contains("no messages yet"), "oldest first: {}", lines[1]);
     assert!(lines[3].contains("▲ rust-analyzer: 2 errors · see the log"), "{}", lines[3]);

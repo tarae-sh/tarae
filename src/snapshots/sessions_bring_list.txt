@@ -7,12 +7,12 @@
 04
 05
 06
-07                       ╭─ sessions ── 4 sessions ──────── enter switch  / search  o new ─╮
+07                       ╭─ sessions ── 4 sessions ────────────────────────────────────────╮
 08                       │▎ main                                                           │
 09                       │  fix-login                                                      │
 10                       │  docs                                                           │
 11                       │  parser                                                         │
-12                       ╰─────────────────────────────────────────────────────────────────╯
+12                       ╰──────────── enter switch  / search  o new  $ billing  esc code ─╯
 13
 14
 15
@@ -69,12 +69,12 @@
 04
 05
 06
-07                       aa TTTTTTTT aa d dddddddd aaaaaaaa DDDDD ffffff  D ffffff  D fff aa
+07                       aa TTTTTTTT aa d dddddddd aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 08                       aa BBBB                                                           a
 09                       a                                                                 a
 10                       a                                                                 a
 11                       a                                                                 a
-12                       aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+12                       aaaaaaaaaaaaa BBBBB ffffff  B ffffff  B fff  B fffffff  BBB ffff aa
 13
 14
 15

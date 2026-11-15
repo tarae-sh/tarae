@@ -336,6 +336,29 @@ pub fn models_where_they_differ(rows: &mut [Row]) {
     }
 }
 
+/// The columns that widen the floating list's frame (`need`): what a person watching several sessions work reads —
+/// the rest only in room left over.
+const WIDENS: [Col; 8] =
+    [Col::Waits, Col::State, Col::Overlap, Col::Behind, Col::Context, Col::Model, Col::Report, Col::Cost];
+
+/// What a floating frame takes beside its rows' text: its two sides, the bar's cell and a blank, a cell before the side.
+pub const FRAMED: usize = 5;
+
+/// The cells the floating list's frame needs for `rows` (the one list L2, `.sb/one-list-plan.md` §1): the name's
+/// column, then each of `WIDENS` as wide as its widest (the state to `STATE_MAX`, the report to `REPORT_MAX`) with its
+/// `GAP`, then the frame's own (`FRAMED`) — taken over every row, in sight or not, so scrolling never widens it.
+pub fn need(rows: &[Row]) -> usize {
+    let width = |c: Col| rows.iter().map(|r| r.text(c).width()).max().unwrap_or(0);
+    let cap = |c: Col, w: usize| match c {
+        Col::Report => w.min(REPORT_MAX),
+        Col::State => w.min(STATE_MAX),
+        _ => w,
+    };
+    let name = rows.iter().map(Row::name_width).max().unwrap_or(0);
+    let cols: usize = WIDENS.iter().map(|&c| cap(c, width(c))).filter(|&w| w > 0).map(|w| GAP + w).sum();
+    name + cols + FRAMED
+}
+
 /// The columns shown in a pane whose rows are `room` cells wide (the name's column first, then each shown column
 /// `GAP` after the one before), and each one's width: every column as wide as its widest (the report to `REPORT_MAX`,
 /// the state to `STATE_MAX`); too wide, they give way in `LADDER`'s order, the first step that fits kept — a cut
@@ -445,7 +468,7 @@ pub(crate) fn matches(row: &Row, re: &regex::Regex) -> bool {
     re.is_match(&row.name) || COLS.iter().any(|&c| re.is_match(&row.text(c)))
 }
 
-/// The list's keys for its top line, as they apply to the row in hand: `enter` switches, `/` searches, then what the row's session
+/// The list's keys for its frame's bottom line (docked, its foot), as they apply to the row in hand: `enter` switches, `/` searches, then what the row's session
 /// takes — `v` its changes woven where it overlaps, `f` follow while its Claude works, `B` the marked ones in turn —,
 /// `o` new, `O` fork, `d` end and `b` bring (not the checkout tarae started in), `m` mark, `x` its build folder once measured,
 /// `$` who pays; `esc code`, `q close`. The line folds them from the last.

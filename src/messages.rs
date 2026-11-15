@@ -123,7 +123,7 @@ pub fn rows_drawn(ed: &mut Editor, frame: &[u8], w: u16, h: u16) -> bool {
     came
 }
 
-/// The list's keys for its top line: `enter` where the row in hand is longer than its row, then `y`, `/`, `esc`, `q`.
+/// The list's keys for its frame's bottom line: `enter` where the row in hand is longer than its row, then `y`, `/`, `esc`, `q`.
 pub fn hints(ed: &Editor) -> Vec<(&'static str, String)> {
     let id = ed.float_list_here(GroupKind::Messages);
     let room = ed.screen.messages_room.get();

@@ -190,11 +190,16 @@ impl Editor {
         let (w, h) = self.float_screen();
         let f = Frame::of_rect(r, w, h);
         // (a floating list's is the viewer's, kept with the sizes — as tall as its rows still unless its height
-        // changed)
+        // changed, as wide as them unless its width did (a move keeps it), centred unless it moved or its width changed)
         if crate::floatlist::is_list(kind) {
-            let rows = self.float_list_frame(kind).is_some_and(|f| f.h == 0)
-                && self.float_rect(kind).is_some_and(|was| was.h == r.h);
-            self.float_list_frame_set(kind, Some(if rows { Frame { h: 0, ..f } } else { f }));
+            let (Some(was_f), Some(was)) = (self.float_list_frame(kind), self.float_rect(kind)) else {
+                return self.float_list_frame_set(kind, Some(f));
+            };
+            let h = if was_f.h == 0 && was.h == r.h { 0 } else { f.h };
+            let w = if was_f.w == 0 && was.w == r.w { 0 } else { f.w };
+            let placed = was_f.x == Frame::PLACED && was.x == r.x && was.w == r.w;
+            let x = if placed { Frame::PLACED } else { f.x };
+            self.float_list_frame_set(kind, Some(Frame { x, w, h, ..f }));
             return;
         }
         if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind)
@@ -328,10 +333,17 @@ impl Editor {
         self.sizes_keep();
     }
 
-    /// `C-w =` from a floating group's member: back in the middle, 3/5 × 1/2 of the screen. False: not in one.
+    /// `C-w =` from a floating group's member: back in the middle, 3/5 × 1/2 of the screen — a list as tall as its rows,
+    /// the session list as wide as them too. False: not in one.
     pub fn float_auto(&mut self) -> bool {
         let Some(kind) = self.float_in_hand() else { return false };
         match kind {
+            k if crate::floatlist::list_frame(k).w == 0 => {
+                self.float_list_frame_set(k, None);
+                self.float_keep();
+                self.say_size(format!("{} as wide as its rows, in the middle", kind.name()));
+                return true;
+            }
             k if crate::floatlist::is_list(k) => self.float_list_frame_set(k, None),
             _ => {
                 if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind) {

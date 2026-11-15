@@ -2452,7 +2452,7 @@ const ORCHESTRA_LIST: &[&str] = &[
     "@1",
     "y",
     "@20?Started all",
-    "@20?▲1 waiting",
+    "@20?thread-docs asks",
     "@3",
     "\x1b",
     " ",
@@ -2610,7 +2610,7 @@ const ORCHESTRA_STRIP: &[&str] = &[
     "@1",
     "y",
     "@20?Started all",
-    "@20?▲1 waiting",
+    "@20?thread-docs asks",
     "@3",
 ];
 /// orchestra P3 (`orchestra-propose-bring`): main starts knot-count; in it a commit (yours, by `:sh`); back in main you

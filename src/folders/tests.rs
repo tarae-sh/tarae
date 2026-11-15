@@ -97,6 +97,9 @@ fn a_folder_is_added_listed_and_removed() {
     assert!(ed.float_list_keys(GroupKind::Folders), "focused at once");
     let s = frame(&mut ed);
     assert!(s.contains("╭─ folders ── 1 folder") && s.contains("d remove"), "{s}");
+    // (its keys in its frame's bottom line, as the other lists' — the one list L2)
+    assert!(s.lines().any(|l| l.contains("╰") && l.contains("d remove") && l.contains("q close")), "{s}");
+    assert!(!s.lines().any(|l| l.contains("╭─ folders") && l.contains("d remove")), "{s}");
     let row = s.lines().find(|l| l.contains("▎ infra")).unwrap_or_else(|| panic!("its row: {s}"));
     assert!(row.contains("has CLAUDE.md"), "{row}");
     let listed = ed.ui_state().panels.lists;

@@ -1329,6 +1329,9 @@ struct Layout {
     /// The floating panes in sight this frame, bottom first (P3 step 7): each one's kind, its host pane (the session
     /// list's: its list) and its frame's rect on the screen — the whole screen its frame, never the code area.
     floats: Vec<(crate::pane::GroupKind, crate::split::PaneId, crate::split::Rect)>,
+    /// The session list's rows, built once a frame while it's up (`Editor::sessions_laid`): its frame's width is found
+    /// from them (`floats`) and they're drawn (`draw_sessions_pane`).
+    sessions: std::rc::Rc<[crate::sessionpane::Row]>,
     /// The code panes' top lines and the dividers between them (`code_lines`, `code_dividers`), worked out once a frame:
     /// every edge that meets them asks.
     code: std::cell::OnceCell<CodeEdges>,
@@ -1866,6 +1869,8 @@ impl Layout {
         // `C-w z`: one pane fills the screen (`sizes::Zoom`)
         let zoom = editor.zoomed();
         let zoom_shows = editor.zoomed_shows();
+        // (the session list's rows first: its frame is as wide as they need — `floats`)
+        let sessions = editor.sessions_laid().into();
         // (the slot's header in the line where it meets what's above — panes P3 §1: filling the screen, that line
         // is its first row, no code's line over it)
         let slot_head = crate::chrome::SLOT_HEAD;
@@ -2077,6 +2082,7 @@ impl Layout {
             zoom_shows,
             leaves,
             floats: floats(editor, w as usize, (h as usize).saturating_sub(1)),
+            sessions,
             code: std::cell::OnceCell::new(),
             rail_head: std::cell::OnceCell::new(),
             rail_rows: std::cell::OnceCell::new(),
@@ -6684,7 +6690,7 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
                     for y in rr.y..rr.y + rr.h {
                         queue!(out, MoveTo(rr.x as u16, y as u16), Spaces(rr.w))?;
                     }
-                    draw_sessions_pane(editor, &own, card, line, rr, false, out)?
+                    draw_sessions_pane(editor, &own, (card, line), (rr, false), &lay.sessions, out)?
                 }
                 Some(Slot::Test) if let Some(t) = &editor.workspace.test_run => {
                     draw_test_panel(t, editor, &own, at, out)?
@@ -6733,7 +6739,7 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
         let line = edge_style(&own, card, Region::Slot);
         if kind == GroupKind::Sessions {
             let _fade = Fade::unless(has, &own);
-            draw_sessions_pane(editor, &own, card, line, r, true, out)?;
+            draw_sessions_pane(editor, &own, (card, line), (r, true), &lay.sessions, out)?;
         } else if kind == GroupKind::Messages {
             let _fade = Fade::unless(has, &own);
             draw_messages_pane(editor, &own, card, line, r, out)?;
@@ -6757,27 +6763,65 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
         // (over and under: its detail's top line meets the sides; side by side, the line between them its bottom)
         let members = editor.workspace.group(kind).and_then(|g| group_members(editor, lay, &g));
         let (middle, split) = (members.and_then(|m| over_under(&m)), members.and_then(|m| side_by_side(&m)));
-        // (its keys while it moves: hints as every hint is drawn — never the line's colour, which the pointer lights)
+        // (its keys while it moves, else a list's while it has them: hints as every hint is drawn — never the line's
+        // colour, which the pointer lights)
         let hint = (
             Style { fg: own.hint_key.or(own.virt.fg), bold: true, ..card },
             Style { fg: own.linenr.fg, ..card },
         );
-        float_sides(out, line, hint, r, (middle, split), editor.float_moving == Some(kind))?;
+        let pairs = match editor.float_moving == Some(kind) {
+            true => vec![("h j k l", "move".to_string()), ("enter", "done".to_string())],
+            false if has => list_keys(editor, kind),
+            false => Vec::new(),
+        };
+        let keys: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (*k, d.as_str())).collect();
+        float_sides(out, line, hint, r, (middle, split), &keys)?;
         editor.screen.floating.borrow_mut().push((kind, r));
+    }
+    Ok(())
+}
+
+/// A floating list's keys for its frame's bottom line (the one list L2: the three lists' keys there, as a card's — the
+/// top line keeps the name and the counts), as they apply to the row in hand.
+fn list_keys(editor: &Editor, kind: crate::pane::GroupKind) -> Vec<(&'static str, String)> {
+    use crate::pane::GroupKind;
+    match kind {
+        GroupKind::Sessions => crate::sessionpane::hints(editor),
+        GroupKind::Messages => crate::messages::hints(editor),
+        GroupKind::Folders => crate::folders::hints().into_iter().map(|(k, d)| (k, d.to_string())).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A list's scroll thumb (`THUMB`) in the cell before its side, down rows `y0..y0 + rows` — only while its `n` rows are
+/// more than that, its first in sight `top`; each cell in `ink(k)`, row `k`'s (the selected row's ground kept).
+fn list_thumb(
+    out: &mut impl Write,
+    ink: impl Fn(usize) -> Style,
+    (x, y0, rows): (usize, usize, usize),
+    n: usize,
+    top: usize,
+) -> io::Result<()> {
+    if n <= rows || rows == 0 {
+        return Ok(());
+    }
+    for i in scroll_thumb(rows, n, top) {
+        apply(out, ink(top + i))?;
+        queue!(out, MoveTo(x as u16, (y0 + i) as u16), Print(THUMB))?;
     }
     Ok(())
 }
 
 /// A floating frame's sides and bottom line round `r` (its top line is its header's): `│` down both sides (`├ ┤`
 /// where a detail's top line inside meets them, `middle`), `╰─ … ─╯` (`┴` under the line between members side by
-/// side, `split`) — while `C-w m` moves it, its keys in it.
+/// side, `split`) — `keys` in it: `C-w m`'s while it moves, a list's while it has the keys.
 fn float_sides(
     out: &mut impl Write,
     line: Style,
     (key, faint): (Style, Style),
     r: crate::split::Rect,
     (middle, split): (Option<usize>, Option<usize>),
-    moving: bool,
+    keys: &[(&str, &str)],
 ) -> io::Result<()> {
     let mut buf = Vec::new();
     for y in r.y + 1..r.y + r.h - 1 {
@@ -6787,7 +6831,6 @@ fn float_sides(
         queue!(buf, MoveTo((r.x + r.w - 1) as u16, y as u16))?;
         put_line(&mut buf, line, rr)?;
     }
-    let keys: &[(&str, &str)] = if moving { &[("h j k l", "move"), ("enter", "done")] } else { &[] };
     let head = TopLine { keys, key, faint, plain: true, ..TopLine::default() };
     let splits: Vec<usize> = split.into_iter().collect();
     top_line(&mut buf, line, line, (r.x, r.y + r.h - 1, r.w), ("╰", "╯", "┴"), &splits, true, &head)?;
@@ -6801,21 +6844,19 @@ fn float_sides(
 fn draw_sessions_pane(
     editor: &Editor,
     ui: &Ui,
-    card: Style,
-    line: Style,
-    r: crate::split::Rect,
-    framed: bool,
+    (card, line): (Style, Style),
+    (r, framed): (crate::split::Rect, bool),
+    rows: &[crate::sessionpane::Row],
     out: &mut impl Write,
 ) -> io::Result<()> {
     use crate::sessionpane::{Col, Ink};
-    let rows = editor.sessions_rows();
     let dim = Style { fg: ui.virt.fg, ..card };
     let faint = Style { fg: ui.linenr.fg, ..card };
     let strong =
         card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let warn = Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..card };
-    // Its top line: its name, how many work, its keys while it has them (who waits is each row's `▲`, what waits the
-    // card stack's — never a count here too: polish landing 1)
+    // Its top line: its name, how many work (who waits is each row's `▲`, what waits the card stack's — never a count
+    // here too: polish landing 1); its keys are its bottom line's floating, its foot's docked (the one list L2)
     let working = rows.iter().filter(|r| r.working).count();
     // (the details fold from the last)
     let mut details = vec![(crate::nav::count(rows.len(), "session"), dim)];
@@ -6823,34 +6864,41 @@ fn draw_sessions_pane(
         details.push((format!(" · {working} working"), faint));
     }
     let has = ui.lit == Some(Region::Slot);
-    // (its keys only while it has them: what applies to the row in hand)
-    let pairs = if has { crate::sessionpane::hints(editor) } else { Vec::new() };
-    let keys: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (*k, d.as_str())).collect();
     let names = [(Fit::from("sessions"), strong)];
-    let head = TopLine {
-        names: &names,
-        details: &fits(&details),
-        keys: &keys,
-        key: Style { bold: true, ..dim },
-        faint,
-        ..TopLine::default()
-    };
+    let head = TopLine { names: &names, details: &fits(&details), faint, ..TopLine::default() };
     let ends = if framed { ("╭", "╮", "┬") } else { ("", "", "┬") };
     top_line(out, line, card, (r.x, r.y, r.w), ends, &[], true, &head)?;
-    // The rows: `▎ ` (the bar's cell and a blank), the name, its columns, a cell before the side — docked, no sides
+    // The rows: `▎ ` (the bar's cell and a blank), the name, its columns, a cell before the side — docked, no sides,
+    // and its keys on its last row while it has them (a side column's, at its foot)
     let side = usize::from(framed);
     let (x0, y0, inner) = (r.x + side, r.y + 1, r.h.saturating_sub(1 + side));
-    let room = r.w.saturating_sub(2 * side + 2 + 1);
-    let (name_w, cols) = crate::sessionpane::lay(&rows, room);
-    let here = editor.sessions_here();
-    let selected = rows.iter().position(|row| Some(row.id) == here).unwrap_or(0);
-    let p = editor.float_list(crate::pane::GroupKind::Sessions);
     // (docked right, the asks over its foot — `asks_foot`: the selected row kept in sight above the stack, a row of air
     // between)
     let asks =
         // (a card grown left past the list's edge for its bottom line still stands over its foot)
         editor.screen.offer_card.filter(|c| !framed && c.0 + c.2 > x0 && c.1 + c.3 > y0 && c.1 < y0 + inner);
-    let shown = asks.map_or(inner, |c| c.1.saturating_sub(y0 + 1).clamp(1, inner));
+    // (where its rows end: the leaf's end, or the row of air over the asks — its keys on the row before that)
+    let end = asks.map_or(y0 + inner, |c| c.1.saturating_sub(1).clamp(y0 + 1, y0 + inner));
+    let foot = !framed && has && end > y0 + 1;
+    if foot {
+        let pairs = crate::sessionpane::hints(editor);
+        let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (*k, d.as_str())).collect();
+        let w = r.w.saturating_sub(3);
+        let spans = hint_spans(ui, whole_pairs(&pairs, w), Style { bold: true, ..dim }, faint);
+        let y = end - 1;
+        queue!(out, MoveTo(x0 as u16, y as u16))?;
+        apply(out, card)?;
+        queue!(out, Spaces(2))?;
+        let used = hinted_spans(out, &spans, card, w, (x0 + 2, y))?;
+        apply(out, card)?;
+        queue!(out, Spaces(r.w.saturating_sub(2 + used)))?;
+    }
+    let room = r.w.saturating_sub(2 * side + 2 + 1);
+    let (name_w, cols) = crate::sessionpane::lay(rows, room);
+    let here = editor.sessions_here();
+    let selected = rows.iter().position(|row| Some(row.id) == here).unwrap_or(0);
+    let p = editor.float_list(crate::pane::GroupKind::Sessions);
+    let shown = end - y0 - usize::from(foot);
     // (an ask coming over its foot: fewer rows in sight, the selection brought above it once — the wheel's after)
     let ids: Vec<u64> = rows.iter().map(|row| row.id.n).collect();
     let top = crate::floatlist::top_drawn(p, &ids, selected, shown);
@@ -6946,6 +6994,9 @@ fn draw_sessions_pane(
         apply(out, base)?;
         queue!(out, Spaces((r.w - 2 * side).saturating_sub(used)))?;
     }
+    // (more rows than in sight: the thumb in the cell before the side, as every list's)
+    let thumb = |k: usize| Style { fg: ui.linenr.fg, ..if k == selected { sel } else { card } };
+    list_thumb(out, thumb, (r.x + r.w - side - 1, y0, inner), rows.len(), top)?;
     Ok(())
 }
 
@@ -6969,7 +7020,7 @@ fn draw_messages_pane(
         card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let warn = Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..card };
     let error = Style { fg: ui.error.fg, ..card };
-    // Its top line: its name, how many, the errors and warnings among them, its keys while it has them
+    // Its top line: its name, how many, the errors and warnings among them (its keys its bottom line's, the one list L2)
     let count = |kind: ToastKind| rows.iter().filter(|m| m.kind == kind).count();
     let mut details = vec![(crate::nav::count(rows.len(), "message"), dim)];
     if count(ToastKind::Error) > 0 {
@@ -6979,17 +7030,8 @@ fn draw_messages_pane(
         details.push((format!(" · {}", crate::nav::count(count(ToastKind::Warning), "warning")), warn));
     }
     let has = ui.lit == Some(Region::Slot);
-    let pairs = if has { crate::messages::hints(editor) } else { Vec::new() };
-    let keys: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (*k, d.as_str())).collect();
     let names = [(Fit::from("messages"), strong)];
-    let head = TopLine {
-        names: &names,
-        details: &fits(&details),
-        keys: &keys,
-        key: Style { bold: true, ..dim },
-        faint,
-        ..TopLine::default()
-    };
+    let head = TopLine { names: &names, details: &fits(&details), faint, ..TopLine::default() };
     top_line(out, line, card, (r.x, r.y, r.w), ("╭", "╮", "┬"), &[], true, &head)?;
     // The rows: `▎ ` (the bar's cell and a blank), `▲ ` or two blanks, the text, two cells, its age, a cell before the side
     let (x0, y0, inner) = (r.x + 1, r.y + 1, r.h.saturating_sub(2));
@@ -7071,6 +7113,9 @@ fn draw_messages_pane(
             },
         ));
     }
+    drop(listed);
+    let thumb = |k: usize| Style { fg: faint.fg, ..if k == selected { sel } else { card } };
+    list_thumb(out, thumb, (r.x + r.w - 2, y0, inner), rows.len(), top)?;
     Ok(())
 }
 
@@ -7094,16 +7139,8 @@ fn draw_folders_pane(
         card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let details = vec![(crate::nav::count(rows.len(), "folder"), dim)];
     let has = ui.lit == Some(Region::Slot);
-    let keys = if has { crate::folders::hints() } else { Vec::new() };
     let names = [(Fit::from("folders"), strong)];
-    let head = TopLine {
-        names: &names,
-        details: &fits(&details),
-        keys: &keys,
-        key: Style { bold: true, ..dim },
-        faint,
-        ..TopLine::default()
-    };
+    let head = TopLine { names: &names, details: &fits(&details), faint, ..TopLine::default() };
     top_line(out, line, card, (r.x, r.y, r.w), ("╭", "╮", "┬"), &[], true, &head)?;
     // The rows: `▎ ` (the bar's cell and a blank), the name, two cells, where, two cells, its files, a cell before the side
     let (x0, y0, inner) = (r.x + 1, r.y + 1, r.h.saturating_sub(2));
@@ -7172,6 +7209,9 @@ fn draw_folders_pane(
             },
         ));
     }
+    drop(listed);
+    let thumb = |k: usize| Style { fg: faint.fg, ..if k == selected { sel } else { card } };
+    list_thumb(out, thumb, (r.x + r.w - 2, y0, inner), rows.len(), top)?;
     Ok(())
 }
 

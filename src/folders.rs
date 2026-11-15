@@ -463,7 +463,7 @@ pub fn rows(ed: &Editor) -> Vec<Row> {
         .collect()
 }
 
-/// The list's keys for its top line.
+/// The list's keys for its frame's bottom line.
 pub fn hints() -> Vec<(&'static str, &'static str)> {
     vec![("d", "remove"), ("/", "search"), ("esc", "code"), ("q", "close")]
 }

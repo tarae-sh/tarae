@@ -353,6 +353,9 @@ const BUTTONS: &[&str] = &[
     "-",
     "↑",
     "b",
+    // (the session list's marked ones brought in turn: asked on one card first — `bringqueue.rs`; drawn once its keys
+    // moved to the frame's bottom line, the one list L2, where it has room)
+    "B",
     "c",
     "e",
     "f",

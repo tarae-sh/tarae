@@ -303,12 +303,14 @@ fn the_session_list_floats_and_stays_while_you_work() {
         "its top at 1/4, 3/5 wide, as tall as its row"
     );
     let top = s.lines().nth(f.y).unwrap();
-    assert!(top.contains("╭─ sessions ── 1 session") && top.contains("enter switch"), "{top}");
+    assert!(top.contains("╭─ sessions ── 1 session") && !top.contains("enter switch"), "{top}");
+    let bottom = s.lines().nth(f.y + f.h - 1).unwrap();
+    assert!(bottom.contains("╰") && bottom.contains("enter switch"), "its keys in its bottom line: {bottom}");
     assert!(s.lines().nth(f.y + 1).unwrap().contains("▎ main"), "its row, selected");
     feed(&mut ed, "<esc>");
     assert!(ed.sessions_pane.is_some() && ed.workspace.here() == Here::Code, "esc: the keys back, it stays");
     assert!(
-        !frame(&mut ed, 160, 40).lines().nth(f.y).unwrap().contains("enter switch"),
+        !frame(&mut ed, 160, 40).lines().nth(f.y + f.h - 1).unwrap().contains("enter switch"),
         "its keys only with them"
     );
     ed.handle_mouse(crate::event::Mouse {
@@ -364,6 +366,10 @@ fn the_session_list_docks_and_stays_after_enter() {
     let (_, r) = ed.dock_rect(GroupKind::Sessions).expect("docked, drawn");
     assert!(s.lines().nth(r.y).unwrap().contains("sessions"), "its top line\n{s}");
     assert!(ed.sessions_list_keys(), "the keys stay with it");
+    // (its keys at its foot, a side column's — the one list L2 — never in its top line)
+    let foot: String = s.lines().nth(r.y + r.h - 1).unwrap().chars().skip(r.x).take(r.w).collect();
+    assert!(foot.trim_start_matches(['│', ' ']).starts_with("enter switch"), "its foot: {foot:?}\n{s}");
+    assert!(!s.lines().nth(r.y).unwrap().contains("enter switch"), "{s}");
     feed(&mut ed, "j<ret>");
     assert_eq!(ed.workspace.id, fix, "switched");
     assert!(
@@ -621,6 +627,9 @@ fn the_asks_float_over_a_docked_lists_foot_its_selected_row_above_them() {
         "the selected row above the stack, a row of air: {bar:?} < {y}\n{s}"
     );
     assert!(rows[bar.unwrap()].contains("s29"), "the last one selected\n{s}");
+    // (its keys over the stack, a row of air between — a side column's foot where the asks stand on it)
+    assert!(rows[y - 2].contains("enter switch"), "its keys above the asks: {}\n{s}", rows[y - 2]);
+    assert!(rows[y - 1].chars().skip(r.x + 1).take(r.w - 1).all(|c| c == ' '), "air\n{s}");
 }
 
 /// The list's side is kept as its width is (`sizes.json`, plan §3.4 "its place kept"): docked left, the next tarae —
@@ -899,7 +908,94 @@ fn the_session_list_is_searched_with_slash() {
     assert_eq!(ed.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Session), "o: new");
 }
 
-/// A list floats 3/5 wide and as tall as its rows, up to half the screen (user, 2026-10-23), its top on the line every
+/// The floating list is as wide as its rows need (the one list L2, `.sb/one-list-plan.md` §1): a list's 3/5 at least,
+/// the screen less a picker's margins at most, centred across; it widens as they need more and never narrows while it's
+/// up, and opened again it starts from that moment's rows. A width you set (`C-w >`) is kept as rows come; `C-w =`
+/// gives it its rows' width again. Its frame says a width of 0 and a left placed by the rule as `null`.
+#[test]
+fn the_list_is_as_wide_as_its_rows() {
+    use crate::pane::Frame;
+    use crate::split::Rect;
+    let dir = crate::scratch::Scratch::new("sessionwide");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let rect = |ed: &mut Editor| {
+        frame(ed, 80, 40);
+        ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).unwrap().1
+    };
+    let drop_last = |ed: &mut Editor| {
+        let id = ed.workspaces.last().unwrap().id;
+        ed.workspaces.retain(|l| l.id != id);
+    };
+    feed_at(&mut ed, " W", 80, 40);
+    assert_eq!(rect(&mut ed), Rect { x: 16, y: 10, w: 48, h: 3 }, "a short row: a list's 3/5, centred");
+    // (a name 60 cells long: 60 and the frame's 5)
+    ed.workspace_add(dir.join("n".repeat(60)));
+    assert_eq!(rect(&mut ed), Rect { x: 7, y: 10, w: 65, h: 4 }, "as wide as its rows need, centred");
+    drop_last(&mut ed);
+    assert_eq!(rect(&mut ed).w, 65, "never narrower while it's up");
+    ed.workspace_add(dir.join("m".repeat(90)));
+    assert_eq!((rect(&mut ed).x, rect(&mut ed).w), (2, 76), "the screen less its margins at most");
+    drop_last(&mut ed);
+    feed_at(&mut ed, "q W", 80, 40);
+    assert_eq!(rect(&mut ed).w, 48, "opened again: from that moment's rows");
+    assert_eq!(rect(&mut ed).x, 16);
+    // A width you set is kept; `C-w =` gives it its rows' again
+    feed_at(&mut ed, "<C-w>>", 80, 40);
+    let set = rect(&mut ed);
+    assert_eq!((set.x, set.w), (16, 48 + crate::sizes::STEP_COLS), "wider, its left edge staying");
+    assert!(ed.sizes.sessions.is_some_and(|f| f.w != 0 && f.x != Frame::PLACED), "kept with the sizes");
+    ed.workspace_add(dir.join("n".repeat(60)));
+    assert_eq!(rect(&mut ed).w, set.w, "the width you set, whatever the rows need");
+    feed_at(&mut ed, "<C-w>=", 80, 40);
+    assert_eq!((ed.sizes.sessions, rect(&mut ed).w, rect(&mut ed).x), (None, 65, 7), "its rows' width again");
+    assert!(ed.messages.last().unwrap().2.contains("as wide as its rows"), "said");
+    // A move keeps it as wide as its rows, its left where it was moved to
+    feed_at(&mut ed, "<C-w>ml<ret>", 80, 40);
+    assert!(
+        ed.sizes.sessions.is_some_and(|f| f.w == 0 && f.x != Frame::PLACED && f.h == 0),
+        "{:?}",
+        ed.sizes.sessions
+    );
+    // (as `sizes.json` keeps it)
+    assert_eq!(Frame::ROWS.json(), serde_json::json!([null, null, 0, 0]));
+    assert_eq!(Frame::of_json(&Frame::ROWS.json()), Some(Frame::ROWS));
+    // `:messages` stays a list's 3/5
+    assert_eq!(crate::floatlist::list_frame(GroupKind::Messages), Frame::LIST);
+}
+
+/// More sessions than the list has rows: the `▎` thumb in the cell before its side, at the top, the middle and the end
+/// of twenty as the selection goes down; none while every row is in sight.
+#[test]
+fn the_list_shows_its_thumb_when_it_scrolls() {
+    let dir = crate::scratch::Scratch::new("sessionthumb");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let thumb = |ed: &mut Editor| -> Vec<usize> {
+        let s = frame(ed, 160, 20);
+        let f = ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).unwrap().1;
+        let rows: Vec<&str> = s.lines().collect();
+        (f.y + 1..f.y + f.h - 1)
+            .filter(|&y| rows[y].chars().nth(f.x + f.w - 2) == Some('▎'))
+            .map(|y| y - f.y - 1)
+            .collect()
+    };
+    feed_at(&mut ed, " W", 160, 20);
+    assert!(thumb(&mut ed).is_empty(), "one row: no thumb");
+    for i in 0..19 {
+        ed.workspace_add(dir.join(format!("s{i:02}")));
+    }
+    // (20 rows in 7: a thumb of 3)
+    feed_at(&mut ed, "gg", 160, 20);
+    assert_eq!(thumb(&mut ed), vec![0, 1, 2], "at the top");
+    feed_at(&mut ed, "jjjjjjjjjj", 160, 20);
+    let middle = thumb(&mut ed);
+    assert!(middle.len() == 3 && middle[0] > 0 && middle[2] < 6, "in the middle: {middle:?}");
+    feed_at(&mut ed, "G", 160, 20);
+    assert_eq!(thumb(&mut ed), vec![4, 5, 6], "at the end");
+}
+
+/// A list floats as tall as its rows, up to half the screen (user, 2026-10-23), its top on the line every
 /// floating pane's is — 1/4 of the screen's height, a full 3/5 × 1/2 one's (centred) — for 1, 3 or many rows: a
 /// session added grows it downward, its top never moving, opened again too; a move or a width keeps it as tall as its
 /// rows, a height you set (`C-w + -`) is kept, `C-w =` gives it its rows again on that line.
