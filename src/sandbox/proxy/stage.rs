@@ -732,7 +732,10 @@ impl Closing {
 /// Both sides closed: each one's writing shut (its bridge sends close_notify), then what each still sends read and
 /// dropped until its bridge's thread is over (`Out::life_line`) — its close_notify gone, the other end's own close come
 /// — `CLOSING` at most. (Not its end read alone: a run that half-closed sent that before, and its bridge let go before
-/// it read this shutdown would see only its life line gone, and end with no close_notify.)
+/// it read this shutdown would see only its life line gone, and end with no close_notify.) The sides let go after it:
+/// a bridge that's over gets no byte on its line (`bridge::Line`: its reader gone); one still running past `CLOSING`
+/// is ended by the byte as by the line's end, with no close_notify where its own hadn't gone — a truncation, never a
+/// close_notify more.
 fn close(sides: &[Out; 2]) {
     for s in sides {
         let _ = s.shutdown(Shutdown::Write);

@@ -8,21 +8,62 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// What one read takes, either way.
 const CHUNK: usize = 16 * 1024;
 /// The most decrypted bytes waiting for the relay before the upstream isn't read any more.
 const PENDING_MAX: usize = 64 * 1024;
 
-/// The way out: a connection made, or the bridge's end — with the writing end of a pipe the bridge watches, closed
-/// as the relay lets its end go, a byte on it first where it lets go with no end said (its life line: the pair alone
-/// can't tell a relay gone from one only half-closed).
+/// The way out: a connection made, or the bridge's end — with its life line (`Line`: the pair alone can't tell a
+/// relay gone from one only half-closed). A bridge's end let go is a truncation (no close_notify) unless the relay
+/// shut its writing first and waited (the stage's `close`): `line` before `pair`, fields dropping in their order —
+/// the line's byte is there before the pair's end can read as the relay's close.
 #[derive(Debug)]
 pub enum Out {
     Tcp(TcpStream),
-    Bridged(UnixStream, io::PipeWriter),
+    Bridged { line: Line, pair: UnixStream },
+}
+
+/// A bridge's reading end of its life line, held while its thread runs — None once it's over.
+type Reader = Arc<Mutex<Option<io::PipeReader>>>;
+
+fn lock(r: &Reader) -> MutexGuard<'_, Option<io::PipeReader>> {
+    r.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The relay's half of a bridge's life line: the writing end of a pipe the bridge's thread watches. Let go — by
+/// `abandon`, an early return, a panic's unwind, or after the stage's `close` — it writes one byte, then closes: the
+/// bridge's thread ends both sides with no close_notify, the TLS's reader seeing a truncation, whatever else holds a
+/// copy of its ends (a child forked that moment by any thread's spawn holds them until its exec closes them, in an
+/// order of its own — the pair's end closed first read as the relay's close, a clean end to the run's TLS, #605).
+/// So a clean end is only ever the relay's own: its writing shut while the line lives. The byte only while the bridge
+/// still reads it (under its lock, `Alive`): never into a pipe nobody reads (`EPIPE`, and a SIGPIPE tarae lives
+/// through only while it's ignored — a restart's window resets it, `restart::Signals`).
+#[derive(Debug)]
+pub struct Line {
+    w: io::PipeWriter,
+    alive: Reader,
+}
+
+impl Drop for Line {
+    fn drop(&mut self) {
+        let alive = lock(&self.alive);
+        if alive.is_some() {
+            // (one byte into a pipe nothing else writes: never blocks)
+            let _ = (&self.w).write_all(&[0]);
+        }
+    }
+}
+
+/// The bridge's half: the reading end, let go under its lock as the bridge's thread ends (any return).
+struct Alive(Reader);
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        lock(&self.0).take();
+    }
 }
 
 impl From<TcpStream> for Out {
@@ -35,7 +76,7 @@ impl Out {
     pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
         match self {
             Out::Tcp(s) => s.set_nonblocking(on),
-            Out::Bridged(s, _) => s.set_nonblocking(on),
+            Out::Bridged { pair, .. } => pair.set_nonblocking(on),
         }
     }
 
@@ -43,7 +84,7 @@ impl Out {
     pub fn set_timeouts(&self, t: Option<std::time::Duration>) -> io::Result<()> {
         match self {
             Out::Tcp(s) => s.set_read_timeout(t).and_then(|()| s.set_write_timeout(t)),
-            Out::Bridged(s, _) => s.set_read_timeout(t).and_then(|()| s.set_write_timeout(t)),
+            Out::Bridged { pair, .. } => pair.set_read_timeout(t).and_then(|()| pair.set_write_timeout(t)),
         }
     }
 
@@ -52,14 +93,14 @@ impl Out {
     fn local_addr(&self) -> Option<std::net::SocketAddr> {
         match self {
             Out::Tcp(s) => s.local_addr().ok(),
-            Out::Bridged(..) => None,
+            Out::Bridged { .. } => None,
         }
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         match self {
             Out::Tcp(s) => s.shutdown(how),
-            Out::Bridged(s, _) => s.shutdown(how),
+            Out::Bridged { pair, .. } => pair.shutdown(how),
         }
     }
 
@@ -68,26 +109,16 @@ impl Out {
     pub fn life_line(&self) -> Option<RawFd> {
         match self {
             Out::Tcp(_) => None,
-            Out::Bridged(_, line) => Some(line.as_raw_fd()),
+            Out::Bridged { line, .. } => Some(line.w.as_raw_fd()),
         }
     }
 
-    /// Let go with no end said: a byte on a bridge's life line first — its thread then ends both sides with no
-    /// close_notify, the TLS's reader seeing a truncation — before the pair, whose end alone would read as the
-    /// relay's close. Said by the byte, not by the line's close: a child forked this moment (any thread's spawn)
-    /// holds a copy of both until its exec closes them, in an order of its own — the pair's end first was a clean
-    /// end to the run's TLS (#605).
+    /// Let go with no end said: a connection shut both ways (whatever holds a copy of it); a bridge's end as any
+    /// letting go of one is, by its `Line` — its thread ends both sides with no close_notify, the TLS's reader seeing
+    /// a truncation.
     pub fn abandon(self) {
-        match self {
-            Out::Tcp(s) => {
-                let _ = s.shutdown(Shutdown::Both);
-            }
-            Out::Bridged(s, mut line) => {
-                // (one byte into a pipe nothing else writes: never blocks)
-                let _ = line.write_all(&[0]);
-                drop(line);
-                drop(s);
-            }
+        if let Out::Tcp(s) = &self {
+            let _ = s.shutdown(Shutdown::Both);
         }
     }
 
@@ -96,8 +127,9 @@ impl Out {
         match self {
             Out::Tcp(s) => s.peek(b),
             // SAFETY: a socket of ours, a buffer of `b.len()` bytes.
-            Out::Bridged(s, _) => {
-                match unsafe { libc::recv(s.as_raw_fd(), b.as_mut_ptr().cast(), b.len(), libc::MSG_PEEK) } {
+            Out::Bridged { pair, .. } => {
+                match unsafe { libc::recv(pair.as_raw_fd(), b.as_mut_ptr().cast(), b.len(), libc::MSG_PEEK) }
+                {
                     n if n >= 0 => Ok(n as usize),
                     _ => Err(io::Error::last_os_error()),
                 }
@@ -110,7 +142,7 @@ impl AsRawFd for Out {
     fn as_raw_fd(&self) -> RawFd {
         match self {
             Out::Tcp(s) => s.as_raw_fd(),
-            Out::Bridged(s, _) => s.as_raw_fd(),
+            Out::Bridged { pair, .. } => pair.as_raw_fd(),
         }
     }
 }
@@ -119,7 +151,7 @@ impl Read for &Out {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
         match self {
             Out::Tcp(s) => (&*s).read(b),
-            Out::Bridged(s, _) => (&*s).read(b),
+            Out::Bridged { pair, .. } => (&*pair).read(b),
         }
     }
 }
@@ -128,7 +160,7 @@ impl Write for &Out {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
         match self {
             Out::Tcp(s) => (&*s).write(b),
-            Out::Bridged(s, _) => send(s.as_raw_fd(), b),
+            Out::Bridged { pair, .. } => send(pair.as_raw_fd(), b),
         }
     }
 
@@ -206,11 +238,13 @@ pub fn start_leg(conn: rustls::Connection, tcp: Out) -> io::Result<(Out, Ending)
 
 fn started(conn: rustls::Connection, tcp: Out, ending: Option<Ending>) -> io::Result<Out> {
     let (relay, mine) = pair()?;
-    let (alive, line) = io::pipe()?;
+    let (r, w) = io::pipe()?;
+    let shared: Reader = Arc::new(Mutex::new(Some(r)));
+    let (alive, line) = (Alive(shared.clone()), Line { w, alive: shared });
     std::thread::Builder::new()
         .name("tarae-proxy-tls".into())
         .spawn(move || run(conn, tcp, mine, alive, ending))?;
-    Ok(Out::Bridged(relay, line))
+    Ok(Out::Bridged { line, pair: relay })
 }
 
 /// Tests: the upstream-side addresses (the bridge's own end) of the bridges whose thread still runs.
@@ -258,20 +292,16 @@ pub fn ended(at: std::net::SocketAddr) -> bool {
 /// The bridge's loop (`poll` on both): what the relay writes goes to the upstream encrypted, what the upstream
 /// sends to the relay decrypted. The relay's end closed → close_notify, then the upstream's writing shut down; the
 /// upstream's close_notify (or its end) → the relay's reading end shut down once what's decrypted — all of it, what
-/// rustls still holds too — is written. The relay gone (`alive` says it: `abandon`'s byte, or its end) ends both: nobody
+/// rustls still holds too — is written. The relay gone (`alive` says it: its `Line`'s byte, or its end) ends both: nobody
 /// reads what the upstream would still send, and an upstream that keeps its side open can't hold the thread.
 /// Anything else that fails ends both: the relay sees its side end. A record that doesn't decrypt is never passed on.
 /// `ending` (a terminated leg's): set clean at the upstream's close_notify alone.
-fn run(
-    mut conn: rustls::Connection,
-    tcp: Out,
-    pair: UnixStream,
-    alive: io::PipeReader,
-    ending: Option<Ending>,
-) {
+fn run(mut conn: rustls::Connection, tcp: Out, pair: UnixStream, alive: Alive, ending: Option<Ending>) {
     if tcp.set_nonblocking(true).is_err() || pair.set_nonblocking(true).is_err() {
         return;
     }
+    // (held until any return: `Alive` lets it go then, under its lock)
+    let line = lock(&alive.0).as_ref().map_or(-1, |r| r.as_raw_fd());
     // (to the relay: decrypted, not yet written; the relay's end read to its end; the upstream's socket read to
     // its end; the upstream's TLS ended — once what rustls holds is taken out, after the socket's end)
     let (mut out, mut relay_done, mut tcp_done, mut tls_done) = (Vec::new(), false, false, false);
@@ -350,7 +380,7 @@ fn run(
         let mut fds = [
             libc::pollfd { fd: fd(0, tcp.as_raw_fd()), events: events[0], revents: 0 },
             libc::pollfd { fd: fd(1, pair.as_raw_fd()), events: events[1], revents: 0 },
-            libc::pollfd { fd: alive.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: line, events: libc::POLLIN, revents: 0 },
         ];
         // SAFETY: three pollfds of ours, their count.
         if unsafe { libc::poll(fds.as_mut_ptr(), 3, -1) } < 0 {
@@ -359,7 +389,7 @@ fn run(
             }
             return end();
         }
-        // (anything on the life line — `abandon`'s byte, or its end — says the relay let its end go)
+        // (anything on the life line — its `Line`'s byte, or its end — says the relay let its end go)
         if fds[2].revents != 0 || fds.iter().any(|f| f.revents & (libc::POLLERR | libc::POLLNVAL) != 0) {
             return end();
         }

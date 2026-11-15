@@ -564,7 +564,8 @@ Kept:
   closes); one unasked, framed two ways or a 101 closes the tunnel, a 502 where none of it went. The bytes go on as
   they came. A truncation on the host's leg reaches the run as one: an answer that runs to the host's close is whole
   only by the host's close_notify, and wherever an answer is cut (no close_notify, a length or chunks unfinished, a
-  stall part-way) the run's TLS ends with no close_notify of tarae's — close_notify only at a clean end. Keep-alive on
+  stall part-way) the run's TLS ends with no close_notify of tarae's, whatever else holds a copy of the bridge's ends
+  (a child forked that moment) — close_notify only at a clean end. Keep-alive on
   one host connection, closed after srt's idle limits (10 s to a first head, 6 s at rest, 300 s stalled; never while a
   request waits).
   test: `sandbox::proxy::tests::terminate::a_listed_hosts_tunnel_is_terminated_each_way_a_run_comes` ·
@@ -584,6 +585,8 @@ Kept:
   `sandbox::proxy::tests::terminate::the_idle_limits_close_a_terminated_tunnel` ·
   `sandbox::proxy::tests::terminate::a_truncation_on_the_hosts_leg_reaches_the_run_as_one` ·
   `sandbox::proxy::tests::terminate::a_truncation_on_the_hosts_leg_fails_the_runs_curl` ·
+  `sandbox::proxy::tests::terminate::a_bridge_let_go_with_no_end_said_is_a_truncation_whatever_holds_a_copy_of_its_ends` ·
+  `sandbox::proxy::tests::terminate::a_bridge_let_go_by_a_panics_unwind_is_a_truncation` ·
   `sandbox::proxy::stage::tests::a_refused_request_and_what_follows_it_never_go_on` ·
   `sandbox::proxy::stage::tests::an_answer_with_neither_length_nor_chunks_ends_with_the_close` ·
   `sandbox::proxy::stage::tests::a_204_or_304_has_no_body_whatever_it_says` ·

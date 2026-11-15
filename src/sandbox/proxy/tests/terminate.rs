@@ -850,7 +850,37 @@ fn a_truncation_on_the_hosts_leg_reaches_the_run_as_one() {
 /// let go first and the line's held until the run's read is over — the worst order, every time.
 #[test]
 fn a_bridge_let_go_with_no_end_said_is_a_truncation_whatever_holds_a_copy_of_its_ends() {
-    use std::os::fd::BorrowedFd;
+    let (mut t, out) = bridged_run();
+    let (pair, line) = copies(&out);
+    out.abandon();
+    drop(pair);
+    let end = t.read_to_end(&mut Vec::new()).map_err(|e| e.kind());
+    drop(line);
+    assert_eq!(end, Err(std::io::ErrorKind::UnexpectedEof), "a clean end where the stage let go with none");
+}
+
+/// Letting go of a bridge's end any way but the stage's `close` is a truncation by construction (`bridge::Line`'s
+/// drop): a panic's unwind in the stage's thread mid-answer drops it plain — as an early return would, or a leg whose
+/// other leg's thread didn't start — and the run reads an end without close_notify, never a clean one. (The same
+/// stand-in for a forked child as above, so the pair's end alone would read as the relay's close every time.)
+#[test]
+fn a_bridge_let_go_by_a_panics_unwind_is_a_truncation() {
+    let (mut t, out) = bridged_run();
+    let (pair, line) = copies(&out);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _held = out;
+        panic!("the stage's thread, mid-answer (this test's own panic)");
+    }));
+    assert!(unwound.is_err());
+    drop(pair);
+    let end = t.read_to_end(&mut Vec::new()).map_err(|e| e.kind());
+    drop(line);
+    assert_eq!(end, Err(std::io::ErrorKind::UnexpectedEof), "a clean end where its end was dropped plain");
+}
+
+/// A bridge (the run's leg: tarae's TLS server over loopback) with its handshake done, `OPEN` sent through it and read
+/// by the run's TLS — the run's TLS, and the relay's end.
+fn bridged_run() -> (Tls, super::super::bridge::Out) {
     let public = authority("tarae test public CA");
     let l = TcpListener::bind((LO, 0)).unwrap();
     let s = TcpStream::connect(l.local_addr().unwrap()).unwrap();
@@ -876,14 +906,14 @@ fn a_bridge_let_go_with_no_end_said_is_a_truncation_whatever_holds_a_copy_of_its
     (&out).write_all(OPEN).unwrap();
     let mut got = vec![0; OPEN.len()];
     t.read_exact(&mut got).unwrap();
+    (t, out)
+}
+
+/// A forked child's copies of a bridge's end and of its life line (the open file descriptions kept, as its fd table's).
+fn copies(out: &super::super::bridge::Out) -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
     // SAFETY: the bridge's end and its life line, both open while `out` lives: duplicated before it's let go.
-    let copy = |fd| unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned().unwrap();
-    let (pair, line) = (copy(out.as_raw_fd()), copy(out.life_line().unwrap()));
-    out.abandon();
-    drop(pair);
-    let end = t.read_to_end(&mut Vec::new()).map_err(|e| e.kind());
-    drop(line);
-    assert_eq!(end, Err(std::io::ErrorKind::UnexpectedEof), "a clean end where the stage let go with none");
+    let copy = |fd| unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }.try_clone_to_owned().unwrap();
+    (copy(out.as_raw_fd()), copy(out.life_line().unwrap()))
 }
 
 /// The same truncation as the run's own curl reads it, through a session's port with its token: the answer that runs

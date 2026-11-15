@@ -197,7 +197,7 @@ pub(super) fn relay_with(
     let peer = match &client {
         Out::Tcp(s) => s.peer_addr().and_then(|p| Ok((p, s.local_addr()?))),
         // (a terminated tunnel's stage: a bridge's end, no record of its own)
-        Out::Bridged(..) => Err(io::Error::from(io::ErrorKind::Unsupported)),
+        Out::Bridged { .. } => Err(io::Error::from(io::ErrorKind::Unsupported)),
     };
     let sides = [client, server.into()];
     #[cfg(test)]

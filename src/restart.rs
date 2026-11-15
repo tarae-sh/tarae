@@ -2329,6 +2329,9 @@ mod tests {
         ];
         // (none of `Memory`'s types holds one: dropped with the rest before the exec, or never in the editor)
         const ELSEWHERE: &[(&str, &str)] = &[
+            // (a proxy bridge's life line, its two halves: on the proxy's connection and bridge threads, never in the
+            // editor; the exec ends those threads and closes the pipe)
+            ("Alive", "sandbox/proxy/bridge.rs"),
             ("BareTarget", "sandbox/refused.rs"),
             // (an ACP agent's bridge, on its wire's thread, never in the editor: a socket an exec leaves is in the same pid's
             // folder, one of its number replaced at its next bind)
@@ -2362,6 +2365,7 @@ mod tests {
             ("Holder", "sandbox/owners/tests.rs"),
             ("IndexWatch", "rebase.rs"),
             ("Laid", "sandbox/supervisor/wire/tests/kernel.rs"),
+            ("Line", "sandbox/proxy/bridge.rs"),
             ("Mac", "sound/mac.rs"),
             ("Made", "sandbox/linux.rs"),
             ("Member", "reviewer.rs"),
