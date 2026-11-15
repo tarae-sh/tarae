@@ -176,6 +176,10 @@ pub struct Row {
     /// refuses to start it.
     #[cfg(test)]
     pub own_tools: Option<Recipe>,
+    /// The session mode tarae keeps it in (guard 2): set at the start where its session says another, and set back if
+    /// it moves (`acp::Wire`'s mode). None: it has no modes.
+    #[cfg(test)]
+    pub mode: Option<&'static str>,
 }
 
 /// A config folder of tarae's own (`$state/agent-homes/<row>/`, `agentgate.rs`), and the files tarae writes there
@@ -227,6 +231,8 @@ pub static CLAUDE: Row = Row {
     caps: claude::CAPS,
     #[cfg(test)]
     own_tools: None,
+    #[cfg(test)]
+    mode: None,
 };
 
 /// The stand-in ACP agent's row (`acp::standin`): the test binary re-run on its one test, speaking ACP on
@@ -239,6 +245,7 @@ pub static STAND_IN: Row = Row {
     args: acp::standin::ARGS,
     caps: acp::CAPS,
     own_tools: Some(AGY_TOOLS_OFF),
+    mode: Some("default"),
 };
 
 /// Every row tarae has: what a kept conversation's name is looked up in (`row_named`).
@@ -587,13 +594,17 @@ pub struct Exit {
 }
 
 /// How an agent's process ended, as its wire tells it — never read from its words above the wire.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ended {
     /// It exited, or was ended.
     Exited,
     /// The conversation it was started to continue is gone from the agent (Claude's own cleanup took it, it was
     /// deleted, the agent can't continue one): the chat starts a new one and sends again what it cut off.
     Gone,
+    /// Guard 3, the tripwire: it ran `tool` itself — one of its own reported done, or one of tarae's that tarae never
+    /// ran — and was stopped, its group ended (`acp::Wire::trip`). The chat holds its row until you quit.
+    #[cfg(test)]
+    Tripped { tool: String },
 }
 
 #[cfg(test)]
@@ -857,8 +868,8 @@ mod tests {
     }
 
     /// Whether `row` keeps the floor every ACP row stands on, as what it breaks: every permission ask refused
-    /// (guard 2 — the rule, not a row's choice), and its own tools said off only where a recipe turns them off
-    /// (guard 1).
+    /// (guard 2 — the rule, not a row's choice), its own tools said off only where a recipe turns them off
+    /// (guard 1), and a mode it keeps named, if any (guard 2).
     fn floor(row: &super::Row) -> Vec<&'static str> {
         let mut broken = Vec::new();
         if row.wire != super::Wire::Acp {
@@ -869,6 +880,9 @@ mod tests {
         }
         if row.caps.own_tools_off != row.own_tools.is_some() {
             broken.push("its own tools said off with no recipe, or a recipe said not off");
+        }
+        if row.mode.is_some_and(str::is_empty) {
+            broken.push("its mode named empty");
         }
         broken
     }
@@ -883,10 +897,19 @@ mod tests {
             assert!(floor(row).is_empty(), "{}: {:?}", row.name, floor(row));
         }
         // (and it sees each: a row on `acp::CAPS` with no recipe, and one whose asks are read)
-        let row =
-            |caps, own_tools| Row { name: "x", wire: Wire::Acp, command: "x", args: &[], caps, own_tools };
+        let row = |caps, own_tools| Row {
+            name: "x",
+            wire: Wire::Acp,
+            command: "x",
+            args: &[],
+            caps,
+            own_tools,
+            mode: Some("default"),
+        };
         let asks = super::Caps { asks: true, ..super::acp::CAPS };
         assert_eq!(floor(&row(super::acp::CAPS, None)).len(), 1);
         assert_eq!(floor(&row(asks, Some(super::AGY_TOOLS_OFF))), ["its asks read"]);
+        let empty = Row { mode: Some(""), ..row(super::acp::CAPS, Some(super::AGY_TOOLS_OFF)) };
+        assert_eq!(floor(&empty), ["its mode named empty"]);
     }
 }

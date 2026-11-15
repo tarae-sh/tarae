@@ -172,3 +172,24 @@ fn a_server_named_as_taraes_in_its_config_isnt_started_with() {
     let big = format!("{{\"pad\": \"{}\"}}", "x".repeat(READ_MAX as usize));
     assert_eq!(refused_by(&big), unread("too big to read"));
 }
+
+/// What the real agy leaves in its `config/` (the design session's probe, its L2 note 3) passes condition 3's check:
+/// an empty `mcp_config.json` (0 bytes — not JSON, and no word in it), an empty `.migrated`, `config.json` with its
+/// plugins, a `projects/` folder.
+#[test]
+fn what_agy_leaves_in_its_config_passes() {
+    let dir = crate::scratch::Scratch::new("agentgate-agy-left");
+    let state = dir.join("state");
+    let folder = prepare(&STAND_IN, Some(&state)).unwrap().prepared.folder().to_path_buf();
+    let config = folder.join("config");
+    std::fs::write(config.join("mcp_config.json"), "").unwrap();
+    std::fs::write(config.join(".migrated"), "").unwrap();
+    std::fs::write(config.join("config.json"), json!({"plugins": {}}).to_string()).unwrap();
+    std::fs::create_dir(config.join("projects")).unwrap();
+    assert_eq!(
+        servers_named_as_taraes("stand-in", &folder, &config, &[]),
+        Ok(()),
+        "a 0-byte mcp_config.json, as agy leaves it"
+    );
+    assert_eq!(refused(&state), "started", "and the start");
+}

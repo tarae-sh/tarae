@@ -1422,6 +1422,10 @@ pub struct Editor {
     /// reader threads aren't the simulation's).
     #[cfg(test)]
     pub claude_lines: Option<std::sync::mpsc::Sender<String>>,
+    /// The agents that tripped (guard 3, `agent::Ended::Tripped`), by their row's name: none starts again until you
+    /// quit (`llm::chat_held`) — one of their sessions running elsewhere goes on, and trips on its own.
+    #[cfg(test)]
+    pub agents_tripped: Vec<&'static str>,
     /// Tests: `space i`'s claude is no process — its stdin's lines go here (`ask.rs`; a simulation's stand-in, apart
     /// from the chat's).
     #[cfg(test)]
@@ -1816,6 +1820,8 @@ impl Editor {
             reviewer_stand_in: false,
             #[cfg(test)]
             claude_lines: None,
+            #[cfg(test)]
+            agents_tripped: Vec::new(),
             #[cfg(test)]
             ask_lines: None,
             #[cfg(test)]

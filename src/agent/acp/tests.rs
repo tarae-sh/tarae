@@ -57,6 +57,11 @@ fn agy_ask(name: Option<&str>, title: &str, kind: &str) -> Value {
     json!({"sessionId": "s-1", "toolCall": call, "options": standin::agy_options()})
 }
 
+/// A session answer's `modes`: in `now`, agy's two offered.
+fn modes(now: &str) -> Value {
+    json!({"currentModeId": now, "availableModes": [{"id": "default", "name": "Default"}, {"id": "plan", "name": "Plan"}]})
+}
+
 /// agy's `session/prompt` answer's `usage`.
 fn agy_usage() -> Value {
     json!({"inputTokens": 1200, "outputTokens": 80, "cachedReadTokens": 900, "cachedWriteTokens": 30,
@@ -88,6 +93,7 @@ fn said(ev: Event) -> Option<String> {
         Event::Done(Err(e)) => format!("failed {e}"),
         Event::Exit(Exit { said, kind: Ended::Exited }) => format!("exit {said}"),
         Event::Exit(Exit { said, kind: Ended::Gone }) => format!("exit gone: {said}"),
+        Event::Exit(Exit { said, kind: Ended::Tripped { tool } }) => format!("exit tripped {tool}: {said}"),
         Event::Mcp { id, message } => format!("mcp {id} {message}"),
         _ => return None,
     })
@@ -589,7 +595,8 @@ fn a_request_tarae_doesnt_serve_is_answered_method_not_found() {
 /// and none of tarae's words again (once a conversation, never on a resume).
 #[test]
 fn a_conversation_is_resumed_through_session_resume() {
-    let script = json!([expect("initialize", agy_initialize()), expect("session/resume", json!({"configOptions": []})),
+    let script = json!([expect("initialize", agy_initialize()),
+        expect("session/resume", json!({"configOptions": [], "modes": modes("default")})),
         {"expect": "session/prompt"}, {"end_turn": "end_turn"}]);
     let run = start(
         script,
@@ -617,7 +624,7 @@ fn a_conversation_is_loaded_its_replay_dropped() {
         // (the load held while its replay comes, then answered)
         {"expect": "session/load"},
         replay("user_message_chunk", "old question"), replay("agent_message_chunk", "old answer"),
-        {"answer": {"configOptions": []}},
+        {"answer": {"configOptions": [], "modes": modes("default")}},
         {"expect": "session/prompt"}, replay("agent_message_chunk", "new answer"), {"end_turn": "end_turn"}]);
     let run = start(
         script,
@@ -722,6 +729,7 @@ fn a_test_never_starts_a_real_agent() {
             args: &["--acp"],
             caps: CAPS,
             own_tools: None,
+            mode: None,
         }));
         let s = Start::on(row, Role::Chat, &cfg);
         let refused = std::panic::catch_unwind(|| command(&s, &std::env::temp_dir(), None).map(|_| ()));
@@ -742,22 +750,29 @@ fn a_test_never_starts_a_real_agent() {
 /// `config/`), writes tarae's two files there to the byte — the hook file (0600) naming the program beside it
 /// (0700) — and names it with `--gemini-dir`, tarae's path for the hook in its environment. The stand-in runs its
 /// own `run_command` as agy does: the hook it reads there asks tarae (the program, then the test binary's
-/// `hook::child`), which refuses it, and the call comes up failed with tarae's reason; `mcp_tarae_search` is let
-/// through (its report dropped, as tarae's own tools' are).
+/// `hook::child`), which refuses it, and the call comes up as a refused row (step 3's guard 3: no trip at `failed`);
+/// `mcp_tarae_search` is let through and called through the bridge, as agy calls it (its report dropped, as tarae's
+/// own tools' are, and matched with the bridge's call: no trip at the turn's end).
 #[test]
 fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
     use std::os::unix::fs::PermissionsExt;
-    let own = |name: &str, id: &str| json!({"own": {"name": name, "id": id, "args": {"CommandLine": "echo probe-ran"}}});
+    let own = json!({"own": {"name": "run_command", "id": "t1", "args": {"CommandLine": "echo probe-ran"}}});
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "search", "arguments": {"pattern": "fn beta"}}});
+    let taraes = json!({"own": {"name": "mcp_tarae_search", "id": "t2",
+        "args": {"pattern": "fn beta", "toolSummary": "Search fn beta"}, "mcp": call}});
     let mut script = handshake();
     script.extend([
         json!({"expect": "session/prompt"}),
-        own("run_command", "t1"),
-        own("mcp_tarae_search", "t2"),
+        own,
+        taraes,
         json!({"end_turn": "end_turn"}),
         json!({"eof": true}),
     ]);
-    let run = start(json!(script), Opts { prompt: Some("run echo"), ..Opts::default() });
-    let got = run.until("done");
+    let run = start(json!(script), Opts { prompt: Some("run echo"), tools: true, ..Opts::default() });
+    let mut got = run.until("mcp bridge-1");
+    run.agent().answer_mcp("bridge-1", json!({"jsonrpc": "2.0", "id": 1, "result": {"content": []}}));
+    got.extend(run.until("done"));
     let folder = run.dir.join("state/tarae/agent-homes/stand-in");
     let mode = |p: &std::path::Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777;
     for dir in [folder.parent().unwrap(), &folder, &folder.join("config")] {
@@ -778,8 +793,9 @@ fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
         "{heard:?}"
     );
     assert!(got.contains(&r#"tool t1 run_command {"CommandLine":"echo probe-ran"}"#.to_string()), "{got:?}");
-    assert!(got.contains(&format!("result t1 true {}", hook::DENY)), "refused, tarae's reason: {got:?}");
+    assert!(got.contains(&format!("result t1 true {REFUSED}")), "a refused row: {got:?}");
     assert!(!got.iter().any(|g| g.contains("t2")), "tarae's own, dropped: {got:?}");
+    assert_eq!(got.last().unwrap(), "done ", "no trip: {got:?}");
 }
 
 /// A row that turns its own tools off isn't started without its folder made: the start ends with its words, and
@@ -837,8 +853,11 @@ fn gone(pid: u64) -> bool {
 /// no answer to a notification goes back.
 #[test]
 fn a_call_through_the_bridge_comes_up_once_from_the_bridge() {
+    // (agy's report: its arguments the call's, and its `toolSummary` the server never gets)
+    let args = json!({"files": ["a.rs"], "toolSummary": "Read a.rs"});
     let reported = json!({"say": {"sessionUpdate": "tool_call", "toolCallId": "agy-1", "name": "mcp_tarae_read",
-        "title": "Run mcp_tarae_read", "kind": "other", "status": "pending", "locations": null, "rawInput": {}}});
+        "title": "Run mcp_tarae_read", "kind": "other", "status": "pending", "locations": null, "args": args,
+        "rawInput": args}});
     let finished = json!({"say": {"sessionUpdate": "tool_call_update", "toolCallId": "agy-1",
         "status": "completed", "content": null}});
     let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -919,4 +938,249 @@ fn the_agents_group_and_its_bridge_end_with_it() {
     assert!(gone(relay), "the bridge's relay outlived its agent");
     assert!(gone(linger), "a process of the agent's group outlived it");
     assert!(!socket.exists(), "the bridge's socket outlived its agent");
+}
+
+// ── With no process (`Staged`) ───────────────────────────────────────────────────────────
+
+/// A wire on the stand-in's row with no process, its handshake answered in agy's shapes (`initialize` 0, the session
+/// 1, its answer `session`): what came up, said.
+fn staged(session: Value) -> (Staged, Agent, Vec<String>) {
+    let (mut st, agent) = Staged::new(&std::env::temp_dir());
+    let mut got = st.line(&json!({"jsonrpc": "2.0", "id": 0, "result": agy_initialize()}));
+    got.extend(st.line(&json!({"jsonrpc": "2.0", "id": 1, "result": session})));
+    (st, agent, got.into_iter().filter_map(said).collect())
+}
+
+/// A `session/update` line.
+fn update_line(u: Value) -> Value {
+    json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s-1", "update": u}})
+}
+
+/// What `events` say.
+fn says(events: Vec<Event>) -> Vec<String> {
+    events.into_iter().filter_map(said).collect()
+}
+
+/// A prompt sent from the chat's handle and taken by the wire: what it wrote.
+fn prompted(st: &mut Staged, agent: &Agent) -> Vec<Value> {
+    agent.prompt(Prompt::Text("go".into())).unwrap();
+    st.take();
+    st.written()
+}
+
+/// The turn's answer (`session/prompt` was request `id`): what came up.
+fn turn_over(st: &mut Staged, id: u64) -> Vec<String> {
+    says(st.line(&json!({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn"}})))
+}
+
+/// agy's report of tarae's `tool` (`mcp_tarae_<tool>`) as `id`, on `args` with its `toolSummary`, at `status`.
+fn taraes_report(id: &str, tool: &str, args: Value, status: &str) -> Value {
+    let mut args = args;
+    args["toolSummary"] = json!(format!("Run {tool}"));
+    update_line(json!({"sessionUpdate": "tool_call", "toolCallId": id, "name": format!("mcp_tarae_{tool}"),
+        "title": format!("Run mcp_tarae_{tool}"), "kind": "other", "status": status, "locations": null,
+        "args": args, "rawInput": args}))
+}
+
+/// The bridge's `tools/call` of `tool` on `arguments`.
+fn bridge_call(n: u64, tool: &str, arguments: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": n, "method": "tools/call", "params": {"name": tool, "arguments": arguments}})
+}
+
+/// Guard 2: a session that opens in another mode it offers is set to the row's (`session/set_mode`) before anything
+/// else — the session isn't said (`Conversation`, `Ready`) and the first prompt isn't written until its answer.
+#[test]
+fn a_session_in_another_mode_is_set_to_the_rows() {
+    let (mut st, agent, got) = staged(json!({"sessionId": "s-1", "modes": modes("plan")}));
+    assert!(got.is_empty(), "nothing said before the mode's set: {got:?}");
+    let set = json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_mode",
+        "params": {"sessionId": "s-1", "modeId": "default"}});
+    let written = prompted(&mut st, &agent);
+    assert_eq!(written.last(), Some(&set), "{written:?}");
+    assert!(!written.iter().any(|w| w["method"] == "session/prompt"), "the prompt held: {written:?}");
+    let got = says(st.line(&json!({"jsonrpc": "2.0", "id": 2, "result": {}})));
+    assert_eq!(got, ["conversation s-1  None None", "ready 0 None false"]);
+    let written = st.written();
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert_eq!(written[0]["method"], "session/prompt", "the prompt once the mode's set");
+    // (and in the row's mode already: none set)
+    let (mut st, agent, got) = staged(json!({"sessionId": "s-1", "modes": modes("default")}));
+    assert_eq!(got, ["conversation s-1  None None", "ready 0 None false"]);
+    let written = prompted(&mut st, &agent);
+    assert!(!written.iter().any(|w| w["method"] == "session/set_mode"), "{written:?}");
+}
+
+/// Guard 2, fail-closed: a session that won't take the row's mode (an error at `session/set_mode`, on the stand-in),
+/// doesn't offer it, or says no mode at all ends the start, said; no prompt is written.
+#[test]
+fn a_mode_it_wont_take_ends_the_start() {
+    let session = |modes: Value| expect("session/new", json!({"sessionId": "s-1", "modes": modes}));
+    let refused = json!({"expect": "session/set_mode", "error": -32603, "message": "not now"});
+    let only_plan = json!({"currentModeId": "plan", "availableModes": [{"id": "plan"}]});
+    for (script, words) in [
+        (
+            json!([expect("initialize", agy_initialize()), session(modes("plan")), refused, {"eof": true}]),
+            "failed stand-in won't take mode default: not now",
+        ),
+        (
+            json!([expect("initialize", agy_initialize()), session(only_plan), {"eof": true}]),
+            "failed stand-in offers no mode default",
+        ),
+        (
+            json!([expect("initialize", agy_initialize()), session(Value::Null), {"eof": true}]),
+            "failed stand-in offers no mode default",
+        ),
+    ] {
+        let run = start(script, Opts { prompt: Some("go"), ..Opts::default() });
+        let got = run.until("exit");
+        assert!(got.contains(&words.to_string()), "{words}: {got:?}");
+        assert!(!got.iter().any(|g| g.starts_with("conversation")), "{got:?}");
+        assert!(run.of("session/prompt").is_empty(), "{words}");
+    }
+}
+
+/// Guard 2 mid-session, on the stand-in: a `current_mode_update` to another mode is set back to the row's; one it
+/// won't take back stops it — said as the turn's end, its end an exit (no trip).
+#[test]
+fn a_mode_left_midway_is_set_back() {
+    let moved = json!({"say": {"sessionUpdate": "current_mode_update", "currentModeId": "plan"}});
+    let text =
+        json!({"say": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "ok"}}});
+    let mut script = handshake();
+    script.extend([
+        json!({"expect": "session/prompt"}),
+        moved.clone(),
+        expect("session/set_mode", json!({})),
+        text,
+        json!({"end_turn": "end_turn"}),
+        json!({"expect": "session/prompt"}),
+        moved,
+        json!({"expect": "session/set_mode", "error": -32603, "message": "stuck"}),
+        json!({"eof": true}),
+    ]);
+    let run = start(json!(script), Opts { prompt: Some("go"), ..Opts::default() });
+    assert_eq!(run.until("done").last().unwrap(), "done ok");
+    let set = run.of("session/set_mode");
+    assert_eq!(set[0]["params"], json!({"sessionId": "s-1", "modeId": "default"}));
+    run.agent().prompt(Prompt::Text("again".into())).unwrap();
+    let got = run.until("exit");
+    let words = "stand-in left mode default and won't go back — stopped";
+    assert_eq!(got[got.len() - 2..], [format!("failed {words}"), format!("exit {words}")], "{got:?}");
+}
+
+/// Guard 3 on the stand-in: one of its own tools reported `completed` stops the session at once — never at its
+/// `in_progress` before (Q5) — its group ended (a process of its own that would outlive it included), the turn
+/// ended in tarae's words, its end a trip naming the tool; a prompt after it is never written.
+#[test]
+fn a_completed_own_tool_stops_the_session_and_says_it() {
+    let call = |status: &str| {
+        json!({"sessionUpdate": if status == "in_progress" { "tool_call" } else { "tool_call_update" },
+        "toolCallId": "t1", "name": "run_command", "title": "echo ran", "kind": "execute", "status": status,
+        "args": {"CommandLine": "echo ran"}, "rawInput": {"CommandLine": "echo ran"}})
+    };
+    let mut script = handshake();
+    script.extend([
+        json!({"expect": "session/prompt"}),
+        json!({"say": call("in_progress")}),
+        json!({"linger": true}),
+        json!({"say": call("completed")}),
+        json!({"eof": true}),
+    ]);
+    let run = start(json!(script), Opts { prompt: Some("go"), ..Opts::default() });
+    let got = run.until("exit");
+    let words = "stand-in ran a tool of its own, run_command — stopped: it and everything it started ended. Only \
+                 tarae's tools may run; its hook should have refused this.";
+    let n = got.len();
+    assert_eq!(got[n - 3], r#"tool t1 run_command {"CommandLine":"echo ran"}"#, "{got:?}");
+    assert_eq!(got[n - 2..], [format!("failed {words}"), format!("exit tripped run_command: {words}")]);
+    let linger = run.heard().iter().find_map(|v| v["linger_pid"].as_u64()).expect("its process");
+    assert!(gone(linger), "a process of its group outlived the trip");
+    let _ = run.agent().prompt(Prompt::Text("again".into()));
+    assert_eq!(run.of("session/prompt").len(), 1, "nothing written after the trip");
+}
+
+/// Guard 3: a report of tarae's tool that the bridge never carried, `completed`, trips at the turn's end — its row
+/// first (it never had one), then the turn's end in tarae's words, then its end; a prompt waiting is never written.
+#[test]
+fn an_unbridged_taraes_report_trips_at_the_turns_end() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    let _bridge = st.link();
+    let report = taraes_report("m1", "search", json!({"pattern": "x"}), "completed");
+    assert!(says(st.line(&report)).is_empty(), "held until the turn's end");
+    agent.prompt(Prompt::Text("next".into())).unwrap();
+    st.take();
+    let words = "stand-in said it ran tarae's search, which tarae never ran — stopped: it and everything it \
+                 started ended.";
+    assert_eq!(
+        turn_over(&mut st, 2),
+        [
+            r#"tool m1 mcp_tarae_search {"pattern":"x","toolSummary":"Run search"}"#.to_string(),
+            format!("failed {words}"),
+            format!("exit tripped mcp_tarae_search: {words}"),
+        ]
+    );
+    assert!(st.written().is_empty(), "the prompt waiting, never written");
+    assert!(says(st.line(&report)).is_empty(), "nothing read after it");
+}
+
+/// Guard 3's match (the design session's condition 1), in agy's real shape: a report of tarae's matches a bridge call
+/// of the turn by its tool and the call's every argument, the same — its `toolSummary`, which the server never gets,
+/// beside them — whichever comes first, and no trip. A report whose value differs isn't the call's, nor is a second
+/// report of one call: each trips at the turn's end.
+#[test]
+fn a_bridged_call_doesnt_trip_whichever_comes_first() {
+    let args = json!({"pattern": "fn beta"});
+    let report = |id: &str, args: Value| taraes_report(id, "search", args, "completed");
+    let turn = |first_report: bool, reports: &[Value]| {
+        let (mut st, agent, _) = staged(agy_session("s-1"));
+        prompted(&mut st, &agent);
+        let _bridge = st.link();
+        let mut got = Vec::new();
+        if !first_report {
+            got.extend(says(st.bridged(bridge_call(1, "search", args.clone()))));
+        }
+        for r in reports {
+            got.extend(says(st.line(r)));
+        }
+        if first_report {
+            got.extend(says(st.bridged(bridge_call(1, "search", args.clone()))));
+        }
+        got.extend(turn_over(&mut st, 2));
+        got
+    };
+    for first_report in [true, false] {
+        let got = turn(first_report, &[report("m1", args.clone())]);
+        assert_eq!(got.last().unwrap(), "done ", "report first {first_report}: {got:?}");
+        assert!(!got.iter().any(|g| g.contains("m1")), "its report dropped: {got:?}");
+    }
+    let tripped = |got: &[String]| got.last().is_some_and(|g| g.starts_with("exit tripped mcp_tarae_search"));
+    let other = report("m1", json!({"pattern": "fn alpha"}));
+    let got = turn(true, &[other]);
+    assert!(tripped(&got), "another value: {got:?}");
+    let got = turn(false, &[report("m1", args.clone()), report("m2", args.clone())]);
+    assert!(tripped(&got) && got.iter().any(|g| g.starts_with("tool m2 ")), "one call, two reports: {got:?}");
+    // (the rule itself: every key of the call's, the same; the report may hold more)
+    assert!(carried(&json!({"a": 1}), &json!({"a": 1, "toolSummary": "s"})));
+    assert!(!carried(&json!({"a": 1, "b": 2}), &json!({"a": 1})));
+    assert!(carried(&Value::Null, &json!({"a": 1})), "a call with no arguments");
+}
+
+/// Guard 3: one of its own tools that failed — its hook refused it: `in_progress`, then `failed` (Q5's measure) — is
+/// a refused row in tarae's words, never a trip; the turn ends as ever.
+#[test]
+fn a_failed_own_tool_is_a_refused_row_not_a_trip() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    let running = update_line(
+        json!({"sessionUpdate": "tool_call", "toolCallId": "t1", "name": "run_command",
+        "title": "echo ran", "kind": "execute", "status": "in_progress", "rawInput": {"CommandLine": "echo ran"}}),
+    );
+    let reason = json!({"type": "content", "content": {"type": "text", "text": hook::DENY}});
+    let failed =
+        update_line(json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed",
+        "content": [reason]}));
+    assert_eq!(says(st.line(&running)), [r#"tool t1 run_command {"CommandLine":"echo ran"}"#]);
+    assert_eq!(says(st.line(&failed)), [format!("result t1 true {REFUSED}")]);
+    assert_eq!(turn_over(&mut st, 2), ["done "]);
 }

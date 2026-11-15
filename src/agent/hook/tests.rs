@@ -81,15 +81,16 @@ fn script(dir: &std::path::Path, hook: Option<&std::path::Path>, input: &str) ->
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// The hook file's program asks the tarae in `ENV` — exec'd with `agent-hook`, the input its — and refuses the call
-/// itself, its input read, where none is there: not set, a folder, a file that isn't executable.
+/// The hook file's program asks the tarae in `ENV` — run with `agent-hook`, the input its, its answer passed on — and
+/// refuses the call itself, its input read, where none is there (not set, a folder, a file that isn't executable) or
+/// none answers (it fails, says nothing, or says something and fails): the hook always answers.
 #[test]
 fn the_script_asks_tarae_or_refuses() {
     use std::os::unix::fs::PermissionsExt;
     let dir = crate::scratch::Scratch::new("hook-script");
     let refused = |out: &str| {
         let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("one JSON line: {out:?}"));
-        v["decision"] == "deny" && v["reason"].as_str().is_some_and(|r| r.contains("no tarae to ask"))
+        v["decision"] == "deny" && v["reason"].as_str().is_some_and(|r| r.contains("no answer from tarae"))
     };
     let input = String::from_utf8(agy_input(json!("mcp_tarae_search"))).unwrap();
     assert!(refused(&script(dir.path(), None, &input)), "not set");
@@ -100,7 +101,17 @@ fn the_script_asks_tarae_or_refuses() {
     std::fs::set_permissions(&tarae, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(refused(&script(dir.path(), Some(&tarae), &input)), "not executable");
     std::fs::set_permissions(&tarae, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert_eq!(script(dir.path(), Some(&tarae), &input), format!("agent-hook|{input}"));
+    assert_eq!(script(dir.path(), Some(&tarae), &input), format!("agent-hook|{input}\n"));
+    // (a tarae that doesn't answer: refused all the same, with an answer)
+    for (body, why) in [
+        ("exit 1", "it fails"),
+        ("cat >/dev/null; exit 0", "it says nothing"),
+        ("printf '{\"decision\":\"allow\"}'; exit 1", "it says something and fails"),
+        ("head -c 1 >/dev/null; kill -9 $$", "it dies before it answers"),
+    ] {
+        std::fs::write(&tarae, format!("#!/bin/sh\n{body}\n")).unwrap();
+        assert!(refused(&script(dir.path(), Some(&tarae), &input)), "{why}");
+    }
 }
 
 /// A panic in the hook is a refusal on stdout, exit 0 (`on_panic`, in a process of its own: the test binary re-run on

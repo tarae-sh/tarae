@@ -268,6 +268,26 @@ pub fn held(ed: &Editor) -> Option<String> {
         .then(|| format!("no agent that keeps its own tools starts — choose another: {HELD_WAY}"))
 }
 
+/// `held` for the chat's start: judged by its conversation's agent (`Chat.agent` — a continued conversation's may not
+/// be the config's; the config's where there's no chat), and none that tripped (guard 3, `agent::Ended::Tripped`)
+/// until you quit. (A release build has one agent, the config's Claude: `held`.)
+#[cfg(test)]
+pub fn chat_held(ed: &Editor) -> Option<String> {
+    if !ed.config_unread.is_empty() {
+        return held(ed);
+    }
+    let chat = ed.workspace.claude.chat.as_ref();
+    let row = chat.map_or_else(|| crate::agent::row_of(&ed.config.llm), |c| c.agent);
+    if ed.agents_tripped.contains(&row.name) {
+        return Some(format!("no {} until you quit — it ran a tool of its own", row.name));
+    }
+    (!row.caps.own_tools_off)
+        .then(|| format!("no agent that keeps its own tools starts — choose another: {HELD_WAY}"))
+}
+
+#[cfg(not(test))]
+pub use self::held as chat_held;
+
 /// A load's warnings as its error toast says them: and, while a file doesn't read, that no claude starts (`held`) — first,
 /// so a toast cut at its third row still says it (a path takes a narrow one's rows).
 pub fn config_said(ed: &Editor, warnings: &[String]) -> String {

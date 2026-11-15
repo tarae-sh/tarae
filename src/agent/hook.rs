@@ -28,17 +28,20 @@ pub const INPUT_MAX: usize = 1 << 20;
 /// The hook file's program, beside it.
 pub const SCRIPT_NAME: &str = "tarae-hook.sh";
 
-/// The hook file's program: the tarae in `ENV` asked, else the call refused here. No JSON is read in `sh`; its
-/// input is read to its end before the refusal, as tarae's own hook does.
+/// The hook file's program: the tarae in `ENV` asked, else the call refused here — and refused too where that tarae
+/// failed or said nothing (it wouldn't start, a build was writing it, it died before it answered: the design
+/// session's L2 note 1), so the hook always answers. No JSON is read in `sh`; what of its input is left is read to
+/// its end before the refusal, as tarae's own hook does.
 pub const SCRIPT: &str = r#"#!/bin/sh
 # tarae's hook for an agent it starts, written by tarae: the same at every start, from every tarae.
-# The tarae that started the agent answers (its path in TARAE_AGENT_HOOK); with none there, every call is refused.
+# The tarae that started the agent answers (its path in TARAE_AGENT_HOOK); with none there, or none answering,
+# every call is refused.
 h=$TARAE_AGENT_HOOK
 if [ -n "$h" ] && [ -f "$h" ] && [ -x "$h" ]; then
-  exec "$h" agent-hook
+  if a=$("$h" agent-hook) && [ -n "$a" ]; then printf '%s\n' "$a"; exit 0; fi
 fi
 cat >/dev/null
-printf '%s\n' "{\"decision\":\"deny\",\"reason\":\"tarae's hook has no tarae to ask — refused\"}"
+printf '%s\n' "{\"decision\":\"deny\",\"reason\":\"tarae's hook had no answer from tarae — refused\"}"
 "#;
 
 /// The hook group's name in the hook file.

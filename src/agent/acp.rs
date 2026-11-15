@@ -12,6 +12,12 @@
 //! messages come up the same thread as stdout's, so a tool's call is told once and in order (finding C). Its process
 //! leads a session of its own, with no terminal, and so a group of its own, which ends with it — the relay and
 //! whatever else it started (condition 4).
+//!
+//! Step 3's guards that live on this thread: the row's mode kept (guard 2 — set at the start, set back if it moves,
+//! the start or the session ended where it won't be), and the tripwire (guard 3): one of its own tools reported
+//! `completed`, or one of tarae's the bridge never carried, stops it at once, its group ended (`Wire::trip`). This
+//! thread sees the agent's reports and the bridge's calls in one order, so the match needs no clock.
+//!
 //! Test-only in step 2 (the design session's answer, §9.4): no config reaches it, and a release build carries none
 //! of it.
 
@@ -64,6 +70,15 @@ pub const CAPS: Caps = Caps {
 /// The prefix of tarae's own tools as agy names them in its `tool_call`s (`mcp_<server>_<tool>`): the bridge tells
 /// those (landing 4), so the agent's report of one is dropped, and its updates with it, by id.
 pub const OWN: &str = "mcp_tarae_";
+
+/// An own tool's call that failed (its hook refused it, guard 1), as its row's result says it.
+pub const REFUSED: &str = "refused — tarae's tools only";
+
+/// The tool `name` is of tarae's (`mcp_tarae_<tool>`, something after the prefix, as the hook allows it), or None: one
+/// of the agent's own — an empty name, and the prefix alone, included.
+fn taraes(name: &str) -> Option<&str> {
+    name.strip_prefix(OWN).filter(|tool| !tool.is_empty())
+}
 
 // ── Its environment ─────────────────────────────────────────────────────
 
@@ -221,6 +236,10 @@ struct Begin {
     /// tarae's tools offered (`First.tools`): where its bridge binds (`$state`; None: nowhere — the start ends
     /// saying so), its agent's pid, and the way back to this thread its connections take.
     tools: Option<(Option<PathBuf>, u32, Sender<In>)>,
+    /// Its process, whose group a trip ends at once (None: the simulation's, which has none).
+    pid: Option<u32>,
+    /// The mode its row keeps it in (guard 2, `Row.mode`).
+    mode: Option<&'static str>,
 }
 
 /// Where a bridge binds, and an agent's folder is (`agentgate`): `$state` (`config::state_dir`) — a test's own, its `given` `XDG_STATE_HOME` (a folder of its
@@ -256,6 +275,8 @@ pub(super) fn begin(
         resume: s.resume.as_ref().map(|r| r.conversation.to_string()),
         system: s.system.map(String::from),
         tools: first.tools.then(|| (state(at.given), pid, in_tx.clone())),
+        pid: Some(pid),
+        mode: s.row.mode,
     };
     match child.stdout.take() {
         Some(out) => {
@@ -306,6 +327,41 @@ enum Asked {
     Resume(String),
     Load(String),
     Prompt,
+    /// `session/set_mode` to the row's (guard 2): at the start, the session's id and model held for its answer (the
+    /// session known, `Ready` and the first prompt, only then); None: set back mid-session.
+    Mode(Option<(String, String)>),
+}
+
+/// What the agent reported of one tool call (`tool_call`, then its `tool_call_update`s), for the tripwire (guard 3).
+#[derive(Default)]
+struct Report {
+    /// Its name as `tool_name` reads it ("": an update with no `tool_call` before it — one of its own).
+    name: String,
+    /// Its arguments as it says them (`input_of`): agy's carry a key the server never gets (`toolSummary`).
+    input: Value,
+    /// Where it ended: `completed` (true), `failed` (false), or not yet.
+    done: Option<bool>,
+    /// One of tarae's matched with a call of the bridge's.
+    matched: bool,
+    /// Its place among the reports, for the order they're matched in.
+    seq: u64,
+}
+
+/// A call of tarae's tool through the bridge this turn, for a report of it to be matched with.
+struct Called {
+    tool: String,
+    arguments: Value,
+    matched: bool,
+}
+
+/// What the tripwire makes of one report.
+enum Watch {
+    /// Nothing yet: tarae's (judged at the turn's end), or one of its own still running.
+    Pass,
+    /// One of its own failed: its hook refused it (guard 1) — a refused row.
+    Refused,
+    /// One of its own completed: it ran it — its name, and whether it has no row yet (completed in its first report).
+    Trip(String, bool),
 }
 
 /// What a bridged message is, for its answer.
@@ -350,12 +406,20 @@ struct Wire {
     pending_thought: bool,
     last_flush: std::time::Instant,
     thinking: bool,
-    /// The process is to end: signed out, another version, an error at its start, a conversation gone.
+    /// The process is to end: signed out, another version, an error at its start, a conversation gone, a mode it
+    /// won't keep, a trip.
     end: bool,
-    /// The conversation it was to continue is gone: what its end says (in the log only) in place of stderr's last
-    /// line, its kind `Ended::Gone`.
-    gone: Option<String>,
+    /// How it ended where the wire ended it, in place of stderr's last line: the conversation it was to continue gone
+    /// (`Ended::Gone`, its words in the log only), the mode it left (`Exited`), a trip (`Tripped`).
+    ended_as: Option<Exit>,
     junk_logged: bool,
+    /// Guard 3, the tripwire: the agent's reports of its calls by id (tarae's until their turn's end, its own until
+    /// they end), the bridge's calls this turn, and how many reports there have been.
+    reports: HashMap<String, Report>,
+    calls: Vec<Called>,
+    reports_n: u64,
+    /// It tripped: nothing after it is read, no prompt written.
+    tripped: bool,
     /// tarae's tools' bridge, once bound (dropped: its socket and folder go).
     bridge: Option<bridge::Bridge>,
     /// Its live connection: its number and its writes.
@@ -389,8 +453,12 @@ impl Wire {
             last_flush: crate::clock::now(),
             thinking: false,
             end: false,
-            gone: None,
+            ended_as: None,
             junk_logged: false,
+            reports: HashMap::new(),
+            calls: Vec::new(),
+            reports_n: 0,
+            tripped: false,
             bridge: None,
             link: None,
             bridged: HashMap::new(),
@@ -469,8 +537,195 @@ impl Wire {
     /// A conversation that can't be continued: the process ends, its end's kind `Gone` (the chat's path for one: a
     /// new conversation started, said, the message sent again).
     fn gone(&mut self, id: &str) {
-        self.gone = Some(format!("{} has no conversation {id}", self.begin.name));
+        let said = format!("{} has no conversation {id}", self.begin.name);
+        self.ended_as = Some(Exit { said, kind: Ended::Gone });
         self.end = true;
+    }
+
+    /// The session known, in the row's mode: said (`Conversation`, `Ready`), and the first prompt goes.
+    fn opened(&mut self, id: String, model: String, send: &dyn Fn(Event) -> bool) -> bool {
+        self.session = Some(id.clone());
+        let ev = Event::Conversation { id, model, version: self.version.clone(), key_source: None };
+        if !send(ev) || !send(Event::Ready { models: Vec::new(), key_source: None, account: None }) {
+            return false;
+        }
+        self.next();
+        true
+    }
+
+    /// Guard 2 at the start: the session's answer `r` in the row's mode — opened at once; in another it offers, set to
+    /// the row's first (`session/set_mode`, the session held until its answer); with no mode said, or the row's not
+    /// offered, the start ends, said (fail-closed).
+    fn mode_at_start(&mut self, id: String, r: &Value, send: &dyn Fn(Event) -> bool) -> bool {
+        let (name, model) = (self.begin.name, model_of(r));
+        let Some(mode) = self.begin.mode else { return self.opened(id, model, send) };
+        let modes = &r["modes"];
+        let offered = modes["availableModes"].as_array().into_iter().flatten().any(|m| m["id"] == mode);
+        match modes["currentModeId"].as_str() {
+            Some(now) if now == mode => self.opened(id, model, send),
+            Some(_) if offered => {
+                let params = json!({"sessionId": id, "modeId": mode});
+                self.request("session/set_mode", params, Asked::Mode(Some((id, model))));
+                true
+            }
+            _ => {
+                self.end = true;
+                send(Event::Done(Err(format!("{name} offers no mode {mode}"))))
+            }
+        }
+    }
+
+    /// Guard 2 mid-session: a `current_mode_update` to a mode not the row's is set back (`session/set_mode`); one it
+    /// won't take back stops it (`Asked::Mode(None)`'s error).
+    fn mode_moved(&mut self, u: &Value) {
+        let Some(mode) = self.begin.mode else { return };
+        let Some(session) = self.session.clone() else { return };
+        if u["currentModeId"].as_str() != Some(mode) {
+            self.request(
+                "session/set_mode",
+                json!({"sessionId": session, "modeId": mode}),
+                Asked::Mode(None),
+            );
+        }
+    }
+
+    /// Stopped by tarae (a trip, a mode it won't keep): its group ended at once, before anything is said — whatever it
+    /// runs ends with it; the bridge let go (a bridged call still open gets no answer), nothing queued written; what
+    /// streamed sent, `row` (a call's row it never had), and `said` ending the turn if one runs. Its end's kind and
+    /// words are `ended_as`, told once it's reaped.
+    fn stop(&mut self, said: String, kind: Ended, row: Option<Event>, send: &dyn Fn(Event) -> bool) -> bool {
+        self.end = true;
+        if let Some(pid) = self.begin.pid {
+            super::process::end_group(pid);
+        }
+        self.bridge = None;
+        self.link = None;
+        self.queue.clear();
+        let mut ok = self.thought_over(send) && self.flush(send);
+        if let Some(row) = row {
+            ok = ok && send(row);
+        }
+        if std::mem::replace(&mut self.turn, false) {
+            ok = ok && send(Event::Done(Err(said.clone())));
+        }
+        self.ended_as = Some(Exit { said, kind });
+        ok
+    }
+
+    /// Guard 3's trip (plan §6): it ran `tool` itself — `own`: one of its own it reported completed; else one of
+    /// tarae's that the bridge never carried. Stopped (`stop`), the log told its name and the agent's version, never
+    /// its input.
+    fn trip(&mut self, tool: String, own: bool, row: Option<Event>, send: &dyn Fn(Event) -> bool) -> bool {
+        let name = self.begin.name;
+        let version = self.version.as_deref().unwrap_or("its version unsaid");
+        crate::log::line(name, "warn", &format!("tripped: it ran {tool:?} itself ({version}) — stopped"));
+        let tool = match tool.is_empty() {
+            true => "one with no name".to_string(),
+            false => tool,
+        };
+        let said = match own {
+            true => format!(
+                "{name} ran a tool of its own, {tool} — stopped: it and everything it started ended. Only tarae's \
+                 tools may run; its hook should have refused this."
+            ),
+            false => format!(
+                "{name} said it ran tarae's {}, which tarae never ran — stopped: it and everything it started ended.",
+                taraes(&tool).unwrap_or(&tool)
+            ),
+        };
+        self.tripped = true;
+        self.stop(said, Ended::Tripped { tool }, row, send)
+    }
+
+    /// The tripwire's reading of one `tool_call` or `tool_call_update` (plan §6, the design session's Q5 and
+    /// condition 1): kept by id, its name from its `tool_call`; one of its own trips at `completed`, never before (a
+    /// refused call goes `in_progress`, then `failed`), and is a refused row at `failed`; one of tarae's is matched
+    /// with a bridge call and judged at the turn's end (`judge`). A report of tarae's already judged is passed by.
+    fn watch(&mut self, u: &Value) -> Watch {
+        let id = u["toolCallId"].as_str().unwrap_or_default().to_string();
+        let first = u["sessionUpdate"] == "tool_call";
+        if !first && !self.reports.contains_key(&id) && self.dropped.contains(&id) {
+            return Watch::Pass;
+        }
+        let n = self.reports_n;
+        let r = self.reports.entry(id.clone()).or_insert_with(|| Report { seq: n, ..Report::default() });
+        self.reports_n += 1;
+        if first {
+            r.name = tool_name(u);
+        }
+        match input_of(u) {
+            Value::Null => {}
+            input => r.input = input,
+        }
+        match u["status"].as_str() {
+            Some("completed") => r.done = Some(true),
+            Some("failed") => r.done = Some(false),
+            _ => {}
+        }
+        if taraes(&r.name).is_some() {
+            if !r.matched {
+                self.match_report(&id);
+            }
+            return Watch::Pass;
+        }
+        match r.done {
+            Some(true) => Watch::Trip(r.name.clone(), first),
+            Some(false) => Watch::Refused,
+            None => Watch::Pass,
+        }
+    }
+
+    /// Report `id` of tarae's matched with the first call this turn of its tool that it says: every argument the call
+    /// had is in the report's, the same (it may hold more — the design session's condition 1). Each matched once.
+    fn match_report(&mut self, id: &str) {
+        let Some(r) = self.reports.get_mut(id) else { return };
+        let Some(tool) = taraes(&r.name) else { return };
+        let call =
+            self.calls.iter_mut().find(|c| !c.matched && c.tool == tool && carried(&c.arguments, &r.input));
+        if let Some(c) = call {
+            (c.matched, r.matched) = (true, true);
+        }
+    }
+
+    /// A call of the bridge's (`tool`, on `arguments`) kept for the turn, matched with the first report of tarae's not
+    /// matched yet that says it.
+    fn called(&mut self, tool: &str, arguments: Value) {
+        let report = (self.reports.values_mut())
+            .filter(|r| !r.matched && taraes(&r.name) == Some(tool) && carried(&arguments, &r.input))
+            .min_by_key(|r| r.seq);
+        let matched = report.map(|r| r.matched = true).is_some();
+        self.calls.push(Called { tool: tool.to_string(), arguments, matched });
+    }
+
+    /// The turn's end for the tripwire: each report of tarae's the bridge never carried, judged — one that completed
+    /// trips (its row first, as it never had one); one that failed is a warning row; one still running (a stop cut it
+    /// off) neither. They and the turn's calls go, and its own that ended. Some: it tripped (whether the editor's still
+    /// there).
+    fn judge(&mut self, send: &dyn Fn(Event) -> bool) -> Option<bool> {
+        self.calls.clear();
+        let judged: Vec<String> = (self.reports.iter())
+            .filter(|(_, r)| taraes(&r.name).is_some() || r.done.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut left: Vec<(String, Report)> = judged
+            .into_iter()
+            .filter_map(|id| self.reports.remove(&id).map(|r| (id, r)))
+            .filter(|(_, r)| taraes(&r.name).is_some() && !r.matched && r.done.is_some())
+            .collect();
+        left.sort_by_key(|(_, r)| r.seq);
+        let name = self.begin.name;
+        for (id, r) in left {
+            let row = Event::Tool { id: id.clone(), name: r.name.clone(), input: r.input };
+            if r.done == Some(true) {
+                return Some(self.trip(r.name, false, Some(row), send));
+            }
+            let tool = taraes(&r.name).unwrap_or_default();
+            let text = format!("{name} said tarae's {tool} failed, which tarae never ran");
+            if !(self.flush(send) && send(row) && send(Event::ToolResult { id, text, error: true })) {
+                return Some(false);
+            }
+        }
+        None
     }
 
     /// Signed out (`-32000`): said, and the process ends — never `authenticate` (the brief's §5: you sign in with
@@ -518,6 +773,7 @@ impl Wire {
     /// tarae's tools) right before its `Mcp` — the bridge, not the agent's own report, tells a tarae tool's call
     /// (finding C); anything else is its `Mcp` alone. Each its key, `bridge-N`.
     fn bridged(&mut self, msg: Value, send: &dyn Fn(Event) -> bool) -> bool {
+        // (none after a trip: it let the bridge go)
         let Some((link, _)) = self.link else { return true };
         if !(self.thought_over(send) && self.flush(send)) {
             return false;
@@ -531,9 +787,10 @@ impl Wire {
         };
         self.bridged.insert(key.clone(), (link, kind));
         if kind == Bridged::Call {
-            let name =
-                format!("mcp__{}__{}", bridge::NAME, msg["params"]["name"].as_str().unwrap_or_default());
+            let tool = msg["params"]["name"].as_str().unwrap_or_default();
+            let name = format!("mcp__{}__{tool}", bridge::NAME);
             let input = msg["params"]["arguments"].clone();
+            self.called(tool, input.clone());
             if !send(Event::Tool { id: key.clone(), name, input }) {
                 return false;
             }
@@ -567,6 +824,13 @@ impl Wire {
     /// One message the handle or the bridge handed the conversation's thread, but stdout's end (`run`; the
     /// simulation's driver, `sim/acp.rs`). False: the editor's gone.
     fn take(&mut self, m: In, send: &dyn Fn(Event) -> bool) -> bool {
+        // (tripped: nothing after it is read — the agent's lines, the bridge's, a prompt, an answer; but the handle's end)
+        if self.tripped {
+            if let In::Closed = m {
+                self.out = None;
+            }
+            return true;
+        }
         match m {
             In::Line(line) => self.line(&line, send),
             In::Eof => true,
@@ -628,6 +892,10 @@ impl Wire {
 
     /// One line of stdout. False: the editor's gone.
     fn line(&mut self, line: &str, send: &dyn Fn(Event) -> bool) -> bool {
+        // (tripped: nothing after it is read as the turn's)
+        if self.tripped {
+            return true;
+        }
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             if !std::mem::replace(&mut self.junk_logged, true) {
                 crate::log::line(
@@ -659,11 +927,31 @@ impl Wire {
     }
 
     fn update(&mut self, u: &Value, send: &dyn Fn(Event) -> bool) -> bool {
-        let thought = u["sessionUpdate"] == "agent_thought_chunk";
+        let kind = u["sessionUpdate"].as_str().unwrap_or_default();
+        let thought = kind == "agent_thought_chunk";
         if !thought && !self.thought_over(send) {
             return false;
         }
+        if kind == "current_mode_update" {
+            self.mode_moved(u);
+            return true;
+        }
+        let refused = match kind {
+            "tool_call" | "tool_call_update" => match self.watch(u) {
+                Watch::Trip(tool, unseen) => {
+                    let id = u["toolCallId"].as_str().unwrap_or_default().to_string();
+                    let row = unseen.then(|| Event::Tool { id, name: tool.clone(), input: input_of(u) });
+                    return self.trip(tool, true, row, send);
+                }
+                Watch::Refused => true,
+                Watch::Pass => false,
+            },
+            _ => false,
+        };
         match update(u, &mut self.dropped) {
+            Some(Event::ToolResult { id, error: true, .. }) if refused => {
+                self.flush(send) && send(Event::ToolResult { id, text: REFUSED.into(), error: true })
+            }
             Some(Event::Text(t)) => {
                 self.text.push_str(&t);
                 self.stream(t, false, send)
@@ -724,6 +1012,18 @@ impl Wire {
                 send(Event::Done(Err(format!("{name}: {message}"))));
                 self.end = true;
             }
+            (Asked::Mode(Some((id, model))), Ok(_)) => return self.opened(id, model, send),
+            (Asked::Mode(Some(_)), Err((_, message))) => {
+                let mode = self.begin.mode.unwrap_or_default();
+                send(Event::Done(Err(format!("{name} won't take mode {mode}: {message}"))));
+                self.end = true;
+            }
+            (Asked::Mode(None), Ok(_)) => {}
+            (Asked::Mode(None), Err(_)) => {
+                let mode = self.begin.mode.unwrap_or_default();
+                let said = format!("{name} left mode {mode} and won't go back — stopped");
+                return self.stop(said, Ended::Exited, None, send);
+            }
             (what @ (Asked::New | Asked::Resume(_) | Asked::Load(_)), Ok(r)) => {
                 self.replaying = false;
                 let asked = match what {
@@ -735,19 +1035,14 @@ impl Wire {
                     self.end = true;
                     return true;
                 };
-                self.session = Some(id.clone());
-                let ev = Event::Conversation {
-                    id,
-                    model: model_of(&r),
-                    version: self.version.clone(),
-                    key_source: None,
-                };
-                if !send(ev) || !send(Event::Ready { models: Vec::new(), key_source: None, account: None }) {
-                    return false;
-                }
-                self.next();
+                return self.mode_at_start(id, &r, send);
             }
             (Asked::Prompt, result) => {
+                // (the tripwire's turn's end: a report of tarae's the bridge never carried trips here, its words the
+                // turn's end)
+                if let Some(ok) = self.judge(send) {
+                    return ok;
+                }
                 self.turn = false;
                 if !(self.thought_over(send) && self.flush(send)) {
                     return false;
@@ -814,6 +1109,10 @@ fn run(mut child: Spawned, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn
         let ok = match got {
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) | Ok(In::Eof) => {
+                // (stdout's end mid-turn is the turn's end for the tripwire too)
+                if w.turn && !w.tripped && w.judge(send).is_some() {
+                    break;
+                }
                 let _ = w.thought_over(send) && w.flush(send);
                 break;
             }
@@ -841,10 +1140,7 @@ fn run(mut child: Spawned, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn
         }
         true => {}
         false => {
-            send(Event::Exit(match w.gone.take() {
-                Some(said) => Exit { said, kind: Ended::Gone },
-                None => Exit::exited(err),
-            }));
+            send(Event::Exit(w.ended_as.take().unwrap_or_else(|| Exit::exited(err))));
         }
     }
 }
@@ -859,6 +1155,9 @@ pub struct Staged {
     w: Wire,
     rx: Receiver<In>,
     written: Receiver<String>,
+    /// Its end told: where the wire ends the process (a trip), its `Exit` comes once, after the events that ended it,
+    /// as `run`'s after the reap.
+    exited: bool,
 }
 
 impl Staged {
@@ -874,13 +1173,16 @@ impl Staged {
             resume: None,
             system: None,
             tools: None,
+            pid: None,
+            mode: row.mode,
         };
         let mut w = Wire::new(begin, out);
         w.initialize();
-        (Staged { w, rx, written }, Agent::Acp(Proc(in_tx)))
+        (Staged { w, rx, written, exited: false }, Agent::Acp(Proc(in_tx)))
     }
 
-    /// `f`'s work, its events kept — and what streamed sent at once (the scenario's own clock has no `FLUSH` wait).
+    /// `f`'s work, its events kept — and what streamed sent at once (the scenario's own clock has no `FLUSH` wait); the
+    /// process's end after them, once, where the wire ended it.
     fn run(&mut self, f: impl FnOnce(&mut Wire, &dyn Fn(Event) -> bool)) -> Vec<Event> {
         let events = std::cell::RefCell::new(Vec::new());
         let send = |ev| {
@@ -889,7 +1191,12 @@ impl Staged {
         };
         f(&mut self.w, &send);
         self.w.flush(&send);
-        events.into_inner()
+        let mut events = events.into_inner();
+        if let Some(exit) = self.w.ended_as.take().filter(|_| !self.exited) {
+            self.exited = true;
+            events.push(Event::Exit(exit));
+        }
+        events
     }
 
     /// A line from the agent's stdout.
@@ -1035,6 +1342,17 @@ fn input_of(call: &Value) -> Value {
     }
 }
 
+/// Whether a report's arguments (`report`) carry a bridge call's (`call`): every key the call had is in the report's,
+/// the same — the report may hold more (agy adds `toolSummary`, which the server never gets: the design session's
+/// condition 1). A call with no arguments: any report of its tool.
+fn carried(call: &Value, report: &Value) -> bool {
+    match call {
+        Value::Null => true,
+        Value::Object(o) => o.iter().all(|(k, v)| report.get(k) == Some(v)),
+        other => other == report,
+    }
+}
+
 /// A content block's text — None: another kind (an image, audio, a resource: dropped).
 fn text_of(content: &Value) -> Option<String> {
     (content["type"] == "text").then(|| content["text"].as_str().map(String::from)).flatten()
@@ -1058,10 +1376,11 @@ fn cut(mut text: String) -> String {
 /// A `session/update` as an event, or None — dropped, each said: the prompt echoed (`user_message_chunk`), a
 /// chunk's non-text content, ACP's `plan` (tarae's `plan` tool is the plan, the design session's §9.2), a call's
 /// `locations` (§9.1: the places come from tarae's tools' inputs), a call's `diff` and a read's null content, the
-/// commands, mode, config options and title it offers (`available_commands_update`, `current_mode_update`,
-/// `config_option_update`, `session_info_update`: steps 3 and 4), `usage_update` (no per-request usage to read it
-/// with), a compaction's summary, a `notice`. tarae's own tools' calls (`OWN`, by agy's `name`) are dropped and
-/// kept in `dropped`, so their updates go too.
+/// commands, config options and title it offers (`available_commands_update`, `config_option_update`,
+/// `session_info_update`: step 4), `usage_update` (no per-request usage to read it with), a compaction's summary, a
+/// `notice`. tarae's own tools' calls (`OWN`, by agy's `name`) are dropped and kept in `dropped`, so their updates go
+/// too. Its mode (`current_mode_update`) and what its calls came to are the wire's to read first (`Wire::update`:
+/// guards 2 and 3).
 fn update(u: &Value, dropped: &mut HashSet<String>) -> Option<Event> {
     let id = || u["toolCallId"].as_str().unwrap_or_default().to_string();
     match u["sessionUpdate"].as_str()? {

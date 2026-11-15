@@ -1571,7 +1571,7 @@ pub fn restart_process(ed: &mut Editor) {
         return ed.set_status("claude is answering — s stops it, or wait for the end of its turn");
     }
     // (one running goes on while the config doesn't read: a new one wouldn't start — `llm::held`)
-    if let Some(why) = llm::held(ed) {
+    if let Some(why) = llm::chat_held(ed) {
         return ed.set_error(why);
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
@@ -2609,7 +2609,8 @@ fn ensure_proc(ed: &mut Editor) {
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
     let (web_search, code) = (ed.config.llm.web_search, ed.config.llm.code);
-    let held = llm::held(ed).is_some();
+    // (judged by its conversation's agent: one that tripped is held until you quit — `llm::chat_held`)
+    let held = llm::chat_held(ed).is_some();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
@@ -3203,6 +3204,27 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             c.rows.clear();
             // (a refusal for money read in the turn this exit cut off is that turn's alone)
             c.money = None;
+            // Guard 3: it ran a tool of its own, and was stopped — its row held until you quit (`llm::chat_held`), said
+            // in the transcript once (the turn's end said it, unless no turn of its had begun or your stop's word took
+            // its place) and as an error; a message of yours it never began is cut off in its words (as an exit's
+            // below, its parent told), never "claude exited"
+            #[cfg(test)]
+            if let crate::agent::Ended::Tripped { tool } = &kind {
+                let name = c.agent.name;
+                if !c.msgs.iter().any(|m| m.role == Role::Note && m.text == err) {
+                    c.msgs.push(Msg::new(Role::Note, err.clone(), ""));
+                }
+                let cut = std::mem::replace(&mut c.state, State::Idle) != State::Idle;
+                if !ed.agents_tripped.contains(&name) {
+                    ed.agents_tripped.push(name);
+                }
+                ed.set_error(format!("{name} stopped — it ran {tool} itself"));
+                if cut {
+                    crate::orchestra::turn_ended(ed, &Err(err.clone()), crate::orchestra::Stop::No);
+                }
+            }
+            #[cfg(test)]
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
             // The conversation is gone from claude (its own cleanup took it, or you deleted it): a fresh one, the
             // rows still shown, said once — and a message sent to the process that couldn't resume goes again, to
             // the new one (its wire's word for it, never read from its words here)
@@ -3863,6 +3885,14 @@ fn send_from(ed: &mut Editor, slash: bool) {
     if !question.is_empty() && submit_input(ed, &question, true) {
         let c = ed.workspace.claude.chat.as_mut().expect("just sent");
         c.input.clear();
+    }
+    // (an agent that tripped starts nowhere until you quit: the message stays in the input, why said where you look —
+    // never queued, as nothing would send it)
+    #[cfg(test)]
+    if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.held && c.proc.is_none())
+        && let Some(why) = llm::chat_held(ed)
+    {
+        ed.set_status(why);
     }
 }
 
@@ -6301,7 +6331,7 @@ mod tests {
         let mcp = |m: serde_json::Value| serde_json::json!({"mcp": m});
         let script = serde_json::json!([
             {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
-            {"expect": "session/new", "result": {"sessionId": "s-1"}},
+            {"expect": "session/new", "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}},
             {"expect": "session/prompt"},
             text("Looking for it. "),
             mcp(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -6388,6 +6418,60 @@ mod tests {
         }
     }
 
+    /// Guard 3 in the chat (Q6, §9.1): an agent that tripped — its turn ended in tarae's words, then its end — is said
+    /// once in the transcript and as an error, and its row is held until you quit: a message after it starts nothing
+    /// and stays in the input, why said on the status line and where it would start. The hold is judged by the chat's
+    /// own row: a Claude conversation in the same tarae starts, and a new tarae holds nothing.
+    #[test]
+    fn a_tripped_agent_isnt_started_again_until_you_quit() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        let (tx, _lines) = std::sync::mpsc::channel();
+        ed.claude_lines = Some(tx);
+        let mut c = Chat::new();
+        c.agent = &crate::agent::STAND_IN;
+        c.hidden = false;
+        ed.workspace.claude.chat = Some(c);
+        ensure_proc(&mut ed);
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().proc.is_some(), "started before it tripped");
+        assert!(submit(&mut ed, "go", None, None));
+        let g = ed.workspace.claude.chat.as_ref().unwrap().generation;
+        let said =
+            "stand-in ran a tool of its own, run_command — stopped: it and everything it started ended.";
+        stream_event(&mut ed, g, Event::Done(Err(said.into())));
+        let tool = "run_command".to_string();
+        let exit = crate::agent::Exit { said: said.into(), kind: crate::agent::Ended::Tripped { tool } };
+        stream_event(&mut ed, g, Event::Exit(exit));
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!(c.msgs.iter().filter(|m| m.text == said).count(), 1, "said once");
+        assert!(c.proc.is_none() && c.state == State::Idle);
+        let error =
+            ed.toasts.iter().rfind(|t| t.kind == crate::editor::ToastKind::Error).map(|t| t.text.clone());
+        assert_eq!(error.as_deref(), Some("stand-in stopped — it ran run_command itself"));
+        assert_eq!(ed.agents_tripped, ["stand-in"]);
+        let why = "no stand-in until you quit — it ran a tool of its own";
+        assert_eq!(llm::chat_held(&ed).as_deref(), Some(why));
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.input.set("again");
+        send_from(&mut ed, true);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.proc.is_none() && c.held, "nothing started");
+        assert_eq!(c.input.text(), "again", "the message stays in the input");
+        assert!(ed.status.as_ref().is_some_and(|s| s.0 == why), "{:?}", ed.status);
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 140, 30).unwrap();
+        let mut p = vt100::Parser::new(30, 140, 0);
+        p.process(&bytes);
+        let s = p.screen().contents();
+        assert!(s.contains("▲ no stand-in until you quit"), "said where it would start:\n{s}");
+        // (judged by the chat's row: Claude's conversation starts — §9.1)
+        ed.workspace.claude.chat.as_mut().unwrap().agent = &crate::agent::CLAUDE;
+        assert_eq!(llm::chat_held(&ed), None);
+        ensure_proc(&mut ed);
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().proc.is_some(), "Claude's starts");
+        // (you quit and came back: a new tarae holds nothing)
+        assert!(Editor::new(crate::config::Config::default()).agents_tripped.is_empty());
+    }
+
     #[track_caller]
     fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
         crate::test_results::settle_saying(ed, done, |ed| {
@@ -6412,7 +6496,7 @@ mod tests {
             "status": "pending", "rawInput": {"file_path": file}});
         let script = serde_json::json!([
             {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
-            {"expect": "session/new", "result": {"sessionId": "s-1"}},
+            {"expect": "session/new", "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}},
             {"ask": call, "id": 1},
             {"await": 1},
             {"eof": true},

@@ -25,7 +25,9 @@
 //! - `{"tty": true}` reads its session and group and tries to open `/dev/tty`, heard as `{"pid": pid, "pgid":
 //!   pgid, "sid": sid, "tty": "opened" or why not}`.
 //! - `{"own": {"name": …, "args": …, "id": …}}` runs one of its own tools as agy does (`own`): reported, its folder's
-//!   hook asked on agy's input (heard as `{"hook": its answer}`), then `failed` with the hook's reason or `completed`.
+//!   hook asked on agy's input (heard as `{"hook": its answer}`), then `failed` with the hook's reason or `completed`
+//!   — with `"mcp": message`, one of tarae's: once its hook lets it through, the message sent to tarae's server first
+//!   (as an `mcp` step) and its answer waited for, as agy calls a server's tool.
 //!
 //! It plays agy's part, so its row takes agy's recipe (`agent::AGY_TOOLS_OFF`): its `--gemini-dir <folder>`, which
 //! libtest wouldn't take, is moved by its `sh` into `DIR` before the test binary starts.
@@ -259,6 +261,9 @@ impl Agent {
         });
         let answer = hook(&dir, &input);
         self.heard(&json!({"hook": answer}));
+        if let Some(message) = call.get("mcp").filter(|_| answer["decision"] != "deny") {
+            self.mcp(message);
+        }
         let update = match answer["decision"] == "deny" {
             true => {
                 let reason =

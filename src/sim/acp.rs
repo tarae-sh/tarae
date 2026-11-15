@@ -10,6 +10,12 @@
 //! went, before it; a bridged request is answered at most once. At the end (the agent's turn over: `cancelled` after
 //! a stop, else `end_turn`): the chat is idle, the ask answered once, and the read's answer — the file's text, the
 //! card said yes to — went back through the bridge once, and came up as the call's result.
+//!
+//! A second scenario, `an_own_tool_trips_the_session` (step 3's guard 3): the agent runs one of its own tools to its
+//! end (`in_progress`, then `completed`), calls tarae's `read` of the file outside (its card), and the stop key and a
+//! second message of yours come, in any order. After every step: nothing is written to the agent after the trip, nor
+//! sent back through the bridge; the trip is said once in the transcript; once its end lands, no read card is up. At
+//! the end: the chat is idle, the trip said once, and its row held until you quit.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -102,7 +108,8 @@ fn run(choices: Choices) -> Vec<String> {
     ed.workspace.claude.chat = Some(c);
     // The handshake: the agent's answers to `initialize` and `session/new`, their events landed
     let mut events = staged.line(&json!({"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 1}}));
-    events.extend(staged.line(&json!({"jsonrpc": "2.0", "id": 1, "result": {"sessionId": "s-1"}})));
+    let session = json!({"sessionId": "s-1", "modes": {"currentModeId": "default"}});
+    events.extend(staged.line(&json!({"jsonrpc": "2.0", "id": 1, "result": session})));
     for ev in events {
         land(&mut ed, ev);
     }
@@ -353,6 +360,323 @@ fn held(_: &Editor, w: &World) -> Result<(), String> {
         return Err("the read answered twice through the bridge".into());
     }
     Ok(())
+}
+
+// ── An own tool trips the session ──────────────────────────────────────────────────────────────────
+
+const TRIP: &str = "an_own_tool_trips_the_session";
+
+const TRIP_INPUTS: usize = 40;
+
+/// The inputs after them: what the agent hasn't said, then every event landed and the turn's answer.
+const TRIP_ENDING: usize = 40;
+
+/// The trip's words in the chat (the turn's end, or its end's).
+const TRIPPED: &str = "stand-in ran a tool of its own, run_command — stopped: it and everything it started ended. Only \
+                       tarae's tools may run; its hook should have refused this.";
+
+/// How the fixed seeds' reads went: answered back through the bridge before the trip, or cut off by it.
+static READ_BEFORE: AtomicUsize = AtomicUsize::new(0);
+static READ_CUT: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn an_own_tool_trips_the_session() {
+    super::seeds(TRIP, SEEDS, trip_run);
+    let (before, cut) = (READ_BEFORE.load(Ordering::SeqCst), READ_CUT.load(Ordering::SeqCst));
+    assert!(before > 0 && cut > 0, "the read one way only: {before} answered before the trip, {cut} cut off");
+}
+
+struct Trip {
+    staged: RefCell<Staged>,
+    bridge: std::sync::mpsc::Receiver<String>,
+    back: RefCell<Vec<Value>>,
+    to_agent: RefCell<Vec<Value>>,
+    pending: RefCell<VecDeque<Event>>,
+    /// Its own tool running, its own tool done, the read through the bridge: said yet.
+    said: Cell<[bool; 3]>,
+    stopped: Cell<bool>,
+    again: Cell<bool>,
+    outside: std::path::PathBuf,
+    /// How many lines had gone to the agent, and back through the bridge, when the wire tripped.
+    tripped_at: Cell<Option<(usize, usize)>>,
+    /// The trip's end has landed (its row held), as a check saw.
+    end_seen: Cell<bool>,
+}
+
+impl Trip {
+    fn read_up(&self) {
+        self.to_agent.borrow_mut().extend(self.staged.borrow().written());
+        let back = self.bridge.try_iter().filter_map(|l| serde_json::from_str::<Value>(&l).ok());
+        self.back.borrow_mut().extend(back);
+    }
+
+    /// What the wire made: where it tripped, noted.
+    fn made(&self, events: Vec<Event>) {
+        let tripped = events.iter().any(|e| {
+            matches!(e, Event::Exit(crate::agent::Exit { kind: crate::agent::Ended::Tripped { .. }, .. }))
+        });
+        if tripped {
+            self.read_up();
+            self.tripped_at.set(Some((self.to_agent.borrow().len(), self.back.borrow().len())));
+        }
+        self.pending.borrow_mut().extend(events);
+    }
+}
+
+fn trip_run(choices: Choices) -> Vec<String> {
+    let scratch = crate::scratch::Scratch::new("sim-acp-trip");
+    let root = std::fs::canonicalize(scratch.path()).unwrap();
+    let (project, outside) = (root.join("project"), root.join("outside"));
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("notes.txt"), format!("{WORDS}\n")).unwrap();
+    let mut sim = Sim::new(TRIP, choices, LIMIT);
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.root = project.clone();
+    let (mut staged, agent) = Staged::new(&project);
+    let mut c = crate::chat::Chat::new();
+    c.agent = &crate::agent::STAND_IN;
+    c.hidden = false;
+    crate::chat::stand_in_agent(&mut c, agent);
+    ed.workspace.claude.chat = Some(c);
+    // The handshake, in the row's mode
+    let session = json!({"sessionId": "s-1", "modes": {"currentModeId": "default"}});
+    let mut events = staged.line(&json!({"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": 1}}));
+    events.extend(staged.line(&json!({"jsonrpc": "2.0", "id": 1, "result": session})));
+    for ev in events {
+        land(&mut ed, ev);
+    }
+    let bridge = staged.link();
+    assert!(crate::chat::submit(&mut ed, "read the notes outside", None, None), "the turn asked");
+    let world = Trip {
+        staged: RefCell::new(staged),
+        bridge,
+        back: RefCell::new(Vec::new()),
+        to_agent: RefCell::new(Vec::new()),
+        pending: RefCell::new(VecDeque::new()),
+        said: Cell::new([false; 3]),
+        stopped: Cell::new(false),
+        again: Cell::new(false),
+        outside: outside.join("notes.txt"),
+        tripped_at: Cell::new(None),
+        end_seen: Cell::new(false),
+    };
+    let check = |ed: &Editor| trip_held(ed, &world);
+    let print = |ed: &Editor| trip_print(ed, &world);
+    // (the end: the read and its own tool's run, if not said yet; the read's answer back through the bridge where it
+    // hadn't tripped yet — its card answered in the settling; then its own tool done, everything landed and taken, and
+    // its turn's answer, which nothing reads after the trip)
+    let (n, over) = (Cell::new(0), Cell::new(false));
+    let step = |sim: &mut Sim, ed: &mut Editor| {
+        n.set(n.get() + 1);
+        if n.get() <= TRIP_INPUTS {
+            return trip_input(sim, ed, &world);
+        }
+        let said = world.said.get();
+        if let Some(i) = [2, 0].into_iter().find(|&i| !said[i]) {
+            return trip_say(&world, i);
+        }
+        if !said[1] {
+            world.read_up();
+            let back = world.back.borrow().iter().any(|v| v["id"] == 9);
+            return match back {
+                true => trip_say(&world, 1),
+                false => trip_settle(ed, &world),
+            };
+        }
+        if over.get() || !world.pending.borrow().is_empty() {
+            return trip_settle(ed, &world);
+        }
+        over.set(true);
+        world.read_up();
+        let prompt =
+            world.to_agent.borrow().iter().find(|v| v["method"] == "session/prompt").map(|v| v["id"].clone());
+        let reason = if world.stopped.get() { "cancelled" } else { "end_turn" };
+        let line = json!({"jsonrpc": "2.0", "id": prompt, "result": {"stopReason": reason}});
+        world.made(world.staged.borrow_mut().line(&line));
+        format!("the agent's turn over: {reason} · {}", trip_settle(ed, &world))
+    };
+    sim.walk(&mut ed, TRIP_INPUTS + TRIP_ENDING, step, check, print);
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let idle = !c.busy();
+    let said = c.msgs.iter().filter(|m| m.text == TRIPPED).count();
+    let held = ed.agents_tripped.contains(&"stand-in");
+    let tripped = world.tripped_at.get();
+    let back = world.back.borrow().clone();
+    sim.at_end(|| {
+        let Some((_, back_at)) = tripped else { return Err("the wire never tripped".into()) };
+        match back[..back_at].iter().any(|v| v["id"] == 9) {
+            true => READ_BEFORE.fetch_add(1, Ordering::SeqCst),
+            false => READ_CUT.fetch_add(1, Ordering::SeqCst),
+        };
+        if !idle {
+            return Err("the trip left the chat busy".into());
+        }
+        if said != 1 {
+            return Err(format!("the trip said {said} times"));
+        }
+        if !held {
+            return Err("its row isn't held".into());
+        }
+        Ok(())
+    });
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    ed.workspace.claude.chat = None;
+    drop(ed);
+    trace
+}
+
+/// One round of the end: every event landed, every message the chat handed taken, a read card answered.
+fn trip_settle(ed: &mut Editor, w: &Trip) -> String {
+    let mut n = 0;
+    loop {
+        let ev = w.pending.borrow_mut().pop_front();
+        let moved = match ev {
+            Some(ev) => {
+                land(ed, ev);
+                true
+            }
+            None => match w.staged.borrow_mut().take() {
+                Some((_, events)) => {
+                    w.made(events);
+                    true
+                }
+                None => answer_card(ed),
+            },
+        };
+        if !moved {
+            break;
+        }
+        n += 1;
+    }
+    format!("settled ({n} moves)")
+}
+
+/// The agent says its `i`th: its own tool running, then done; the read through the bridge.
+fn trip_say(w: &Trip, i: usize) -> String {
+    let mut said = w.said.get();
+    said[i] = true;
+    w.said.set(said);
+    let call = |kind: &str, status: &str| {
+        let u = json!({"sessionUpdate": kind, "toolCallId": "t1", "name": "run_command", "title": "echo ran",
+            "kind": "execute", "status": status, "rawInput": {"CommandLine": "echo ran"}});
+        json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s-1", "update": u}})
+    };
+    let mut staged = w.staged.borrow_mut();
+    let (events, what) = match i {
+        0 => (staged.line(&call("tool_call", "in_progress")), "its own tool running (run_command)"),
+        1 => (staged.line(&call("tool_call_update", "completed")), "its own tool done"),
+        _ => {
+            let files = [w.outside.to_string_lossy()];
+            let call = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                "params": {"name": "read", "arguments": {"files": files}}});
+            (staged.bridged(call), "a read through the bridge")
+        }
+    };
+    drop(staged);
+    w.made(events);
+    format!("the agent says {what}")
+}
+
+fn trip_input(sim: &mut Sim, ed: &mut Editor, w: &Trip) -> String {
+    let c = &mut sim.choices;
+    // (by arm: the agent says its next 3, an event lands 4, the wire takes what the chat handed 3, the stop key 1, the
+    // read card answered 2, a second message 1, a frame 1)
+    match c.weighted(&[3, 4, 3, 1, 2, 1, 1]) {
+        0 => {
+            // (its own tool done only once it ran, and least often: a read has its card, its job and its answer to go
+            // through before it, in some seeds)
+            let said = w.said.get();
+            let left: Vec<usize> = (0..3).filter(|&i| !said[i] && (i != 1 || said[0])).collect();
+            if left.is_empty() {
+                return "(the agent has said all)".into();
+            }
+            let weights: Vec<usize> = left.iter().map(|&i| [3, 1, 4][i]).collect();
+            let i = left[c.weighted(&weights)];
+            trip_say(w, i)
+        }
+        1 => {
+            let Some(ev) = w.pending.borrow_mut().pop_front() else { return "(no event to land)".into() };
+            land(ed, ev);
+            "an event lands".into()
+        }
+        2 => {
+            let Some((what, events)) = w.staged.borrow_mut().take() else {
+                return "(nothing handed to take)".into();
+            };
+            w.made(events);
+            format!("the wire takes {what}")
+        }
+        3 if !w.stopped.get() && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) => {
+            w.stopped.set(true);
+            crate::chat::stop(ed);
+            "the stop key".into()
+        }
+        3 => "(stopped already, or nothing to stop)".into(),
+        4 => match answer_card(ed) {
+            true => "y on the read card".into(),
+            false => "(no read card)".into(),
+        },
+        5 if !w.again.get() => {
+            w.again.set(true);
+            match crate::chat::submit(ed, "and then?", None, None) {
+                true => "a second message, sent".into(),
+                false => "a second message, not sent".into(),
+            }
+        }
+        5 => "(a second message already)".into(),
+        _ => {
+            crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+            "a frame".into()
+        }
+    }
+}
+
+/// Nothing to the agent nor back through the bridge after the trip; the trip said at most once; as its end lands, no
+/// read card up — one raised after it by a read already on a worker then (its answer goes nowhere: checked above) is
+/// the read tool's, as when claude ends mid-read, and reported, not held here.
+fn trip_held(ed: &Editor, w: &Trip) -> Result<(), String> {
+    w.read_up();
+    if let Some((agent, back)) = w.tripped_at.get() {
+        let to_agent = w.to_agent.borrow();
+        if let Some(v) = to_agent.get(agent..).and_then(|after| after.first()) {
+            return Err(format!("written to the agent after the trip: {v}"));
+        }
+        if let Some(v) = w.back.borrow().get(back..).and_then(|after| after.first()) {
+            return Err(format!("sent back through the bridge after the trip: {v}"));
+        }
+    }
+    let c = ed.workspace.claude.chat.as_ref().ok_or("the chat's gone")?;
+    let said = c.msgs.iter().filter(|m| m.text == TRIPPED).count();
+    if said > 1 {
+        return Err(format!("the trip said {said} times"));
+    }
+    let read_card = |o: &crate::offer::Offer| matches!(o.what, crate::offer::What::Read { .. });
+    if ed.agents_tripped.contains(&"stand-in") && !w.end_seen.replace(true) {
+        if ed.offers.iter().chain(&ed.workspace.parked).any(read_card) {
+            return Err("a read card still up as the trip's end landed".into());
+        }
+        if c.running() || c.busy() {
+            return Err("its process or its turn outlived the trip's end".into());
+        }
+    }
+    Ok(())
+}
+
+fn trip_print(ed: &Editor, w: &Trip) -> String {
+    let c = ed.workspace.claude.chat.as_ref();
+    let busy = c.is_some_and(|c| c.busy());
+    let running = c.is_some_and(crate::chat::Chat::running);
+    format!(
+        "busy {busy} · running {running} · card {} · to the agent {} · back {} · tripped {} · held {} · waiting {}",
+        !ed.offers.is_empty(),
+        w.to_agent.borrow().len(),
+        w.back.borrow().len(),
+        w.tripped_at.get().is_some(),
+        !ed.agents_tripped.is_empty(),
+        w.pending.borrow().len()
+    )
 }
 
 /// What a trace line ends with: the chat busy, what was written to the agent and back, what waits to land.
