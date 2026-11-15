@@ -1049,3 +1049,171 @@ fn the_list_is_as_tall_as_its_rows() {
         "its rows again, its top at 1/4"
     );
 }
+
+/// The row in hand's card says the whole row (the one list L3): its name, then its state with the step whole, whom it
+/// overlaps, behind, ctx, the model, the report whole and the cost, ` · ` apart — never `▲` nor the rest the list
+/// always said; a row shows less than it where its name is cut or one of those cells is cut or gone.
+#[test]
+fn the_row_in_hands_card_says_the_whole_row() {
+    let step = "▸ asks to run cargo test --workspace";
+    let r = row(&Shown { step: step.into(), ..full(WorkspaceId::HOME, "main", Doing::Waiting) });
+    let text: String = card(&r).iter().map(|p| p.0.as_str()).collect();
+    assert_eq!(
+        text,
+        format!(
+            "main · {step} · ≈ main · ↓3 · ctx 84% · opus · high · I will switch it to the entry API so a repeat \
+             keeps the first strand · $0.42"
+        )
+    );
+    assert_eq!(card(&r)[0].1, Ink::Participant(0), "its name in its colour");
+    let rows = [r];
+    let (name_w, cols) = lay(&rows, 400);
+    assert!(cut_on_row(&rows[0], name_w, &cols), "a report past REPORT_MAX: cut, however wide");
+    let short = "I will switch it to the entry API.";
+    let rows = [row(&Shown { report: short.into(), ..full(WorkspaceId::HOME, "main", Doing::Waiting) })];
+    let (name_w, cols) = lay(&rows, 400);
+    assert!(!cut_on_row(&rows[0], name_w, &cols), "wide: every cell whole");
+    let (name_w, cols) = lay(&rows, 60);
+    assert!(cut_on_row(&rows[0], name_w, &cols), "the report gone, the step cut: {cols:?}");
+    let (name_w, cols) = lay(&rows, 2);
+    assert!(cut_on_row(&rows[0], name_w, &cols), "its name cut");
+    // (what the card doesn't say gone says nothing)
+    let few = [row(&Shown { report: String::new(), ..full(WorkspaceId::HOME, "main", Doing::Idle) })];
+    let (name_w, mut cols) = lay(&few, 400);
+    cols.retain(|c| !matches!(c.0, Col::Branch | Col::Usage | Col::Waits));
+    assert!(!cut_on_row(&few[0], name_w, &cols), "the rest gone: nothing the card says");
+}
+
+/// The cut card's text and its frame's rect, the list's floating frame — the card outside it, below.
+fn hand_card(ed: &mut Editor, w: u16, h: u16) -> (Option<String>, String) {
+    let s = frame(ed, w, h);
+    let f = ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).map(|f| f.1);
+    let c = ed.screen.cut_card.borrow().clone();
+    let text = c.map(|c| {
+        let f = f.unwrap_or_else(|| panic!("floating\n{s}"));
+        assert!(c.outside && c.rect.1 >= f.y + f.h, "outside its frame, below: {c:?} {f:?}\n{s}");
+        let crate::whole::Cut::Text(w) = c.cut else { panic!("a text's card") };
+        w.text
+    });
+    (text, s)
+}
+
+/// The name of the row in hand.
+fn here_name(ed: &Editor) -> String {
+    let here = ed.sessions_here();
+    ed.sessions_rows().into_iter().find(|r| Some(r.id) == here).expect("a row in hand").name
+}
+
+/// Floating, the row in hand's card stands just outside the frame, below (the one list L3): while its row shows less
+/// than it (a name cut) — none for a row whole and in sight — and, the wheel having taken the row out of sight, still
+/// naming it there (no pinned row); `j`/`k` take it to the next row's; without the keys, none.
+#[test]
+fn the_row_in_hands_card_names_it_under_the_frame_in_sight_or_not() {
+    let dir = crate::scratch::Scratch::new("sessioncard");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    for i in 0..19 {
+        ed.workspace_add(dir.join(format!("s{i:02}")));
+    }
+    let long = "l".repeat(90);
+    ed.workspace_add(dir.join(&long));
+    feed_at(&mut ed, " Wgg", 80, 24);
+    let (c, s) = hand_card(&mut ed, 80, 24);
+    assert_eq!(c, None, "a row whole and in sight: no card\n{s}");
+    // The long one: its name cut on its row, whole on the card
+    feed_at(&mut ed, "G", 80, 24);
+    let (c, s) = hand_card(&mut ed, 80, 24);
+    assert_eq!(c.as_deref(), Some(long.as_str()), "its name whole\n{s}");
+    assert!(s.contains("lll…"), "cut on its row\n{s}");
+    // The wheel takes it out of sight: the card still names it
+    crate::floatlist::wheel(&mut ed, GroupKind::Sessions, true);
+    hand_card(&mut ed, 80, 24);
+    crate::floatlist::wheel(&mut ed, GroupKind::Sessions, true);
+    let (c, s) = hand_card(&mut ed, 80, 24);
+    assert!(!s.contains("lll…"), "out of sight\n{s}");
+    assert_eq!(c.as_deref(), Some(long.as_str()), "named out of sight\n{s}");
+    // A row whole, out of sight: named too
+    feed_at(&mut ed, "gg", 80, 24);
+    assert_eq!(hand_card(&mut ed, 80, 24).0, None, "back in sight, whole");
+    crate::floatlist::wheel(&mut ed, GroupKind::Sessions, false);
+    hand_card(&mut ed, 80, 24);
+    crate::floatlist::wheel(&mut ed, GroupKind::Sessions, false);
+    let (c, s) = hand_card(&mut ed, 80, 24);
+    assert!(!s.contains("▎ main"), "main out of sight\n{s}");
+    assert_eq!(c.as_deref(), Some("main"), "named out of sight\n{s}");
+    // `j` brings the view back to the next row — in sight, whole: no card
+    feed_at(&mut ed, "j", 80, 24);
+    let (c, s) = hand_card(&mut ed, 80, 24);
+    assert_eq!((here_name(&ed).as_str(), c), ("s00", None), "{s}");
+    // Without the keys: none
+    feed_at(&mut ed, "G<esc>", 80, 24);
+    let (c, s) = hand_card(&mut ed, 80, 24);
+    assert!(c.is_none() && s.contains("─ sessions"), "no card without the keys\n{s}");
+}
+
+/// Docked, the row in hand's card sits at the foot above its keys while the list has them (the one list L3): as tall as
+/// the most rows any row's card takes, up to `CARD_ROWS`, so `j`/`k` never changes the rows in sight; it goes above
+/// the asks with the keys when they stand over the foot; the keys elsewhere, the rows have the room back.
+#[test]
+fn a_docked_lists_row_in_hand_has_its_card_at_the_foot_above_the_keys() {
+    use crate::offer::{Offer, What};
+    let dir = crate::scratch::Scratch::new("sessiondockcard");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    for i in 0..5 {
+        ed.workspace_add(dir.join(format!("s{i:02}")));
+    }
+    let long = "l".repeat(200);
+    ed.workspace_add(dir.join(&long));
+    feed(&mut ed, " W<C-w>Lgg");
+    let rows_in_sight = |ed: &Editor| {
+        let lists = ed.screen.lists.borrow();
+        lists.iter().find(|l| l.0 == GroupKind::Sessions).map(|l| l.1.1).expect("drawn")
+    };
+    // (the leaf's rows: its text from the bar's column, and the row its keys are on)
+    let foot = |ed: &mut Editor| -> (Vec<String>, usize, String) {
+        let s = frame(ed, 160, 30);
+        let (_, r) = ed.dock_rect(GroupKind::Sessions).unwrap_or_else(|| panic!("docked\n{s}"));
+        // (from the bar's column: the line between the code and the leaf left out)
+        let leaf: Vec<String> = (s.lines())
+            .map(|l| l.chars().skip(r.x).take(r.w).collect::<String>().trim_start_matches('│').to_string())
+            .collect();
+        let keys = (r.y..r.y + r.h)
+            .find(|&y| leaf[y].contains("enter switch"))
+            .unwrap_or_else(|| panic!("keys\n{s}"));
+        (leaf, keys, s)
+    };
+    let (leaf, keys, s) = foot(&mut ed);
+    let n = rows_in_sight(&ed);
+    let y0 = ed.screen.lists.borrow().iter().find(|l| l.0 == GroupKind::Sessions).map(|l| l.1.0).unwrap();
+    assert_eq!(y0 + n, keys - 3, "its rows end over its card\n{s}");
+    // (the long name would take four of its card's rows: three over the keys, the row in hand's name on the first)
+    let blank = |l: &str| l.trim().is_empty();
+    assert!(
+        leaf[keys - 3].starts_with("  main") && blank(&leaf[keys - 2]) && blank(&leaf[keys - 1]),
+        "main's\n{s}"
+    );
+    feed(&mut ed, "j");
+    let (leaf, keys, s) = foot(&mut ed);
+    assert!(leaf[keys - 3].starts_with(&format!("  {}", here_name(&ed))), "the next row's\n{s}");
+    assert_eq!(rows_in_sight(&ed), n, "the rows in sight the same");
+    feed(&mut ed, "G");
+    let (leaf, keys, s) = foot(&mut ed);
+    assert!((keys - 3..keys).all(|y| leaf[y].starts_with("  lll")), "wrapped\n{s}");
+    assert!(leaf[keys - 1].trim_end().ends_with("l…"), "its last row cut\n{s}");
+    let spot = ed.screen.cut_spots.borrow().iter().any(|c| c.0 == keys - 1);
+    assert!(spot, "its rest whole under the mouse");
+    assert_eq!(rows_in_sight(&ed), n, "the rows in sight the same");
+    // An ask over its foot: the asks, then the keys, then the card, then the rows
+    let what = What::Asks { call: crate::tools::Call::test(1) };
+    ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
+    let (leaf, keys, s) = foot(&mut ed);
+    let (_, y, _, _) = ed.screen.offer_card.expect("drawn");
+    assert_eq!(keys, y - 2, "its keys over the asks, a row of air\n{s}");
+    assert!((keys - 3..keys).all(|y| leaf[y].starts_with("  lll")), "the card over them\n{s}");
+    // The keys elsewhere: no card, no keys — the rows have the room
+    ed.offers.clear();
+    feed(&mut ed, "<esc>");
+    let s = frame(&mut ed, 160, 30);
+    assert!(rows_in_sight(&ed) > n && !s.contains("enter switch"), "the rows have its room\n{s}");
+}

@@ -6880,6 +6880,96 @@ fn draw_sessions_pane(
     // (where its rows end: the leaf's end, or the row of air over the asks — its keys on the row before that)
     let end = asks.map_or(y0 + inner, |c| c.1.saturating_sub(1).clamp(y0 + 1, y0 + inner));
     let foot = !framed && has && end > y0 + 1;
+    let room = r.w.saturating_sub(2 * side + 2 + 1);
+    let (name_w, cols) = crate::sessionpane::lay(rows, room);
+    let here = editor.sessions_here();
+    let selected = rows.iter().position(|row| Some(row.id) == here).unwrap_or(0);
+    let sel = selected_row(ui, editor, card);
+    let ink = |i: Ink, base: Style| match i {
+        Ink::Text => Style { fg: ui.virt.fg, ..base },
+        Ink::Faint => Style { fg: ui.linenr.fg, ..base },
+        Ink::Warn => Style { fg: warn.fg, ..base },
+        Ink::Accent => Style { fg: ui.accent.fg, ..base },
+        Ink::Participant(c) => Style { fg: ui.participant(c, true), ..base },
+    };
+    // The row in hand's card (the one list L3): its name, bold in its colour, then its cells whole, each in its ink —
+    // its text and its pieces' colours
+    let card_of = |row: &crate::sessionpane::Row| -> (String, Vec<(std::ops::Range<usize>, Style)>) {
+        let mut text = String::new();
+        let mut pieces = Vec::new();
+        for (k, (t, i)) in crate::sessionpane::card(row).into_iter().enumerate() {
+            let st = Style { bold: k == 0, ..ink(i, card) };
+            pieces.push((text.len()..text.len() + t.len(), st));
+            text.push_str(&t);
+        }
+        (text, pieces)
+    };
+    // (docked: at the foot above its keys while it has them, as tall as the most rows any row's card takes, up to
+    // `CARD_ROWS` — so `j`/`k` never changes the rows in sight — while a row shows less than its card or they scroll)
+    let card_w = r.w.saturating_sub(3);
+    let rows_room = (end - y0).saturating_sub(usize::from(foot));
+    let laid = |text: &str| {
+        let mut v = Vec::new();
+        lay_text(text, (0, text.len()), card_w, false, &mut v);
+        v
+    };
+    let card_h = match foot && card_w >= 8 {
+        true if rows.len() > rows_room
+            || rows.iter().any(|row| crate::sessionpane::cut_on_row(row, name_w, &cols)) =>
+        {
+            (rows.iter().map(|row| laid(&card_of(row).0).len()).max().unwrap_or(0))
+                .min(crate::sessionpane::CARD_ROWS)
+                .min(rows_room.saturating_sub(1))
+        }
+        _ => 0,
+    };
+    if let Some(row) = rows.get(selected).filter(|_| card_h > 0) {
+        let (text, pieces) = card_of(row);
+        let rows_of = laid(&text);
+        // (`[from, to)` of its text, each piece in its ink on the row in hand's ground)
+        let segs = |(from, to): (usize, usize)| -> Vec<(&str, Style)> {
+            (pieces.iter())
+                .map(|(p, s)| ((p.start.max(from), p.end.min(to)), s))
+                .filter(|((a, b), _)| a < b)
+                .map(|((a, b), s)| (crate::cut::slice(&text, a..b), Style { bg: sel.bg, ..*s }))
+                .collect()
+        };
+        for k in 0..card_h {
+            let y = end - 1 - card_h + k;
+            queue!(out, MoveTo(x0 as u16, y as u16))?;
+            apply(out, sel)?;
+            queue!(out, Spaces(2))?;
+            let mut used = 2;
+            if let Some((at, t)) = rows_of.get(k) {
+                // (its last row with more after it: the rest cut there, whole under the mouse)
+                if k + 1 == card_h && rows_of.len() > card_h {
+                    let rest = crate::cut::slice(&text, *at..);
+                    let moved = (pieces.iter())
+                        .filter(|p| p.0.end > *at)
+                        .map(|(p, s)| (p.start.max(*at) - at..p.end - at, *s))
+                        .collect();
+                    let fit = crate::whole::fit(rest, card_w).painted(moved);
+                    for (t, s) in segs((*at, at + fit.uncut().len())) {
+                        apply(out, s)?;
+                        queue!(out, Print(t))?;
+                    }
+                    // (its `…`: the fit's tail, its whole recorded below)
+                    apply(out, Style { fg: ui.linenr.fg, ..sel })?;
+                    queue!(out, Print(fit.shown().strip_prefix(fit.uncut()).unwrap_or_default()))?;
+                    crate::whole::at(crate::whole::On::List, &fit, (x0 + 2, y), sel, (0, usize::MAX));
+                    used += fit.width();
+                } else {
+                    for (t, s) in segs((*at, at + t.len())) {
+                        apply(out, s)?;
+                        queue!(out, Print(t))?;
+                    }
+                    used += t.width();
+                }
+            }
+            apply(out, sel)?;
+            queue!(out, Spaces(r.w.saturating_sub(used)))?;
+        }
+    }
     if foot {
         let pairs = crate::sessionpane::hints(editor);
         let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (*k, d.as_str())).collect();
@@ -6893,26 +6983,36 @@ fn draw_sessions_pane(
         apply(out, card)?;
         queue!(out, Spaces(r.w.saturating_sub(2 + used)))?;
     }
-    let room = r.w.saturating_sub(2 * side + 2 + 1);
-    let (name_w, cols) = crate::sessionpane::lay(rows, room);
-    let here = editor.sessions_here();
-    let selected = rows.iter().position(|row| Some(row.id) == here).unwrap_or(0);
     let p = editor.float_list(crate::pane::GroupKind::Sessions);
-    let shown = end - y0 - usize::from(foot);
+    let shown = end - y0 - usize::from(foot) - card_h;
     // (an ask coming over its foot: fewer rows in sight, the selection brought above it once — the wheel's after)
     let ids: Vec<u64> = rows.iter().map(|row| row.id.n).collect();
     let top = crate::floatlist::top_drawn(p, &ids, selected, shown);
     // (its rows in sight: those above the stack — the moves page by them, the row under the card air)
     let inner = shown;
     editor.screen.lists.borrow_mut().push((crate::pane::GroupKind::Sessions, (y0, inner, top)));
-    let sel = selected_row(ui, editor, card);
-    let ink = |i: Ink, base: Style| match i {
-        Ink::Text => Style { fg: ui.virt.fg, ..base },
-        Ink::Faint => Style { fg: ui.linenr.fg, ..base },
-        Ink::Warn => Style { fg: warn.fg, ..base },
-        Ink::Accent => Style { fg: ui.accent.fg, ..base },
-        Ink::Participant(c) => Style { fg: ui.participant(c, true), ..base },
+    // (floating: the row in hand's card just outside its frame, below — `Hand::Outside` — while its row shows less than
+    // its card or the wheel has taken it out of sight; recorded at its name, or, out of sight, at no cell of the first
+    // row in sight: the card names it wherever it is, the mouse over no row brings it)
+    let out_of_sight = !(top..top + inner).contains(&selected);
+    let hand_card = framed
+        && has
+        && rows
+            .get(selected)
+            .is_some_and(|row| out_of_sight || crate::sessionpane::cut_on_row(row, name_w, &cols));
+    let record_card = |(y, a, b): (usize, usize, usize)| {
+        let row = &rows[selected];
+        let (text, pieces) = card_of(row);
+        let style = drawn_style(Style { fg: ui.participant(row.colour, true), bold: true, ..sel });
+        let (cols, state, float, key) = ((0, usize::MAX), None, crate::whole::drawn_in(), None);
+        let w =
+            crate::whole::Whole { on: crate::whole::On::List, text, style, pieces, cols, state, float, key };
+        let hand = crate::whole::Hand::Outside((r.x, r.y, r.w, r.h), (0, usize::MAX));
+        crate::whole::record(editor, (y, a, b), w, Some(hand));
     };
+    if hand_card && out_of_sight {
+        record_card((y0, x0 + 2, x0 + 2));
+    }
     // Its search's matches (its own `/`), as the code's: a faint accent ground, the selected row's stronger
     let re = crate::floatlist::lit(editor, crate::pane::GroupKind::Sessions);
     let hit = |on: bool, st: Style| match on {
@@ -6944,19 +7044,21 @@ fn draw_sessions_pane(
         let name_w = name_w.saturating_sub(pre.width());
         let shown = crate::whole::fit(&row.name, name_w);
         print_lit(out, (shown.shown(), &row.name), (name, hit(on, name)), &hits_in(&row.name))?;
-        crate::whole::cut_at(
-            editor,
-            crate::whole::On::List,
-            (x0 + 2 + pre.width(), y),
-            &shown,
-            name,
-            (0, usize::MAX),
-            // (floating, the screen its free ground; docked, nothing beside it is)
-            (on && has).then_some(crate::whole::Hand::Outside(
-                (r.x, r.y, r.w, r.h),
-                if framed { (0, usize::MAX) } else { (r.x, r.x + r.w) },
-            )),
-        );
+        let at = x0 + 2 + pre.width();
+        match on && hand_card {
+            // (the row in hand's card, its name its spot — its own cut with it)
+            true => record_card((y, at, at + shown.width())),
+            // (docked, its card is at the foot)
+            false => crate::whole::cut_at(
+                editor,
+                crate::whole::On::List,
+                (at, y),
+                &shown,
+                name,
+                (0, usize::MAX),
+                None,
+            ),
+        }
         apply(out, name)?;
         queue!(out, Spaces(name_w.saturating_sub(shown.width())))?;
         used += name_w + pre.width();

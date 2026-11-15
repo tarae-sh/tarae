@@ -15,7 +15,8 @@
 //! narrow, they give way in `LADDER`'s order (`lay`): the rest first, then the report (cut, then gone), the model, the
 //! step cut to its floor, the context, the cost, behind, the overlaps, `▲`, the state last, the name never. Built from
 //! the sessions every frame it's drawn (`rows`), nothing slow: git's part is read on a worker as it opens
-//! (`Editor::session_list`).
+//! (`Editor::session_list`). The row in hand's card (`card`, the one list L3) says its row whole — floating, just outside
+//! the frame, below, while its row shows less or the wheel has taken it out of sight; docked, at its foot above its keys.
 //!
 //! Its keys are a floating list's (`floatlist.rs`: the moves, its own search, `esc code`, `q`), `enter` switches to
 //! the row's session, and its letters as the picker's were (`Editor::session_list_key`: `o` new, `d` end, `b` bring,
@@ -394,6 +395,43 @@ pub fn lay(rows: &[Row], room: usize) -> (usize, Vec<(Col, usize)>) {
         }
     }
     (name_w, Vec::new())
+}
+
+/// What the row in hand's card says after its name (the one list L3, `.sb/one-list-plan.md`): the manager's columns,
+/// whole — `▲` (the state says it waits) and the rest the list always said left out.
+pub const CARD: [Col; 7] =
+    [Col::State, Col::Overlap, Col::Behind, Col::Context, Col::Model, Col::Report, Col::Cost];
+
+/// The most rows the row in hand's card takes docked (`term::draw_sessions_pane`): past them its last is cut.
+pub const CARD_ROWS: usize = 3;
+
+/// Between the card's cells.
+pub const CARD_SEP: &str = " · ";
+
+/// The row in hand's card (the one list L3): its name in its colour, then each of `CARD`'s cells it has, whole,
+/// `CARD_SEP` apart — the step whole, whom it overlaps, behind, its context, model, report and cost, what a narrow list
+/// gave up on its row said here.
+pub fn card(row: &Row) -> Vec<Part> {
+    let mut parts = vec![(row.name.clone(), Ink::Participant(row.colour))];
+    for c in CARD {
+        let cell = row.cell(c);
+        if cell.is_empty() {
+            continue;
+        }
+        parts.push((CARD_SEP.into(), Ink::Faint));
+        parts.extend(cell.iter().cloned());
+    }
+    parts
+}
+
+/// Whether `row`, laid out as `lay` lays it (the name's column `name_w`, the columns shown `cols`), shows less than its
+/// card says: its name cut, or one of `CARD`'s cells it has cut or gone.
+pub fn cut_on_row(row: &Row, name_w: usize, cols: &[(Col, usize)]) -> bool {
+    row.name_width() > name_w
+        || CARD.iter().any(|&c| {
+            let w = row.text(c).width();
+            w > 0 && cols.iter().find(|x| x.0 == c).is_none_or(|x| w > x.1)
+        })
 }
 
 /// Its Claude's last report line: the last sentence of its last answer, the Markdown's marks taken out — empty before
