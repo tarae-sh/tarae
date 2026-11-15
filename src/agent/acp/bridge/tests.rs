@@ -37,6 +37,22 @@ fn closed(s: &mut UnixStream) -> bool {
     }
 }
 
+/// What `f` returns — a wait with no patience of its own (a pipe's read, a thread's join) — on a thread of its own,
+/// waited for with the patience: a wait that runs out names `what` (the thread is left to the process's end).
+fn within<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(PATIENCE) {
+        Ok(v) => v,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("waited {}s for {what}", PATIENCE.as_secs())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{what}: its thread panicked"),
+    }
+}
+
 /// The next message the bridge handed the wire's thread, but `Linked`'s writer as its number.
 fn next(rx: &Receiver<In>) -> String {
     match rx.recv_timeout(PATIENCE).expect("a message to the wire") {
@@ -207,8 +223,9 @@ fn a_live_line_past_its_bound_ends_the_connection() {
     assert_eq!(next(&rx), format!("linked {}", n + 1), "the next is the live one");
 }
 
-/// The relay: the token first, then the agent's side to the socket and the socket to the agent's side; it ends when
-/// either side does.
+/// The relay: the token first, then the agent's side to the socket and the socket to the agent's side — a line from
+/// the socket reaches the agent's pipe while the socket stays open (`pass`: on Linux `std::io::copy` held it back) —
+/// and it ends when either side does.
 #[test]
 fn the_relay_carries_both_ways_and_ends_with_either_side() {
     let dir = crate::scratch::Scratch::new("acp-bridge-relay");
@@ -222,12 +239,16 @@ fn the_relay_carries_both_ways_and_ends_with_either_side() {
     writeln!(agent_in, r#"{{"jsonrpc":"2.0","id":7,"method":"ping"}}"#).unwrap();
     assert_eq!(next(&rx), r#"bridged {"id":7,"jsonrpc":"2.0","method":"ping"}"#);
     out.send(r#"{"jsonrpc":"2.0","id":7,"result":{}}"#.into()).unwrap();
-    let mut back = String::new();
     let mut agent_out = BufReader::new(agent_out);
-    agent_out.read_line(&mut back).unwrap();
+    // (`agent_out` kept: its end dropped would end the relay's down side, not the agent's side closing)
+    let (back, _agent_out) = within("the answer at the agent's side", move || {
+        let mut back = String::new();
+        agent_out.read_line(&mut back).unwrap();
+        (back, agent_out)
+    });
     assert_eq!(back.trim_end(), r#"{"jsonrpc":"2.0","id":7,"result":{}}"#);
     drop(agent_in);
-    assert_eq!(relayed.join().unwrap(), Ok(()));
+    assert_eq!(within("the relay's end, the agent's side closed", move || relayed.join().unwrap()), Ok(()));
     assert_eq!(next(&rx), format!("unlinked {n}"));
     assert!(relay(Path::new("/nonexistent/0.sock"), "t", std::io::empty(), std::io::sink()).is_err());
 }

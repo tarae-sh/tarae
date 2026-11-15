@@ -380,8 +380,8 @@ fn writer(mut out: UnixStream) -> Sender<String> {
 const RELAY_TEST: &str = "agent::acp::bridge::relay_test";
 
 /// `tarae agent-tools <socket>`: connects (a path past `sun_path` from its folder), writes the token from its
-/// environment, then copies `input` to the socket and the socket to `output`, two threads, until either side
-/// closes. No config read, no state touched.
+/// environment, then passes `input` to the socket and the socket to `output` (`pass`), two threads, until either
+/// side closes. No config read, no state touched.
 pub fn relay(
     socket: &Path,
     token: &str,
@@ -398,16 +398,37 @@ pub fn relay(
     let (ended, end) = std::sync::mpsc::channel::<()>();
     let up_ended = ended.clone();
     crate::event::thread("tarae-relay-up", move || {
-        let _ = std::io::copy(&mut input, &mut up);
+        pass(&mut input, &mut up);
         let _ = up_ended.send(());
     });
     crate::event::thread("tarae-relay-dn", move || {
-        let _ = std::io::copy(&mut down, &mut output);
+        pass(&mut down, &mut output);
         let _ = ended.send(());
     });
     let _ = end.recv();
     let _ = stream.shutdown(std::net::Shutdown::Both);
     Ok(())
+}
+
+/// `r` to `w` until `r` ends or `w` fails, each read written and flushed as it comes. Never `std::io::copy`: on Linux,
+/// between a socket and a pipe it splices, and a splice from a socket into a pipe waits for the socket's next bytes
+/// holding the pipe's lock — what it already put in the pipe can't be read meanwhile, so tarae's answer stayed in
+/// the agent's stdout pipe until the socket said something more (the relay's test: a hang; the agent's: its MCP
+/// server never answering).
+fn pass(r: &mut impl Read, w: &mut impl Write) {
+    let mut buf = [0u8; 8192];
+    loop {
+        match r.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => {
+                if w.write_all(&buf[..n]).and_then(|_| w.flush()).is_err() {
+                    return;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
 }
 
 /// `tarae agent-tools <socket>` (`main.rs`, under the gate with the rest of the wire): `relay` on stdin and stdout.

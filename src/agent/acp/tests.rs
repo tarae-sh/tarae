@@ -810,7 +810,11 @@ fn mcp(message: Value) -> Value {
     json!({"mcp": message})
 }
 
-/// Whether process `pid` is gone, once it is (an orphan's reaper may take a moment).
+/// Whether process `pid` is gone, once it is. The agent's group's processes are orphans once it's reaped, gone when
+/// whoever adopts them reaps them — a moment's wait: in a real tarae on Linux tarae itself, a child subreaper
+/// (`reaper::at_start`) that takes them as adopted (in a session neither its own nor tarae's) and reaps them
+/// (`Reaper::round`); on macOS launchd; in a test, which makes no subreaper, init — under `cargo xtask linux` the
+/// container's pid 1, its `sh`, which reaps every child it's given.
 fn gone(pid: u64) -> bool {
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     loop {
