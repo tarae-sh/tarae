@@ -213,7 +213,7 @@ pub struct Config {
     /// The project file's held-back part (`trust.rs`) — None when it has none.
     pub project: Option<crate::trust::Project>,
     /// The files that didn't read — `file:line: why`, as their warnings say it: one there and tarae runs on what's
-    /// left, its defaults maybe, so no claude starts until they read (`llm::held`, friction #339).
+    /// left, its defaults maybe, so no claude starts until they read (`llm::held_for`, friction #339).
     pub unread: Vec<String>,
 }
 

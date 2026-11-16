@@ -20408,7 +20408,7 @@ fn continue_row(
     row
 }
 
-/// Where the chat's claude would start while the config doesn't read (`llm::held`, friction #339): why it doesn't — `▲ no
+/// Where the chat's claude would start while the config doesn't read (`llm::held_for`, friction #339): why it doesn't — `▲ no
 /// claude until your config reads`, the file's own words with its line (wrapped as a toast is, `toast_wrap`, never cut: you
 /// fix it from them), the way out. Styles: (warning, strong, dim, key, faint).
 fn held_rows(
@@ -20421,7 +20421,7 @@ fn held_rows(
     // (its agent tripped, the config reading: why, alone — there's no way out but to quit)
     #[cfg(test)]
     if editor.config_unread.is_empty()
-        && let Some(why) = crate::llm::chat_held(editor)
+        && let Some(why) = crate::llm::held_for(editor, crate::agent::Role::Chat)
     {
         return (toast_wrap(&why, w.saturating_sub(2).max(1), false).into_iter().enumerate())
             .map(|(i, l)| vec![sp(if i == 0 { "▲ " } else { "  " }.into(), warn), sp(l, strong)])
@@ -20442,8 +20442,8 @@ fn held_rows(
     rows
 }
 
-/// Whether the chat's claude is held where it would start (`llm::held`): the config doesn't read, none running — or
-/// its agent tripped (`llm::chat_held`, guard 3), until you quit.
+/// Whether the chat's claude is held where it would start (`llm::held_for`): the config doesn't read, none running — or
+/// its agent tripped (`llm::held_for`, guard 3), until you quit.
 fn held_here(editor: &Editor, c: &crate::chat::Chat) -> bool {
     #[cfg(test)]
     if c.held && !c.running() && editor.agents_tripped.contains(&c.agent.name) {
@@ -20798,8 +20798,10 @@ fn draw_ask_line(
         chat_row_end(out, card, cw, 2 + used)?;
         y += 1;
     }
-    // No claude until the config reads (`llm::held`): why, under the line in its place — one row, whole on its card
-    if let Some(why) = crate::llm::chat_held(editor).filter(|_| held && y < top + rows) {
+    // No claude until the config reads (`llm::held_for`): why, under the line in its place — one row, whole on its card
+    if let Some(why) =
+        crate::llm::held_for(editor, crate::agent::Role::Chat).filter(|_| held && y < top + rows)
+    {
         chat_row_start(out, x0, y, edge, card)?;
         let warn = editor
             .theme
@@ -20962,7 +20964,7 @@ fn draw_chat(
         lines.push(Vec::new());
         lines.push(vec![sp(sign(editor), accent), sp(" thinking…".into(), dim)]);
     }
-    // No claude until the config reads (`llm::held`): said where it would start — an empty chat's first rows in place of
+    // No claude until the config reads (`llm::held_for`): said where it would start — an empty chat's first rows in place of
     // its guidance, else under the conversation's last
     if held_here(editor, c) {
         if !c.msgs.is_empty() {
@@ -21184,7 +21186,7 @@ fn draw_chat(
             let sign = wave_here(editor, true, ("chat top", 0)).unwrap_or_else(|| crate::shimmer::mark(""));
             vec![sp(rule_through(sign), accent), sp(format!(" starting {t}"), dim)]
         }
-        // (no claude until the config reads — `llm::held`: what needs you, in warning, never "ready")
+        // (no claude until the config reads — `llm::held_for`: what needs you, in warning, never "ready")
         State::Idle if held_here(editor, c) => match left {
             11.. => vec![sp("▲ no claude".into(), warn_fg)],
             1.. => vec![sp("▲".into(), warn_fg)],

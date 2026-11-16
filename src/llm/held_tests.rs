@@ -1,4 +1,4 @@
-//! Friction #339: a config file that doesn't read holds every claude until it does (`llm::held`).
+//! Friction #339: a config file that doesn't read holds every claude until it does (`llm::held_for`).
 
 use std::sync::mpsc::{Receiver, channel};
 
@@ -90,6 +90,29 @@ fn no_claude_starts_until_the_config_reads() {
     assert!(c.running() && !c.held, "started once it reads");
     assert!(rx.try_iter().any(|l| l.contains("hello")), "the message went");
     assert!(!screen(&mut ed, 120, 34).contains("no claude until"), "nothing said once it reads");
+}
+
+/// Agents beside Claude, step 4, C.2: on a config whose agent can chat and nothing else (the stand-in's ACP row, as
+/// agy's will be), `space i` and a commit draft are refused in their words — nothing started, the chat's own claude
+/// told nothing — and the chat's start isn't held; the config unread is said first.
+#[test]
+fn space_i_and_a_draft_are_held_on_a_row_that_can_only_chat() {
+    let mut config = reads();
+    config.editor.llm.row = Some(&crate::agent::STAND_IN);
+    let (mut ed, rx) = editor(config);
+    feed(&mut ed, "<space>imake it shorter<ret>");
+    assert_eq!(last_error(&ed), "not yet with stand-in — space i runs on Claude's sessions only");
+    assert!(ed.workspace.claude.ask.is_none() && ed.workspace.claude.review.is_none(), "no ask started");
+    let doc = ed.doc().id;
+    let drafted = crate::llm::draft(&mut ed, doc, "draft", "a commit message", 0, 0);
+    assert_eq!(drafted, Err("not yet with stand-in — a commit draft runs on Claude's sessions only".into()));
+    assert_eq!(crate::llm::held_for(&ed, crate::agent::Role::Chat), None, "the chat's start isn't held");
+    assert_eq!(rx.try_iter().count(), 0, "nothing reached a claude");
+    // (a config that doesn't read is said before the row's hold)
+    let (broken, warnings) = parse(BROKEN);
+    ed.reload_config(broken, warnings);
+    let held = crate::llm::held_for(&ed, crate::agent::Role::Ask).unwrap_or_default();
+    assert!(held.starts_with("no claude until your config reads"), "{held}");
 }
 
 /// A reload that doesn't read: said as an error toast with the hold, once; a claude already running goes on (its

@@ -940,8 +940,8 @@ fn launch(ed: &mut Editor, i: usize) {
     // Who pays: `llm.reviewer-billing`, else its session's (`billing.rs`)
     let cred = crate::agent::args(&start)
         .and_then(|_| ed.credential(ed.reviewer_billing(), crate::billing::Role::Reviewer));
-    // (no claude while the config doesn't read — `llm::held`: those waiting end with it, said)
-    let cred = match llm::held(ed) {
+    // (no claude while the config doesn't read — `llm::held_for`: those waiting end with it, said)
+    let cred = match llm::held_for(ed, crate::agent::Role::Reviewer(role)) {
         Some(why) => Err(why),
         None => cred,
     };

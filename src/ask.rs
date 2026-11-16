@@ -114,7 +114,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     if instruction.is_empty() {
         return Err("usage: :ask <instruction>".into());
     }
-    if let Some(why) = llm::held(ed) {
+    if let Some(why) = llm::held_for(ed, agent::Role::Ask) {
         return Err(why);
     }
     if ed.workspace.claude.review.is_some() || ed.workspace.claude.ask.is_some() {

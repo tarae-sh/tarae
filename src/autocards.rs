@@ -46,6 +46,8 @@ pub const USER_CUT: usize = 1500;
 pub const SAID_CUT: usize = 300;
 /// claude's own cap on one review's spend (`--max-budget-usd`): a backstop, R0's ~$0.0005 a card far under it.
 const MAX_USD: f64 = 0.05;
+/// Its start's role.
+const ROLE: crate::agent::Role = crate::agent::Role::CardReview { max_usd: MAX_USD };
 /// Its usage line in the card's session.
 pub const USAGE: &str = "auto cards";
 /// The week's inputs' folder in the record's (`$state/cards/inputs/`), removed after the week's report.
@@ -246,8 +248,7 @@ pub fn prepare(ed: &Editor, o: &Offer) -> Option<Prepared> {
 /// `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `claude::pump`, the model said by
 /// its config (`agent::command` adds it).
 fn start<'a>(cfg: &'a llm::LlmConfig, policy: &'a str) -> crate::agent::Start<'a> {
-    let role = crate::agent::Role::CardReview { max_usd: MAX_USD };
-    crate::agent::Start { system: Some(policy), ..crate::agent::Start::new(role, cfg) }
+    crate::agent::Start { system: Some(policy), ..crate::agent::Start::new(ROLE, cfg) }
 }
 
 /// Tests: the reviewer's flags, as `start` gives them.
@@ -261,10 +262,18 @@ static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Card `card` landed (inserted, parked, or merged into the one up, its `rev` bumped — `push_offer`): its review
 /// starts, beside it — never delaying it, changing its rank or anything drawn. An older rev's run is dropped, its cost
-/// kept.
+/// kept. Off while the config's agent can't review a card (`agent::row_for`): no review, nothing kept, every card asks —
+/// said once.
 pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
     sweep(ed);
     let Some(p) = p else { return };
+    if crate::agent::row_for(&ed.config.llm, ROLE).is_err() {
+        if !std::mem::replace(&mut ed.auto_cards_off_said, true) {
+            let name = crate::agent::row_of(&ed.config.llm).name;
+            ed.set_warning(format!("not yet with {name} — auto cards are off, every card asks"));
+        }
+        return;
+    }
     let (revs, spent) = match ed.auto_cards.remove(&card) {
         Some(old) => {
             stop(old.pid);
@@ -294,9 +303,10 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
         entry: None,
         late: false,
     };
-    let cred = match (revs > REVS_MAX, llm::held(ed)) {
+    let cred = match (revs > REVS_MAX, llm::held_for(ed, ROLE)) {
         (true, _) => Err("merges"),
-        (_, Some(_)) => Err("config unread"),
+        (_, Some(_)) if llm::config_held(ed).is_some() => Err("config unread"),
+        (_, Some(_)) => Err("held"),
         _ => ed.credential(p.billing, crate::billing::Role::AutoCards).map_err(|_| "billing"),
     };
     let cred = match cred {

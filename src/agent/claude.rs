@@ -201,6 +201,7 @@ pub const CAPS: Caps = Caps {
     billing: true,
     asks: true,
     helpers: true,
+    roles: crate::agent::RoleKind::ALL,
 };
 
 /// Whether a claude that ended saying `err` is started again, and how: one whose last words refuse

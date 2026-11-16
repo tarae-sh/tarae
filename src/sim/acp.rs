@@ -15,10 +15,12 @@
 //! file's text, the card said yes to — went back through the bridge once, and came up as the call's result.
 //!
 //! A second scenario, `an_own_tool_trips_the_session` (step 3's guard 3): the agent runs one of its own tools to its
-//! end (`in_progress`, then `completed`), calls tarae's `read` of the file outside (its card), and the stop key and a
-//! second message of yours come, in any order. After every step: nothing is written to the agent after the trip, nor
-//! sent back through the bridge; the trip is said once in the transcript; once its end lands, no read card is up. At
-//! the end: the chat is idle, the trip said once, and its row held until you quit.
+//! end (`in_progress`, then `completed`), calls tarae's `read` of the file outside (its card), and the stop key, a
+//! second message of yours and `space i` come, in any order — the config's agent the stand-in's row, which is no ask's
+//! (step 4's L1). After every step: nothing is written to the agent after the trip, nor sent back through the bridge;
+//! the trip is said once in the transcript; once its end lands, no read card is up; `space i` started nothing and said
+//! why (the trip's words once its row tripped, the role's before). At the end: the chat is idle, the trip said once,
+//! its row held until you quit, and `space i` held in the trip's words.
 //!
 //! A third, `an_untrusted_projects_agent_waits_for_its_card` (step 3's guard 4 and its watch, L5): an untrusted
 //! project's held files — its own and its repository top's (L-B2) — hold the agent on its gate (`agentgate.rs`), each
@@ -439,6 +441,10 @@ const TRIP_INPUTS: usize = 40;
 /// The inputs after them: what the agent hasn't said, then every event landed and the turn's answer.
 const TRIP_ENDING: usize = 40;
 
+/// What `space i` says on the stand-in's config: before its row tripped (an ACP row is no ask's), and after.
+const ASK_HELD: &str = "not yet with stand-in — space i runs on Claude's sessions only";
+const TRIP_HELD: &str = "no stand-in until you quit — it ran a tool of its own";
+
 /// The trip's words in the chat (the turn's end, or its end's).
 const TRIPPED: &str = "stand-in ran a tool of its own, run_command — stopped: it and everything it started ended. Only \
                        tarae's tools may run; its hook should have refused this.";
@@ -469,6 +475,8 @@ struct Trip {
     tripped_at: Cell<Option<(usize, usize)>>,
     /// The trip's end has landed (its row held), as a check saw.
     end_seen: Cell<bool>,
+    /// What a `space i` did wrong (the next check says it).
+    asked_wrong: RefCell<Option<String>>,
 }
 
 impl Trip {
@@ -501,6 +509,8 @@ fn trip_run(choices: Choices) -> Vec<String> {
     let mut sim = Sim::new(TRIP, choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = project.clone();
+    // (the config's agent the stand-in's: `space i` judges its row — L1)
+    ed.config.llm.row = Some(&crate::agent::STAND_IN);
     let (mut staged, agent) = Staged::new(&project);
     let mut c = crate::chat::Chat::new();
     c.agent = &crate::agent::STAND_IN;
@@ -516,6 +526,7 @@ fn trip_run(choices: Choices) -> Vec<String> {
     }
     let bridge = staged.link();
     assert!(crate::chat::submit(&mut ed, "read the notes outside", None, None), "the turn asked");
+    // (`space i` before anything: held in the role's words — checked by the first check)
     let world = Trip {
         staged: RefCell::new(staged),
         bridge,
@@ -528,7 +539,9 @@ fn trip_run(choices: Choices) -> Vec<String> {
         outside: outside.join("notes.txt"),
         tripped_at: Cell::new(None),
         end_seen: Cell::new(false),
+        asked_wrong: RefCell::new(None),
     };
+    trip_ask(&mut ed, &world);
     let check = |ed: &Editor| trip_held(ed, &world);
     let print = |ed: &Editor| trip_print(ed, &world);
     // (the end: the read and its own tool's run, if not said yet; the read's answer back through the bridge where it
@@ -565,6 +578,9 @@ fn trip_run(choices: Choices) -> Vec<String> {
         format!("the agent's turn over: {reason} · {}", trip_settle(ed, &world))
     };
     sim.walk(&mut ed, TRIP_INPUTS + TRIP_ENDING, step, check, print);
+    // (and once its row tripped, for sure: `space i` held in the trip's words)
+    trip_ask(&mut ed, &world);
+    let asked = world.asked_wrong.borrow_mut().take();
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     let idle = !c.busy();
     let said = c.msgs.iter().filter(|m| m.text == TRIPPED).count();
@@ -586,7 +602,7 @@ fn trip_run(choices: Choices) -> Vec<String> {
         if !held {
             return Err("its row isn't held".into());
         }
-        Ok(())
+        asked.map_or(Ok(()), Err)
     });
     let trace = sim.trace().to_vec();
     drop(sim);
@@ -621,6 +637,43 @@ fn trip_settle(ed: &mut Editor, w: &Trip) -> String {
     format!("settled ({n} moves)")
 }
 
+/// `space i` on the stand-in's config, an instruction typed: no ask started and nothing written to the agent, its hold
+/// said as an error — the trip's words once its row tripped (L3 note 5), the role's before. What went wrong is kept
+/// for the next check.
+fn trip_ask(ed: &mut Editor, w: &Trip) -> String {
+    use crate::key::{Code, Key};
+    w.read_up();
+    let before = w.to_agent.borrow().len();
+    // (the toasts gone, as they fade: an error said before with the same words isn't said again while it's up)
+    ed.toasts.clear();
+    ed.workspace.viewer.keys_to_code();
+    for k in ["space".parse().unwrap(), Key::plain(Code::Char('i'))] {
+        ed.handle_key(k);
+    }
+    // (the line a held ask kept, then this one's)
+    ed.change_draft.clear();
+    ed.handle_key(Key::plain(Code::Char('x')));
+    ed.handle_key("ret".parse().unwrap());
+    w.read_up();
+    let tripped = ed.agents_tripped.contains(&"stand-in");
+    let want = if tripped { TRIP_HELD } else { ASK_HELD };
+    let error = ed.toasts.iter().rfind(|t| t.kind == crate::editor::ToastKind::Error);
+    let said = error.map(|t| t.text.clone()).unwrap_or_default();
+    let wrong = if ed.workspace.claude.ask.is_some() || ed.workspace.claude.review.is_some() {
+        Some("space i started an ask on the stand-in's row".to_string())
+    } else if w.to_agent.borrow().len() != before {
+        Some("space i wrote to the agent".to_string())
+    } else if said != want {
+        Some(format!("space i said {said:?}, not {want:?}"))
+    } else {
+        None
+    };
+    if let Some(wrong) = wrong {
+        w.asked_wrong.borrow_mut().get_or_insert(wrong);
+    }
+    format!("space i (tripped: {tripped})")
+}
+
 /// The agent says its `i`th: its own tool running, then done; the read through the bridge.
 fn trip_say(w: &Trip, i: usize) -> String {
     let mut said = w.said.get();
@@ -650,7 +703,7 @@ fn trip_say(w: &Trip, i: usize) -> String {
 fn trip_input(sim: &mut Sim, ed: &mut Editor, w: &Trip) -> String {
     let c = &mut sim.choices;
     // (by arm: the agent says its next 3, an event lands 4, the wire takes what the chat handed 3, the stop key 1, the
-    // read card answered 2, a second message 1, a frame 1)
+    // read card answered 2, a second message 1 — then space i, which so takes no choice of its own —, a frame 1)
     match c.weighted(&[3, 4, 3, 1, 2, 1, 1]) {
         0 => {
             // (its own tool done only once it ran, and least often: a read has its card, its job and its answer to go
@@ -693,7 +746,7 @@ fn trip_input(sim: &mut Sim, ed: &mut Editor, w: &Trip) -> String {
                 false => "a second message, not sent".into(),
             }
         }
-        5 => "(a second message already)".into(),
+        5 => trip_ask(ed, w),
         _ => {
             crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
             "a frame".into()
@@ -714,6 +767,9 @@ fn trip_held(ed: &Editor, w: &Trip) -> Result<(), String> {
         if let Some(v) = w.back.borrow().get(back..).and_then(|after| after.first()) {
             return Err(format!("sent back through the bridge after the trip: {v}"));
         }
+    }
+    if let Some(wrong) = w.asked_wrong.borrow().clone() {
+        return Err(wrong);
     }
     let c = ed.workspace.claude.chat.as_ref().ok_or("the chat's gone")?;
     let said = c.msgs.iter().filter(|m| m.text == TRIPPED).count();

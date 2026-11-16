@@ -5971,7 +5971,7 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     if !sent {
         // (its claude starting — the project's settings read first, as after `:restart`: the review waits for it,
         // frictions29 #67; it went out as "couldn't reach claude" while the chat said nothing of it)
-        // (or none until the config reads — `llm::held`)
+        // (or none until the config reads — `llm::held_for`)
         if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.starts_later()) {
             if !c.sends.contains(&later()) {
                 c.sends.push(later());

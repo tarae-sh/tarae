@@ -170,11 +170,16 @@ pub struct LlmConfig {
     /// estimate on its card and its start. Off (a shared screen, a recording): none of it; `:usage`, `/cost` and a
     /// board's report, which you ask for, still say it.
     pub cost: bool,
+    /// Tests: the row this config chooses (`agent::row_of`), as step 4's L2 setting will; no setting reaches it.
+    #[cfg(test)]
+    pub row: Option<&'static crate::agent::Row>,
 }
 
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
+            row: None,
             command: crate::agent::CLAUDE.command.into(),
             args: crate::agent::CLAUDE.args.iter().map(|s| s.to_string()).collect(),
             model: None,
@@ -248,45 +253,44 @@ pub fn spawn_failed(command: &str, e: &std::io::Error, whole: bool) -> String {
         .into()
 }
 
-/// The way out of a hold, said wherever it is (`held`).
+/// The way out of a hold, said wherever it is (`held_for`).
 pub const HELD_WAY: &str = "fix it, then :config-reload";
 
-/// Why no claude starts now, or None: a config file that doesn't read (friction #339). tarae runs on what's left of
-/// the config then — its defaults maybe, and the default `llm.command` is the real claude on PATH: a typo would turn a
-/// stand-in, another command or an API-billed setup into a live claude. So every start from the config holds alike —
-/// the chat (a new session's, a continue), `space i`'s, a commit draft, the reviewer, `:claude-update` — until it reads
-/// (`:config-reload`, or the watch's next load); one already running goes on. The file's own words, with its line.
-pub fn held(ed: &Editor) -> Option<String> {
-    if !ed.config_unread.is_empty() {
-        return Some(format!(
-            "no claude until your config reads — {}: {HELD_WAY}",
-            ed.config_unread.join("; ")
-        ));
-    }
-    // (nor one that keeps tools of its own: its reads, edits and runs would go around tarae's — never Claude's)
-    (!crate::agent::row_of(&ed.config.llm).caps.own_tools_off)
-        .then(|| format!("no agent that keeps its own tools starts — choose another: {HELD_WAY}"))
+/// Why nothing the config starts starts now, or None: a config file that doesn't read (friction #339). tarae runs on
+/// what's left of the config then — its defaults maybe, and the default `llm.command` is the real claude on PATH: a typo
+/// would turn a stand-in, another command or an API-billed setup into a live claude. So every start from the config
+/// holds alike — every agent's (`held_for`), `:claude-update` — until it reads (`:config-reload`, or the watch's next
+/// load); one already running goes on. The file's own words, with its line.
+pub fn config_held(ed: &Editor) -> Option<String> {
+    (!ed.config_unread.is_empty())
+        .then(|| format!("no claude until your config reads — {}: {HELD_WAY}", ed.config_unread.join("; ")))
 }
 
-/// `held` for the chat's start: judged by its conversation's agent (`Chat.agent` — a continued conversation's may not
-/// be the config's; the config's where there's no chat), and none that tripped (guard 3, `agent::Ended::Tripped`)
-/// until you quit. (A release build has one agent, the config's Claude: `held`.)
-#[cfg(test)]
-pub fn chat_held(ed: &Editor) -> Option<String> {
-    if !ed.config_unread.is_empty() {
-        return held(ed);
+/// Why `role`'s agent doesn't start now, or None — asked by every start of one, before it starts
+/// (`every_start_passes_through_held_for`): the config unread (`config_held`); a row that tripped (guard 3,
+/// `agent::Ended::Tripped`), until you quit, whatever the role; a row that can't be the role (`agent::row_for`: the
+/// chat's is any row's, the others wait for the second round, said); one that keeps tools of its own. The chat's is
+/// judged by its conversation's agent (`Chat.agent` — a continued conversation's may not be the config's; the
+/// config's where there's no chat), the others by the config's.
+pub fn held_for(ed: &Editor, role: crate::agent::Role) -> Option<String> {
+    if let Some(why) = config_held(ed) {
+        return Some(why);
     }
-    let chat = ed.workspace.claude.chat.as_ref();
+    let chat = ed.workspace.claude.chat.as_ref().filter(|_| matches!(role, crate::agent::Role::Chat));
     let row = chat.map_or_else(|| crate::agent::row_of(&ed.config.llm), |c| c.agent);
+    #[cfg(test)]
     if ed.agents_tripped.contains(&row.name) {
         return Some(format!("no {} until you quit — it ran a tool of its own", row.name));
     }
+    if chat.is_none()
+        && let Err(why) = crate::agent::row_for(&ed.config.llm, role)
+    {
+        return Some(why);
+    }
+    // (nor one that keeps tools of its own: its reads, edits and runs would go around tarae's — never Claude's)
     (!row.caps.own_tools_off)
         .then(|| format!("no agent that keeps its own tools starts — choose another: {HELD_WAY}"))
 }
-
-#[cfg(not(test))]
-pub use self::held as chat_held;
 
 /// A load's warnings as its error toast says them: and, while a file doesn't read, that no claude starts (`held`) — first,
 /// so a toast cut at its third row still says it (a path takes a narrow one's rows).
@@ -796,7 +800,7 @@ pub(crate) fn draft_start(cfg: &LlmConfig) -> crate::agent::Start<'_> {
 /// A draft's answer for `hunk` of `doc_id`: the process, the review waiting for it, the stream into it — a turn
 /// named `draft` in `:usage` and the call-order record.
 fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: Hunk) -> Result<(), String> {
-    if let Some(why) = held(ed) {
+    if let Some(why) = held_for(ed, crate::agent::Role::Draft) {
         return Err(why);
     }
     let what = "draft";

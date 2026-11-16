@@ -355,6 +355,29 @@ fn off_reviews_nothing_and_turning_it_off_writes_whats_held() {
     assert_eq!((&e["reviewer"]["verdict"], &e["reviewer"]["failed"]), (&json!("none"), &json!("off")));
 }
 
+/// Agents beside Claude, step 4, C.2: on a config whose agent can't review a card (the stand-in's ACP row, as agy's
+/// will be), auto cards are off — no review, nothing held or written, every card asks — said once until you quit.
+#[test]
+fn auto_cards_are_off_said_once_on_an_agent_that_cant_review() {
+    let dir = Scratch::new("autocards-held");
+    let (mut ed, told) = shadow(&dir);
+    ed.config.llm.row = Some(&crate::agent::STAND_IN);
+    let said = "not yet with stand-in — auto cards are off, every card asks";
+    let warned = |ed: &Editor| ed.toasts.iter().filter(|t| t.text == said).count();
+    let id = card(&mut ed);
+    assert!(told.try_recv().is_err() && ed.auto_cards.is_empty(), "no review");
+    assert!(ed.offers.iter().any(|o| o.id == id), "the card asks");
+    assert_eq!(warned(&ed), 1, "{:?}", ed.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
+    ed.offer_dismiss();
+    // (its toast gone, as it fades: a card after it says nothing again)
+    ed.toasts.clear();
+    card(&mut ed);
+    assert!(told.try_recv().is_err() && ed.auto_cards.is_empty());
+    assert_eq!(warned(&ed), 0, "said once");
+    ed.offer_dismiss();
+    assert!(record(&dir).iter().all(|e| e["reviewer"].is_null()), "no verdict kept: {:?}", record(&dir));
+}
+
 /// Keys: Claude's read outside the project comes up as its card in the chat, its review started beside it — its cost
 /// arriving changes nothing on screen —, `C-q y` answers it, then the verdict comes: one entry, your `y` and the
 /// verdict in it, `late`.

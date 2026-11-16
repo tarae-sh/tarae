@@ -617,7 +617,7 @@ pub struct Chat {
     pub follow: crate::follow::Follow,
     /// How its next start differs, as its wire asked when the last one ended (`agent::again`) — None: as asked.
     again: Option<crate::agent::Again>,
-    /// Its claude would have started but the config doesn't read (`llm::held`): it starts once it does (`config_read`).
+    /// Its claude would have started but the config doesn't read (`llm::held_for`): it starts once it does (`config_read`).
     pub(crate) held: bool,
     /// A new conversation was asked for (`C-l`, `:chat-new`) — a session brought back doesn't continue its own when
     /// the project's are read.
@@ -1336,7 +1336,7 @@ impl Chat {
     }
 
     /// Its claude starts later, so what's sent waits for it: the project's Claude settings being read (`claudetrust.rs`),
-    /// or none until the config reads (`held`, `llm::held`).
+    /// or none until the config reads (`held`, `llm::held_for`).
     pub(crate) fn starts_later(&self) -> bool {
         self.starting() || (self.held && !self.running())
     }
@@ -1576,8 +1576,8 @@ pub fn restart_process(ed: &mut Editor) {
     if c.state != State::Idle {
         return ed.set_status("claude is answering — s stops it, or wait for the end of its turn");
     }
-    // (one running goes on while the config doesn't read: a new one wouldn't start — `llm::held`)
-    if let Some(why) = llm::chat_held(ed) {
+    // (one running goes on while the config doesn't read: a new one wouldn't start — `llm::held_for`)
+    if let Some(why) = llm::held_for(ed, crate::agent::Role::Chat) {
         return ed.set_error(why);
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
@@ -2615,13 +2615,13 @@ fn ensure_proc(ed: &mut Editor) {
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
     let (web_search, code) = (ed.config.llm.web_search, ed.config.llm.code);
-    // (judged by its conversation's agent: one that tripped is held until you quit — `llm::chat_held`)
-    let held = llm::chat_held(ed).is_some();
+    // (judged by its conversation's agent: one that tripped is held until you quit — `llm::held_for`)
+    let held = llm::held_for(ed, crate::agent::Role::Chat).is_some();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
     }
-    // (none while the config doesn't read — `llm::held`: the chat says why where it would start, and it starts once it
+    // (none while the config doesn't read — `llm::held_for`: the chat says why where it would start, and it starts once it
     // reads, `config_read`)
     c.held = held;
     if c.held {
@@ -3244,7 +3244,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             c.rows.clear();
             // (a refusal for money read in the turn this exit cut off is that turn's alone)
             c.money = None;
-            // Guard 3: it ran a tool of its own, and was stopped — its row held until you quit (`llm::chat_held`), said
+            // Guard 3: it ran a tool of its own, and was stopped — its row held until you quit (`llm::held_for`), said
             // in the transcript once (the turn's end said it, unless no turn of its had begun or your stop's word took
             // its place) and as an error; a message of yours it never began is cut off in its words (as an exit's
             // below, its parent told), never "claude exited"
@@ -3875,7 +3875,7 @@ fn send_from(ed: &mut Editor, slash: bool) {
     // Claude is working: it waits its turn (#23) — said over the input, sent when this turn ends; a second
     // one joins it. So it does while the project's settings are read (`claudetrust.rs` — their card doesn't
     // hold it: claude runs held back meanwhile): sent once it starts — and while no claude starts until the config
-    // reads (`llm::held`, said where it would start)
+    // reads (`llm::held_for`, said where it would start)
     let held = unread && !c.running();
     if (c.busy() || c.starting() || moving || held) && !question.is_empty() {
         // (`/compact` waits alone, as it goes — joined to a message it would be that message's text, never run;
@@ -3951,7 +3951,7 @@ fn send_from(ed: &mut Editor, slash: bool) {
     // never queued, as nothing would send it)
     #[cfg(test)]
     if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.held && c.proc.is_none())
-        && let Some(why) = llm::chat_held(ed)
+        && let Some(why) = llm::held_for(ed, crate::agent::Role::Chat)
     {
         ed.set_status(why);
     }
@@ -6511,7 +6511,7 @@ mod tests {
         assert_eq!(error.as_deref(), Some("stand-in stopped — it ran run_command itself"));
         assert_eq!(ed.agents_tripped, ["stand-in"]);
         let why = "no stand-in until you quit — it ran a tool of its own";
-        assert_eq!(llm::chat_held(&ed).as_deref(), Some(why));
+        assert_eq!(llm::held_for(&ed, crate::agent::Role::Chat).as_deref(), Some(why));
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.input.set("again");
         send_from(&mut ed, true);
@@ -6527,7 +6527,7 @@ mod tests {
         assert!(s.contains("▲ no stand-in until you quit"), "said where it would start:\n{s}");
         // (judged by the chat's row: Claude's conversation starts — §9.1)
         ed.workspace.claude.chat.as_mut().unwrap().agent = &crate::agent::CLAUDE;
-        assert_eq!(llm::chat_held(&ed), None);
+        assert_eq!(llm::held_for(&ed, crate::agent::Role::Chat), None);
         ensure_proc(&mut ed);
         assert!(ed.workspace.claude.chat.as_ref().unwrap().proc.is_some(), "Claude's starts");
         // (you quit and came back: a new tarae holds nothing)

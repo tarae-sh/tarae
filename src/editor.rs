@@ -1400,6 +1400,9 @@ pub struct Editor {
     pub cards_dir: Option<PathBuf>,
     /// Auto cards' reviews whose verdict or answer is still to come, by card id (`autocards.rs`) — in memory only.
     pub auto_cards: std::collections::HashMap<u64, crate::autocards::Pending>,
+    /// Auto cards are off because the config's agent can't review a card (`agent::row_for`), and that's been said:
+    /// said once until you quit (`autocards::review`).
+    pub auto_cards_off_said: bool,
     /// (tests: auto cards' stand-in reviewer — the messages it's told)
     #[cfg(test)]
     pub auto_cards_told: Option<std::sync::mpsc::Sender<String>>,
@@ -1423,7 +1426,7 @@ pub struct Editor {
     #[cfg(test)]
     pub claude_lines: Option<std::sync::mpsc::Sender<String>>,
     /// The agents that tripped (guard 3, `agent::Ended::Tripped`), by their row's name: none starts again until you
-    /// quit (`llm::chat_held`) — one of their sessions running elsewhere goes on, and trips on its own.
+    /// quit (`llm::held_for`) — one of their sessions running elsewhere goes on, and trips on its own.
     #[cfg(test)]
     pub agents_tripped: Vec<&'static str>,
     /// Where an agent's files were held back on their card (guard 4, `agenttrust.rs`), by the answer's place: no agent
@@ -1556,7 +1559,7 @@ pub struct Editor {
     ticking: Option<std::time::Instant>,
     /// Values `:set` at runtime — they win even when the config file is reloaded (the top layer).
     pub overrides: Vec<(String, toml::Value)>,
-    /// The config files that didn't read as last loaded (`Config.unread`): while any, no claude starts (`llm::held`).
+    /// The config files that didn't read as last loaded (`Config.unread`): while any, no claude starts (`llm::held_for`).
     pub config_unread: Vec<String>,
     pub pending: Vec<Key>,
     pub(crate) count: Option<usize>,
@@ -1804,6 +1807,7 @@ impl Editor {
                 crate::config::state_dir().map(|d| d.join(crate::cards::DIR))
             },
             auto_cards: Default::default(),
+            auto_cards_off_said: false,
             #[cfg(test)]
             auto_cards_told: None,
             calls_dir: if cfg!(test) {

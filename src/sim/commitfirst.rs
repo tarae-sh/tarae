@@ -4,7 +4,7 @@
 //! review opened or its end asked in `board` (`space v v`, `space v q` — its bases jobs), a high-risk change looked at
 //! (`]h`, a frame, `space v h`) or taken back by an edit (graded again once its diff is), a commit on main from
 //! outside, `:q` in the commit's message, a frame, the user taking their time. No claude starts: the config holds it
-//! (`llm::held` — a draft asked is said held, the message buffer open).
+//! (`llm::held_for` — a draft asked is said held, the message buffer open).
 //!
 //! After every step: a commit first waits only behind its review's end card, up or parked (#535: never set aside in
 //! silence); a bring's held card says a review is open in its checkout exactly while one is (#535); the review's end

@@ -155,7 +155,7 @@ pub struct Caps {
     /// Its conversation can be compacted (idle compaction, `idlecompact.rs`).
     pub compaction: bool,
     /// It runs with none of its own tools: every read, edit and run is tarae's. None that keeps its own starts
-    /// (`llm::held`).
+    /// (`llm::held_for`).
     pub own_tools_off: bool,
     /// tarae chooses who pays for it (`billing.rs`: a plan's login or an API key) and checks the credential it says it
     /// runs on. One that can't: no credential is asked for it, nor its word checked.
@@ -169,6 +169,9 @@ pub struct Caps {
     /// Haiku). One whose aren't: its chat doesn't list such a tool — a session's every model is its agent's (the
     /// user's rule; step 2's condition 3, `tools::chat_gets`).
     pub helpers: bool,
+    /// The starts it can be, by kind: the chat's always (`every_row_chats`); a role it can't be is held where it would
+    /// start, with its words (`row_for`, `llm::held_for`), and `start` refuses it.
+    pub roles: &'static [RoleKind],
 }
 
 /// An agent tarae can start: data, as a language pack is a row ("agents are rows of data", 2026-11-13).
@@ -183,7 +186,7 @@ pub struct Row {
     /// What it can do, before it runs too.
     pub caps: Caps,
     /// How its own tools go off (guard 1). None: it has none of its own to turn off (Claude: `--tools ""`), or it
-    /// can't — and then an ACP row's `caps.own_tools_off` is false (`every_acp_row_keeps_the_floor`), and `llm::held`
+    /// can't — and then an ACP row's `caps.own_tools_off` is false (`every_acp_row_keeps_the_floor`), and `llm::held_for`
     /// refuses to start it.
     #[cfg(test)]
     pub own_tools: Option<Recipe>,
@@ -276,9 +279,30 @@ pub static STAND_IN: Row = Row {
 /// Every row tarae has: what a kept conversation's name is looked up in (`row_named`).
 static ROWS: &[&Row] = &[&CLAUDE];
 
-/// The row a start from `cfg` runs: Claude's, whatever `cfg` says — no setting names another (step 2).
+/// The row a start from `cfg` runs: Claude's, whatever `cfg` says — no setting names another (step 2); a test's
+/// config may (`LlmConfig.row`).
 pub fn row_of(_cfg: &crate::llm::LlmConfig) -> &'static Row {
+    #[cfg(test)]
+    if let Some(row) = _cfg.row {
+        return row;
+    }
     &CLAUDE
+}
+
+/// The row `role`'s start from `cfg` runs: the config's (`row_of`) where it can be that role (`Caps::roles` — the
+/// chat's, always), else why not, in the words said where it would start (step 4, C.2: the helpers wait for the
+/// second round).
+pub fn row_for(cfg: &crate::llm::LlmConfig, role: Role) -> Result<&'static Row, String> {
+    let row = row_of(cfg);
+    match row.caps.roles.contains(&role.kind()) {
+        true => Ok(row),
+        false => Err(not_for(row, role)),
+    }
+}
+
+/// Why `row` doesn't start as `role`: none of its roles.
+fn not_for(row: &Row, role: Role) -> String {
+    format!("not yet with {} — {} runs on Claude's sessions only", row.name, role.said())
 }
 
 /// The row named `name` (a kept conversation's), or None: no such row here.
@@ -301,6 +325,55 @@ pub enum Role {
     CardReview {
         max_usd: f64,
     },
+}
+
+/// A `Role` without its particulars: what a row's `Caps::roles` names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RoleKind {
+    Chat,
+    Ask,
+    Draft,
+    Reviewer,
+    WebSearch,
+    CardReview,
+}
+
+impl RoleKind {
+    /// Every role: what a row that can be any (Claude's) says.
+    pub const ALL: &[RoleKind] = &[
+        RoleKind::Chat,
+        RoleKind::Ask,
+        RoleKind::Draft,
+        RoleKind::Reviewer,
+        RoleKind::WebSearch,
+        RoleKind::CardReview,
+    ];
+}
+
+impl Role {
+    /// Its kind, as `Caps::roles` names it.
+    pub fn kind(self) -> RoleKind {
+        match self {
+            Role::Chat => RoleKind::Chat,
+            Role::Ask => RoleKind::Ask,
+            Role::Draft => RoleKind::Draft,
+            Role::Reviewer(_) => RoleKind::Reviewer,
+            Role::WebSearch => RoleKind::WebSearch,
+            Role::CardReview { .. } => RoleKind::CardReview,
+        }
+    }
+
+    /// Its name where a hold says it (`row_for`).
+    fn said(self) -> &'static str {
+        match self {
+            Role::Chat => "the chat",
+            Role::Ask => "space i",
+            Role::Draft => "a commit draft",
+            Role::Reviewer(_) => "the reviewer",
+            Role::WebSearch => "the web search",
+            Role::CardReview { .. } => "auto cards' reviewer",
+        }
+    }
 }
 
 /// What a start asks for; its wire says it in its own arguments (`args`).
@@ -333,7 +406,8 @@ pub struct Start<'a> {
 
 impl<'a> Start<'a> {
     /// `role`'s start on `cfg`, on its row (`row_of`): no words of tarae's, no conversation continued, no thinking
-    /// text, no settings.
+    /// text, no settings. Its start asks `llm::held_for` first (`every_start_passes_through_held_for`), which holds a
+    /// role the row can't be (`row_for`); `start` refuses one all the same.
     pub fn new(role: Role, cfg: &'a crate::llm::LlmConfig) -> Start<'a> {
         Start::on(row_of(cfg), role, cfg)
     }
@@ -477,6 +551,10 @@ pub fn start(
     tx: crate::event::Tx,
     route: impl Fn(Event) -> Option<crate::event::Apply> + Send + 'static,
 ) -> Result<Started, SpawnError> {
+    // (a role its row can't be never reaches its wire: the ACP one has the chat's conversation only)
+    if !s.row.caps.roles.contains(&s.role.kind()) {
+        return Err(SpawnError::Role(not_for(s.row, s.role)));
+    }
     match s.row.wire {
         Wire::Claude => {
             let started = spawn(s, at.dir, at.given, at.cred)?;
@@ -509,6 +587,8 @@ pub enum SpawnError {
     Args(String),
     /// Its first lines couldn't be written: it has no input, or stopped reading it.
     Write(std::io::Error),
+    /// Its row can't be its role (`row_for`'s words): a start that skipped `llm::held_for`.
+    Role(String),
 }
 
 impl SpawnError {
@@ -516,7 +596,7 @@ impl SpawnError {
     pub fn said(&self, command: &str, whole: bool) -> String {
         match self {
             SpawnError::Start(e) => crate::llm::spawn_failed(command, e, whole),
-            SpawnError::Billing(why) | SpawnError::Args(why) => why.clone(),
+            SpawnError::Billing(why) | SpawnError::Args(why) | SpawnError::Role(why) => why.clone(),
             SpawnError::Write(e) => format!("{command}: {e}"),
         }
     }
@@ -914,7 +994,7 @@ mod tests {
 
     /// Agents beside Claude, step 3 (plan §1): every row on the ACP wire — `ROWS` and the stand-in's — keeps the
     /// floor: its asks refused, and its own tools off only by a recipe (`acp::CAPS` says off; a row copying it with
-    /// no recipe would pass `llm::held` with nothing turned off).
+    /// no recipe would pass `llm::held_for` with nothing turned off).
     #[test]
     fn every_acp_row_keeps_the_floor() {
         use super::{ROWS, Row, STAND_IN, Wire};
@@ -937,5 +1017,214 @@ mod tests {
         assert_eq!(floor(&row(asks, Some(super::AGY_TOOLS_OFF))), ["its asks read"]);
         let empty = Row { mode: Some(""), ..row(super::acp::CAPS, Some(super::AGY_TOOLS_OFF)) };
         assert_eq!(floor(&empty), ["its mode named empty"]);
+    }
+
+    /// Every role, one of each kind.
+    const ROLES: [super::Role; 6] = [
+        super::Role::Chat,
+        super::Role::Ask,
+        super::Role::Draft,
+        super::Role::Reviewer(crate::reviewer::Role::One),
+        super::Role::WebSearch,
+        super::Role::CardReview { max_usd: 0.05 },
+    ];
+
+    /// Agents beside Claude, step 4, C.2: every row chats — the chat's role takes the config's row, whichever — and
+    /// Claude's can be every role.
+    #[test]
+    fn every_row_chats() {
+        use super::{CLAUDE, ROWS, RoleKind, STAND_IN};
+        for row in ROWS.iter().copied().chain([&STAND_IN]) {
+            assert!(row.caps.roles.contains(&RoleKind::Chat), "{} can't chat", row.name);
+        }
+        assert!(ROLES.iter().all(|r| CLAUDE.caps.roles.contains(&r.kind())));
+        assert_eq!(RoleKind::ALL.len(), ROLES.len(), "each kind once");
+    }
+
+    /// Agents beside Claude, step 4, C.2: a role's start runs the config's row where the row can be that role, else
+    /// it's held in that role's words.
+    #[test]
+    fn a_role_runs_the_configs_row_only_where_it_can_be_it() {
+        use super::{CLAUDE, STAND_IN, row_for};
+        let claude = crate::llm::LlmConfig::default();
+        let stand_in = crate::llm::LlmConfig { row: Some(&STAND_IN), ..claude.clone() };
+        for role in ROLES {
+            assert!(row_for(&claude, role).is_ok_and(|r| std::ptr::eq(r, &CLAUDE)), "{role:?}");
+        }
+        assert!(row_for(&stand_in, super::Role::Chat).is_ok_and(|r| std::ptr::eq(r, &STAND_IN)));
+        let said: Vec<String> = ROLES[1..].iter().map(|&r| row_for(&stand_in, r).unwrap_err()).collect();
+        assert_eq!(
+            said,
+            [
+                "not yet with stand-in — space i runs on Claude's sessions only",
+                "not yet with stand-in — a commit draft runs on Claude's sessions only",
+                "not yet with stand-in — the reviewer runs on Claude's sessions only",
+                "not yet with stand-in — the web search runs on Claude's sessions only",
+                "not yet with stand-in — auto cards' reviewer runs on Claude's sessions only",
+            ]
+        );
+    }
+
+    /// Agents beside Claude, step 4, C.2: `agent::start` refuses a role its row can't be before anything runs — a
+    /// start that skipped `llm::held_for` never reaches the ACP wire, which has only the chat's conversation.
+    #[test]
+    fn a_role_its_row_cant_be_never_reaches_its_wire() {
+        use super::{First, Place, Role, STAND_IN, SpawnError, Start, start};
+        let cfg = crate::llm::LlmConfig { row: Some(&STAND_IN), ..Default::default() };
+        let s = Start::new(Role::Ask, &cfg);
+        assert!(std::ptr::eq(s.row, &STAND_IN));
+        let ed = crate::editor::Editor::new(crate::config::Config::default());
+        let at = Place { dir: &std::env::temp_dir(), given: None, cred: None };
+        let first = First { tools: false, prompt: None };
+        let started = start(&s, at, first, true, ed.events.sender(), |_| None);
+        let Err(SpawnError::Role(why)) = started else { panic!("not refused for its role") };
+        assert_eq!(why, "not yet with stand-in — space i runs on Claude's sessions only");
+    }
+
+    /// Agents beside Claude, step 4, C.2 (L3 note 5): a tripped row holds every start of it until you quit — the
+    /// chat's and each other role's it can be — and no other row's.
+    #[test]
+    fn a_tripped_row_holds_every_start_of_it() {
+        use super::{Caps, RoleKind, Row, Wire};
+        static EVERY: Row = Row {
+            name: "every",
+            wire: Wire::Acp,
+            command: "x",
+            args: &[],
+            caps: Caps { roles: RoleKind::ALL, ..super::acp::CAPS },
+            own_tools: Some(super::AGY_TOOLS_OFF),
+            mode: Some("default"),
+            held: &[],
+        };
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.config.llm.row = Some(&EVERY);
+        let held = |ed: &crate::editor::Editor| ROLES.map(|r| crate::llm::held_for(ed, r));
+        assert_eq!(held(&ed), ROLES.map(|_| None), "a row that can be every role, not tripped");
+        ed.agents_tripped.push(EVERY.name);
+        let why = "no every until you quit — it ran a tool of its own";
+        assert_eq!(held(&ed), ROLES.map(|_| Some(why.to_string())));
+        ed.config.llm.row = None;
+        assert_eq!(held(&ed), ROLES.map(|_| None), "Claude's starts aren't the tripped row's");
+    }
+
+    /// What builds or starts an agent's start: a function holding one asks `llm::held_for` in its own body.
+    const STARTS: &[&str] = &["agent::start(", "Start::new(", "Start::on("];
+
+    /// The functions that build a start and ask `llm::held_for` nowhere in their own body: each builds a role's
+    /// `Start` for the one function that starts it, which asks. None of them starts one. This list only shrinks: a
+    /// builder folded into its start leaves it, none is added.
+    const BUILDERS: &[(&str, &str)] = &[
+        ("agent.rs", "new"),
+        ("ask.rs", "agent_start"),
+        ("autocards.rs", "start"),
+        ("llm.rs", "draft_start"),
+        ("reviewer.rs", "start"),
+        ("web/search.rs", "helper"),
+    ];
+
+    /// The functions of `code` (a file's, literals emptied) holding one of `STARTS` that don't ask `held_for` in their
+    /// own body, by name (`(outside a fn)` for one outside any), each with whether it starts one (`agent::start`).
+    fn unheld(code: &str) -> Vec<(String, bool)> {
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut fns: Vec<(&str, usize, usize)> = Vec::new();
+        for (at, _) in code.match_indices("fn ").filter(|(at, _)| !code[..*at].ends_with(ident)) {
+            let rest = &code[at + 3..];
+            let name = &rest[..rest.find(|c: char| !ident(c)).unwrap_or(rest.len())];
+            // (its body's brace, or a declaration's `;` — neither inside its parameters: `[u8; 4]`)
+            let mut nested = 0usize;
+            let open = rest.char_indices().find(|&(_, c)| {
+                match c {
+                    '(' | '[' => nested += 1,
+                    ')' | ']' => nested = nested.saturating_sub(1),
+                    _ => {}
+                }
+                nested == 0 && (c == '{' || c == ';')
+            });
+            let Some((open, '{')) = open.filter(|_| !name.is_empty()) else { continue };
+            let (start, mut depth) = (at + 3 + open, 0usize);
+            let end = code[start..].char_indices().find_map(|(i, c)| {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => return None,
+                }
+                (depth == 0).then_some(start + i + 1)
+            });
+            fns.push((name, start, end.unwrap_or(code.len())));
+        }
+        // (each name once: `agent::start` is looked for first, so of two of one name the one that starts is said)
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for (at, _) in STARTS.iter().flat_map(|p| code.match_indices(p)) {
+            if code[..at].ends_with(ident) {
+                continue;
+            }
+            let inner = fns.iter().filter(|f| f.1 <= at && at < f.2).max_by_key(|f| f.1);
+            let (name, body) = match inner {
+                Some(&(name, start, end)) => (name, &code[start..end]),
+                None => ("(outside a fn)", ""),
+            };
+            if !body.contains("held_for(") && !out.iter().any(|(n, _)| n == name) {
+                out.push((name.to_string(), body.contains("agent::start(")));
+            }
+        }
+        out
+    }
+
+    /// What `unheld` finds in `codes` that isn't a builder of `BUILDERS` starting nothing, as `file: fn`.
+    fn skipping(codes: &[(String, String)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (key, code) in codes {
+            for (name, starts) in unheld(code) {
+                if starts || !BUILDERS.contains(&(key.as_str(), name.as_str())) {
+                    out.push(format!("{key}: {name}"));
+                }
+            }
+        }
+        out
+    }
+
+    /// Agents beside Claude, step 4, C.2 (L3 note 5): every start of an agent asks `llm::held_for` first — the config
+    /// read, its row not tripped, the role one its row can be — so no start skips the hold once a config can choose a
+    /// row. A function that starts one (`agent::start`) asks in its own body; one that only builds a `Start` is a
+    /// builder of `BUILDERS`, a list that only shrinks.
+    #[test]
+    fn every_start_passes_through_held_for() {
+        assert!(BUILDERS.len() <= 6, "this list only shrinks");
+        let codes = crate::sim::lint::codes();
+        for (file, name) in BUILDERS {
+            let code = codes.iter().find(|(key, _)| key == file).map(|(_, c)| c.as_str());
+            let found = code.is_some_and(|c| unheld(c).iter().any(|(n, _)| n == name));
+            assert!(found, "{file}: {name} builds no start now: take it off");
+        }
+        let skips = skipping(&codes);
+        assert!(skips.is_empty(), "a start that doesn't ask `held_for`: {skips:?}");
+        // (and it sees each: a start that doesn't ask, a builder that starts, a nested one, one outside any function)
+        let code = |key: &str, c: &str| (key.to_string(), c.to_string());
+        let made_up = [
+            code("ask.rs", "fn start(ed: &mut Editor) { agent::start(&s, at, first, true, tx, route); }"),
+            code(
+                "term.rs",
+                "fn go(ed: &Editor) { if llm::held_for(ed, R).is_some() { return; } agent::start(&s); }",
+            ),
+            code("llm.rs", "fn draft_start(cfg: &C) -> R { crate::agent::start(&Start::new(R, cfg)) }"),
+            code(
+                "web/search.rs",
+                "fn helper(cfg: &C) -> Start<'_> { Start { system: None, ..Start::new(R, cfg) } }",
+            ),
+            code("x.rs", "fn outer() { held_for(ed, R); fn inner() { let s = Start::on(row, R, cfg); } }"),
+            code("y.rs", "const S: u8 = agent::start(&s);"),
+            code("z.rs", "fn wants() { myagent::start(&s); }"),
+            code("w.rs", "fn four(a: [u8; 4]) { agent::start(&s); }"),
+            code("reviewer.rs", "fn start() -> S { Start::new(R, c) } fn start() { agent::start(&s); }"),
+        ];
+        let found = [
+            "ask.rs: start",
+            "llm.rs: draft_start",
+            "x.rs: inner",
+            "y.rs: (outside a fn)",
+            "w.rs: four",
+            "reviewer.rs: start",
+        ];
+        assert_eq!(skipping(&made_up), found);
     }
 }

@@ -48,9 +48,10 @@ pub const VERSION: u64 = 1;
 /// 4), a compaction on demand, who pays (ACP has no word for it), its permission asks read by tool name (an ask's
 /// name is the agent's own, its title the model's text: every ask refused, condition 1, but one for a tool tarae's
 /// bridge offered — `allowed_ask`, guard 2's ask rule), a helper of Claude's for
-/// its chat's tools (`web_search`'s: a session's every model is its agent's, condition 3). Its own tools off: by its
-/// row's recipe, which a row on these caps must have (`every_acp_row_keeps_the_floor`) — tarae's hook refuses them
-/// (guard 1, `agentgate.rs`).
+/// its chat's tools (`web_search`'s: a session's every model is its agent's, condition 3), any start but the chat's
+/// (`space i`, a draft, the reviewers, the web search's helper: held, `row_for` — step 4, C.2). Its own tools off: by
+/// its row's recipe, which a row on these caps must have (`every_acp_row_keeps_the_floor`) — tarae's hook refuses
+/// them (guard 1, `agentgate.rs`).
 pub const CAPS: Caps = Caps {
     interrupt: true,
     resume: true,
@@ -66,6 +67,7 @@ pub const CAPS: Caps = Caps {
     billing: false,
     asks: false,
     helpers: false,
+    roles: &[crate::agent::RoleKind::Chat],
 };
 
 /// The prefix of tarae's own tools as agy names them in its `tool_call`s (`mcp_<server>_<tool>`): the bridge tells

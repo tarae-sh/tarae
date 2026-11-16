@@ -1173,11 +1173,14 @@ mod tests {
 
     /// Second review 1: a test-only declaration (`#[cfg(test)] mod compat;`) hides nothing after it — what a
     /// non-test build compiles is counted to the file's end — and a test-only item of any form isn't counted (a
-    /// module, a function, a field, a statement), nor comments and literals (a `}` in one doesn't end an item).
+    /// module, a function, a field, a statement), nor comments and literals (a `}` in one doesn't end an item); a
+    /// `,` at an item's top level ends a field, never a function's return type or an `impl`'s generics.
     #[test]
     fn the_lint_counts_what_a_non_test_build_compiles() {
         let main = "mod a;\n#[cfg(test)]\nmod compat;\nfn f() { let t = Instant::now(); }\n\
                     #[cfg(test)]\nfn helper() { Instant::now(); }\n\
+                    #[cfg(test)]\npub fn pair(\n    a: u8,\n) -> Result<(u8, u8), String> { Instant::now(); }\n\
+                    #[cfg(test)]\nimpl<A, B> T for (A, B) { fn t() { Instant::now(); } }\n\
                     struct S {\n    #[cfg(test)]\n    t: Instant,\n    u: u8\n}\n\
                     fn g() {\n    #[cfg(test)]\n    let _ = Instant::now();\n    // Instant::now()\n    \
                     let s = \"Instant::now()\";\n    let r = r#\"Instant::now() \"#;\n    SystemTime::now();\n}\n\
@@ -1261,6 +1264,17 @@ pub mod lint {
     /// tarae's code as a non-test build compiles it, literals kept (comments and test-only items and files
     /// out): each file's key (`keyed`) and its text — for checks of the words it says.
     pub fn sources() -> Vec<(String, String)> {
+        built(|s| s.decls)
+    }
+
+    /// tarae's code as a non-test build compiles it, literals emptied (comments and test-only items and files out):
+    /// each file's key (`keyed`) and its code — for checks of its shape, which a `"}"` in a literal would fool.
+    pub fn codes() -> Vec<(String, String)> {
+        built(|s| s.code)
+    }
+
+    /// What a non-test build compiles of each file, as `take` takes it from its `Split`, by the file's key.
+    fn built(take: fn(Split) -> String) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for (rel, files) in trees() {
             let split: BTreeMap<&str, Split> = files.iter().map(|(p, t)| (p.as_str(), split(t))).collect();
@@ -1269,7 +1283,7 @@ pub mod lint {
                 split
                     .into_iter()
                     .filter(|(p, _)| !tests.contains(*p))
-                    .map(|(p, s)| (keyed(&rel, p), s.decls)),
+                    .map(|(p, s)| (keyed(&rel, p), take(s))),
             );
         }
         out
@@ -1430,14 +1444,20 @@ pub mod lint {
         at.starts_with("#[cfg(test") || at.starts_with("#[cfg(all(test")
     }
 
+    /// The words that make a test-only item one that a `,` doesn't end (a function's `-> Result<(A, B), E>`, an
+    /// `impl<A, B>`): it's no field.
+    const DECLARES: &[&str] =
+        &["fn", "impl", "struct", "enum", "union", "trait", "type", "mod", "use", "static", "const", "let"];
+
     /// `text` split (`Split`). A test-only item is whatever follows its attribute up to its end, whatever it is:
     /// a module or function (its block), a declaration or statement (its `;`), a field (its `,`, or the block
     /// around it closing).
     fn split(text: &str) -> Split {
         let mut s =
             Split { whole: text.lines().any(|l| l.trim().starts_with("#![cfg(test")), ..Split::default() };
-        // (in a test-only item: its bracket depth)
+        // (in a test-only item: its bracket depth; whether it's a declaration, and the word at its top level so far)
         let mut item: Option<i32> = None;
+        let (mut declares, mut word) = (false, String::new());
         let (mut i, mut prev) = (0, ' ');
         while i < text.len() {
             let rest = &text[i..];
@@ -1457,17 +1477,23 @@ pub mod lint {
             (i, prev) = (i + c.len_utf8(), c);
             if item.is_none() && cfg_test(rest) {
                 item = Some(0);
+                (declares, word) = (false, String::new());
             }
             if let Some(depth) = item {
                 // (the block around it closes: it ended unterminated — a last field)
                 if !(c == '}' && depth == 0) {
                     s.tests.push(c);
+                    match c.is_alphanumeric() || c == '_' {
+                        true if depth == 0 => word.push(c),
+                        _ => declares |= DECLARES.contains(&std::mem::take(&mut word).as_str()),
+                    }
                     item = match c {
                         '(' | '[' | '{' => Some(depth + 1),
                         ')' | ']' => Some(depth - 1),
                         '}' if depth == 1 => None,
                         '}' => Some(depth - 1),
-                        ';' | ',' if depth == 0 => None,
+                        ';' if depth == 0 => None,
+                        ',' if depth == 0 && !declares => None,
                         _ => Some(depth),
                     };
                     continue;

@@ -388,7 +388,7 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
         ed.workspace.claude.searches_queued.push_back(Ask { call, query, guarded: false });
         return Ok(());
     }
-    if let Some(why) = llm::held(ed) {
+    if let Some(why) = llm::held_for(ed, crate::agent::Role::WebSearch) {
         return Err(why);
     }
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::WebSearch)?;
