@@ -158,17 +158,32 @@ pub(crate) fn hold(p: Pic) -> Option<u64> {
 /// What painting laid (`Plan::paint`): the steps painted of the pictures' all, and each one's run (frames, from its first
 /// stroke to its rest); the frames of each of the sweep's seven, of the three back, of the lift, of the rest (`draw-in`,
 /// the turn's too) and of `swing-1` turning; how many times a picture of the rhythm stood fewer frames than its hold (a
-/// surprise, stretch or swing over it can cut one).
+/// surprise, stretch or swing over it can cut one); and each sweep across the tablet as shown (`Sweep`): the brush's
+/// sound, a stroke a sweep (`cut::brushing`).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Painted {
     pub(crate) steps: (usize, usize),
     pub(crate) runs: Vec<(u64, u64)>,
+    pub(crate) sweeps: Vec<Sweep>,
     pub(crate) sweep: [usize; Pic::SWEEPS as usize],
     pub(crate) back: [usize; Pic::RETURNS as usize],
     pub(crate) lift: usize,
     pub(crate) rest: usize,
     pub(crate) turns: usize,
     pub(crate) under: usize,
+}
+
+/// A sweep across the tablet as shown: its first frame (a `sweep-1` the frame before isn't across from), how many frames
+/// the brush is on the tablet (`sweep-1` … `-7`) — up to its way back in the air, its rest or whatever stands over
+/// it —, and which it is: its picture, its step and its place among that step's sweeps (from 0) — the brush's sound's
+/// seed, the same sweep the same sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Sweep {
+    pub(crate) at: u64,
+    pub(crate) frames: u64,
+    pub(crate) picture: usize,
+    pub(crate) step: usize,
+    pub(crate) nth: usize,
 }
 
 /// The fast-forward holds (frames, from–to, in order): each run of frames shown past `KEYS_MAX_SPEED` — runs with only
@@ -969,7 +984,9 @@ impl Plan {
             lay[..at(a + (crossed - a) / 2)].fill(Pic::Swing(0));
             lay[at(b + (out - b) / 2)..].fill(Pic::Swing(0));
             let first = Program::time_of(a);
-            for (s, &start) in pic.steps.iter().zip(&pic.starts()) {
+            // (each step's run, by its step)
+            let mut stepped: Vec<(usize, u64, u64)> = Vec::new();
+            for (si, (s, &start)) in pic.steps.iter().zip(&pic.starts()).enumerate() {
                 painted.steps.1 += 1;
                 let from = s.strokes.iter().map(|x| x.at).min();
                 let to = s.strokes.iter().map(|x| x.at + x.ms).max();
@@ -982,6 +999,7 @@ impl Plan {
                 lay[at(s0)..at(e)].copy_from_slice(&run);
                 painted.steps.0 += 1;
                 painted.runs.push((s0, e));
+                stepped.push((si, s0, e));
             }
             for (j, &l) in lay.iter().enumerate() {
                 let k = a as usize + j;
@@ -995,6 +1013,24 @@ impl Plan {
                     Pic::DrawLift => painted.lift += 1,
                     Pic::DrawIn => painted.rest += 1,
                     _ => painted.turns += 1,
+                }
+            }
+            // (each sweep as shown: from a `sweep-1` the frame before isn't across, as long as the brush is on the tablet)
+            let across = |k: u64| matches!(self.pics.get(k as usize), Some(Some(Pic::Sweep(_))));
+            for &(step, s0, e) in &stepped {
+                let (mut k, mut nth) = (s0, 0);
+                while k < e {
+                    let starts = self.pics.get(k as usize) == Some(&Some(Pic::Sweep(0)))
+                        && !k.checked_sub(1).is_some_and(across);
+                    let n = match starts {
+                        true => (k..e).take_while(|&j| across(j)).count() as u64,
+                        false => 0,
+                    };
+                    if n > 0 {
+                        painted.sweeps.push(Sweep { at: k, frames: n, picture: i, step, nth });
+                        nth += 1;
+                    }
+                    k += n.max(1);
                 }
             }
         }

@@ -417,7 +417,7 @@ impl Rng {
     }
 
     /// In [0, 1).
-    fn f(&mut self) -> f64 {
+    pub(crate) fn f(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
 
@@ -426,13 +426,13 @@ impl Rng {
     }
 
     /// Near-Gaussian, unit variance: four uniforms summed (a filter takes the rest of the way).
-    fn gauss(&mut self) -> f64 {
+    pub(crate) fn gauss(&mut self) -> f64 {
         (self.f() + self.f() + self.f() + self.f() - 2.0) * 3f64.sqrt()
     }
 }
 
 #[derive(Clone, Copy)]
-enum Shape {
+pub(crate) enum Shape {
     LowPass,
     HighPass,
     /// Its peak at 0 dB.
@@ -443,14 +443,14 @@ enum Shape {
 
 /// A second-order section (the Audio EQ Cookbook's), transposed direct form II.
 #[derive(Clone, Copy)]
-struct Biquad {
+pub(crate) struct Biquad {
     b: [f64; 3],
     a: [f64; 2],
     z: [f64; 2],
 }
 
 impl Biquad {
-    fn new(shape: Shape, f: f64, q: f64, db: f64) -> Biquad {
+    pub(crate) fn new(shape: Shape, f: f64, q: f64, db: f64) -> Biquad {
         let w = std::f64::consts::TAU * f / R;
         let (cw, alpha, a) = (w.cos(), w.sin() / (2.0 * q), 10f64.powf(db / 40.0));
         let [b0, b1, b2, a0, a1, a2] = match shape {
@@ -479,7 +479,7 @@ impl Biquad {
         Biquad { b: [b0 / a0, b1 / a0, b2 / a0], a: [a1 / a0, a2 / a0], z: [0.0; 2] }
     }
 
-    fn run(&mut self, x: f64) -> f64 {
+    pub(crate) fn run(&mut self, x: f64) -> f64 {
         let y = self.b[0] * x + self.z[0];
         self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
         self.z[1] = self.b[2] * x - self.a[1] * y;
@@ -496,7 +496,7 @@ fn through(sections: &mut [Biquad], mut x: f64) -> f64 {
 }
 
 /// A fourth-order Butterworth high-pass: two sections.
-fn high_pass(f: f64) -> [Biquad; 2] {
+pub(crate) fn high_pass(f: f64) -> [Biquad; 2] {
     [Biquad::new(Shape::HighPass, f, 0.541, 0.0), Biquad::new(Shape::HighPass, f, 1.307, 0.0)]
 }
 

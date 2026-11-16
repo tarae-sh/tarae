@@ -114,6 +114,8 @@
 //! [sound]                                 # the mix by distance (LU; each left out: its constant, `sound.rs`)
 //! under = 0                               # the bed under the keys' own loudness where they may sound
 //! over = 6                                # the bed where it leads, over that: the swing
+//! brush = "dry"                           # a stroke under each sweep of the character's painting: dry, damp,
+//!                                         # ink or none (`brushing.rs`; left out: none)
 //! ```
 //!
 //! A time in the take: `start`, `end`, a clock (`1:02:03.5`, `37:12`), a length from the start (`72.5s`), or a landmark
@@ -141,6 +143,7 @@ use crate::camera;
 use crate::scenes::docshots::Bg;
 use crate::video::{self, FPS};
 
+mod brushing;
 mod check;
 mod draw;
 pub(crate) mod init;
@@ -747,6 +750,9 @@ pub(crate) struct Cut {
     pub(crate) masks: Vec<mask::Entry>,
     pub(crate) beds: Vec<Bed>,
     pub(crate) mix: sound::Mix,
+    /// The brush on the tablet's kind, a stroke under each sweep of the character's painting (`[sound] brush`,
+    /// `brushing.rs`); none if none is named.
+    pub(crate) brush: Option<brushing::Kind>,
     pub(crate) end: u64,
     /// The pictures, in the take's order (`picture.rs`).
     pub(crate) pictures: Vec<picture::Picture>,
@@ -977,10 +983,17 @@ impl Cut {
             }
         };
         // (the list as read, but its `[mascot]`, its masks and its route: switching a motion or the pops, hiding a
-        // cell or laying the stations reshuffles no blink)
+        // cell or laying the stations reshuffles no blink — nor does the brush's sound: `[sound] brush` left out, and its
+        // table with it where that emptied it)
         let mut seeded = top.clone();
         for key in ["mascot", "mask", "route", "station"] {
             seeded.remove(key);
+        }
+        if let Some(toml::Value::Table(t)) = seeded.get_mut("sound")
+            && t.remove("brush").is_some()
+            && t.is_empty()
+        {
+            seeded.remove("sound");
         }
         let seed = (toml::to_string(&seeded).unwrap_or_default().bytes())
             .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
@@ -1398,12 +1411,16 @@ impl Cut {
             };
             beds.push(Bed { chapter: n - 1, file, looped, gain, line: e.line });
         }
-        let mut mix = sound::Mix::default();
+        let (mut mix, mut brush) = (sound::Mix::default(), None);
         match top.get("sound") {
             None => {}
             Some(toml::Value::Table(t)) => {
                 let e = Entry { t, line: src.header("sound", None), src: &src, name: "sound" };
-                e.keys(&["under", "over"])?;
+                e.keys(&["under", "over", "brush"])?;
+                if let Some(v) = t.get("brush") {
+                    let bad = || e.err("brush", "sound: brush = \"dry\", \"damp\", \"ink\" or \"none\"");
+                    brush = v.as_str().and_then(brushing::Kind::parse).ok_or_else(bad)?;
+                }
                 let lu = |key: &str, least: f64| -> Result<Option<f32>> {
                     match t.get(key) {
                         None => Ok(None),
@@ -1420,6 +1437,7 @@ impl Cut {
         }
         Ok(Cut {
             mix,
+            brush,
             file: file.to_string(),
             bg,
             mascot,

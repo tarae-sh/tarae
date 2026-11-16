@@ -936,7 +936,8 @@ pub(crate) fn make(
     let heard = match &ffmpeg {
         Some(f) => {
             let skip = intro.as_ref().map_or(0, video::WideIntro::skipped_us);
-            Some(super::sound::make(&prog, dir, &keys, marks, (f, skip), &wav)?)
+            let sweeps = plan.as_ref().and_then(|p| p.painted.as_ref()).map_or(&[][..], |p| &p.sweeps[..]);
+            Some(super::sound::make(&prog, dir, &keys, marks, (f, skip), sweeps, &wav)?)
         }
         None => None,
     };
