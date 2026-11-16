@@ -4628,6 +4628,77 @@ fn the_big_v_is_drawn_in_the_lane_at_the_swings_frames_and_nowhere_else() {
     assert_eq!(reds, [150, 180, 210], "swing-3, -4, -5 each its own picture");
 }
 
+/// Into and out of a picture the board crosses alone and the character is laid after it (`Stage::finish`): mid-crossing,
+/// the ball's top inside the board's rows is the same pose's pixels as outside a crossing — never dimmed by a straight
+/// edge — and the frame the crossing leaves has the board's rows under its own head bare (`Crossings::bare`): no ghost.
+#[test]
+fn the_character_is_laid_after_the_boards_crossing_never_dimmed_nor_a_ghost() {
+    use super::draw::{Crossings, Shown, Stage, Words, cross_px, layout};
+    let fonts = crate::shot::Fonts::load(1).unwrap();
+    let look = video::look(Bg::Dark);
+    let lay = layout(&fonts, (166, 32), video::Scale::HD).unwrap();
+    let c = cut(CUT).unwrap();
+    let p = Program::new(&c);
+    // (two poses: the one it leaves inked from column 60, the one it comes to from column 120, both from row 20)
+    let (from_pose, to_pose) = (Pic::all()[0], Pic::WATCH);
+    assert_ne!(from_pose, to_pose);
+    let mut a = art(60);
+    a.pics[to_pose.index()] = art(120).pics[to_pose.index()].clone();
+    let place = mascot::place(&a, (lay.at.0, lay.pic.0), lay.at.1 + lay.pic.1 - lay.pad, true).unwrap();
+    let (top, w, bytes) = (place.y + 20, lay.dims.0, lay.rule * lay.dims.0 * 3);
+    assert!(top + 4 < lay.rule, "the ball's top over the rule: row {top}, the rule's {}", lay.rule);
+    let stage = Stage::new(lay, &look, &c, Some((a, place)));
+    let mut busy = vt100::Parser::new(32, 166, 0);
+    busy.process("the take's screen, every row\r\n".repeat(31).as_bytes());
+    let render = |s: &vt100::Parser| crate::shot::render_scaled(s.screen(), &fonts, lay.glyph, 1);
+    let (take, board) = (render(&busy), render(&vt100::Parser::new(32, 166, 0)));
+    let f = at_take(&p, 5_000, 0);
+    let mut words = Words::new(&fonts, look.ground, video::Scale::HD);
+    let pops = Pops::default();
+    let none: &[(usize, u64)] = &[];
+    // (the frame before: the take, the character in the pose it leaves, no crossing; its head in the board's rows)
+    let mut before = stage.take_bare(&Shown::Whole(&take), &f, &mut words);
+    let before_bare = before.clone();
+    let mut idle = Crossings::new(Vec::new(), Vec::new());
+    let under = stage.finish(&mut before, (Some(from_pose), &pops, none), None, &mut idle, &mut words);
+    let under = under.expect("a mascot laid: the rows under it kept");
+    let at = |x: usize, y: usize| (y * w + x) * 3;
+    let leaves_only = |y: usize| (place.x + 60..place.x + 120).map(move |x| (x, y));
+    assert!(
+        (top..lay.rule).flat_map(leaves_only).any(|(x, y)| before[at(x, y)] != before_bare[at(x, y)]),
+        "the head it leaves is in the board's rows, where a ghost would show"
+    );
+    // (into the picture at 1 s, the board alone through the ground; a quarter of the way, the take still fading)
+    let into = 1_000_000;
+    let mut x = Crossings::new(vec![(into, true)], Vec::new()).confined(vec![into], bytes);
+    x.at(into - 33_333, None);
+    x.at(into, Some(&before));
+    x.bare(&under);
+    let share = x.at(into + crate::camera::CROSS_MS * 1000 / 4, None);
+    assert!(share.is_some_and(|s| s > 0 && s < 128), "{share:?}: the first half");
+    let mut px = stage.take_bare(&Shown::Whole(&board), &f, &mut words);
+    let to_bare = px.clone();
+    stage.finish(&mut px, (Some(to_pose), &pops, none), share, &mut x, &mut words);
+    // (the board's rows: the two bare boards crossed, the character it comes to laid whole over them — no ghost)
+    let mut want = to_bare.clone();
+    cross_px(&before_bare[..bytes], &mut want[..bytes], look.ground, share.unwrap(), true);
+    let mut ignored = Crossings::new(Vec::new(), Vec::new());
+    stage.finish(&mut want, (Some(to_pose), &pops, none), None, &mut ignored, &mut words);
+    let ghost =
+        (top..lay.rule).flat_map(leaves_only).filter(|&(x, y)| px[at(x, y)] != want[at(x, y)]).count();
+    assert_eq!(ghost, 0, "pixels of the head it left, in the board's rows");
+    // (the ball's top, in the board's rows: the pose's pixels outside a crossing, never dimmed)
+    let outside = stage.take_frame(&Shown::Whole(&board), &f, (Some(to_pose), &pops, none), &mut words);
+    let ball = (top..lay.rule).flat_map(|y| (place.x + 120..place.x + mascot::BOX.0).map(move |x| (x, y)));
+    let dimmed = ball.filter(|&(x, y)| px[at(x, y)..][..3] != outside[at(x, y)..][..3]).count();
+    assert_eq!(dimmed, 0, "pixels of the ball's top changed by the crossing");
+    assert_ne!(px[..bytes], outside[..bytes], "the board itself mid-crossing");
+    assert!(
+        px[..bytes] == want[..bytes],
+        "the board's rows: the bare boards crossed, the character over them"
+    );
+}
+
 /// The lane off, or the big pictures not all there: the swing's marked frames are the box's small-V ones — where those
 /// are there, else its usual frames; never an error.
 #[test]

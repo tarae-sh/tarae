@@ -168,6 +168,15 @@ pub(crate) fn wide_window(t: Region, (cols, rows): (u16, u16)) -> Region {
     Region { x, y, w, h }
 }
 
+/// The frame in force in the frames' loop: what it looks like, its picture (none where it wasn't needed yet), the frame
+/// it was first met on, and the board's rows under its mascot, bare.
+type Last = (Key, Option<Vec<u8>>, Frame, Option<Under>);
+
+/// A frame's mascot as `Stage::finish` lays it (`key`'s pose and pops up, of `pops`): none on a card.
+fn mascot_of<'a>(key: &'a Key, pops: &'a Pops) -> (Option<Pic>, &'a Pops, &'a [(usize, u64)]) {
+    (key.pose.filter(|_| key.card.is_none()), pops, &key.pops)
+}
+
 /// What a frame looks like, to draw it only where it changed: its card, the clock's second, the band's marks and
 /// caption, the screen (whose replay, how many screens in), the camera's region, a crossing's share.
 #[derive(PartialEq)]
@@ -433,7 +442,9 @@ impl<'a> Stage<'a> {
     }
 
     /// The take's frame `f`: the screen as `screen` shows it (`shown`), the band's rule (a line `scale` px thick), the
-    /// band, the mascot in `pose` and the key pops up (`up`: of `pops`, with their age in frames) in its lane.
+    /// band, the mascot in `pose` and the key pops up (`up`: of `pops`, with their age in frames) in its lane — no
+    /// crossing over it (the frames' loop: `take_bare`, then `finish`).
+    #[cfg(test)]
     pub(crate) fn take_frame(
         &self,
         screen: &Shown,
@@ -441,36 +452,54 @@ impl<'a> Stage<'a> {
         mascot: (Option<Pic>, &Pops, &[(usize, u64)]),
         words: &mut Words,
     ) -> Vec<u8> {
+        let mut px = self.take_bare(screen, f, words);
+        self.lay_mascot(&mut px, mascot, words);
+        px
+    }
+
+    /// The take's frame `f` without its mascot: what `finish` lays it on, after the crossing in force or before.
+    pub(crate) fn take_bare(&self, screen: &Shown, f: &Frame, words: &mut Words) -> Vec<u8> {
         let (w, h) = self.lay.dims;
         let mut px = self.look.ground.repeat(w * h);
         self.lay_screen(&mut px, screen, 0..self.lay.pic.1);
-        self.dress(px, f, mascot, words)
+        self.dress(px, f, words)
     }
 
-    /// A picture's frame `f`: the `board` (the frame above the band, `picture.rs`) in place of the screen, the rest as a
-    /// take's frame has it.
-    pub(crate) fn picture_frame(
-        &self,
-        board: &[u8],
-        f: &Frame,
-        mascot: (Option<Pic>, &Pops, &[(usize, u64)]),
-        words: &mut Words,
-    ) -> Vec<u8> {
+    /// A picture's frame `f` without its mascot: the `board` (the frame above the band, `picture.rs`) in place of the
+    /// screen, the rest as a take's frame has it.
+    pub(crate) fn picture_bare(&self, board: &[u8], f: &Frame, words: &mut Words) -> Vec<u8> {
         let (w, h) = self.lay.dims;
         let mut px = self.look.ground.repeat(w * h);
         px[..board.len().min(self.lay.rule * w * 3)]
             .copy_from_slice(&board[..board.len().min(self.lay.rule * w * 3)]);
-        self.dress(px, f, mascot, words)
+        self.dress(px, f, words)
     }
 
-    /// What's laid over a frame's board `px`: the words over where it ends, the band's rule, the band, the mascot.
-    fn dress(
+    /// A bare frame `px` finished: the crossing in force over it (`share` of the way through, `crossings`') and the
+    /// mascot (`mascot`, as `take_frame` has it) — after the crossing where it crosses the board alone, into and out of a
+    /// picture: the character isn't the board's, its head over the rule never dimmed by a straight edge; else before it,
+    /// crossed with the frame whole (into a card, which has none). What the mascot covers of the board's rows, bare —
+    /// where no crossing was laid under it — for a crossing of the board from this frame (`Crossings::bare`).
+    pub(crate) fn finish(
         &self,
-        mut px: Vec<u8>,
-        f: &Frame,
-        (pose, pops, up): (Option<Pic>, &Pops, &[(usize, u64)]),
+        px: &mut [u8],
+        mascot: (Option<Pic>, &Pops, &[(usize, u64)]),
+        share: Option<u8>,
+        crossings: &mut Crossings,
         words: &mut Words,
-    ) -> Vec<u8> {
+    ) -> Option<Under> {
+        let ground = self.look.ground;
+        if crossings.confines(share) {
+            crossings.over(px, ground, share);
+            return self.lay_mascot(px, mascot, words);
+        }
+        let under = self.lay_mascot(px, mascot, words);
+        crossings.over(px, ground, share);
+        under.filter(|_| share.is_none())
+    }
+
+    /// What's laid over a frame's board `px`: the words over where it ends, the band's rule, the band.
+    fn dress(&self, mut px: Vec<u8>, f: &Frame, words: &mut Words) -> Vec<u8> {
         let lay = &self.lay;
         let w = lay.dims.0;
         let x0 = lay.at.0;
@@ -504,12 +533,29 @@ impl<'a> Stage<'a> {
             );
         }
         band(&mut px, lay, f, self.cut, (x0, self.marks_right), self.look, words);
+        px
+    }
+
+    /// The mascot in `pose` over a frame `px`, the swing's V and the key pops up (`up`: of `pops`, with their age in
+    /// frames) in its lane over it — the pops over its paw, so laid with it. What it covers of the board's rows (from
+    /// its box's top), as they were before; none where no mascot is laid.
+    pub(crate) fn lay_mascot(
+        &self,
+        px: &mut [u8],
+        (pose, pops, up): (Option<Pic>, &Pops, &[(usize, u64)]),
+        words: &mut Words,
+    ) -> Option<Under> {
+        let lay = &self.lay;
+        let w = lay.dims.0;
+        let mut under = None;
         if let (Some((art, place)), Some(p)) = (&self.mascot, pose) {
             let t = Instant::now();
-            video::stamp(&mut px, lay.dims, art.picture(p), (place.x, place.y));
+            let rows = (place.y.min(lay.rule) * w * 3)..(lay.rule * w * 3);
+            under = Some(Under { at: rows.start, bytes: px[rows].to_vec() });
+            video::stamp(px, lay.dims, art.picture(p), (place.x, place.y));
             // (the swing's big V over the lane, against the box, where the swing draws it: no pop is up then)
             if let (Some((left, _)), Some(v)) = (place.lane, art.mark(p)) {
-                video::stamp(&mut px, lay.dims, v, (left, place.y));
+                video::stamp(px, lay.dims, v, (left, place.y));
             }
             if let Some((left, right)) = place.lane {
                 let s = lay.scale;
@@ -532,7 +578,7 @@ impl<'a> Stage<'a> {
                     let mid =
                         place.y + s.px(mascot::PAWS) - (rise * s.px(pops::RISE) as f32).round() as usize;
                     pops::ink(
-                        &mut px,
+                        px,
                         lay.dims,
                         word,
                         (x, mid.saturating_sub(word.1 / 2)),
@@ -543,8 +589,15 @@ impl<'a> Stage<'a> {
             }
             self.stamping.set(self.stamping.get() + t.elapsed());
         }
-        px
+        under
     }
+}
+
+/// A frame's board rows under its mascot as they were before it was laid, from byte `at` to the board's end: what a
+/// crossing of the board alone leaves from, so the head it had is never a ghost in the board's rows.
+pub(crate) struct Under {
+    at: usize,
+    bytes: Vec<u8>,
 }
 
 /// The take part's whole-screen changes (video µs: each frame whose screen has more than `camera::CROSS` of its cells
@@ -914,16 +967,16 @@ pub(crate) fn make(
     let sheet_fonts = Fonts::load(1)?;
     let mut pics = Pictures::default();
     // (the frame in force: what it looks like, its picture — with `--picks` none where it wasn't needed yet — and the
-    // frame it was first met on, what it's drawn from if it's needed after)
-    let mut last: Option<(Key, Option<Vec<u8>>, Frame)> = None;
+    // frame it was first met on, what it's drawn from if it's needed after; the board's rows under its mascot, bare)
+    let mut last: Option<Last> = None;
     let (mut differ, mut drawn, mut painted, mut wrote) = (0u64, 0u64, 0u64, Ok(()));
     let mut hashes: Vec<(u64, u64, u64)> = Vec::new();
     let mut sheet: Vec<Picture> = Vec::new();
     let mut pages = 0;
     let all = Region::all(size);
     let mut posed: HashMap<Pic, u64> = HashMap::new();
-    // (a frame's picture: the card it is, else the take's screen `s` as the frame shows it — the crossing in force laid
-    // over after; how many screens were drawn for it)
+    // (a frame's picture: the card it is, else the take's screen `s` as the frame shows it, without its mascot — the
+    // crossing in force and the mascot laid after, `finish`; how many screens were drawn for it)
     let paint = |f: &Frame,
                  key: &Key,
                  s: &vt100::Screen,
@@ -932,7 +985,7 @@ pub(crate) fn make(
      -> (Vec<u8>, u64) {
         if let (None, Some(shows)) = (f.card, &f.picture) {
             let board = boards.board(shows);
-            return (stage.picture_frame(&board, f, (key.pose, &pops, &key.pops), words), 0);
+            return (stage.picture_bare(&board, f, words), 0);
         }
         match f.card {
             Some(Card::Intro(ms)) => match &intro {
@@ -945,7 +998,7 @@ pub(crate) fn make(
             None => {
                 let camera = (key.region, drawn_at(f, &glyphs));
                 let (shown, fresh) = stage.shown(pics, (s, key.screen), camera, size, &key.blank, &fonts);
-                (stage.take_frame(&shown, f, (key.pose, &pops, &key.pops), words), fresh)
+                (stage.take_bare(&shown, f, words), fresh)
             }
         }
     };
@@ -956,11 +1009,11 @@ pub(crate) fn make(
         // replays, the crossings still at it)
         if only_picks
             && crossings.begins(v)
-            && let Some((key, held @ None, first)) = last.as_mut()
+            && let Some((key, held @ None, first, under)) = last.as_mut()
         {
             let s = if first.ends { ends.screen() } else { replay.screen() };
             let (mut px, fresh) = paint(first, key, s, (&mut pics, &mut boards), &mut words);
-            crossings.over(&mut px, look.ground, key.cross);
+            *under = stage.finish(&mut px, mascot_of(key, &pops), key.cross, &mut crossings, &mut words);
             (drawn, painted) = (drawn + fresh, painted + 1);
             *held = Some(px);
         }
@@ -971,6 +1024,9 @@ pub(crate) fn make(
             r.to(t);
         }
         let share = crossings.at(v, last.as_ref().and_then(|l| l.1.as_deref()));
+        if let Some(under) = last.as_ref().and_then(|l| l.3.as_ref()) {
+            crossings.bare(under);
+        }
         let region = region(&f, &paths, size);
         let screen = match f.ends {
             true => (true, ends.shown),
@@ -1014,21 +1070,21 @@ pub(crate) fn make(
         let needed = !only_picks || picks.contains_key(&k) || crossings.fresh() || still;
         let s = if f.ends { ends.screen() } else { replay.screen() };
         match &mut last {
-            Some((was, held @ None, first)) if *was == key && needed => {
+            Some((was, held @ None, first, under)) if *was == key && needed => {
                 let (mut px, fresh) = paint(first, was, s, (&mut pics, &mut boards), &mut words);
-                crossings.over(&mut px, look.ground, share);
+                *under = stage.finish(&mut px, mascot_of(was, &pops), share, &mut crossings, &mut words);
                 (drawn, painted) = (drawn + fresh, painted + 1);
                 *held = Some(px);
             }
             Some((was, ..)) if *was == key => {}
             _ if needed => {
                 let (mut px, fresh) = paint(&f, &key, s, (&mut pics, &mut boards), &mut words);
-                crossings.over(&mut px, look.ground, share);
+                let under = stage.finish(&mut px, mascot_of(&key, &pops), share, &mut crossings, &mut words);
                 (drawn, painted) = (drawn + fresh, painted + 1);
                 differ += u64::from(last.as_ref().is_none_or(|l| l.1.as_ref() != Some(&px)));
-                last = Some((key, Some(px), f));
+                last = Some((key, Some(px), f, under));
             }
-            _ => last = Some((key, None, f)),
+            _ => last = Some((key, None, f, None)),
         }
         let px = last.as_ref().and_then(|l| l.1.as_deref());
         if let (Some(w), Some(px)) = (stdin.as_mut(), px)
@@ -1584,12 +1640,31 @@ impl Crossings {
         share.filter(|&a| a < 255)
     }
 
+    /// Whether the crossing in force (`share` of the way through, `at`'s) crosses the board alone.
+    pub(crate) fn confines(&self, share: Option<u8>) -> bool {
+        share.is_some() && self.cross.is_some() && self.board.2
+    }
+
+    /// The crossing begun at the frame `at` last met, where it crosses the board alone, leaves the frame before with its
+    /// board's rows under the mascot as they were before it was laid (`under`): the character, laid after, isn't the
+    /// board's.
+    pub(crate) fn bare(&mut self, under: &Under) {
+        if let (true, true, Some((from, ..))) = (self.fresh, self.board.2, self.cross.as_mut()) {
+            from[under.at..under.at + under.bytes.len()].copy_from_slice(&under.bytes);
+        }
+    }
+
     /// Frame `px` as drawn, the crossing in force over it, `share` of the way through (`at`'s) — but none where the
-    /// frame it begins on is the picture it leaves: a crossing between two identical pictures draws nothing (take 3's
-    /// final2c at 10:11.7, the take's last screen into itself held: down to the ground and back, the band with it).
+    /// frame it begins on is the picture it leaves (of the board, where it crosses the board alone): a crossing between
+    /// two identical pictures draws nothing (take 3's final2c at 10:11.7, the take's last screen into itself held: down
+    /// to the ground and back, the band with it).
     pub(crate) fn over(&mut self, px: &mut [u8], ground: Rgb, share: Option<u8>) {
         let (Some(p), Some((from, _, through))) = (share, &self.cross) else { return };
-        if self.fresh && from.as_slice() == px {
+        let same = match self.board {
+            (_, bytes, true) if bytes <= px.len() => from[..bytes] == px[..bytes],
+            _ => from.as_slice() == px,
+        };
+        if self.fresh && same {
             self.cross = None;
             return;
         }
