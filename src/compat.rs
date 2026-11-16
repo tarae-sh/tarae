@@ -1273,6 +1273,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/keyfolders.rs", "in fn read: READS.with(|r| r.set(r.get() + 1));", RECORD),
     ("src/sandbox/linux.rs", "in fn confine_in: cant", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: granted", SEAM),
+    ("src/sandbox/linux.rs", "in fn confine_in: marks", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: sealing", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: ways", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: ways_in", SEAM),

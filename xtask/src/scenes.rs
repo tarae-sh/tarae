@@ -8207,6 +8207,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "grants",
     "alsoread",
     "refusedkey",
+    "refusedgit",
     "refusedhost",
     "masked",
     "maskedopen",
@@ -8404,6 +8405,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "grants" => turn.grants()?,
             "alsoread" => turn.also_read()?,
             "refusedkey" => turn.refused_key()?,
+            "refusedgit" => turn.refused_git()?,
             "refusedhost" => turn.refused_host()?,
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
@@ -9467,6 +9469,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.text("\n")?;
         self.call(1, "run", json!({"command": "cat ~/.ssh/id_ed25519"}))?;
         self.words("The key is kept out of my commands.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #609's turn: a write under git's folder by another name (`gitdir: gitdata`) the sandbox refuses.
+    fn refused_git(&mut self) -> io::Result<()> {
+        self.words("I'll add the lint as a pre-commit hook.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "printf 'cargo clippy -q\\n' > gitdata/hooks/pre-commit"}))?;
+        self.words("Git's folder is kept from my commands.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

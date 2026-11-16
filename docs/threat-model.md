@@ -145,6 +145,23 @@ Kept:
   `sandbox::tests::a_packs_names_are_kept_in_a_project_of_another_language` ·
   `sandbox::linux::tests::protected_names_are_found_where_they_are` ·
   `sandbox::linux::tests::a_project_inside_a_writable_place_keeps_its_protected_names`
+- The repository's git folder by another name: the folder a checkout's `.git` file names (`gitdir: gitdata`), its
+  common folder, and where links among a `.git` folder's entries lead (Android `repo`), read when the policy is made,
+  wherever they lie in the project or a folder opened for writing (#609, 2026-11-16). Every folder and link on the way
+  to one is kept from being removed, renamed, replaced or made where it's missing (macOS: each locked by its path,
+  either case; Linux: the folders on the way get no rule of their own). A run's `git commit` there is refused, as in
+  `.git`, and its report names the folder. A link's target is kept even when it's a tracked folder: one rule for what
+  `.git` leads to, where a `core.hooksPath` folder is held by the hooks card instead. The hooks card leaves to the
+  sandbox exactly the hooks folders this rule keeps.
+  test: `sandbox::gitfolders::tests::a_git_folder_a_git_file_names_in_the_project_is_kept_from_runs` ·
+  `sandbox::gitfolders::tests::a_git_folders_links_lead_to_what_is_kept_from_runs` ·
+  `sandbox::gitfolders::tests::a_git_folders_chain_cant_be_swapped_by_a_run` ·
+  `sandbox::gitfolders::tests::a_git_folder_where_the_git_dir_is_the_project_keeps_its_hooks_and_config` ·
+  `hooks::tests::a_hooks_folder_in_a_kept_git_folder_is_the_sandboxs` (shown, macOS/Linux) ·
+  `sandbox::gitfolders::tests::a_git_folders_links_are_followed_to_a_bound_in_name_order` (rule)
+- `llm.sandbox-protect`'s paths: the folders on the way to each can't be removed, renamed or replaced either (macOS
+  kept the path alone until #609: `mv a a2 && ln -s a2 a` put `a/b` in a run's hands).
+  test: `sandbox::gitfolders::tests::a_protected_paths_folders_are_kept_as_a_git_folders_way` (shown, macOS/Linux)
 - Python's bytecode beside its source (`__pycache__`, what your own `pytest` imports) is a protected name: a run's
   Python writes its own under `PYTHONPYCACHEPREFIX` in the run's folder; a virtualenv's is tools' output.
   test: `sandbox::tests::bytecode_beside_its_source_is_kept_and_a_virtualenvs_isnt` ·
@@ -234,6 +251,18 @@ Not kept:
   old time isn't seen.
   test: `snapshot::tests::code_a_run_changed_below_tools_output_is_named` ·
   `tools::tests::what_builds_is_the_checks_and_the_builders`
+- **Where the project itself is git's folder** (`gitdir: .`): only its `hooks` and `config` are kept; `objects/`,
+  `refs/`, `HEAD` and `info/` are written. Keeping the whole folder would refuse every write in the project.
+- **Linux: a folder on the way to a kept git folder or `llm.sandbox-protect` path takes no new files** and keeps the
+  ones it has, as a folder holding a protected name does (Landlock grants around what's kept); writing a file already
+  there works. Tier own's seals spare a folder on the way to one that's there. A folder holding a step not there yet,
+  a link on the way or a kept path not there now pays it on every tier, tier own's too: a mount can't sit on what
+  isn't there. The run's report says why a new file there was refused.
+  test: `sandbox::gitfolders::tests::a_folder_on_a_git_folders_way_says_why_it_takes_no_new_file`
+- **A nested checkout's git folder named by its `.git` file** (`sub/.git` → `sub/gitdata`): only `.git` by name is
+  kept there until #609's second landing. And macOS: a git folder whose way passes `GIT_LOCKS_MAX` (32) paths isn't
+  locked (writes under it are still refused); the run's rules name it. A `.git` folder of more than 256 entries has
+  none of its links followed, said in the rules too.
 - **Names no pack knows.** A tool that runs a file by another name (`Taskfile.yml`, `noxfile.py`,
   `.pre-commit-config.yaml`) is protected only once a pack lists it or you add it to `llm.sandbox-protect`.
 - **What you accept in a review.** A `build.rs` you accept runs at your next build — and rust-analyzer runs it as

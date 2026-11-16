@@ -440,12 +440,17 @@ fn walk_in(p: &Policy, caps: Caps, shared: &dyn Fn(&Path) -> bool) -> KeyFolders
     };
     let mut folders: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let (mut bytes, mut full) = (0, false);
+    // (the ways to git's folders are locked first, in the same op's literals — #609, capped on their own at
+    // `gitfolders::GIT_LOCKS_MAX` — so the keys get what's left of both caps)
+    let gits = p.git.locks();
+    let (git_count, git_bytes) = (gits.len(), gits.iter().map(|g| g.as_os_str().len()).sum::<usize>());
     for (i, k, from) in keys {
         if !full {
             let on_the_way = from.ancestors().take_while(|a| a.starts_with(top(i)));
             let new: Vec<&Path> = on_the_way.filter(|a| !folders.contains(*a)).collect();
             let more: usize = new.iter().map(|f| f.as_os_str().len()).sum();
-            full = folders.len() + new.len() > caps.locks || bytes + more > caps.bytes;
+            full =
+                git_count + folders.len() + new.len() > caps.locks || git_bytes + bytes + more > caps.bytes;
             if !full {
                 bytes += more;
                 folders.extend(new.into_iter().map(Path::to_path_buf));

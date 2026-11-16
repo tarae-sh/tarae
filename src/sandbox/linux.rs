@@ -113,6 +113,10 @@ pub struct Confine {
     pub ptys: Option<Arc<super::ptys::Ptys>>,
     pub made: Arc<Made>,
     pub closed: Vec<PathBuf>,
+    /// The folders that take no new entry for a mark alone (#609: a step not there, a link met, a folder off a kept
+    /// target's way — `gitfolders::shut_by_marks`), not among `closed`: said as those are (`takes_no_new`), nothing
+    /// granted by it — no `REMOVE_DIR`, no `Kept`.
+    pub marked: Vec<PathBuf>,
     /// The folders a run makes files in but can't read them back until its next run — each holds a file named
     /// like a key, or one below it (`grant_around`, 7b).
     pub unread: Vec<PathBuf>,
@@ -171,6 +175,12 @@ impl Confine {
         (self.rules.fd(), &self.covers)
     }
 
+    /// Whether `folder` takes no new entry in its run: one holding a protected name (`closed`) or a mark (`marked`) —
+    /// what the report says a refused new file there by.
+    pub fn takes_no_new(&self, folder: &Path) -> bool {
+        self.closed.iter().chain(&self.marked).any(|f| f == folder)
+    }
+
     /// Tests: the ruleset's descriptor alone, for `Keeper::start` — refused where its keys are hidden by mounts
     /// (started so, they'd be read: `start_confined`).
     #[cfg(test)]
@@ -220,6 +230,7 @@ impl PartialEq for Confine {
             && self.net == other.net
             && self.no_userns == other.no_userns
             && self.closed == other.closed
+            && self.marked == other.marked
             && self.unread == other.unread
             && self.covers == other.covers
             && self.split_why == other.split_why
@@ -2031,7 +2042,27 @@ pub(super) fn confine_in(
         true => make(to_make(&p.root, &found, &crate::packs::made_beside())),
         false => Made::none(),
     };
-    grant(&mut r, &p.root, landlock::ALL, if sealed { &[][..] } else { &found[..] })?;
+    // (#609: on the ways to what's kept, what no grant may open — a step not there, a link met, a folder off its
+    // target's own way — and a kept path not there now: each a hole, so the folder holding it takes no new entry and a
+    // run can't make, swap or move it; sealed or not, as a mount can't sit on what isn't there)
+    let marks: Vec<PathBuf> = p
+        .git
+        .marks
+        .iter()
+        .chain(p.protect.iter().filter(|k| k.symlink_metadata().is_err()))
+        .cloned()
+        .collect();
+    // (the break-once: no marks — a dangling way's missing step made by a run)
+    #[cfg(test)]
+    let marks = match std::env::var_os("TARAE_TEST_NO_GIT_MARKS") {
+        Some(_) => Vec::new(),
+        None => marks,
+    };
+    let root_holes: Vec<PathBuf> = match sealed {
+        true => marks.clone(),
+        false => found.iter().chain(&marks).cloned().collect(),
+    };
+    grant(&mut r, &p.root, landlock::ALL, &root_holes)?;
     // A folder holding a protected name: a folder in it may go once emptied (`cargo clean`, `rm -rf target` —
     // the user's decision, 2026-10-05). Nothing else: no file there is removed (no `REMOVE_FILE`), no entry
     // made (a rename there is a remove and a make — `.git` renamed away), and what's written is granted
@@ -2072,7 +2103,13 @@ pub(super) fn confine_in(
     }
     let shut_unlooked = shut_by(&unlooked, &p.write);
     let protected_in = |place: &Path| {
-        found.iter().chain(&opened_holes).filter(|f| f.starts_with(place)).cloned().collect::<Vec<_>>()
+        found
+            .iter()
+            .chain(&opened_holes)
+            .chain(&marks)
+            .filter(|f| f.starts_with(place))
+            .cloned()
+            .collect::<Vec<_>>()
     };
     if let Some(run) = &p.run {
         grant(&mut r, run.path(), landlock::ALL, &protected_in(run.path()))?;
@@ -2103,6 +2140,15 @@ pub(super) fn confine_in(
         false => Kept::of(&[found.as_slice(), &split_names].concat()),
     };
     crate::sorting::sort(&mut unread);
+    // (the folders a mark alone leaves without a rule of their own: said as the closed ones are — #609)
+    let places: Vec<PathBuf> = std::iter::once(p.root.clone())
+        .chain(p.write.iter().cloned())
+        .chain(p.run.as_ref().map(|r| r.path().to_path_buf()))
+        .collect();
+    let marked: Vec<PathBuf> = super::gitfolders::shut_by_marks(&marks, &places)
+        .into_iter()
+        .filter(|d| !closed.contains(d))
+        .collect();
     Ok(Confine {
         abi,
         audit,
@@ -2113,6 +2159,7 @@ pub(super) fn confine_in(
         ptys: None,
         made: Arc::new(made),
         closed,
+        marked,
         unread,
         covers: Covers { seals, pins, ..covers.unwrap_or_default() },
         split_why,

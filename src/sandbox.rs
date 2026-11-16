@@ -44,6 +44,8 @@ mod movedhome;
 // Landlock's said on Linux)
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod guarantees;
+// (#609: git's folders by other names and the ways to them — read and kept the same on every system)
+pub mod gitfolders;
 #[cfg(all(test, target_os = "linux"))]
 mod handed;
 #[cfg(target_os = "linux")]
@@ -553,7 +555,7 @@ impl Guard {
         let (mut secret, mut services, mut copied) = (Vec::new(), Vec::new(), Vec::new());
         let (mut homes, mut ports, mut keys) = (Vec::new(), Vec::new(), Vec::new());
         let (mut beyond, mut temp_keys, mut locked) = (Vec::new(), Vec::new(), Vec::new());
-        let mut cloned = Vec::new();
+        let (mut cloned, mut gits) = (Vec::new(), Vec::new());
         // (reads refused under a moved home's default place, by home — #521)
         let mut moved: Vec<Vec<String>> = vec![Vec::new(); p.moved_homes.len()];
         let refused_port = &crate::sandboxpack::get().refused_port;
@@ -603,6 +605,16 @@ impl Guard {
                     Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
                     _ => crate::allow::tilde(path),
                 }),
+                // (git's folder by another name, or a path on the way to it: said as `.git` is, naming it; an
+                // `llm.sandbox-protect` entry or the way to one, as a protected name — #609)
+                _ if p.git.holding(path).is_some() => match p.git.holding(path) {
+                    Some((t, true)) => {
+                        git = true;
+                        gits.push(t.to_path_buf());
+                    }
+                    Some((t, false)) => names.push(crate::allow::from_project(&p.root, t)),
+                    None => {}
+                },
                 Ok(rel) if protected_in(&p.root, path) => {
                     match rel.iter().any(|c| c.eq_ignore_ascii_case(".git")) {
                         true => git = true,
@@ -774,11 +786,24 @@ impl Guard {
             );
         }
         if git {
-            s.push_str(
-                "Git's own folder is kept from your commands: committing, staging, switching branches and the \
+            // (in the order they're kept: a place that's git's folder itself says `hooks and config`)
+            let gits: Vec<String> = p
+                .git
+                .git
+                .iter()
+                .filter(|g| gits.contains(*g))
+                .map(|g| crate::allow::from_project(&p.root, g))
+                .collect();
+            let here = match gits.as_slice() {
+                [] => String::new(),
+                [one] => format!(", here {one},"),
+                [rest @ .., last] => format!(", here {} and {last},", rest.join(", ")),
+            };
+            s.push_str(&format!(
+                "Git's own folder{here} is kept from your commands: committing, staging, switching branches and the \
                  like are the user's (their git tab) — ask them, or ask to run it outside the sandbox \
                  (outside_sandbox, with your reason).\n",
-            );
+            ));
         }
         for i in caches {
             s.push_str(&p.caches_said[i].kept());
@@ -1085,6 +1110,8 @@ impl Guard {
                         )
                     })
                     .collect();
+                // (#609: git's folders by other names, and what of them it couldn't lock or look through)
+                let names_where = format!("{names_where}{}", p.git.said(&p.root, p.supervised));
                 format!(
                     "In tarae's sandbox: it could {reads}write only in {project} — not {names}, {names_where} \
                      (your edits change those) — temp folders and the toolchain's own{crates}{net}.{gone}{granted}\
@@ -4934,6 +4961,9 @@ pub struct Env {
     /// `llm.sandbox-write` · `-protect` · `-network` · `-ports` · `-localhost`.
     pub write: Vec<String>,
     pub protect: Vec<String>,
+    /// Git's folders by other names the project, its folders and `write`'s places lead to, and `protect`'s entries,
+    /// each with its way (`gitfolders::found`, #609) — what the policy keeps of them is `gitfolders::git_kept`'s.
+    pub git: gitfolders::Read,
     pub network: bool,
     /// The network closed (`network` off), beyond this machine still goes through tarae's proxy, every host asked
     /// on a card (piece C) — `env_in` sets it; off, nothing goes beyond (tests that build an `Env` by hand).
@@ -5166,6 +5196,7 @@ pub(crate) fn env_with(
         folders_gone: Vec::new(),
         write: llm.sandbox_write.clone(),
         protect: llm.sandbox_protect.clone(),
+        git: Default::default(),
         network: llm.sandbox_network,
         // (set below: the toolchain's own ask goes out nowhere)
         asks_hosts: false,
@@ -5199,6 +5230,7 @@ pub(crate) fn env_with(
         let (asked, own_build, builder) = (named.named, named.own_build, asks.builder);
         env.folders.push(FolderEnv { at, asked, builder, own_build });
     }
+    env.git = git_found(&env);
     (env.dirs, env.asked, env.own_build) = (found.other, found.named, found.own_build);
     env.asks_hosts = !llm.sandbox_network;
     // Its caches, as the packs say them; what it names that no run reads — in home, not home itself nor what
@@ -5221,6 +5253,18 @@ pub(crate) fn env_with(
         }
     }
     (env, above)
+}
+
+/// What `env`'s project, its folders and `llm.sandbox-write`'s places lead to of git's folders, and `llm.sandbox-
+/// protect`'s ways (`gitfolders::found`, #609) — what `env_with` fills `Env.git` with; tests made an `Env` by hand
+/// call it too. Reads the disk (the policy's worker).
+pub(crate) fn git_found(env: &Env) -> gitfolders::Read {
+    let writes = env.write.iter().map(|w| match (w.strip_prefix("~/"), &env.home) {
+        (Some(rest), Some(home)) => profile_path(&home.join(rest)),
+        _ => profile_path(&env.root.join(w)),
+    });
+    let places: Vec<PathBuf> = env.folders.iter().map(|f| f.at.clone()).chain(writes).collect();
+    gitfolders::found(&env.root, &places, &env.protect)
 }
 
 /// The upstream proxy `here`'s environment names, as `setting` takes it (step 5g) — variables set in both cases
@@ -14375,6 +14419,7 @@ mod tests {
         let p = Policy {
             root: root.clone(),
             protect: vec![root.join(".git"), root.join(".tarae.toml")],
+            git: Default::default(),
             write: Vec::new(),
             files: Vec::new(),
             keep: Vec::new(),
@@ -17051,6 +17096,7 @@ mod tests {
             let p = Policy {
                 root: root.clone(),
                 protect: vec![root.join(".git")],
+                git: Default::default(),
                 write: vec!["/private/tmp".into(), user_temp(&profile_path(&std::env::temp_dir()))],
                 files: Vec::new(),
                 keep: Vec::new(),
@@ -17147,6 +17193,7 @@ mod tests {
         let policy = |tag: &str| Policy {
             root: root.clone(),
             protect: Vec::new(),
+            git: Default::default(),
             write: Vec::new(),
             files: Vec::new(),
             keep: Vec::new(),
@@ -17230,6 +17277,7 @@ mod tests {
         let p = Policy {
             root: root.clone(),
             protect: Vec::new(),
+            git: Default::default(),
             write: vec![tmp.clone()],
             files: Vec::new(),
             keep: kept.to_vec(),
@@ -18870,6 +18918,7 @@ mod tests {
         let policy = |network: bool, localhost: bool, ports: Vec<u16>| Policy {
             root: root.clone(),
             protect: Vec::new(),
+            git: Default::default(),
             write: Vec::new(),
             files: Vec::new(),
             keep: Vec::new(),

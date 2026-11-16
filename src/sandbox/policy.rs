@@ -398,8 +398,12 @@ impl KeyView<'_> {
 pub struct Policy {
     /// The project: writable but for `protect` and the names `protected_names` gives.
     pub root: PathBuf,
-    /// Inside `root`, kept as they are (`llm.sandbox-protect`).
+    /// Kept as they are: `llm.sandbox-protect` inside `root`, and git's folders by other names inside it or a folder
+    /// opened for writing, with `llm.sandbox-protect`'s entries as resolved (`git.protect`, #609).
     pub protect: Vec<PathBuf>,
+    /// What it keeps of git's folders and the ways to what it keeps (`gitfolders::git_kept`, #609): the words and
+    /// the hooks card read `git.git`, macOS's profile locks `git.ways`, Linux's grants leave out `git.marks`.
+    pub git: super::gitfolders::GitKept,
     /// Folders writable besides the project (temp, the toolchain's, `llm.sandbox-write`).
     pub write: Vec<PathBuf>,
     /// Of `write`, the folders the user opened (`llm.sandbox-write`, a write grant): below each the protected names
@@ -835,6 +839,21 @@ impl Policy {
         // …and below each folder the user opened for writing, counted from it as the root's are (`opened`)
         for (i, o) in self.opened.iter().enumerate() {
             p.push_str(&deny(&format!("file-write* {}", protected_writes_in(o, &format!("O{i}")))));
+        }
+        // …what's kept as it is (`llm.sandbox-protect`, git's folders by other names — #609) wherever runs write: the
+        // root's rule leaves them out, and this keeps them in a folder opened for writing too
+        let kept: String = (0..self.protect.len()).map(|i| format!(" (subpath (param \"P{i}\"))")).collect();
+        if !kept.is_empty() {
+            p.push_str(&deny(&format!("file-write*{kept}")));
+        }
+        // …and the paths on the way to each, which a run can't remove, rename away, replace or make where one's
+        // missing (#609): srt's `generateMoveBlockingRules`, both ops as srt has them — a step may be empty or not there
+        // yet, so a rename onto it or one made there must be refused too (G33's key lock leaves create out: nothing
+        // renames onto a folder holding a key). As literal parameters, as every path
+        let locks = if self.supervised { Vec::new() } else { self.git.locks() };
+        let locked: String = (0..locks.len()).map(|i| format!(" (literal (param \"GD{i}\"))")).collect();
+        if !locked.is_empty() {
+            p.push_str(&deny(&format!("file-write-unlink file-write-create{locked}")));
         }
         // …the multiplexers' socket folders (they sit inside writable temp ones), cargo's caches
         let keep: String = (0..self.keep.len()).map(|i| format!(" (subpath (param \"K{i}\"))")).collect();
@@ -1536,11 +1555,12 @@ impl Policy {
         false
     }
 
-    /// Linux: whether `folder` is one of the project's that take no new entry (`linux::Confine::closed`).
+    /// Linux: whether `folder` is one of the project's that take no new entry (`linux::Confine::takes_no_new`: one
+    /// holding a protected name, or a mark on a way to what's kept — #609).
     pub(super) fn closed_holds(&self, folder: &Path) -> bool {
         #[cfg(target_os = "linux")]
         if let Some(Ok(c)) = &self.confine {
-            return c.closed.iter().any(|f| f == folder);
+            return c.takes_no_new(folder);
         }
         let _ = folder;
         false
@@ -1578,7 +1598,7 @@ impl Policy {
                     _ => "file-entry-make",
                 };
                 for real in paths_in(line, self.from()).into_iter().chain(named_in(line, self.from())) {
-                    let closed = real.parent().is_some_and(|d| c.closed.iter().any(|f| f == d));
+                    let closed = real.parent().is_some_and(|d| c.takes_no_new(d));
                     let target = real.display().to_string();
                     if closed && self.writes_allow(&real) && !out.iter().any(|d| d.target == target) {
                         out.push(Denial { process: SEEN_IN_OUTPUT.into(), op: op.into(), target });
@@ -1622,6 +1642,9 @@ impl Policy {
         v.extend(spared.enumerate().map(|(i, p)| (format!("KI{i}"), s(p))));
         if self.keys.is_some() && !self.supervised {
             v.extend(self.key_folders.folders.iter().enumerate().map(|(i, f)| (format!("KD{i}"), s(f))));
+        }
+        if !self.supervised {
+            v.extend(self.git.locks().iter().enumerate().map(|(i, f)| (format!("GD{i}"), s(f))));
         }
         let r = &self.reads;
         v.extend(r.home.iter().map(|h| ("HOME".to_string(), s(h))));
@@ -1751,6 +1774,16 @@ impl Policy {
         // project, which isn't, nor `/`)
         let opened: Vec<PathBuf> = user_writes.into_iter().filter(|w| write.contains(w)).collect();
         folders.retain(|f| opened.contains(f));
+        // (#609: git's folders by other names kept where runs write as `.git` is, and the ways to them and to
+        // `llm.sandbox-protect`'s — read on the worker, `Env.git`)
+        let kept_in: Vec<PathBuf> = std::iter::once(root.clone()).chain(opened.iter().cloned()).collect();
+        let writes: Vec<PathBuf> = kept_in.iter().chain(&write).cloned().collect();
+        let git = super::gitfolders::git_kept(&env.git, &kept_in, &writes, super::gitfolders::GIT_LOCKS_MAX);
+        for p in &git.protect {
+            if !protect.contains(p) {
+                protect.push(p.clone());
+            }
+        }
         key_places.extend(opened.iter().cloned());
         // (a read place holding the project stays — a granted ancestor, the main checkout of a nested worktree: its
         // rule leaves the project to the project's own; one in the project is the project's)
@@ -1772,6 +1805,7 @@ impl Policy {
         Policy {
             root,
             protect,
+            git,
             write,
             opened,
             folders,
