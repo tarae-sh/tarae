@@ -749,9 +749,13 @@ fn state_dir(git_dir: &Path) -> Option<PathBuf> {
     if merge.is_dir() { Some(merge) } else { apply.join("rebasing").exists().then_some(apply) }
 }
 
-/// Commit n of m, as git counts in the rebase's folder.
+/// Commit n of m, as git counts in the rebase's folder. Its files read by `gitrepo::git_file`, never waited on
+/// (#607): the git folder is a workspace's tarae made, but a run can still write there — with `llm.sandbox` off
+/// (a run writes anywhere), or where the repository keeps its git folder inside the project under another name
+/// than `.git` (`git init --separate-git-dir`, a `.git` file naming `gitdata/`: only `.git` is a name the sandbox
+/// keeps), where a run makes `worktrees/<workspace>/rebase-merge/msgnum` a FIFO.
 fn step_of(state: &Path) -> Option<(usize, usize)> {
-    let read = |f: &str| std::fs::read_to_string(state.join(f)).ok()?.trim().parse::<usize>().ok();
+    let read = |f: &str| crate::gitrepo::git_file(&state.join(f))?.trim().parse::<usize>().ok();
     match state.ends_with("rebase-merge") {
         true => Some((read("msgnum")?, read("end")?)),
         false => Some((read("next")?, read("last")?)),
@@ -761,7 +765,8 @@ fn step_of(state: &Path) -> Option<(usize, usize)> {
 /// The rebase under way in the checkout at `root` — where it stopped — if there's one.
 pub fn under_way(root: &Path) -> Option<Stop> {
     let state = state_dir(&git_dir(root)?)?;
-    let read = |f: &str| std::fs::read_to_string(state.join(f)).ok().map(|s| s.trim().to_string());
+    // (never waited on: `step_of`)
+    let read = |f: &str| crate::gitrepo::git_file(&state.join(f)).map(|s| s.trim().to_string());
     // (`ls-files -u`: a row per side, by path — a read that never takes the index lock)
     let mut files: Vec<String> = git(root, &["ls-files", "-u", "-z"], None)
         .unwrap_or_default()

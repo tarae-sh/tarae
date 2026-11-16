@@ -829,3 +829,24 @@ fn a_project_skill_cant_pre_approve_tools_in_the_chat() {
     drop(ed);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// #607's follow-up: a FIFO in place of a settings file is unreadable at once, never waited on — `read_file` goes
+/// through `paths::plain_file_within`, which looks before it opens and judges the file it opened (one swapped for a
+/// FIFO after the look can't hold it either). Past `READ_MAX` is too big; nothing there is no file. Bounded by the
+/// shared patience; the files in the test's own scratch folder.
+#[test]
+fn a_fifo_in_place_of_a_settings_file_is_never_waited_on() {
+    let dir = crate::scratch::Scratch::new("claudetrust-fifo");
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let (plain, fifo, big, none) =
+        (base.join("plain.json"), base.join("fifo.json"), base.join("big.json"), base.join("none.json"));
+    std::fs::write(&plain, "{}").unwrap();
+    std::fs::write(&big, vec![b' '; READ_MAX as usize + 1]).unwrap();
+    crate::gitrepo::fifo_at(&fifo);
+    let read = crate::gitrepo::bounded(move || [&plain, &fifo, &big, &none].map(|p| read_file(p)));
+    let too_big = format!("{} bytes — too big to read", READ_MAX + 1);
+    assert_eq!(
+        read,
+        [Some(Ok(b"{}".to_vec())), Some(Err("not a regular file".into())), Some(Err(too_big)), None]
+    );
+}

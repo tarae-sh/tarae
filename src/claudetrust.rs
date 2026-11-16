@@ -313,14 +313,12 @@ pub fn scan(files: &[(&'static str, FileRead)]) -> Option<Scan> {
     Some(Scan { items, held, unreadable, hash })
 }
 
-/// A settings file as read — a regular file only (a FIFO there would hold the read), at most `READ_MAX`.
+/// A settings file as read — a regular file only, at most `READ_MAX`, never waited on (`paths::plain_file_within`:
+/// a FIFO there, or one swapped in after the look, would hold the read for good). None: not there, or nothing there
+/// to look at (a parent that isn't a folder, one not let in).
 fn read_file(path: &Path) -> FileRead {
-    match std::fs::metadata(path) {
-        Err(_) => None,
-        Ok(m) if !m.is_file() => Some(Err("not a regular file".to_string())),
-        Ok(m) if m.len() > READ_MAX => Some(Err(format!("{} bytes — too big to read", m.len()))),
-        Ok(_) => Some(std::fs::read(path).map_err(|e| e.to_string())),
-    }
+    std::fs::metadata(path).ok()?;
+    Some(crate::paths::plain_file_within(path, READ_MAX).map_err(|e| e.to_string()))
 }
 
 /// What your own settings file holds, as items (none when it can't be read key by key).

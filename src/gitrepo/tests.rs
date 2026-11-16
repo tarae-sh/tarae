@@ -409,6 +409,75 @@ fn fixture_git_in_its_own_process() {
     fixture_git(&at, &["commit", "-qm", "a"]);
 }
 
+/// The reads that wait on a FIFO: a blocking open, then a read.
+const BLOCKING_READS: &[&str] = &["read_to_string(", "fs::read(", "File::open("];
+
+/// The words that say a path is one of git's files a project holds or names.
+const GIT_NAMES: &[&str] = &[".git\"", "commondir", "gitdir", "packed-refs", "HEAD", ".gitmodules"];
+
+/// Blocking reads of git's files left, per file (`no_read_of_gits_files_waits`) — none since #607's sweep (the
+/// design session's search found none, 2026-11-16). The list only shrinks: a read added fails.
+const BLOCKING_GIT_READS: &[(&str, usize)] = &[];
+
+/// Each file's blocking reads of git's files: one of `BLOCKING_READS` whose own line or call (its arguments, to its
+/// closing parenthesis — a call rustfmt breaks over lines too) holds one of `GIT_NAMES`. A path built on a line
+/// before isn't seen: the words are what this can go by.
+fn blocking_git_reads(files: Vec<(String, String)>) -> std::collections::BTreeMap<String, usize> {
+    let mut out = std::collections::BTreeMap::new();
+    for (file, code) in files {
+        let mut n = 0;
+        for read in BLOCKING_READS {
+            for (at, _) in code.match_indices(read) {
+                let start = code[..at].rfind('\n').map_or(0, |i| i + 1);
+                let end = code[at..].find('\n').map_or(code.len(), |i| at + i);
+                let args = call_args(&code[at + read.len()..]);
+                n += usize::from(GIT_NAMES.iter().any(|w| code[start..end].contains(w) || args.contains(w)));
+            }
+        }
+        if n > 0 {
+            out.insert(file, n);
+        }
+    }
+    out
+}
+
+/// A call's arguments: `rest`, just past its `(`, to the `)` that closes it.
+fn call_args(rest: &str) -> &str {
+    let mut depth = 1;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 1 => return &rest[..i],
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    rest
+}
+
+/// #607's sweep held: no read of one of git's files in what a non-test build compiles (`sim::lint::sources`: every
+/// code root, comments and test code out) opens it waiting — each goes through `git_file` (`paths::plain_file_within`
+/// under it). One put back fails here, naming its file.
+#[test]
+fn no_read_of_gits_files_waits() {
+    let now = blocking_git_reads(crate::sim::lint::sources());
+    crate::sim::lint::only_shrinks("blocking reads of git's files", &now, BLOCKING_GIT_READS);
+}
+
+/// What `no_read_of_gits_files_waits` counts: a blocking read naming one of git's files on its line or in its call,
+/// broken over lines too — not a read through `git_file`, nor a blocking read of another file.
+#[test]
+fn a_blocking_read_of_a_git_file_counts() {
+    let code = "let a = std::fs::read_to_string(dir.join(\"commondir\")).ok();\n\
+                let b = crate::gitrepo::git_file(&dir.join(\"commondir\"));\n\
+                let c = fs::read(\n    p.join(\"HEAD\"),\n);\n\
+                let d = File::open(&top.join(\".gitmodules\"));\n\
+                let e = std::fs::read_to_string(&notes);\n\
+                let f = File::open(p.join(\".github\"));\n";
+    let n = blocking_git_reads(vec![("a.rs".into(), code.into())]);
+    assert_eq!(n.get("a.rs"), Some(&3), "{n:?}");
+}
+
 /// #607: `git_file` reads a plain file and refuses at once — unopened — a FIFO, a link to one and a folder; past its
 /// bound it reads nothing. Each look bounded by the shared patience; files written by hand, no git run.
 #[test]

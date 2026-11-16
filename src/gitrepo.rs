@@ -1153,25 +1153,11 @@ pub fn git_file(path: &Path) -> Option<String> {
 }
 
 /// One of git's files — a project's checkout holds some and names where the rest are, so a run can put anything
-/// in their place — read as text, never waited on (#607: a FIFO named `.git` hung `trust::place_of` for good; a
-/// project's files are never waited on, #375): looked at first and opened only when it's a plain file (a FIFO, a
-/// device, a folder are refused unopened — opening a device can do something of its own), opened without waiting
-/// nor taking a terminal, and read only when the opened file is a plain one too (what's at the path may change
-/// between the look and the open), to `max` bytes. None: not there, not a plain file, past `max`, or not text.
+/// in their place — read as text to `max` bytes, never waited on (`paths::plain_file_within`, #607). None: not
+/// there, not a plain file, past `max`, or not text. Every read of git's files goes through here:
+/// `no_read_of_gits_files_waits` holds it.
 pub fn git_file_within(path: &Path, max: u64) -> Option<String> {
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let flags = libc::O_NONBLOCK | libc::O_NOCTTY;
-    let f = std::fs::OpenOptions::new().read(true).custom_flags(flags).open(path).ok()?;
-    if !f.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut text = String::new();
-    let n = f.take(max.saturating_add(1)).read_to_string(&mut text).ok()?;
-    (n as u64 <= max).then_some(text)
+    String::from_utf8(crate::paths::plain_file_within(path, max).ok()?).ok()
 }
 
 /// The git folder the `.git` file of the checkout at `at` names (`gitdir: …`, from `at` — or absolute), as given.

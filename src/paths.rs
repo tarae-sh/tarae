@@ -77,6 +77,33 @@ pub fn open_read(path: &Path) -> std::io::Result<Opened> {
     Ok(Opened { file, real, meta })
 }
 
+/// A plain file's bytes, to `max`, never waited on — for a file a project holds or names, which a run can put
+/// anything in place of (#607: a FIFO named `.git` hung `trust::place_of` for good; #375: a project's files are never
+/// waited on). Looked at first and opened only when it's a plain file: a FIFO, a device or a folder is refused
+/// unopened (opening a device can do something of its own). Opened without waiting nor taking a terminal, and read
+/// only when the opened file is a plain one too: what's at the path may be swapped between the look and the open.
+/// Its errors: `NotFound` as the look says it, else words a card can say ("not a regular file", "N bytes — too big
+/// to read").
+pub fn plain_file_within(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let plain = |m: &std::fs::Metadata| match m.len() {
+        _ if !m.is_file() => Err(std::io::Error::other("not a regular file")),
+        n if n > max => Err(std::io::Error::other(format!("{n} bytes — too big to read"))),
+        _ => Ok(()),
+    };
+    plain(&std::fs::metadata(path)?)?;
+    let file =
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(path)?;
+    plain(&file.metadata()?)?;
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    match bytes.len() as u64 {
+        n if n > max => Err(std::io::Error::other(format!("more than {max} bytes — too big to read"))),
+        _ => Ok(bytes),
+    }
+}
+
 /// Where an open descriptor's file is.
 #[cfg(target_os = "macos")]
 fn fd_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
