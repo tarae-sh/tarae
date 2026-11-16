@@ -742,8 +742,8 @@ pub(crate) fn make(
             "the character paints each step on the tablet (the mascot's motions say how)".to_string()
         }
         (false, Some((art, _))) => format!(
-            "the character watches (painting: its pictures, frame-draw-1…3.png, frame-draw-lift.png, \
-             frame-draw-in.png and frame-swing-1.png, not all in {})",
+            "the character watches (painting: its pictures, frame-sweep-1…7.png, frame-return-1…3.png, \
+             frame-draw-lift.png, frame-draw-in.png and frame-swing-1.png, not all in {})",
             art.dir.display()
         ),
         (false, None) => "no character to paint them".to_string(),

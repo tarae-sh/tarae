@@ -90,8 +90,8 @@ pub(crate) enum Face {
 /// Every picture the mascot can show: arms and a face (resting arms only raised, half or closed; open and wide over
 /// typing ones), or the `n`th frame of the surprise (2), the stretch (5) or the swing (5); or, pressing fast-forward,
 /// winding the skein: the loop's `n`th (3) and the in-between it starts with; or, while a picture is drawn, painting it
-/// on the tablet: the brush at its left, middle and right (3), lifted off it, and the turn in (the brush from the back,
-/// the keyboard a tablet — also the rest).
+/// on the tablet: the brush across it, left to right (7), back in the air (3), lifted off it, and the turn in (the brush
+/// from the back, the keyboard a tablet — also the rest).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Pic {
     At(Arms, Face),
@@ -100,7 +100,8 @@ pub(crate) enum Pic {
     Swing(u8),
     Wind(u8),
     WindIn,
-    Draw(u8),
+    Sweep(u8),
+    Return(u8),
     DrawLift,
     DrawIn,
 }
@@ -110,9 +111,12 @@ const TYPING: [Arms; 4] = [Arms::Up, Arms::Left, Arms::Right, Arms::Both];
 
 impl Pic {
     /// How many there are (`index`'s range).
-    pub(crate) const COUNT: usize = 5 + 5 + 5 + 4 + 4 + 2 + 5 + 5 + 4 + 5;
+    pub(crate) const COUNT: usize = 5 + 5 + 5 + 4 + 4 + 2 + 5 + 5 + 4 + 12;
     /// The skein's loop: how many pictures round it.
     pub(crate) const WIND_STEPS: u8 = 3;
+    /// Painting: the brush's pictures across the tablet, and back over it in the air.
+    pub(crate) const SWEEPS: u8 = 7;
+    pub(crate) const RETURNS: u8 = 3;
     pub(crate) const WATCH: Pic = Pic::At(Arms::Rest, Face::Raised);
 
     /// V4's five poses as pictures.
@@ -128,7 +132,8 @@ impl Pic {
     }
 
     /// Its place in `Art`'s list: the five first (in `Pose`'s order), then the closed, half, raised and wide faces, the
-    /// surprise, the stretch, the swing, the skein's loop and its in-between.
+    /// surprise, the stretch, the swing, the skein's loop and its in-between, painting's sweep, its way back, the lift and
+    /// the turn in.
     pub(crate) fn index(self) -> usize {
         let arm = |a: Arms| ARMS.iter().position(|&x| x == a).unwrap_or(0);
         match self {
@@ -143,9 +148,10 @@ impl Pic {
             Pic::Swing(n) => 30 + usize::from(n.min(4)),
             Pic::Wind(n) => 35 + usize::from(n.min(Pic::WIND_STEPS - 1)),
             Pic::WindIn => 38,
-            Pic::Draw(n) => 39 + usize::from(n.min(2)),
-            Pic::DrawLift => 42,
-            Pic::DrawIn => 43,
+            Pic::Sweep(n) => 39 + usize::from(n.min(Pic::SWEEPS - 1)),
+            Pic::Return(n) => 46 + usize::from(n.min(Pic::RETURNS - 1)),
+            Pic::DrawLift => 49,
+            Pic::DrawIn => 50,
         }
     }
 
@@ -173,7 +179,8 @@ impl Pic {
             }
             Pic::Wind(n) => format!("wind-{}", n.min(Pic::WIND_STEPS - 1) + 1),
             Pic::WindIn => "wind-in".into(),
-            Pic::Draw(n) => format!("draw-{}", n.min(2) + 1),
+            Pic::Sweep(n) => format!("sweep-{}", n.min(Pic::SWEEPS - 1) + 1),
+            Pic::Return(n) => format!("return-{}", n.min(Pic::RETURNS - 1) + 1),
             Pic::DrawLift => "draw-lift".into(),
             Pic::DrawIn => "draw-in".into(),
         }
@@ -192,16 +199,18 @@ impl Pic {
         v.extend((0..5).map(Pic::Swing));
         v.extend((0..Pic::WIND_STEPS).map(Pic::Wind));
         v.push(Pic::WindIn);
-        v.extend((0..3).map(Pic::Draw));
+        v.extend((0..Pic::SWEEPS).map(Pic::Sweep));
+        v.extend((0..Pic::RETURNS).map(Pic::Return));
         v.extend([Pic::DrawLift, Pic::DrawIn]);
         v
     }
 
-    /// Painting's pictures (`Art::load`'s `optional`, where the cut has pictures): the three across the tablet, the
-    /// lift, the turn in, and the swing's first it turns through. With them all, the character paints each step on the
-    /// tablet as it's drawn (`Plan::paint`); without, it watches.
+    /// Painting's pictures (`Art::load`'s `optional`, where the cut has pictures): the seven across the tablet, the
+    /// three back in the air, the lift, the turn in, and the swing's first it turns through. With them all, the
+    /// character paints each step on the tablet as it's drawn (`Plan::paint`); without, it watches.
     pub(crate) fn painting() -> Vec<Pic> {
-        let mut v: Vec<Pic> = (0..3).map(Pic::Draw).collect();
+        let mut v: Vec<Pic> = (0..Pic::SWEEPS).map(Pic::Sweep).collect();
+        v.extend((0..Pic::RETURNS).map(Pic::Return));
         v.extend([Pic::DrawLift, Pic::DrawIn, Pic::Swing(0)]);
         v
     }
@@ -228,7 +237,8 @@ impl Pic {
                 Pic::At(_, Face::Wide) | Pic::Surprise(_) => sw.surprise,
                 Pic::Stretch(_) => sw.stretch,
                 Pic::Swing(_) => sw.swing,
-                Pic::Wind(_) | Pic::WindIn | Pic::Draw(_) | Pic::DrawLift | Pic::DrawIn => false,
+                Pic::Wind(_) | Pic::WindIn => false,
+                Pic::Sweep(_) | Pic::Return(_) | Pic::DrawLift | Pic::DrawIn => false,
             })
             .collect()
     }

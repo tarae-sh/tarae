@@ -45,8 +45,8 @@
 //! - **Painting on the tablet** (`Plan::paint`, Z3: the mascot brief's §6.2, the user's "붓으로 슥슥 … 너무 빠르게
 //!   휙휙 할 필요는 없을 듯"), where its pictures are found: one calm rhythm of its own, never the board's strokes — while
 //!   a step is drawn, from the frame its first stroke starts to the frame its last ends, the brush across the tablet
-//!   (`draw-1`, `-2`, `-3`, `PAINT_EACH` frames each: a second), lifted `PAINT_LIFT`, again; no picture of it under
-//!   `PAINT_LEAST` frames (`rhythm`). Then at rest (`draw-in`: the brush up, the eyes off the tablet) on the frame the
+//!   (`sweep-1` … `-7`, `SWEEP`'s holds: a second), back over it in the air (`return-1` … `-3`, `RETURN`'s) and lifted
+//!   (`draw-lift`, `PAINT_LIFT`), again; no picture of it held fewer frames than its own hold (`rhythm`). Then at rest (`draw-in`: the brush up, the eyes off the tablet) on the frame the
 //!   last stroke ends, the one its station is inked on, through the stand. The keyboard becomes the tablet inside the
 //!   board's crossing into the picture (`swing-1`, then `draw-in`), and back inside the crossing out. A surprise,
 //!   stretch or swing over it stays. Not found: it watches, said.
@@ -107,55 +107,68 @@ pub(crate) const WIND_EVERY: u64 = 4;
 pub(crate) const WIND_EVERY_FAST: u64 = 2;
 pub(crate) const WIND_FAST_PAST: f64 = 8.0;
 pub(crate) const WIND_KEY_GAP: u64 = 2;
-/// Painting: the brush at the tablet's left, middle and right this many frames each — across in a second…
-pub(crate) const PAINT_EACH: u64 = 10;
-/// …then lifted this many, and again (a sweep: 38 frames, 1.27 s).
-pub(crate) const PAINT_LIFT: u64 = 8;
-/// No picture of painting stands fewer frames than this: nothing flickers.
-pub(crate) const PAINT_LEAST: u64 = 8;
+/// Painting's sweep (the in-between pictures, the user's 2026-11-16): the brush across the tablet, each picture
+/// (`Pic::Sweep`) and the frames it's held — easing in and out, 30 frames, a second —…
+pub(crate) const SWEEP: [(u8, u64); Pic::SWEEPS as usize] =
+    [(0, 5), (1, 4), (2, 4), (3, 4), (4, 4), (5, 4), (6, 5)];
+/// …back over it in the air (`Pic::Return`)…
+pub(crate) const RETURN: [(u8, u64); Pic::RETURNS as usize] = [(0, 2), (1, 2), (2, 2)];
+/// …lifted (`draw-lift`), and again: a sweep 38 frames (1.27 s).
+pub(crate) const PAINT_LIFT: u64 = 2;
 
-/// Painting's rhythm over a run of `n` frames from a step's first stroke: `draw-1`, `-2`, `-3` `PAINT_EACH` frames each,
-/// `draw-lift` `PAINT_LIFT`, again; a last piece under `PAINT_LEAST` taken by the one before it; a run under
-/// `PAINT_LEAST`, none (the rest stays).
+/// A sweep's pictures in order, each with its hold (frames): `SWEEP`, `RETURN`, `draw-lift`.
+pub(crate) fn sweep() -> Vec<(Pic, u64)> {
+    let mut v: Vec<(Pic, u64)> = SWEEP.iter().map(|&(n, f)| (Pic::Sweep(n), f)).collect();
+    v.extend(RETURN.iter().map(|&(n, f)| (Pic::Return(n), f)));
+    v.push((Pic::DrawLift, PAINT_LIFT));
+    v
+}
+
+/// Painting's rhythm over a run of `n` frames from a step's first stroke: `sweep`, again. A last piece cut shorter than
+/// its own picture's hold is taken by the one before it, which is whole; a run shorter than `sweep-1`'s hold is none
+/// (the rest stays) — so no picture is held fewer frames than its own hold.
 pub(crate) fn rhythm(n: u64) -> Vec<Pic> {
-    if n < PAINT_LEAST {
+    let sweep = sweep();
+    if n < sweep[0].1 {
         return Vec::new();
     }
-    let sweep = [
-        (Pic::Draw(0), PAINT_EACH),
-        (Pic::Draw(1), PAINT_EACH),
-        (Pic::Draw(2), PAINT_EACH),
-        (Pic::DrawLift, PAINT_LIFT),
-    ];
-    let mut pieces: Vec<(Pic, u64)> = Vec::new();
+    // (each piece: its picture, its frames, its hold)
+    let mut pieces: Vec<(Pic, u64, u64)> = Vec::new();
     let mut left = n;
-    for &(p, len) in sweep.iter().cycle() {
+    for &(p, hold) in sweep.iter().cycle() {
         if left == 0 {
             break;
         }
-        pieces.push((p, len.min(left)));
-        left -= len.min(left);
+        pieces.push((p, hold.min(left), hold));
+        left -= hold.min(left);
     }
     let k = pieces.len();
-    if k >= 2 && pieces[k - 1].1 < PAINT_LEAST {
+    if k >= 2 && pieces[k - 1].1 < pieces[k - 1].2 {
         pieces[k - 2].1 += pieces[k - 1].1;
         pieces.pop();
     }
-    pieces.iter().flat_map(|&(p, len)| std::iter::repeat_n(p, len as usize)).collect()
+    pieces.iter().flat_map(|&(p, len, _)| std::iter::repeat_n(p, len as usize)).collect()
+}
+
+/// A painting picture's hold in a sweep (frames); none for the rest's and the rest.
+pub(crate) fn hold(p: Pic) -> Option<u64> {
+    sweep().into_iter().find(|s| s.0 == p).map(|s| s.1)
 }
 
 /// What painting laid (`Plan::paint`): the steps painted of the pictures' all, and each one's run (frames, from its first
-/// stroke to its rest); the frames of each of the three, of the lift, of the rest (`draw-in`, the turn's too) and of
-/// `swing-1` turning; the shortest a picture of the rhythm stood (frames).
+/// stroke to its rest); the frames of each of the sweep's seven, of the three back, of the lift, of the rest (`draw-in`,
+/// the turn's too) and of `swing-1` turning; how many times a picture of the rhythm stood fewer frames than its hold (a
+/// surprise, stretch or swing over it can cut one).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Painted {
     pub(crate) steps: (usize, usize),
     pub(crate) runs: Vec<(u64, u64)>,
-    pub(crate) frames: [usize; 3],
+    pub(crate) sweep: [usize; Pic::SWEEPS as usize],
+    pub(crate) back: [usize; Pic::RETURNS as usize],
     pub(crate) lift: usize,
     pub(crate) rest: usize,
     pub(crate) turns: usize,
-    pub(crate) least: Option<u64>,
+    pub(crate) under: usize,
 }
 
 /// The fast-forward holds (frames, from–to, in order): each run of frames shown past `KEYS_MAX_SPEED` — runs with only
@@ -977,23 +990,25 @@ impl Plan {
                 }
                 self.pics[k] = Some(l);
                 match l {
-                    Pic::Draw(m) => painted.frames[usize::from(m)] += 1,
+                    Pic::Sweep(m) => painted.sweep[usize::from(m)] += 1,
+                    Pic::Return(m) => painted.back[usize::from(m)] += 1,
                     Pic::DrawLift => painted.lift += 1,
                     Pic::DrawIn => painted.rest += 1,
                     _ => painted.turns += 1,
                 }
             }
         }
-        // (the shortest stand of one of the rhythm's pictures, all through)
+        // (the stands of the rhythm's pictures shorter than their holds, all through)
         let mut run: Option<(Pic, u64)> = None;
         for k in 0..=self.pics.len() {
-            let now =
-                self.pics.get(k).copied().flatten().filter(|p| matches!(p, Pic::Draw(_) | Pic::DrawLift));
+            let now = self.pics.get(k).copied().flatten().filter(|&p| hold(p).is_some());
             match (run, now) {
                 (Some((p, n)), Some(q)) if p == q => run = Some((p, n + 1)),
                 _ => {
-                    if let Some((_, n)) = run {
-                        painted.least = Some(painted.least.map_or(n, |l| l.min(n)));
+                    if let Some((p, n)) = run
+                        && hold(p).is_some_and(|h| n < h)
+                    {
+                        painted.under += 1;
                     }
                     run = now.map(|q| (q, 1));
                 }
@@ -1115,17 +1130,24 @@ impl Plan {
             });
         }
         if let Some(p) = &self.painted {
+            let dots = |v: &mut dyn Iterator<Item = String>| v.collect::<Vec<_>>().join("·");
+            let held = |h: &[(u8, u64)]| dots(&mut h.iter().map(|x| x.1.to_string()));
             out.push(format!(
-                "  painting on the tablet: {} steps of {}; a sweep of draw-1, -2, -3 {PAINT_EACH} frames each, then \
-                 draw-lift {PAINT_LIFT}, again — none under {PAINT_LEAST} frames (the shortest {}); from each step's \
-                 first stroke to its last's end, then at rest on draw-in; the keyboard a tablet inside the board's \
-                 crossings (swing-1, draw-in); frames: draw-1 {}, draw-2 {}, draw-3 {}, lifted {}, draw-in {}, swing-1 {}",
+                "  painting on the tablet: {} steps of {}; a sweep of sweep-1 … -7 held {} frames, return-1 … -3 {} in \
+                 the air, draw-lift {PAINT_LIFT} ({}), again — {}; from each step's first \
+                 stroke to its last's end, then at rest on draw-in; the keyboard a tablet inside the board's crossings \
+                 (swing-1, draw-in); frames: sweep-1 … -7 {}, return-1 … -3 {}, lifted {}, draw-in {}, swing-1 {}",
                 p.steps.0,
                 p.steps.1,
-                p.least.map_or("none".into(), |l| l.to_string()),
-                p.frames[0],
-                p.frames[1],
-                p.frames[2],
+                held(&SWEEP),
+                held(&RETURN),
+                sweep().iter().map(|s| s.1).sum::<u64>(),
+                match p.under {
+                    0 => "no picture held under its own hold".to_string(),
+                    n => format!("{n} stands under their own holds"),
+                },
+                dots(&mut p.sweep.iter().map(|n| n.to_string())),
+                dots(&mut p.back.iter().map(|n| n.to_string())),
                 p.lift,
                 p.rest,
                 p.turns
