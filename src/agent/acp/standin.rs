@@ -30,7 +30,8 @@
 //!   `session/request_permission`, its answer waited for) and, on `allow_once`, the call and `completed`, on any other
 //!   `in_progress` then `failed`, as 1.5.9 reported a refusal (`after_refusal`) — with `"mcp": message`, one of
 //!   tarae's: the message sent to tarae's server (as an `mcp` step) and its answer waited for, as agy calls a server's
-//!   tool. With `NO_ASK` set, no ask: agy 1.5.4 and 1.5.7.
+//!   tool. With `NO_ASK` set, no ask: agy 1.5.4 and 1.5.7. Its numbers, on both sides, as 1.5.9 writes them
+//!   (`as_agy_writes`).
 //!
 //! It plays agy's part, so its row takes agy's recipe (`agent::AGY_TOOLS_OFF`): its `--gemini-dir <folder>`, which
 //! libtest wouldn't take, is moved by its `sh` into `DIR` before the test binary starts.
@@ -256,9 +257,11 @@ impl Agent {
     /// `allow_once` and `reject_once` only, in every mode; on `allow_once` `in_progress`, the call (one of tarae's:
     /// its `mcp` message to tarae's server, the answer waited for), then `completed`; any other answer `in_progress`
     /// then `failed`, as 1.5.9 reported a `reject_once` (`after_refusal`; `cancelled` unmeasured, the same). With
-    /// `NO_ASK` set, the call is made after the hooks, unasked (agy 1.5.4 and 1.5.7).
+    /// `NO_ASK` set, the call is made after the hooks, unasked (agy 1.5.4 and 1.5.7). Its numbers are written as 1.5.9
+    /// writes them (`as_agy_writes`) in what it reports, asks and hands its hooks, and in what tarae's server gets (#15:
+    /// the server's half measured; the hooks' not).
     fn own(&mut self, call: &Value) {
-        let (id, name, args) = (&call["id"], &call["name"], &call["args"]);
+        let (id, name, args) = (&call["id"], &call["name"], &as_agy_writes(&call["args"]));
         let kind = if name.as_str().is_some_and(|n| n.starts_with("mcp_")) { "other" } else { "execute" };
         self.update(json!({"sessionUpdate": "tool_call", "toolCallId": id, "title": name, "kind": kind,
             "status": "in_progress", "name": name, "args": args, "rawInput": args, "locations": null}));
@@ -316,7 +319,11 @@ impl Agent {
             );
         }
         if let Some(message) = call.get("mcp") {
-            self.mcp(message);
+            let mut message = message.clone();
+            if let Some(a) = message.pointer_mut("/params/arguments") {
+                *a = as_agy_writes(a);
+            }
+            self.mcp(&message);
         }
         self.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed", "content": null}));
     }
@@ -361,6 +368,30 @@ impl Agent {
             Some(a) => self.heard(&json!({"mcp_answer": a})),
             None => self.missed(&format!("tarae's server's answer to {id}")),
         }
+    }
+}
+
+/// `v` with its numbers written as agy 1.5.9 wrote the model's, in its report and to the server alike (the second
+/// probe, `.sb/agent-p4-probe/out-1794767239/`, #15): each one a float64 — an integral one under 1e21 written as an
+/// integer (`1.0` → `1`; one past 2^53 rounded, by that rule, unmeasured), the rest as a float (`2.50` → `2.5`, a
+/// 23-digit integer → `1.2345678901234568e+22`, which serde_json writes without the `+`: the same value read).
+fn as_agy_writes(v: &Value) -> Value {
+    match v {
+        Value::Number(n) => {
+            let f = n.as_f64().unwrap_or_default();
+            if f.fract() == 0.0 && f.abs() < 1e21 {
+                if (i64::MIN as f64..i64::MAX as f64).contains(&f) {
+                    return json!(f as i64);
+                }
+                if (0.0..u64::MAX as f64).contains(&f) {
+                    return json!(f as u64);
+                }
+            }
+            json!(f)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(as_agy_writes).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), as_agy_writes(v))).collect()),
+        other => other.clone(),
     }
 }
 
@@ -518,6 +549,25 @@ fn a_refused_asks_report_is_what_1_5_9_said() {
     let reports = after_refusal(&json!(id), &json!("mcp_tarae_mark"), &args, "other");
     assert_eq!(reports, [measured("in_progress"), measured("failed")]);
     assert!(reports.iter().all(|r| r.get("content").is_none()), "no content at all");
+}
+
+/// L-B4: the stand-in writes the model's numbers as 1.5.9 did in the second probe (#15: the `types` call's arguments,
+/// its report's `args` as they came but `toolSummary`), the rest as it was.
+#[test]
+fn the_stand_in_writes_numbers_as_1_5_9_did() {
+    let model: Value = serde_json::from_str(
+        r#"{"big":12345678901234567890123,"e":"","f":0.1,"g":1.0,"h":2.50,"i":7,"o":{"a":{"b":[1.0,2,"x"]},"z":null},"s":"한글 é 🙂\ttab"}"#,
+    )
+    .unwrap();
+    let measured: Value = serde_json::from_str(
+        r#"{"big":1.2345678901234568e+22,"e":"","f":0.1,"g":1,"h":2.5,"i":7,"o":{"a":{"b":[1,2,"x"]},"z":null},"s":"한글 é 🙂\ttab"}"#,
+    )
+    .unwrap();
+    assert_ne!(model, measured, "the model's aren't 1.5.9's as JSON");
+    assert_eq!(as_agy_writes(&model), measured);
+    assert_eq!(as_agy_writes(&json!(-3.0)), json!(-3));
+    let past_2_53 = as_agy_writes(&json!(9007199254740993u64));
+    assert_eq!(past_2_53, json!(9007199254740992u64), "a float64's rounding");
 }
 
 /// L-B2's stand-in, as 1.5.9 was measured (probe 2, #16 and run D): the project's `.stand-in/hooks.json` from the git

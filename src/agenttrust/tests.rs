@@ -764,3 +764,84 @@ fn a_git_folder_that_is_no_repository_is_not_the_top() {
     std::fs::write(root.join(".git"), "gitdir: /nowhere\n").unwrap();
     assert_eq!(listed_lines(&root), ["  .stand-in/p.json"], "a gitdir file is a top");
 }
+
+/// The design session's fix on L-B3: with no repository above the root, a `.git` that's no repository's two levels up
+/// (`make`) is the top — a walk of agy's own may stop there (unmeasured, plan §1c) and load every `.agents/` from it
+/// down to the root — so all three folders are held, and none above it.
+fn no_repository_and_a_git_of_another_kind_above(name: &str, make: impl Fn(&Path)) {
+    let dir = Scratch::new(name);
+    let above = dir.join("above");
+    let x = above.join("x");
+    held_at(&above, "n.json", "0");
+    held_at(&x, "x.json", "1");
+    held_at(&x.join("a"), "a.json", "2");
+    let root = x.join("a/proj");
+    held_at(&root, "p.json", "3");
+    let real = std::fs::canonicalize(&above).unwrap();
+    assert!(real.ancestors().all(|d| !d.join(".git").exists()), "the scratch folder is in a repository");
+    make(&x.join(".git"));
+    assert_eq!(chain(&root).top, std::fs::canonicalize(&x).unwrap(), "its top");
+    assert_eq!(
+        listed_lines(&root),
+        ["  .stand-in/x.json", "  a/.stand-in/a.json", "  a/proj/.stand-in/p.json"]
+    );
+}
+
+/// `no_repository_and_a_git_of_another_kind_above` with an empty `.git` folder.
+#[test]
+fn with_no_repository_an_empty_git_folder_above_is_the_top() {
+    no_repository_and_a_git_of_another_kind_above("agenttrust-empty-git", |g| {
+        std::fs::create_dir(g).unwrap()
+    });
+}
+
+/// `no_repository_and_a_git_of_another_kind_above` with a junk `.git` file.
+#[test]
+fn with_no_repository_a_junk_git_file_above_is_the_top() {
+    no_repository_and_a_git_of_another_kind_above("agenttrust-junk-git", |g| {
+        std::fs::write(g, "not a gitdir\n").unwrap();
+    });
+}
+
+/// The variable that has `git_open_in_its_own_process` run (else it returns at once: `--ignored` alone doesn't).
+#[cfg(target_os = "linux")]
+const NOCTTY_CHILD: &str = "TARAE_TEST_NOCTTY_CHILD";
+
+/// The design session's item on L-B3: a `.git` file's open (`open_git_file`) never takes a terminal — a tty swapped in
+/// for `.git` after the stat said plain file, opened by a session leader with none, isn't its terminal after. Linux
+/// only: macOS takes a terminal only by `TIOCSCTTY`, never on an open, and closes every tty to a sandboxed run. In a
+/// process of its own, which `setsid`s (`git_open_in_its_own_process`).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_tty_named_git_is_never_taken_as_a_terminal() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "agenttrust::tests::git_open_in_its_own_process", "--ignored", "--nocapture"])
+        .env(NOCTTY_CHILD, "1")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && said.contains("1 passed"), "the child ran it: {said}");
+}
+
+/// `a_tty_named_git_is_never_taken_as_a_terminal`'s child: a session of its own, with no terminal, opens a pty's
+/// slave (one of its own making, nobody's terminal: `pty::open`, both ends `O_NOCTTY`) again by its path, as
+/// `open_git_file` opens a `.git`, and still has no terminal.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "run by a_tty_named_git_is_never_taken_as_a_terminal in a process of its own"]
+fn git_open_in_its_own_process() {
+    use std::os::fd::AsRawFd;
+    if std::env::var_os(NOCTTY_CHILD).is_none() {
+        return;
+    }
+    let no_terminal = || std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").is_err();
+    // SAFETY: a plain call in this process of its own.
+    assert!(unsafe { libc::setsid() } > 0, "a session of its own");
+    assert!(no_terminal(), "a terminal after setsid");
+    let (_master, slave) = crate::pty::open(24, 80).expect("a pty");
+    assert!(no_terminal(), "pty::open took its slave as the terminal");
+    let path = format!("/proc/self/fd/{}", slave.as_raw_fd());
+    let opened = open_git_file(Path::new(&path)).expect("the pty's slave opened again");
+    assert!(no_terminal(), "the open took the pty as its terminal");
+    drop(opened);
+}

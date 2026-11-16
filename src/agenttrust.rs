@@ -63,9 +63,10 @@ fn file_of(row: &Row, root: &Path) -> PathBuf {
 }
 
 /// The folders a row's held paths are read in, and what they're keyed from (L-B2). agy loads `.agents/` in every
-/// folder from its cwd up to the git top — the nearest repository's `.git` (`is_repository`), a folder or a worktree's
-/// file — and not above it (measured, 1.5.9, #16: a worktree's file is its top); with no git top, the cwd's alone
-/// (measured). Found up the root's real path, as agy's cwd is: stats and a file's first bytes, no git.
+/// folder from its cwd up to the git top and not above it (measured, 1.5.9, #16: a worktree's file is its top); with
+/// no `.git` above, the cwd's alone (measured, run D). Which `.git` agy stops at is unmeasured (plan §1c), so the
+/// chain's top is the larger of git's answer and a walk to any `.git` (`chain`). Found up the root's real path, as
+/// agy's cwd is: stats and a file's first bytes, no git.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chain {
     /// The git top's real path, or the root's with none: the keys are from it.
@@ -86,10 +87,18 @@ impl Chain {
     }
 }
 
-/// `root`'s chain: from its git top down to it. Reads the disk (stats): a worker's.
+/// `root`'s chain: from its top down to it. The top is the rule that holds whether agy stops where git's discovery
+/// does or at the first `.git` it meets (unmeasured, plan §1c), taking the larger answer: the nearest repository's
+/// `.git` (`is_repository`) where there is one — the nearest `.git` of any kind is never above it, so that covers both
+/// — else the nearest `.git` of any kind (an empty folder, a junk file, a FIFO, a dangling link: git's discovery walks
+/// past them all, a walk of agy's own may stop there), else the root alone. Reads the disk (stats): a worker's.
 pub fn chain(root: &Path) -> Chain {
     let real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let top = real.ancestors().find(|d| is_repository(&d.join(".git"))).unwrap_or(&real).to_path_buf();
+    let any_git = |d: &&Path| std::fs::symlink_metadata(d.join(".git")).is_ok();
+    let top = (real.ancestors().find(|d| is_repository(&d.join(".git"))))
+        .or_else(|| real.ancestors().find(any_git))
+        .unwrap_or(&real)
+        .to_path_buf();
     let below = real.strip_prefix(&top).unwrap_or(Path::new(""));
     let mut folders = vec![PathBuf::new()];
     for c in below.components() {
@@ -105,13 +114,12 @@ pub fn chain(root: &Path) -> Chain {
 
 /// Whether `git` (a folder's `.git`, through a link) is a repository's as git's own discovery takes one: a folder
 /// holding `HEAD`, `objects/` and `refs/` (setup.c's `is_git_directory`), or a file starting `gitdir:` (a linked
-/// checkout's). git walks past any other folder named `.git` (an empty one) and refuses a junk file; the chain walks
-/// past both. agy runs git, and whether its top is git's answer or a walk of its own is unmeasured (the design
-/// session's note 1 on L-B2, plan §1c): stopping only where git would, tarae holds what git's answer loads, and more
-/// where agy stops at any `.git` — never less.
+/// checkout's). git walks past any other folder named `.git` (an empty one) and refuses a junk file. agy runs git, and
+/// whether its top is git's answer or a walk of its own is unmeasured (the design session's note 1 on L-B2, plan
+/// §1c): where a repository is above, the chain stops at the nearest one's, holding what either loads; with none,
+/// it stops at any `.git` (`chain`).
 fn is_repository(git: &Path) -> bool {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
     let Ok(meta) = std::fs::metadata(git) else { return false };
     if meta.is_dir() {
         let is = |name: &str, dir: bool| std::fs::metadata(git.join(name)).is_ok_and(|m| m.is_dir() == dir);
@@ -119,11 +127,17 @@ fn is_repository(git: &Path) -> bool {
     }
     const GITDIR: &[u8] = b"gitdir:";
     let mut head = Vec::new();
-    // (a plain file only, opened without waiting: a FIFO named `.git` holds nothing up)
-    let opened = || std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(git);
     meta.is_file()
-        && opened().and_then(|f| f.take(GITDIR.len() as u64).read_to_end(&mut head)).is_ok()
+        && open_git_file(git).and_then(|f| f.take(GITDIR.len() as u64).read_to_end(&mut head)).is_ok()
         && head == GITDIR
+}
+
+/// A `.git` file opened to read its first bytes, after a stat said plain file — which a swap can undo before the open:
+/// without waiting (a FIFO named `.git` holds nothing up) and never taken as a controlling terminal (a tty named
+/// `.git`, opened by a session leader with none, would be on Linux).
+fn open_git_file(git: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(git)
 }
 
 /// A repository's `.git` made at `at` as git's discovery takes one (`is_repository`): `HEAD`, `objects/`, `refs/`.

@@ -177,14 +177,18 @@ fn a_file_added_in_a_parents_held_folder_while_it_runs_stops_it() {
 }
 
 /// The design session's note 2 on L-B2: the top's `.git` is armed — a worktree's `.git` file written over in place
-/// while the agent runs (no folder's list changes: nothing else armed sees it), so it's no top and the chain is
-/// another, stops it, said once, and the card asks again for the chain as it is now (no git top: the root's alone).
+/// while the agent runs (no folder's list changes: nothing else armed sees it), so it's no repository's and the chain
+/// is another, stops it, said once, and the card asks again for the chain as it is now: up to the repository above
+/// (`up`). (A repository above, since the fix on L-B3: with none, a junk `.git` is still the top, and the chain the
+/// same.)
 #[test]
 fn the_tops_git_written_over_while_it_runs_stops_it() {
     let dir = crate::scratch::Scratch::new("agentgate-watch-top");
-    let wt = dir.join("wt");
+    let up = dir.join("up");
+    let wt = up.join("wt");
     let root = wt.join("p");
-    for folder in [&wt, &root] {
+    crate::agenttrust::repository_at(&up);
+    for folder in [&up, &wt, &root] {
         std::fs::create_dir_all(folder.join(".stand-in")).unwrap();
         std::fs::write(folder.join(".stand-in/hooks.json"), "{}").unwrap();
     }
@@ -206,7 +210,8 @@ fn the_tops_git_written_over_while_it_runs_stops_it() {
                  Their card asks again.";
     assert_eq!(said_n(&ed, words), 1, "said once");
     assert!(!chat(&ed).running(), "stopped");
-    assert_eq!(card(&ed).unwrap(), ["  .stand-in/hooks.json"]);
+    let lines = ["  .stand-in/hooks.json", "  wt/.stand-in/hooks.json", "  wt/p/.stand-in/hooks.json"];
+    assert_eq!(card(&ed).unwrap(), lines);
     ed.workspace.claude.chat = None;
 }
 

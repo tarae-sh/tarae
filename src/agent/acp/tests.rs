@@ -666,11 +666,20 @@ fn a_conversation_that_cant_be_continued_is_said_gone() {
 
 /// The design session's note 1 on L-B2: an agent that isn't Claude gets none of the names that move git's discovery
 /// (`GIT_DISCOVERY`), so a git it runs finds its repository from its cwd, as `agenttrust::chain` does — the rest as it
-/// is. (Their values point nowhere: the stand-in runs no git.)
+/// is. (Their values point nowhere: the stand-in runs no git.) The names are the test's own list, so one taken out of
+/// `GIT_DISCOVERY` reaches the agent here: `GIT_OBJECT_DIRECTORY` among them (the design session's item on L-B3:
+/// git's `is_git_directory` takes it in place of `objects/`).
 #[test]
 fn an_agent_gets_none_of_the_names_that_move_gits_discovery() {
-    let mut env: Env =
-        GIT_DISCOVERY.iter().map(|n| (n.to_string(), "tarae-fake-nowhere".to_string())).collect();
+    let moving = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ];
+    let mut env: Env = moving.iter().map(|n| (n.to_string(), "tarae-fake-nowhere".to_string())).collect();
     env.insert("GIT_AUTHOR_NAME".into(), "kept".into());
     let mut script = handshake();
     script.push(json!({"eof": true}));
@@ -679,9 +688,9 @@ fn an_agent_gets_none_of_the_names_that_move_gits_discovery() {
     let heard = run.heard();
     let names: Vec<&str> = heard[0]["env"].as_array().unwrap().iter().filter_map(|n| n.as_str()).collect();
     assert!(names.contains(&"GIT_AUTHOR_NAME"), "the rest as it is: {names:?}");
-    let got: Vec<&&str> = GIT_DISCOVERY.iter().filter(|n| names.contains(n)).collect();
+    let got: Vec<&&str> = moving.iter().filter(|n| names.contains(n)).collect();
     assert!(got.is_empty(), "passed on: {got:?}");
-    assert_eq!(GIT_DISCOVERY.len(), 5);
+    assert_eq!(GIT_DISCOVERY, moving, "the list as the test's");
 }
 
 /// Step 3, L1: the agent has a session of its own (`spawn::setsid_fed_as`) — its session and group its own pid, the
@@ -784,10 +793,11 @@ fn a_test_never_starts_a_real_agent() {
 fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
     use std::os::unix::fs::PermissionsExt;
     let own = json!({"own": {"name": "run_command", "id": "t1", "args": {"CommandLine": "echo probe-ran"}}});
+    // (the model's `1.0`, which the stand-in writes `1` on both sides, as 1.5.9 did: L-B4)
     let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "search", "arguments": {"pattern": "fn beta"}}});
+        "params": {"name": "search", "arguments": {"pattern": "fn beta", "context": 1.0}}});
     let taraes = json!({"own": {"name": "mcp_tarae_search", "id": "t2",
-        "args": {"pattern": "fn beta", "toolSummary": "Search fn beta"}, "mcp": call}});
+        "args": {"pattern": "fn beta", "context": 1.0, "toolSummary": "Search fn beta"}, "mcp": call}});
     let mut script = handshake();
     script.extend([
         json!({"expect": "session/prompt"}),
@@ -828,6 +838,8 @@ fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
     );
     assert!(got.contains(&r#"tool t1 run_command {"CommandLine":"echo probe-ran"}"#.to_string()), "{got:?}");
     assert!(got.contains(&format!("result t1 true {REFUSED}")), "a refused row: {got:?}");
+    let bridged = r#"tool bridge-1 mcp__tarae__search {"context":1,"pattern":"fn beta"}"#;
+    assert!(got.contains(&bridged.to_string()), "the server got the rewritten number: {got:?}");
     assert!(!got.iter().any(|g| g.contains("t2")), "tarae's own, dropped: {got:?}");
     assert_eq!(got.last().unwrap(), "done ", "no trip: {got:?}");
 }
@@ -1326,6 +1338,88 @@ fn a_bridged_call_doesnt_trip_whichever_comes_first() {
     assert!(carried(&json!({"a": 1}), &json!({"a": 1, "toolSummary": "s"})));
     assert!(!carried(&json!({"a": 1, "b": 2}), &json!({"a": 1})));
     assert!(carried(&Value::Null, &json!({"a": 1})), "a call with no arguments");
+}
+
+/// Whether a turn trips with the bridge's `search` call on `call` and agy's report of it on `report` (its
+/// `toolSummary` beside), the report first and last: the same answer both ways, or the test fails.
+fn trips_on(call: &Value, report: &Value) -> bool {
+    let turn = |report_first: bool| {
+        let (mut st, agent, _) = staged(agy_session("s-1"));
+        prompted(&mut st, &agent);
+        let _bridge = st.link();
+        let line = taraes_report("m1", "search", report.clone(), "completed");
+        let mut got = Vec::new();
+        if report_first {
+            got.extend(says(st.line(&line)));
+        }
+        got.extend(says(st.bridged(bridge_call(1, "search", call.clone()))));
+        if !report_first {
+            got.extend(says(st.line(&line)));
+        }
+        got.extend(turn_over(&mut st, 2));
+        got.last().is_some_and(|g| g.starts_with("exit tripped mcp_tarae_search"))
+    };
+    let first = turn(true);
+    assert_eq!(first, turn(false), "either order: {call} against {report}");
+    first
+}
+
+/// L-B4 (#15): agy 1.5.9 rewrites the model's numbers — `1.0` as `1`, a 23-digit integer as
+/// `1.2345678901234568e+22` (the second probe, measured) — and a report so written still carries the bridge's call:
+/// numbers by value, nested ones too, whichever side was rewritten.
+#[test]
+fn a_report_with_its_numbers_rewritten_matches_its_bridge_call() {
+    let read = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+    let (big, its_float) = (read("12345678901234567890123"), read("1.2345678901234568e+22"));
+    let nested = |one: Value, two: Value| json!({"o": {"a": {"b": [one, two, "x"]}, "z": null}, "s": ""});
+    for (call, report) in [
+        (json!({"n": 1.0}), json!({"n": 1})),
+        (json!({"n": 1}), json!({"n": 1.0})),
+        (json!({"n": big}), json!({"n": its_float})),
+        (json!({"n": 0.1}), json!({"n": 0.1})),
+        (json!({"n": -7.0}), json!({"n": -7})),
+        (nested(json!(1.0), json!(2)), nested(json!(1), json!(2.0))),
+    ] {
+        assert!(!trips_on(&call, &report), "{call} against {report}");
+    }
+}
+
+/// L-B4's other side: a report whose number is another still trips at the turn's end — at the top, nested, or an
+/// array or object of another shape around the same numbers.
+#[test]
+fn a_report_with_another_number_still_trips() {
+    let nested = |b: Value| json!({"o": {"a": {"b": b}}});
+    for (call, report) in [
+        (json!({"n": 1}), json!({"n": 2})),
+        (json!({"n": 0.1}), json!({"n": 0.2})),
+        (json!({"n": 7}), json!({"n": 7.5})),
+        (json!({"n": 1}), json!({"n": "1"})),
+        (nested(json!([1, 2])), nested(json!([1, 2.5]))),
+        (nested(json!([1, 2])), nested(json!([1, 2, 3]))),
+        (nested(json!({"x": 1})), nested(json!({"x": 1, "y": 2}))),
+    ] {
+        assert!(trips_on(&call, &report), "{call} against {report}");
+    }
+}
+
+/// L-B4's strict side: two integers are compared exactly, so one that differs only past f64's precision — 2^53 + 1
+/// against 2^53, `u64::MAX` against one less, `i64::MIN` against one more, integers on both sides — still trips. (A
+/// 23-digit integer can't be held so: tarae's JSON, serde_json without `arbitrary_precision`, reads it as its nearest
+/// f64, so two that differ in their last digit are one value before any compare.)
+#[test]
+fn a_report_with_an_integer_off_past_f64s_precision_still_trips() {
+    for (call, report) in [
+        (json!({"n": 9007199254740993u64}), json!({"n": 9007199254740992u64})),
+        (json!({"n": u64::MAX}), json!({"n": u64::MAX - 1})),
+        (json!({"n": i64::MIN}), json!({"n": i64::MIN + 1})),
+        (json!({"o": [u64::MAX]}), json!({"o": [u64::MAX - 1]})),
+    ] {
+        let f64_of = |v: &Value| v.pointer("/n").or(v.pointer("/o/0")).and_then(Value::as_f64);
+        assert_eq!(f64_of(&call), f64_of(&report), "the same as f64s: {call} against {report}");
+        assert!(trips_on(&call, &report), "{call} against {report}");
+    }
+    let read = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+    assert_eq!(read("12345678901234567890123"), read("12345678901234567890124"), "read as one f64");
 }
 
 /// Guard 3: one of its own tools that failed — its hook refused it: `in_progress`, then `failed` (Q5's measure) — is

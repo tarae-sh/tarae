@@ -133,11 +133,14 @@ pub const SOCKETS: &[&str] = &["TARAE_UI", crate::pty::BROKER, "SSH_AUTH_SOCK"];
 
 /// What moves git's discovery of a repository from a folder: agy runs git (probe 2's `opens.tsv`), and whether its
 /// `.agents/` top is git's answer is unmeasured (the design session's note 1 on L-B2), so none of these reaches it —
-/// its top is then found from its cwd alone, as `agenttrust::chain` finds it.
+/// its top is then found from its cwd alone, as `agenttrust::chain` finds it. `GIT_OBJECT_DIRECTORY` too: git's
+/// `is_git_directory` takes it in place of `objects/`, so with it set git accepts a `.git` that `agenttrust`'s
+/// `is_repository` doesn't.
 pub const GIT_DISCOVERY: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
     "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 ];
@@ -1469,13 +1472,33 @@ fn input_of(call: &Value) -> Value {
 }
 
 /// Whether a report's arguments (`report`) carry a bridge call's (`call`): every key the call had is in the report's,
-/// the same — the report may hold more (agy adds `toolSummary`, which the server never gets: the design session's
-/// condition 1). A call with no arguments: any report of its tool.
+/// the same by value (`same`) — the report may hold more at the top (agy adds `toolSummary`, which the server never
+/// gets: the design session's condition 1). A call with no arguments: any report of its tool.
 fn carried(call: &Value, report: &Value) -> bool {
     match call {
         Value::Null => true,
-        Value::Object(o) => o.iter().all(|(k, v)| report.get(k) == Some(v)),
-        other => other == report,
+        Value::Object(o) => o.iter().all(|(k, v)| report.get(k).is_some_and(|r| same(v, r))),
+        other => same(other, report),
+    }
+}
+
+/// Whether two arguments are the same by value (#15, L-B4): two integers exactly (as `i128`), other numbers as f64 —
+/// `1.0` is `1`, a 23-digit integer its float `1.2345678901234568e+22`, as agy 1.5.9 rewrote the model's numbers
+/// (the second probe, `.sb/agent-p4-probe/out-1794767239/`); arrays and objects all the way down, their keys the
+/// same; the rest as JSON. 1.5.9 hands the server the rewritten numbers too, so its report and the bridge's call
+/// already match as JSON: this is defence in depth, against a version that rewrites one side only.
+fn same(a: &Value, b: &Value) -> bool {
+    let integer = |n: &serde_json::Number| n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => match (integer(x), integer(y)) {
+            (Some(i), Some(j)) => i == j,
+            _ => x.as_f64() == y.as_f64(),
+        },
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(v, w)| same(v, w)),
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w)))
+        }
+        _ => a == b,
     }
 }
 
