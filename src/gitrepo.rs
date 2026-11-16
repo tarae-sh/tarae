@@ -609,9 +609,8 @@ impl Repo {
             let git_dir = match std::fs::symlink_metadata(&dot_git) {
                 Ok(m) if m.is_dir() => dot_git,
                 Ok(_) => {
-                    let named = std::fs::read_to_string(&dot_git).unwrap_or_default();
-                    let Some(to) = named.lines().find_map(|l| l.strip_prefix("gitdir:")) else { continue };
-                    at.join(to.trim())
+                    let Some(named) = named_git_dir(&at) else { continue };
+                    named
                 }
                 Err(_) => continue,
             };
@@ -620,10 +619,7 @@ impl Repo {
                 continue;
             };
             // (a linked checkout's git folder names its common one)
-            let common = std::fs::read_to_string(git_dir.join("commondir"))
-                .ok()
-                .and_then(|c| std::fs::canonicalize(git_dir.join(c.trim())).ok())
-                .unwrap_or_else(|| git_dir.clone());
+            let common = common_of(&git_dir);
             let repo = Repo::read_local(git_dir, common, Some(sub_top.clone()), sub_top, depth + 1);
             subs.push(Sub { rel: rel.to_string(), repo: Arc::new(repo) });
         }
@@ -1128,9 +1124,7 @@ fn submodule(repo: &Repo, at: &Path, rel: &str) -> Option<Arc<Repo>> {
     if !gitlink {
         return None;
     }
-    let named = std::fs::read_to_string(at.join(".git")).ok()?;
-    let git_dir =
-        std::fs::canonicalize(at.join(named.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim())).ok()?;
+    let git_dir = std::fs::canonicalize(named_git_dir(at)?).ok()?;
     let modules = std::fs::canonicalize(repo.common_dir.join("modules")).ok()?;
     if git_dir == modules || !git_dir.starts_with(&modules) || !git_dir.is_dir() {
         return None;
@@ -1147,6 +1141,73 @@ fn submodule(repo: &Repo, at: &Path, rel: &str) -> Option<Arc<Repo>> {
     submodules().put(top, sub.clone(), epoch);
     tell(&sub);
     Some(sub)
+}
+
+/// The most of one of git's small files `git_file` reads (a `.git` file, `gitdir`, `commondir`, `HEAD`, a loose ref, a
+/// `config`, `.gitmodules`).
+pub const GIT_FILE_MAX: u64 = 1 << 20;
+
+/// One of git's small files, read as text to `GIT_FILE_MAX` (`git_file_within`).
+pub fn git_file(path: &Path) -> Option<String> {
+    git_file_within(path, GIT_FILE_MAX)
+}
+
+/// One of git's files — a project's checkout holds some and names where the rest are, so a run can put anything
+/// in their place — read as text, never waited on (#607: a FIFO named `.git` hung `trust::place_of` for good; a
+/// project's files are never waited on, #375): looked at first and opened only when it's a plain file (a FIFO, a
+/// device, a folder are refused unopened — opening a device can do something of its own), opened without waiting
+/// nor taking a terminal, and read only when the opened file is a plain one too (what's at the path may change
+/// between the look and the open), to `max` bytes. None: not there, not a plain file, past `max`, or not text.
+pub fn git_file_within(path: &Path, max: u64) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let flags = libc::O_NONBLOCK | libc::O_NOCTTY;
+    let f = std::fs::OpenOptions::new().read(true).custom_flags(flags).open(path).ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    let n = f.take(max.saturating_add(1)).read_to_string(&mut text).ok()?;
+    (n as u64 <= max).then_some(text)
+}
+
+/// The git folder the `.git` file of the checkout at `at` names (`gitdir: …`, from `at` — or absolute), as given.
+fn named_git_dir(at: &Path) -> Option<PathBuf> {
+    let named = git_file(&at.join(".git"))?;
+    Some(at.join(named.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim()))
+}
+
+/// The common git folder of `git_dir` (real): the one its `commondir` names (a linked checkout's), else itself.
+fn common_of(git_dir: &Path) -> PathBuf {
+    git_file(&git_dir.join("commondir"))
+        .and_then(|c| std::fs::canonicalize(git_dir.join(c.trim())).ok())
+        .unwrap_or_else(|| git_dir.to_path_buf())
+}
+
+/// Tests: a FIFO in place of what's at `p` (in the test's own scratch folder) — what a run could plant where
+/// one of git's files goes.
+#[cfg(test)]
+pub(crate) fn fifo_at(p: &Path) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let _ = std::fs::remove_file(p);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a path of the test's own scratch folder, live for the call.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", p.display());
+}
+
+/// Tests: `look` on a thread of its own, its answer by the shared patience — a read that waits on a FIFO fails
+/// the test, saying so, rather than hanging the run.
+#[cfg(test)]
+pub(crate) fn bounded<T: Send + 'static>(look: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::event::thread("tarae-gitfifo", move || {
+        let _ = tx.send(look());
+    });
+    rx.recv_timeout(crate::test_results::PATIENCE).expect("a read of one of git's files waited on a FIFO")
 }
 
 /// Tests only: whether git run in `dir` would work on tarae's own repository (the nearest `.git` up from it

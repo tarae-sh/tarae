@@ -80,20 +80,22 @@ fn toolchain_files(c: &Client) -> Vec<String> {
 }
 
 /// Git's common folder for the checkout `root` is in: its `.git` folder, or for a worktree (`.git` a file
-/// naming its own folder) the one that folder's `commondir` names.
+/// naming its own folder) the one that folder's `commondir` names. Both read by `gitrepo::git_file`: a run can
+/// put a FIFO named `.git` in a project's folder, and it's never waited on (#607) — a `.git` that isn't a plain
+/// file nor a folder is no checkout's, a `commondir` that isn't one is none.
 fn common_dir(root: &Path) -> Option<PathBuf> {
     let dot = root.ancestors().map(|d| d.join(".git")).find(|g| g.exists())?;
     let dir = if dot.is_dir() {
         dot
     } else {
-        let text = std::fs::read_to_string(&dot).ok()?;
+        let text = crate::gitrepo::git_file(&dot)?;
         let p = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
         if p.is_absolute() { p } else { dot.parent()?.join(p) }
     };
-    let common = match std::fs::read_to_string(dir.join("commondir")) {
-        Ok(c) if Path::new(c.trim()).is_absolute() => PathBuf::from(c.trim()),
-        Ok(c) => dir.join(c.trim()),
-        Err(_) => dir,
+    let common = match crate::gitrepo::git_file(&dir.join("commondir")) {
+        Some(c) if Path::new(c.trim()).is_absolute() => PathBuf::from(c.trim()),
+        Some(c) => dir.join(c.trim()),
+        None => dir,
     };
     std::fs::canonicalize(common).ok()
 }
@@ -2330,5 +2332,29 @@ mod tests {
             "a server whose pack names none: by repository alone"
         );
         let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// #607: a FIFO named `.git` (a run can make one in a project's folder) or in place of a linked checkout's
+    /// `commondir` is never waited on: the first is no checkout's (no key), the second names no common folder (the
+    /// checkout's git folder is its own). Each look bounded by the shared patience; git's files written by hand, no
+    /// git run.
+    #[test]
+    fn a_fifo_named_git_or_commondir_is_never_waited_on() {
+        let dir = crate::scratch::Scratch::new("share-fifo");
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let (w, entry) = (base.join("w"), base.join("repo/.git/worktrees/w"));
+        std::fs::create_dir_all(&w).unwrap();
+        std::fs::create_dir_all(&entry).unwrap();
+        std::fs::write(w.join(".git"), format!("gitdir: {}\n", entry.display())).unwrap();
+        std::fs::write(entry.join("commondir"), "../..\n").unwrap();
+        let look = |w: &Path| {
+            let w = w.to_path_buf();
+            crate::gitrepo::bounded(move || common_dir(&w))
+        };
+        assert_eq!(look(&w), Some(base.join("repo/.git")), "as written");
+        crate::gitrepo::fifo_at(&entry.join("commondir"));
+        assert_eq!(look(&w), Some(entry.clone()), "no commondir read: its own");
+        crate::gitrepo::fifo_at(&w.join(".git"));
+        assert_eq!(look(&w), None, "no checkout's");
     }
 }

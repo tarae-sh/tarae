@@ -884,3 +884,28 @@ fn the_tip_is_read_from_the_loose_ref_or_packed_refs_and_never_past_refs_heads()
     }
     assert_eq!(read_tip(common, "nope"), None);
 }
+
+/// #607: a FIFO in place of the loose ref or of `packed-refs` is never waited on — the loose one is passed for
+/// `packed-refs`' line, a `packed-refs` one is no tip; and a `packed-refs` past git's small files' bound is read to its
+/// own (`PACKED_REFS_MAX`). Each look bounded by the shared patience; git's files written by hand, no git run.
+#[test]
+fn a_fifo_in_place_of_a_ref_or_packed_refs_is_never_waited_on() {
+    let dir = Scratch::new("keepclose-fifo");
+    let common = std::fs::canonicalize(dir.path()).unwrap();
+    let (tip, other) = ("a".repeat(40), "b".repeat(40));
+    let mut packed = String::from("# pack-refs with: peeled fully-peeled sorted \n");
+    while packed.len() as u64 <= crate::gitrepo::GIT_FILE_MAX {
+        packed.push_str(&format!("{other} refs/tags/t{}\n", packed.len()));
+    }
+    packed.push_str(&format!("{tip} refs/heads/main\n"));
+    std::fs::write(common.join("packed-refs"), packed).unwrap();
+    let look = |common: &Path| {
+        let common = common.to_path_buf();
+        crate::gitrepo::bounded(move || read_tip(&common, "main"))
+    };
+    assert_eq!(look(&common).as_deref(), Some(tip.as_str()), "past 1 MB, read whole");
+    crate::gitrepo::fifo_at(&common.join("refs/heads/main"));
+    assert_eq!(look(&common).as_deref(), Some(tip.as_str()), "the loose ref a FIFO: packed-refs' line");
+    crate::gitrepo::fifo_at(&common.join("packed-refs"));
+    assert_eq!(look(&common), None);
+}

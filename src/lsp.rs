@@ -521,7 +521,8 @@ pub struct Nested {
 
 /// `nested_checkouts`' walk, and the output folders it passes by on the way (`Nested.outputs`).
 pub fn nested_walk(root: &Path) -> Nested {
-    let submodules: Vec<String> = std::fs::read_to_string(root.join(".gitmodules"))
+    // (a project's file: never waited on — a FIFO there is no submodule's, #607)
+    let submodules: Vec<String> = crate::gitrepo::git_file(&root.join(".gitmodules"))
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.trim().strip_prefix("path")?.trim_start().strip_prefix('='))
@@ -1667,5 +1668,17 @@ mod tests {
             .into();
         assert_eq!(ex, whole);
         let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// #607: a FIFO named `.gitmodules` (a project's file: a run can make one) is never waited on — it names no
+    /// submodule, and the walk goes on. Bounded by the shared patience; files made by hand, no git run.
+    #[test]
+    fn a_fifo_named_gitmodules_is_never_waited_on() {
+        let dir = crate::scratch::Scratch::new("lsp-fifo");
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir_all(root.join("inner/.git")).unwrap();
+        crate::gitrepo::fifo_at(&root.join(".gitmodules"));
+        let found = crate::gitrepo::bounded(move || nested_walk(&root).checkouts);
+        assert_eq!(found, ["inner"]);
     }
 }

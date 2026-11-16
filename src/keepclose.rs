@@ -412,18 +412,23 @@ pub fn unwatched(ed: &Editor) -> Vec<Base> {
     out
 }
 
+/// The most of `packed-refs` `read_tip` reads: four times the largest measured in git's reftable design — Android's,
+/// 62.2 MB for 866k refs (git's `Documentation/technical/reftable`, "Performance") — where a big work repository's
+/// is a few MB; one past it is no tip's, as an unreadable one is.
+const PACKED_REFS_MAX: u64 = 256 << 20;
+
 /// `branch`'s tip as git's files have it — its loose ref, else `packed-refs`' line (no git run). None: no such
-/// branch, or a name that could leave `refs/heads`.
+/// branch, or a name that could leave `refs/heads`. Both read by `gitrepo::git_file`: never waited on (#607).
 pub fn read_tip(common: &Path, branch: &str) -> Option<String> {
     let parts_ok = branch.split('/').all(|p| !p.is_empty() && p != "." && p != "..");
     if !parts_ok || branch.contains(['\0', '\\']) {
         return None;
     }
     let hex = |s: &str| (s.len() >= 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| s.to_string());
-    if let Ok(s) = std::fs::read_to_string(common.join("refs/heads").join(branch)) {
+    if let Some(s) = crate::gitrepo::git_file(&common.join("refs/heads").join(branch)) {
         return hex(s.trim());
     }
-    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    let packed = crate::gitrepo::git_file_within(&common.join("packed-refs"), PACKED_REFS_MAX)?;
     let name = format!("refs/heads/{branch}");
     packed.lines().find_map(|l| l.split_once(' ').filter(|(_, r)| *r == name).and_then(|(sha, _)| hex(sha)))
 }

@@ -15,7 +15,7 @@ pub fn find_head(start: &Path) -> Option<PathBuf> {
             return Some(dot.join("HEAD"));
         }
         if dot.is_file() {
-            let s = std::fs::read_to_string(&dot).ok()?;
+            let s = crate::gitrepo::git_file(&dot)?;
             let gitdir = s.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
             let gitdir =
                 if Path::new(gitdir).is_absolute() { PathBuf::from(gitdir) } else { dir.join(gitdir) };
@@ -37,17 +37,18 @@ pub fn parse_head(content: &str) -> Option<String> {
     }
 }
 
+/// The branch `head` (a git folder's `HEAD`) is on. Read by `gitrepo::git_file`, as `head_ref` reads it and
+/// `commondir`: the git folder is the one a checkout's `.git` file names, anywhere — never waited on (#607).
 pub fn read_branch(head: &Path) -> Option<String> {
-    parse_head(&std::fs::read_to_string(head).ok()?)
+    parse_head(&crate::gitrepo::git_file(head)?)
 }
 
 /// The loose ref file a symbolic HEAD points to (`ref: refs/heads/x`) — in a worktree's own git folder, or
 /// the repository's common one (`commondir`). None: HEAD is detached (or unreadable).
 fn head_ref(head: &Path) -> Option<PathBuf> {
-    let name = std::fs::read_to_string(head).ok()?.strip_prefix("ref:")?.trim().to_string();
+    let name = crate::gitrepo::git_file(head)?.strip_prefix("ref:")?.trim().to_string();
     let gitdir = head.parent()?;
-    let common = std::fs::read_to_string(gitdir.join("commondir"))
-        .ok()
+    let common = crate::gitrepo::git_file(&gitdir.join("commondir"))
         .map(|c| gitdir.join(c.trim()))
         .unwrap_or_else(|| gitdir.to_path_buf());
     let own = gitdir.join(&name);
@@ -623,5 +624,25 @@ mod tests {
     fn finds_this_repo() {
         let head = find_head(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path()).unwrap();
         assert!(read_branch(&head).is_some());
+    }
+
+    /// #607: a FIFO in place of a git folder's `HEAD` or `commondir` — the git folder a checkout's `.git` file names,
+    /// anywhere — is never waited on: a FIFO `HEAD` is no branch nor ref, a FIFO `commondir` leaves the ref in the
+    /// git folder itself. Each look bounded by the shared patience; git's files written by hand, no git run.
+    #[test]
+    fn a_fifo_in_place_of_head_or_commondir_is_never_waited_on() {
+        let dir = crate::scratch::Scratch::new("git-fifo");
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let gd = base.join("repo/.git/worktrees/w");
+        std::fs::create_dir_all(&gd).unwrap();
+        std::fs::write(gd.join("HEAD"), "ref: refs/heads/x\n").unwrap();
+        std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+        let look = |head: PathBuf| crate::gitrepo::bounded(move || (read_branch(&head), head_ref(&head)));
+        let x = Some("x".to_string());
+        assert_eq!(look(gd.join("HEAD")), (x.clone(), Some(gd.join("../..").join("refs/heads/x"))));
+        crate::gitrepo::fifo_at(&gd.join("commondir"));
+        assert_eq!(look(gd.join("HEAD")), (x, Some(gd.join("refs/heads/x"))), "no commondir read");
+        crate::gitrepo::fifo_at(&gd.join("HEAD"));
+        assert_eq!(look(gd.join("HEAD")), (None, None));
     }
 }

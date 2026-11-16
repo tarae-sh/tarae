@@ -408,3 +408,50 @@ fn fixture_git_in_its_own_process() {
     fixture_git(&at, &["status", "--porcelain"]);
     fixture_git(&at, &["commit", "-qm", "a"]);
 }
+
+/// #607: `git_file` reads a plain file and refuses at once — unopened — a FIFO, a link to one and a folder; past its
+/// bound it reads nothing. Each look bounded by the shared patience; files written by hand, no git run.
+#[test]
+fn a_fifo_in_place_of_a_git_file_is_refused_unopened() {
+    let dir = crate::scratch::Scratch::new("gitrepo-fifo");
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let (plain, fifo, link) = (base.join("plain"), base.join("fifo"), base.join("link"));
+    std::fs::write(&plain, "gitdir: x\n").unwrap();
+    fifo_at(&fifo);
+    std::os::unix::fs::symlink(&fifo, &link).unwrap();
+    let read = bounded(move || {
+        let within = |n| git_file_within(&plain, n);
+        (git_file(&plain), within(10), within(9), git_file(&fifo), git_file(&link), git_file(&base))
+    });
+    let text = Some("gitdir: x\n".to_string());
+    assert_eq!(read, (text.clone(), text, None, None, None, None));
+}
+
+/// #607: the reads `submodules` and `submodule` make of a submodule's checkout — its `.git` file (a run can make a
+/// FIFO by that name in a project's folder) and the `commondir` of the git folder it names — never wait: a FIFO
+/// `.git` names no git folder, a FIFO `commondir` names no common one (the git folder is its own). Each look bounded
+/// by the shared patience; git's files written by hand, no git run.
+#[test]
+fn a_fifo_in_place_of_a_submodules_git_files_is_never_waited_on() {
+    let dir = crate::scratch::Scratch::new("gitrepo-sub-fifo");
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let (sub, git_dir) = (base.join("sub"), base.join("modules/sub"));
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(&git_dir).unwrap();
+    std::fs::write(sub.join(".git"), "gitdir: ../modules/sub\n").unwrap();
+    std::fs::write(git_dir.join("commondir"), "../..\n").unwrap();
+    let look = |sub: &Path| {
+        let sub = sub.to_path_buf();
+        bounded(move || {
+            let named = named_git_dir(&sub);
+            let common = named.as_deref().and_then(|n| std::fs::canonicalize(n).ok()).map(|g| common_of(&g));
+            (named, common)
+        })
+    };
+    let named = Some(sub.join("../modules/sub"));
+    assert_eq!(look(&sub), (named.clone(), Some(base.clone())), "as written");
+    fifo_at(&git_dir.join("commondir"));
+    assert_eq!(look(&sub), (named, Some(git_dir.clone())), "no commondir read: its own");
+    fifo_at(&sub.join(".git"));
+    assert_eq!(look(&sub), (None, None), "no git folder named");
+}
