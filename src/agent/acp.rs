@@ -1569,12 +1569,14 @@ fn model_of(r: &Value) -> String {
 }
 
 /// A turn's `usage` as tarae counts it (None: not given — a turn cut off). As agy 1.5.9 reported it (step 4's two
-/// probes, their `summary.md`s' #3): `inputTokens` leaves the cache read out, as Claude's input does — `totalTokens`
-/// was in + out on the 4 uncached turns (probe 1's turns 1, 4, 8 and 13) and in + out + `cachedReadTokens` on the 10
-/// cached ones (probe 1's 2, 3, 5, 6, 7, 9 and 10; probe 2's 1, 2 and 4); `thoughtTokens` was in none of the 14
-/// totals, so it's carried apart (`Spent.thought`) and never added in. `cachedWriteTokens` was 0 on all 14: mapped as
-/// Claude's cache write, where it goes in the total unmeasured. Probe 1's turns 11 and 12 and probe 2's turn 3 (cut
-/// off) reported none.
+/// probes, their `summary.md`s' #3 and the kept `wire.jsonl`s): `inputTokens` leaves the cache read out, as Claude's
+/// input does — `totalTokens` was in + out on the 5 uncached turns (probe 1's turns 1, 4, 8, 11 and 13) and in + out +
+/// `cachedReadTokens` on the 11 cached ones (probe 1's 2, 3, 5, 6, 7, 9, 10 and 12; probe 2's 1, 2 and 4).
+/// `thoughtTokens` was never a term of its own in those 16 totals: `outputTokens` already holds it. Each turn's visible
+/// output (its answer's text, its calls' names and arguments) is about out − thought, never near out — probe 1's
+/// turn 13 answered `ok` with out 36, thought 31 (L-B6). So it's carried apart (`Spent.thought`) and never added in.
+/// `cachedWriteTokens` was 0 on all 16: mapped as Claude's cache write, where it goes in the total unmeasured. Probe
+/// 2's turn 3 (cut off) reported none.
 fn spent(usage: &Value, conversation: String, at_ms: u64) -> Option<crate::usage::Spent> {
     if !usage.is_object() {
         return None;

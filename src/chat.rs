@@ -6425,7 +6425,8 @@ mod tests {
         };
         // (its folder's hook file changed since the last start: written again, said — step 3's guard 1)
         let state = crate::agent::acp::state(ed.claude_env.as_ref());
-        let made = crate::agentgate::prepare(&crate::agent::STAND_IN, state.as_deref()).unwrap();
+        let made =
+            crate::agentgate::prepare(&crate::agent::STAND_IN, state.as_deref(), &ed.workspace.root).unwrap();
         std::fs::write(made.prepared.folder().join("config/hooks.json"), "{}").unwrap();
         feed(&mut ed, " l");
         // (once its folder is made, on a worker — step 3's guard 1)

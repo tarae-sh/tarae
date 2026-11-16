@@ -1,12 +1,15 @@
 //! Guard 1's folder (agents beside Claude, step 3): an agent whose own tools tarae turns off (its row's `Recipe`) is
-//! started on a config folder of tarae's own, `$state/agent-homes/<row>/`, made and checked before every start, on a
-//! worker, and its two files written there again — the hook file and the program it names (`agent::hook`), the same
-//! bytes from every tarae and every start (the design session's condition 2).
+//! started on a config folder of tarae's own, `$state/agent-homes/<row>/<key>/`, made and checked before every start,
+//! on a worker, and its two files written there again — the hook file and the program it names (`agent::hook`), the
+//! same bytes from every tarae and every start (the design session's condition 2).
 //!
 //! - The folder holds the agent's conversations, so it outlives a session; it's in tarae's state, which no run and no
 //!   `read` of Claude's reaches (`sandbox::taraes_own`), and never the user's own `~/.gemini`.
-//! - `$state`, `agent-homes/`, `<row>/` and its `config/` are each this user's, a real folder (never a link), and
-//!   nobody else's to write (condition 4) — `agent-homes/` and below 0700, as made. One that isn't ends the start,
+//! - One folder a project (step 4's L-B6): `<key>` is the project's — its repository's, which its checkouts share, else
+//!   the folder's real path (`home_key`) — so nothing the agent remembers (its summaries, read back at every start)
+//!   crosses projects.
+//! - `$state`, `agent-homes/`, `<row>/`, `<key>/` and its `config/` are each this user's, a real folder (never a link),
+//!   and nobody else's to write (condition 4) — `agent-homes/` and below 0700, as made. One that isn't ends the start,
 //!   said; nothing is repaired in place.
 //! - Each file goes to a new name in `config/` and is renamed over its own: never seen half written, and a link
 //!   put in its place is replaced, never written through. One that was there and differs is said once.
@@ -70,9 +73,10 @@ pub struct Made {
     pub changed: Vec<(String, u64)>,
 }
 
-/// `row`'s folder under `state` (`$state`) made and checked, its own `config/` looked through, and its files written.
-/// Err: why it isn't started, in the chat's words.
-pub fn prepare(row: &Row, state: Option<&Path>) -> Result<Made, String> {
+/// `row`'s folder under `state` (`$state`) for the project at `root` made and checked, its own `config/` looked
+/// through, and its files written. Err: why it isn't started, in the chat's words. It reads the disk (the project's
+/// git files too, never waited on): a worker's.
+pub fn prepare(row: &Row, state: Option<&Path>, root: &Path) -> Result<Made, String> {
     let name = row.name;
     let off = |why: String| format!("{name}: its own tools can't be turned off — {why}");
     let Some(recipe) = row.own_tools else { return Err(off("its row has no recipe for it".into())) };
@@ -80,7 +84,7 @@ pub fn prepare(row: &Row, state: Option<&Path>) -> Result<Made, String> {
     let say = |what: &str, p: &Path, e: std::io::Error| off(format!("{what} {}: {e}", p.display()));
     std::fs::create_dir_all(state).map_err(|e| say("can't make", state, e))?;
     alone(name, state, 0o022)?;
-    let folder = state.join(HOMES).join(name);
+    let folder = state.join(HOMES).join(name).join(home_key(root));
     let hook_file = folder.join(recipe.hook_file);
     let config = hook_file.parent().unwrap_or(&folder).to_path_buf();
     let mut dir = state.to_path_buf();
@@ -109,6 +113,22 @@ pub fn prepare(row: &Row, state: Option<&Path>) -> Result<Made, String> {
     }
     let program = program(state).map_err(|e| off(format!("can't tell where this tarae is: {e}")))?;
     Ok(Made { prepared: Prepared { folder, program }, changed })
+}
+
+/// The name of the project's folder under its row's (L-B6): the first 16 hex of the SHA-256 of its place's key
+/// (`trust::key`) — a fixed length that says no path. The place is the trust's (`trust::place_of`'s walk): the
+/// repository's git common folder, which its checkouts share, for every folder in it; with no repository, the
+/// folder's real path, so a link to it gets the same folder. Walked from the folder itself, not a file in it: no name
+/// a project puts in its root is followed.
+fn home_key(root: &Path) -> String {
+    use crate::trust::Place;
+    let real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let checkout = real.ancestors().find(|a| a.join(".git").exists());
+    let place = match checkout.and_then(crate::allow::common_dir) {
+        Some(common) => Place::Repo { common, file: PathBuf::new() },
+        None => Place::File(real),
+    };
+    crate::sha256::hex(crate::trust::key(&place).as_bytes())[..16].to_string()
 }
 
 /// tarae's two files in the agent's `folder` for `recipe`: the program, then the hook file naming it, each with the
@@ -357,7 +377,7 @@ pub fn ready(ed: &mut Editor) -> Option<Prepared> {
         let (id, row) = (c.agent_gate.id, c.agent);
         ed.events.jobs().spawn(move || {
             let (looked, since, carried) = crate::agenttrust::look_since(row, &root, store.as_deref());
-            let made = prepare(row, state.as_deref());
+            let made = prepare(row, state.as_deref(), &root);
             move |ed: &mut Editor| {
                 ed.trust_carried(carried);
                 made_now(ed, id, made, looked, since)

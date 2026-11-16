@@ -14,21 +14,22 @@ fn chmod(p: &Path, mode: u32) {
 }
 
 fn refused(state: &Path) -> String {
-    prepare(&STAND_IN, Some(state)).err().unwrap_or_else(|| "started".into())
+    prepare(&STAND_IN, Some(state), state.parent().unwrap()).err().unwrap_or_else(|| "started".into())
 }
 
-/// Condition 4: `$state`, `agent-homes/`, the row's folder and its `config/` are each this user's, a real folder and
-/// nobody else's to write — one that isn't ends the start, said, and is left as it is (nothing repaired, nothing
+/// Condition 4: `$state`, `agent-homes/`, the row's folder, the project's in it (L-B6) and its `config/` are each this
+/// user's, a real folder and nobody else's to write — one that isn't ends the start, said, and is left as it is (nothing repaired, nothing
 /// made through a link). The chat says it where its agent would start, and nothing starts.
 #[test]
 fn a_folder_not_yours_alone_isnt_started_in() {
     let dir = crate::scratch::Scratch::new("agentgate-alone");
     let state = dir.join("state");
-    let made = prepare(&STAND_IN, Some(&state)).unwrap();
+    let made = prepare(&STAND_IN, Some(&state), &dir).unwrap();
     let folder = made.prepared.folder().to_path_buf();
-    assert_eq!(folder, state.join("agent-homes/stand-in"));
-    let homes = state.join("agent-homes");
-    for (dir, mode) in [(&state, 0o775), (&homes, 0o750), (&folder, 0o755), (&folder.join("config"), 0o770)] {
+    assert_eq!(folder, state.join("agent-homes/stand-in").join(home_key(&dir)));
+    let (homes, row) = (state.join("agent-homes"), state.join("agent-homes/stand-in"));
+    let config = folder.join("config");
+    for (dir, mode) in [(&state, 0o775), (&homes, 0o750), (&row, 0o755), (&folder, 0o705), (&config, 0o770)] {
         let was = std::fs::metadata(dir).unwrap().permissions().mode() & 0o7777;
         chmod(dir, mode);
         let said = format!("stand-in: {} isn't yours alone — not started", dir.display());
@@ -38,7 +39,18 @@ fn a_folder_not_yours_alone_isnt_started_in() {
     }
     // ($state only for others' writes: its read is its own business)
     chmod(&state, 0o755);
-    assert!(prepare(&STAND_IN, Some(&state)).is_ok());
+    assert!(prepare(&STAND_IN, Some(&state), &dir).is_ok());
+    // (the project's folder a link, to a folder of this user's: refused, nothing made through it)
+    let away = dir.join("away");
+    std::fs::create_dir(&away).unwrap();
+    chmod(&away, 0o700);
+    let moved = dir.join("moved");
+    std::fs::rename(&folder, &moved).unwrap();
+    std::os::unix::fs::symlink(&away, &folder).unwrap();
+    assert_eq!(refused(&state), format!("stand-in: {} isn't yours alone — not started", folder.display()));
+    assert_eq!(std::fs::read_dir(&away).unwrap().count(), 0, "made through the link");
+    std::fs::remove_file(&folder).unwrap();
+    std::fs::rename(&moved, &folder).unwrap();
     // (a link where a folder should be, to a folder of this user's: refused, nothing made through it)
     let (other, there) = (dir.join("other"), dir.join("there"));
     std::fs::create_dir_all(other.join("tarae")).unwrap();
@@ -227,7 +239,7 @@ fn a_hook_file_changed_while_it_runs_stops_it() {
     crate::chat::gate_opened(&mut ed);
     settle_until(&mut ed, |ed| chat(ed).running() && heard_n(&dir, "session/new") == 1);
     let state = crate::agent::acp::state(ed.claude_env.as_ref()).unwrap();
-    let hooks = state.join(HOMES).join("stand-in/config/hooks.json");
+    let hooks = state.join(HOMES).join("stand-in").join(home_key(&root)).join("config/hooks.json");
     let was = std::fs::read(&hooks).unwrap();
     std::fs::write(&hooks, "{}").unwrap();
     settle_until(&mut ed, |ed| !chat(ed).running());
@@ -274,10 +286,10 @@ fn the_same_bytes_renamed_over_its_files_stop_nothing() {
     settle_until(&mut ed, |ed| chat(ed).running() && heard_n(&dir, "session/new") == 1);
     // (another tarae's start: the same bytes renamed over both)
     let state = crate::agent::acp::state(ed.claude_env.as_ref()).unwrap();
-    let config = state.join(HOMES).join("stand-in/config");
+    let config = state.join(HOMES).join("stand-in").join(home_key(&root)).join("config");
     let inode = |f: &str| std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(config.join(f)).unwrap());
     let was = (inode("hooks.json"), inode(crate::agent::hook::SCRIPT_NAME));
-    let again = prepare(&STAND_IN, Some(&state)).unwrap();
+    let again = prepare(&STAND_IN, Some(&state), &root).unwrap();
     assert!(again.changed.is_empty(), "{:?}", again.changed);
     let now = (inode("hooks.json"), inode(crate::agent::hook::SCRIPT_NAME));
     assert!(was.0 != now.0 && was.1 != now.1, "both renamed over: {was:?} {now:?}");
@@ -296,6 +308,46 @@ fn homes_of(state: &Path) -> String {
     state.join(HOMES).display().to_string()
 }
 
+/// L-B6: one home a project, under its row's folder. A repository's is one for its checkouts — its main one, a linked
+/// one (made by hand, git's links both ways) and a folder in either — and another repository's is its own; a folder in
+/// no repository is keyed by its real path, so a link to it gets the same home. The name is 16 hex, no path in it, and
+/// what the agent keeps in one home isn't in another's.
+#[test]
+fn each_repository_gets_its_own_home() {
+    let dir = crate::scratch::Scratch::new("agentgate-homes");
+    let state = dir.join("state");
+    let row = state.join("agent-homes/stand-in");
+    let home = |root: &Path| {
+        let folder = prepare(&STAND_IN, Some(&state), root).unwrap().prepared.folder().to_path_buf();
+        assert_eq!(folder.parent(), Some(row.as_path()), "under its row's folder");
+        folder
+    };
+    let (one, two, wt, plain) = (dir.join("one"), dir.join("two"), dir.join("one-wt"), dir.join("plain"));
+    for d in [one.join(".git"), two.join(".git"), one.join("sub"), plain.clone()] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let entry = one.join(".git/worktrees/wt");
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", entry.display())).unwrap();
+    std::fs::write(entry.join("gitdir"), format!("{}\n", wt.join(".git").display())).unwrap();
+    std::fs::write(entry.join("commondir"), "../..\n").unwrap();
+    std::os::unix::fs::symlink(&plain, dir.join("link")).unwrap();
+    let first = home(&one);
+    assert_eq!(home(&wt), first, "a repository's two checkouts: one home");
+    assert_eq!(home(&one.join("sub")), first, "a folder in it: the repository's");
+    let (second, own) = (home(&two), home(&plain));
+    assert_ne!(first, second, "two repositories: two homes");
+    assert!(own != first && own != second, "a folder in no repository: its own");
+    assert_eq!(home(&dir.join("link")), own, "a link to it: the same home");
+    let name = first.file_name().unwrap().to_str().unwrap();
+    assert!(name.len() == 16 && name.bytes().all(|b| b.is_ascii_hexdigit()), "{name}");
+    std::fs::write(first.join("conversation_summaries.db"), "one's").unwrap();
+    assert!(
+        !second.join("conversation_summaries.db").exists() && !own.join("conversation_summaries.db").exists()
+    );
+}
+
 /// Condition 2: tarae's two files are the same bytes at every start, whichever tarae writes them (no path of its
 /// own in them). One changed since — its bytes, its mode, a link put in its place — is written again and said, with
 /// its size; a link is replaced, never written through.
@@ -303,7 +355,7 @@ fn homes_of(state: &Path) -> String {
 fn a_hook_file_changed_between_starts_is_written_again_and_said() {
     let dir = crate::scratch::Scratch::new("agentgate-changed");
     let state = dir.join("state");
-    let first = prepare(&STAND_IN, Some(&state)).unwrap();
+    let first = prepare(&STAND_IN, Some(&state), &dir).unwrap();
     let config = first.prepared.folder().join("config");
     let (hooks, script) = (config.join("hooks.json"), config.join(crate::agent::hook::SCRIPT_NAME));
     let bytes = |p: &Path| std::fs::read(p).unwrap();
@@ -311,23 +363,23 @@ fn a_hook_file_changed_between_starts_is_written_again_and_said() {
     assert!(first.changed.is_empty(), "{:?}", first.changed);
     let exe = std::env::current_exe().unwrap();
     assert!(!String::from_utf8_lossy(&hooks_was).contains(exe.to_str().unwrap()), "a tarae's own path in it");
-    let again = prepare(&STAND_IN, Some(&state)).unwrap();
+    let again = prepare(&STAND_IN, Some(&state), &dir).unwrap();
     assert!(again.changed.is_empty() && bytes(&hooks) == hooks_was && bytes(&script) == script_was);
     // (its bytes)
     std::fs::write(&hooks, "{}").unwrap();
-    let made = prepare(&STAND_IN, Some(&state)).unwrap();
+    let made = prepare(&STAND_IN, Some(&state), &dir).unwrap();
     assert_eq!(made.changed, [("config/hooks.json".to_string(), 2)]);
     assert_eq!(bytes(&hooks), hooks_was);
     // (its mode)
     chmod(&hooks, 0o644);
-    assert_eq!(prepare(&STAND_IN, Some(&state)).unwrap().changed.len(), 1);
+    assert_eq!(prepare(&STAND_IN, Some(&state), &dir).unwrap().changed.len(), 1);
     assert_eq!(std::fs::metadata(&hooks).unwrap().permissions().mode() & 0o7777, 0o600);
     // (a link in its place: replaced by tarae's file, what it pointed at untouched)
     let marker = dir.join("marker");
     std::fs::write(&marker, "untouched").unwrap();
     std::fs::remove_file(&script).unwrap();
     std::os::unix::fs::symlink(&marker, &script).unwrap();
-    let made = prepare(&STAND_IN, Some(&state)).unwrap();
+    let made = prepare(&STAND_IN, Some(&state), &dir).unwrap();
     let rel = format!("config/{}", crate::agent::hook::SCRIPT_NAME);
     assert_eq!(made.changed.iter().map(|c| &c.0).collect::<Vec<_>>(), [&rel]);
     assert!(std::fs::symlink_metadata(&script).unwrap().is_file());
@@ -344,7 +396,7 @@ fn a_hook_file_changed_between_starts_is_written_again_and_said() {
 fn a_server_named_as_taraes_in_its_config_isnt_started_with() {
     let dir = crate::scratch::Scratch::new("agentgate-servers");
     let state = dir.join("state");
-    let config = prepare(&STAND_IN, Some(&state)).unwrap().prepared.folder().join("config");
+    let config = prepare(&STAND_IN, Some(&state), &dir).unwrap().prepared.folder().join("config");
     let file = config.join("mcp_config.json");
     let refused_by = |text: &str| {
         std::fs::write(&file, text).unwrap();
@@ -371,7 +423,7 @@ fn a_server_named_as_taraes_in_its_config_isnt_started_with() {
         assert_eq!(refused_by(&text.to_string()), "started", "{text}");
     }
     std::fs::write(config.join(".migrated"), "tarae").unwrap();
-    assert!(prepare(&STAND_IN, Some(&state)).is_ok(), "a file that isn't JSON nor `.json`");
+    assert!(prepare(&STAND_IN, Some(&state), &dir).is_ok(), "a file that isn't JSON nor `.json`");
     std::fs::write(config.join("projects"), json!({"mcpServers": {"tarae": {}}}).to_string()).unwrap();
     assert_eq!(
         refused(&state),
@@ -397,7 +449,7 @@ fn a_server_named_as_taraes_in_its_config_isnt_started_with() {
 fn what_agy_leaves_in_its_config_passes() {
     let dir = crate::scratch::Scratch::new("agentgate-agy-left");
     let state = dir.join("state");
-    let folder = prepare(&STAND_IN, Some(&state)).unwrap().prepared.folder().to_path_buf();
+    let folder = prepare(&STAND_IN, Some(&state), &dir).unwrap().prepared.folder().to_path_buf();
     let config = folder.join("config");
     std::fs::write(config.join("mcp_config.json"), "").unwrap();
     std::fs::write(config.join(".migrated"), "").unwrap();

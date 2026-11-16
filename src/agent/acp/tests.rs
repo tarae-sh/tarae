@@ -297,8 +297,9 @@ fn a_turns_answer_is_its_usage_and_its_end() {
 
 /// The turns agy 1.5.9 reported usage for in step 4's two probes (their `summary.md`s' #3) — in, out, cache read,
 /// thought, `totalTokens`: probe 1's uncached turns 1, 4, 8 and 13, its cached 2, 3, 5, 6, 7, 9 and 10, then probe
-/// 2's cached 1, 2 and 4. Every cache write was 0.
-const AGY_1_5_9_TURNS: [(u64, u64, u64, u64, u64); 14] = [
+/// 2's cached 1, 2 and 4; last probe 1's turns 11 (uncached) and 12 (cached), whose usage is on its `wire.jsonl`
+/// though its `turns.jsonl` kept them as attempts with no answer (L-B6). Every cache write was 0.
+const AGY_1_5_9_TURNS: [(u64, u64, u64, u64, u64); 16] = [
     (10630, 73, 0, 38, 10703),
     (12416, 360, 0, 251, 12776),
     (10680, 156, 0, 122, 10836),
@@ -313,6 +314,8 @@ const AGY_1_5_9_TURNS: [(u64, u64, u64, u64, u64); 14] = [
     (15154, 263, 17404, 186, 32821),
     (16287, 508, 19460, 352, 36255),
     (17412, 311, 26799, 200, 44522),
+    (10775, 109, 0, 72, 10884),
+    (2363, 635, 8721, 548, 11719),
 ];
 
 /// One of `AGY_1_5_9_TURNS` as agy's `usage`.
@@ -327,9 +330,9 @@ fn usage_said(u: &crate::usage::Usage) -> String {
 }
 
 /// L-B5 (#3): agy's usage counted as 1.5.9 reported it. On each of the probes' turns, cached and uncached, tarae's
-/// total (its context and its output) is `totalTokens`, and the thinking stays apart: `Spent.thought`, never in the
-/// counts. Over the 14 turns the tally's total is their totals' sum, its thinking theirs, kept with the conversation,
-/// and `:usage`'s line on cost says it.
+/// total (its context and its output) is `totalTokens`, and the thinking stays apart: `Spent.thought`, never added in
+/// (its output count holds it, L-B6). Over the 16 turns the tally's total is their totals' sum, its thinking theirs,
+/// kept with the conversation, and `:usage`'s line on cost says it is part of the output.
 #[test]
 fn agys_usage_counts_as_1_5_9_reported() {
     let mut u = crate::usage::Usage::of(&CAPS);
@@ -348,7 +351,8 @@ fn agys_usage_counts_as_1_5_9_reported() {
     back.restore("s-1", &u.conv_json("s-1").unwrap());
     assert_eq!(back.totals().thought, Some(thought), "kept with the conversation");
     let line = format!(
-        "\nThis agent doesn't report what its turns cost. Its thinking — {} tokens — isn't in the counts below.\n",
+        "\nThis agent doesn't report what its turns cost. Its thinking — {} tokens — is part of the output count \
+         below.\n",
         crate::usage::tokens(thought)
     );
     let said = usage_said(&u);
@@ -390,7 +394,8 @@ fn start(script: Value, o: Opts) -> Run {
     // (where a test's bridge binds and its agent's folder is: its own state folder)
     env.insert("XDG_STATE_HOME".into(), dir.join("state").to_string_lossy().into_owned());
     // (its folder made as the chat's gate makes it, on this thread)
-    let made = crate::agentgate::prepare(&STAND_IN, state(Some(&env)).as_deref()).expect("its folder made");
+    let made = crate::agentgate::prepare(&STAND_IN, state(Some(&env)).as_deref(), dir.path())
+        .expect("its folder made");
     if let Some(hooks) = &o.hooks {
         std::fs::write(made.prepared.folder().join("config/hooks.json"), hooks).unwrap();
     }
@@ -879,15 +884,15 @@ fn a_test_never_starts_a_real_agent() {
     }
     // (and the stand-in's own isn't refused, its folder made)
     let dir = crate::scratch::Scratch::new("acp-real-agent");
-    let made = crate::agentgate::prepare(&STAND_IN, Some(dir.path())).unwrap();
+    let made = crate::agentgate::prepare(&STAND_IN, Some(dir.path()), dir.path()).unwrap();
     let s = Start { prepared: Some(&made.prepared), ..Start::on(&STAND_IN, Role::Chat, &cfg) };
     assert!(command(&s, &std::env::temp_dir(), None).is_ok());
 }
 
 // ── Guard 1: its own tools off ─────────────────────────────────────────────────────
 
-/// Step 3's guard 1, end to end on the stand-in: a start makes its folder (`$state/agent-homes/<row>/`, 0700 down to
-/// `config/`), writes tarae's two files there to the byte — the hook file (0600) naming the program beside it
+/// Step 3's guard 1, end to end on the stand-in: a start makes its folder (`$state/agent-homes/<row>/<key>/`, the
+/// project's — here a folder in no repository, keyed by its real path (L-B6) —, 0700 down to `config/`), writes tarae's two files there to the byte — the hook file (0600) naming the program beside it
 /// (0700) — and names it with `--gemini-dir`, tarae's path for the hook in its environment. The stand-in runs its
 /// own `run_command` as agy does: the hook it reads there asks tarae (the program, then the test binary's
 /// `hook::child`), which refuses it, and the call comes up as a refused row (step 3's guard 3: no trip at `failed`),
@@ -922,9 +927,12 @@ fn a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied() {
     got.extend(run.until("mcp bridge-1"));
     run.agent().answer_mcp("bridge-1", json!({"jsonrpc": "2.0", "id": 1, "result": {"content": []}}));
     got.extend(run.until("done"));
-    let folder = run.dir.join("state/tarae/agent-homes/stand-in");
+    let place = crate::trust::Place::File(std::fs::canonicalize(run.dir.path()).unwrap());
+    let key = &crate::sha256::hex(crate::trust::key(&place).as_bytes())[..16];
+    let row = run.dir.join("state/tarae/agent-homes/stand-in");
+    let folder = row.join(key);
     let mode = |p: &std::path::Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777;
-    for dir in [folder.parent().unwrap(), &folder, &folder.join("config")] {
+    for dir in [row.parent().unwrap(), &row, &folder, &folder.join("config")] {
         assert_eq!(mode(dir), 0o700, "{}", dir.display());
     }
     let (hooks, program) = (folder.join("config/hooks.json"), folder.join("config").join(hook::SCRIPT_NAME));

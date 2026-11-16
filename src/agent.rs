@@ -203,7 +203,7 @@ pub fn held_paths() -> impl Iterator<Item = &'static str> {
     ROWS.iter().copied().chain([&STAND_IN]).flat_map(|r| r.held.iter().copied())
 }
 
-/// A config folder of tarae's own (`$state/agent-homes/<row>/`, `agentgate.rs`), and the files tarae writes there
+/// A config folder of tarae's own (`$state/agent-homes/<row>/<key>/`, one a project, `agentgate.rs`), and the files tarae writes there
 /// before every start: the agent's own tools turned off by tarae's hook (guard 1).
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]

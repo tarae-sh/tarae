@@ -170,8 +170,9 @@ pub struct Spent {
     pub models: Vec<(String, Option<u64>)>,
     pub ms: Option<u64>,
     pub at_ms: u64,
-    /// The tokens it says it spent thinking, apart from `counts` and never added in (agy's `thoughtTokens`, not in
-    /// its total — `acp::spent`) — None: not reported (Claude's). Under the test gate with the ACP wire.
+    /// The tokens it says it spent thinking, apart from `counts` and never added in (agy's `thoughtTokens`, already
+    /// part of its output count — `acp::spent`) — None: not reported (Claude's). Under the test gate with the ACP
+    /// wire.
     #[cfg(test)]
     pub thought: Option<u64>,
 }
@@ -1022,12 +1023,12 @@ pub fn report(
     }
     match u.caps.cost {
         true => out += &format!("{}\n\n", price_note(u.cli.as_deref())),
-        // (agy's thinking: counted apart, never in its total — `acp::spent`)
+        // (agy's thinking: already in its output count, so never added in — `acp::spent`)
         #[cfg(test)]
         false if u.totals().thought.is_some() => {
             out += &format!(
-                "This agent doesn't report what its turns cost. Its thinking — {} tokens — isn't in the counts \
-                 below.\n\n",
+                "This agent doesn't report what its turns cost. Its thinking — {} tokens — is part of the output \
+                 count below.\n\n",
                 tokens(u.totals().thought.unwrap_or_default())
             )
         }
