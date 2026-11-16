@@ -584,6 +584,7 @@ fn near_the_limit_the_reset_outlasts_the_turns_cost() {
             models,
             ms: None,
             at_ms: now,
+            thought: None,
         });
         let far = iso_ms("2099-01-06T01:00:00Z").unwrap();
         let weekly = Reading {

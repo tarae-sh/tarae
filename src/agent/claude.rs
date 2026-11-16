@@ -677,6 +677,8 @@ pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<Event> {
                 models,
                 ms: ev["duration_ms"].as_u64(),
                 at_ms,
+                #[cfg(test)]
+                thought: None,
             }))
         }
         _ => None,

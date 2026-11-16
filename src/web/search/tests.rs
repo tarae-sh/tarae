@@ -528,6 +528,7 @@ fn the_turns_end_stops_it_and_its_cost_is_an_entry_of_its_own() {
         models: vec![("claude-haiku-5-5".into(), None)],
         ms: Some(7500),
         at_ms: 1,
+        thought: None,
     };
     let chat_turns = |ed: &Editor| {
         ed.workspace.claude.usage.turns.iter().filter(|t| t.conversation != "web-search").count()

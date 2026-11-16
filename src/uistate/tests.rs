@@ -2343,6 +2343,7 @@ fn usage_turn(u: &mut crate::usage::Usage) {
         models: vec![(model, Some(200_000))],
         ms: Some(4200),
         at_ms: 1_791_100_000_000,
+        thought: None,
     });
 }
 

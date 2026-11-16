@@ -274,7 +274,7 @@ fn a_permission_answer_selects_its_option_by_kind() {
     assert_eq!(outcome(&Value::Null, &deny), json!({"outcome": {"outcome": "cancelled"}}));
 }
 
-/// A turn's answer: agy's `usage` counted (`thoughtTokens` dropped), its model from `configOptions`, and each
+/// A turn's answer: agy's `usage` counted (`thoughtTokens` apart), its model from `configOptions`, and each
 /// `stopReason` said.
 #[test]
 fn a_turns_answer_is_its_usage_and_its_end() {
@@ -293,6 +293,68 @@ fn a_turns_answer_is_its_usage_and_its_end() {
     ] {
         assert_eq!(stopped("agy", reason, ""), Err(words.into()));
     }
+}
+
+/// The turns agy 1.5.9 reported usage for in step 4's two probes (their `summary.md`s' #3) — in, out, cache read,
+/// thought, `totalTokens`: probe 1's uncached turns 1, 4, 8 and 13, its cached 2, 3, 5, 6, 7, 9 and 10, then probe
+/// 2's cached 1, 2 and 4. Every cache write was 0.
+const AGY_1_5_9_TURNS: [(u64, u64, u64, u64, u64); 14] = [
+    (10630, 73, 0, 38, 10703),
+    (12416, 360, 0, 251, 12776),
+    (10680, 156, 0, 122, 10836),
+    (10758, 36, 0, 31, 10794),
+    (2423, 146, 8576, 36, 11145),
+    (2400, 81, 8950, 47, 11431),
+    (2805, 70, 9301, 29, 12176),
+    (2689, 173, 10465, 136, 13327),
+    (2479, 64, 11806, 27, 14349),
+    (9013, 292, 36161, 152, 45466),
+    (13043, 419, 8731, 245, 22193),
+    (15154, 263, 17404, 186, 32821),
+    (16287, 508, 19460, 352, 36255),
+    (17412, 311, 26799, 200, 44522),
+];
+
+/// One of `AGY_1_5_9_TURNS` as agy's `usage`.
+fn agy_1_5_9_usage((input, output, read, thought, total): (u64, u64, u64, u64, u64)) -> Value {
+    json!({"inputTokens": input, "outputTokens": output, "cachedReadTokens": read, "cachedWriteTokens": 0,
+        "thoughtTokens": thought, "totalTokens": total})
+}
+
+/// `:usage`'s text for `u`, at a fixed time.
+fn usage_said(u: &crate::usage::Usage) -> String {
+    crate::usage::report("s", u, &Default::default(), &[], 100, crate::log::Zone::Here)
+}
+
+/// L-B5 (#3): agy's usage counted as 1.5.9 reported it. On each of the probes' turns, cached and uncached, tarae's
+/// total (its context and its output) is `totalTokens`, and the thinking stays apart: `Spent.thought`, never in the
+/// counts. Over the 14 turns the tally's total is their totals' sum, its thinking theirs, kept with the conversation,
+/// and `:usage`'s line on cost says it.
+#[test]
+fn agys_usage_counts_as_1_5_9_reported() {
+    let mut u = crate::usage::Usage::of(&CAPS);
+    let (mut total, mut thought) = (0, 0);
+    for (i, turn) in AGY_1_5_9_TURNS.into_iter().enumerate() {
+        let usage = agy_1_5_9_usage(turn);
+        let s = spent(&usage, "s-1".into(), i as u64 + 1).unwrap();
+        assert_eq!(s.counts.context().unwrap() + s.counts.output.unwrap(), turn.4, "{usage}");
+        assert_eq!(s.thought, Some(turn.3), "{usage}");
+        u.spent(s);
+        (total, thought) = (total + turn.4, thought + turn.3);
+    }
+    let t = u.totals();
+    assert_eq!((t.counts.context().unwrap() + t.counts.output.unwrap(), t.thought), (total, Some(thought)));
+    let mut back = crate::usage::Usage::of(&CAPS);
+    back.restore("s-1", &u.conv_json("s-1").unwrap());
+    assert_eq!(back.totals().thought, Some(thought), "kept with the conversation");
+    let line = format!(
+        "\nThis agent doesn't report what its turns cost. Its thinking — {} tokens — isn't in the counts below.\n",
+        crate::usage::tokens(thought)
+    );
+    let said = usage_said(&u);
+    assert!(said.contains(&line), "{said}");
+    let none = usage_said(&crate::usage::Usage::of(&CAPS));
+    assert!(none.contains("\nThis agent doesn't report what its turns cost.\n"), "no thinking yet: {none}");
 }
 
 // ── Over the stand-in ───────────────────────────────────────────────────────────
@@ -468,6 +530,49 @@ fn a_turn_on_the_stand_in() {
     run.started = None;
     run.heard_until(|v| v["eof"] == true);
     assert!(run.until("exit").last().unwrap().starts_with("exit"));
+}
+
+/// L-B5: a turn with no `usage` — an answer without one, or a turn cut off (probe 2's turn 3: its stdin ended
+/// mid-turn, no answer at all) — sends no usage, so nothing is said of it, and the tally (`:usage`'s turns, totals and
+/// text) stays as the turn before left it, the cut's end (`Usage::cut_off`, the chat's on an exit) included.
+#[test]
+fn a_turn_with_no_usage_leaves_the_tally_and_says_nothing() {
+    let usage = agy_1_5_9_usage(AGY_1_5_9_TURNS[11]);
+    let text = |t: &str| json!({"say": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": t}}});
+    let mut script = handshake();
+    script.extend([
+        json!({"expect": "session/prompt"}),
+        text("One"),
+        json!({"end_turn": "end_turn", "usage": usage}),
+        json!({"expect": "session/prompt"}),
+        text("Two"),
+        json!({"end_turn": "end_turn"}),
+        json!({"expect": "session/prompt"}),
+        json!({"eof": true}),
+    ]);
+    let mut run = start(json!(script), Opts { prompt: Some("one"), ..Opts::default() });
+    let spent_said = |got: &[String]| got.iter().filter(|g| g.starts_with("spent ")).count();
+    let first = run.until("done");
+    assert_eq!(spent_said(&first), 1, "the turn with usage: {first:?}");
+    run.agent().prompt(Prompt::Text("two".into())).unwrap();
+    let second = run.until("done");
+    assert_eq!((spent_said(&second), second.last().unwrap().as_str()), (0, "done Two"), "{second:?}");
+    run.agent().prompt(Prompt::Text("cut".into())).unwrap();
+    run.heard_until(|v| v["method"] == "session/prompt" && v["params"]["prompt"][0]["text"] == "cut");
+    // (its stdin ended mid-turn, as probe 2's run C's)
+    run.started = None;
+    let cut = run.until("exit");
+    assert_eq!(spent_said(&cut), 0, "the turn cut off: {cut:?}");
+    // The chat's side: the first turn's usage, then the cut's end — the tally as it was, `:usage` saying the same
+    let mut u = crate::usage::Usage::of(&CAPS);
+    u.spent(spent(&usage, "s-1".into(), 1).unwrap());
+    let before = (u.turns.clone(), u.totals(), usage_said(&u));
+    assert!(
+        spent(&json!({"stopReason": "end_turn"})["usage"], "s-1".into(), 2).is_none(),
+        "no usage, none sent"
+    );
+    u.cut_off(3);
+    assert_eq!((u.turns.clone(), u.totals(), usage_said(&u)), before);
 }
 
 /// An agent whose `sessionCapabilities` take a system prompt gets tarae's words in `session/new`, appended, and

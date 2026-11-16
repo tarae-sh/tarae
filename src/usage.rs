@@ -170,6 +170,10 @@ pub struct Spent {
     pub models: Vec<(String, Option<u64>)>,
     pub ms: Option<u64>,
     pub at_ms: u64,
+    /// The tokens it says it spent thinking, apart from `counts` and never added in (agy's `thoughtTokens`, not in
+    /// its total — `acp::spent`) — None: not reported (Claude's). Under the test gate with the ACP wire.
+    #[cfg(test)]
+    pub thought: Option<u64>,
 }
 
 /// One API request.
@@ -221,6 +225,9 @@ pub struct Turn {
     pub compacted: Option<String>,
     /// Its tool calls (`calls.rs`) — None: a one-turn process's, or a turn kept before they were counted.
     pub calls: Option<crate::calls::Calls>,
+    /// Its thinking tokens, apart from `counts` (`Spent.thought`) — None: not reported.
+    #[cfg(test)]
+    pub thought: Option<u64>,
 }
 
 impl Turn {
@@ -229,6 +236,10 @@ impl Turn {
                 "requests": self.requests, "ms": self.ms, "compacted": self.compacted });
         if let Some(c) = &self.calls {
             v["calls"] = c.json();
+        }
+        #[cfg(test)]
+        if let Some(n) = self.thought {
+            v["thought"] = json!(n);
         }
         v
     }
@@ -278,6 +289,8 @@ impl Turn {
             ms: v["ms"].as_u64(),
             compacted: v["compacted"].as_str().map(String::from),
             calls: crate::calls::Calls::from_json(&v["calls"]),
+            #[cfg(test)]
+            thought: v["thought"].as_u64(),
         })
     }
 }
@@ -336,12 +349,17 @@ pub struct Totals {
     /// The tool calls of the turns that counted them · how many those were.
     pub calls: crate::calls::Sums,
     pub counted: usize,
+    /// The thinking tokens of the turns that reported them, apart from `counts` — None: none did.
+    #[cfg(test)]
+    pub thought: Option<u64>,
 }
 
 impl Totals {
     fn add(&mut self, t: &Turn) {
         self.turns += 1;
         self.counts.add(t.counts);
+        #[cfg(test)]
+        self.add_thought(t.thought);
         if let Some(c) = &t.calls {
             self.calls.add(c.sums);
             self.counted += 1;
@@ -360,6 +378,15 @@ impl Totals {
         self.counted += o.counted;
         self.cost += o.cost;
         self.unpriced += o.unpriced;
+        #[cfg(test)]
+        self.add_thought(o.thought);
+    }
+
+    #[cfg(test)]
+    fn add_thought(&mut self, n: Option<u64>) {
+        if let Some(n) = n {
+            *self.thought.get_or_insert(0) += n;
+        }
     }
 
     /// `$1.23` · `$1.23 + 2 not reported` · `not reported`.
@@ -628,6 +655,8 @@ impl Usage {
             ms: s.ms,
             compacted: self.compacting.take(),
             calls: Some(calls),
+            #[cfg(test)]
+            thought: s.thought,
         });
         let turn = self.turns.last().expect("just pushed");
         self.to_record.push(turn.entry("chat", &steps, &requests));
@@ -648,6 +677,8 @@ impl Usage {
             ms: s.ms,
             compacted: None,
             calls: None,
+            #[cfg(test)]
+            thought: s.thought,
         });
         let turn = self.turns.last().expect("just pushed");
         self.to_record.push(turn.entry(what, &[], &[]));
@@ -991,6 +1022,15 @@ pub fn report(
     }
     match u.caps.cost {
         true => out += &format!("{}\n\n", price_note(u.cli.as_deref())),
+        // (agy's thinking: counted apart, never in its total — `acp::spent`)
+        #[cfg(test)]
+        false if u.totals().thought.is_some() => {
+            out += &format!(
+                "This agent doesn't report what its turns cost. Its thinking — {} tokens — isn't in the counts \
+                 below.\n\n",
+                tokens(u.totals().thought.unwrap_or_default())
+            )
+        }
         false => out += "This agent doesn't report what its turns cost.\n\n",
     }
     out += &limits_section(u, limits, now_ms, zone);
