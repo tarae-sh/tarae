@@ -34318,6 +34318,57 @@ mod tests {
         assert!(worst.0 < budget, "key {:?} took {:?} (budget {:?})", worst.1, worst.0, budget);
     }
 
+    /// What someone waits for before a big markdown file shows its colours (#559: design's row): the whole file
+    /// parsed, its injected layers (each fenced Rust block, each paragraph's inline markdown) parsed, and the first
+    /// frame drawn from them. Median and p90 of 7 warm runs (one first, not kept); reported only, no budget. Only on
+    /// machines with the Rust grammar (`dev-grammars`).
+    #[test]
+    fn perf_highlight_big_markdown_with_injections() {
+        if crate::test_results::unoptimized("term::tests::perf_highlight_big_markdown_with_injections") {
+            return;
+        }
+        let load = |name| crate::syntax::Loader::global().load(crate::syntax::spec(name).unwrap());
+        let (Ok(md), Ok(_)) = (load("markdown"), load("rust")) else { return };
+        // 600 sections, 7.8k lines: a heading, a paragraph with inline code, emphasis and a link, a fenced block
+        let body: String = (0..600)
+            .map(|i| {
+                format!(
+                    "```rust\nfn f{i}(x: &str) -> Option<u32> {{\n    let s = \"타래 {i}\";\n    x.parse().ok()\n}}\n\
+                     struct S{i} {{ a: u32, b: Vec<String> }}\nimpl S{i} {{ fn n(&self) -> u32 {{ self.a }} }}\n```\n\n\
+                     ## Section {i}\n\nSome **bold** words, `f{i}` in code, *emphasis* and [a link](https://x/{i}).\n\n"
+                )
+            })
+            .collect();
+        let text = Rope::from_str(&body);
+        let mut ed = Editor::new(Config::default());
+        ed.docs[0].text = text.clone();
+        let mut buf = Vec::with_capacity(1 << 16);
+        let mut runs: Vec<f64> = (0..8)
+            .map(|_| {
+                drop(ed.docs[0].syntax.take());
+                let t0 = Instant::now();
+                let syn = crate::syntax::Syntax::parsed(md.clone(), &text);
+                let names = |s: &str| syn.layers.iter().any(|l| l.lang.name.contains(s));
+                assert!(names("rust") && names("inline"), "the injected layers: {}", syn.layers.len());
+                ed.docs[0].syntax = Some(syn);
+                buf.clear();
+                render(&mut ed, &mut buf, 160, 50).unwrap();
+                t0.elapsed().as_secs_f64() * 1e3
+            })
+            .skip(1)
+            .collect();
+        let n = ed.docs[0].syntax.as_ref().map_or(0, |s| s.layers.len());
+        runs.sort_by(f64::total_cmp);
+        let (median, p90) = (runs[runs.len() / 2], runs[(runs.len() - 1) * 9 / 10]);
+        let line = format!(
+            "PERF highlight_big_markdown_with_injections_ms {median:.2} noise=1\n\
+             PERF highlight_big_markdown_with_injections_p90_ms {p90:.2} noise=1\n\
+             (big markdown: {} lines, {n} injected layers)\n",
+            text.len_lines()
+        );
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    }
+
     /// Keys (sent as events — every event ends with the panel following the editor) → frame, worst of all.
     /// Like `key_to_frame`: the events once, the frame the fastest of 3 (scheduling noise from parallel tests).
     fn events_to_frames(ed: &mut Editor, keys: &[&str], w: u16, h: u16) -> (Duration, String) {

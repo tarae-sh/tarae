@@ -139,6 +139,37 @@ fn p90(mut v: Vec<f64>) -> f64 {
     v[(v.len() - 1) * 9 / 10]
 }
 
+/// What someone waits for opening a big file (#559: design's row): from `:open` typed to the first frame showing
+/// its code coloured — the read on its worker, the parse, the frame — in the 200k-line file the key rows use. A
+/// fresh tarae each run (a small file open first), the big file in the page cache from its writing (warm);
+/// median and p90 of `REPEAT`, reported only, no budget.
+#[test]
+fn perf_open_big_file_to_first_frame() {
+    if unoptimized("perf_open_big_file_to_first_frame") {
+        return;
+    }
+    let sb = Sandbox::new("perf-open");
+    big_file(&sb, "big.rs", 200_000);
+    sb.write("a.txt", "a small file\n");
+    let mut runs = Vec::new();
+    for _ in 0..REPEAT {
+        let mut t = sb.spawn(&["a.txt"]);
+        t.wait_text("a small file");
+        t.send(":open big.rs");
+        t.wait_text(":open big.rs");
+        let t0 = Instant::now();
+        t.send("\r");
+        // (`fn` a keyword, `//` a comment: two colours once highlighted, one while plain)
+        runs.push(ms(t.coloured_frame_at("fn f1(", "// 타래").saturating_duration_since(t0)));
+    }
+    let line = format!(
+        "PERF open_big_file_to_first_frame_ms {:.3} noise=5\nPERF open_big_file_to_first_frame_p90_ms {:.3} noise=5\n",
+        median(runs.clone()),
+        p90(runs)
+    );
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+}
+
 /// From starting `tarae attach` to the host's first frame on its terminal (the remote plan's step 3), a host up with a
 /// file open — each attach taking over the one before, as a second `tarae attach` does. Beside
 /// `e2e_startup_to_first_frame_ms`.

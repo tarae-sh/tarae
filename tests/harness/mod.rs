@@ -475,6 +475,15 @@ pub struct Output {
 
 pub type Shared = Arc<Mutex<Output>>;
 
+/// The foreground colour `s` shows `needle`'s first character in (None: not on it).
+fn fg_on(s: &vt100::Screen, needle: &str) -> Option<vt100::Color> {
+    use unicode_width::UnicodeWidthStr;
+    let (_, cols) = s.size();
+    let (r, row) = s.rows(0, cols).enumerate().find(|(_, row)| row.contains(needle))?;
+    let col = row[..row.find(needle)?].width();
+    Some(s.cell(r as u16, col as u16)?.fgcolor())
+}
+
 /// A panicking test thread must not wedge the others — ignore poisoning.
 pub fn lock(out: &Shared) -> std::sync::MutexGuard<'_, Output> {
     out.lock().unwrap_or_else(|e| e.into_inner())
@@ -741,13 +750,28 @@ impl Term {
 
     /// The foreground colour the screen shows `needle`'s first character in (None: not on screen).
     pub fn fg_of(&self, needle: &str) -> Option<vt100::Color> {
-        use unicode_width::UnicodeWidthStr;
-        let o = lock(&self.out);
-        let s = o.parser.screen();
-        let (_, cols) = s.size();
-        let (r, row) = s.rows(0, cols).enumerate().find(|(_, row)| row.contains(needle))?;
-        let col = row[..row.find(needle)?].width();
-        Some(s.cell(r as u16, col as u16)?.fgcolor())
+        fg_on(lock(&self.out).parser.screen(), needle)
+    }
+
+    /// Polls finely until a whole frame shows `a`'s and `b`'s first characters in different colours (a
+    /// keyword beside a comment: the text coloured, not drawn plain), and returns when that frame ended — as its
+    /// bytes were read. Panics on timeout.
+    pub fn coloured_frame_at(&mut self, a: &str, b: &str) -> Instant {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            {
+                let o = lock(&self.out);
+                let s = o.parser.screen();
+                if !o.in_frame
+                    && let (Some(x), Some(y)) = (fg_on(s, a), fg_on(s, b))
+                    && x != y
+                {
+                    return o.last_frame_at.expect("a frame");
+                }
+            }
+            assert!(Instant::now() < deadline, "no coloured frame with {a:?} and {b:?}\n{}", self.screen());
+            thread::sleep(Duration::from_micros(200));
+        }
     }
 
     pub fn raw(&self) -> Vec<u8> {
