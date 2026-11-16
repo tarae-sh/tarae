@@ -150,7 +150,7 @@ fn a_file_added_in_a_parents_held_folder_while_it_runs_stops_it() {
     let dir = crate::scratch::Scratch::new("agentgate-watch-parent");
     let repo = dir.join("repo");
     let root = repo.join("p");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    crate::agenttrust::repository_at(&repo);
     for folder in [&repo, &root] {
         std::fs::create_dir_all(folder.join(".stand-in")).unwrap();
         std::fs::write(folder.join(".stand-in/hooks.json"), "{}").unwrap();
@@ -173,6 +173,40 @@ fn a_file_added_in_a_parents_held_folder_while_it_runs_stops_it() {
     assert!(!chat(&ed).running(), "stopped");
     let lines = ["  .stand-in/added.json", "  .stand-in/hooks.json", "  p/.stand-in/hooks.json"];
     assert_eq!(card(&ed).unwrap(), lines);
+    ed.workspace.claude.chat = None;
+}
+
+/// The design session's note 2 on L-B2: the top's `.git` is armed — a worktree's `.git` file written over in place
+/// while the agent runs (no folder's list changes: nothing else armed sees it), so it's no top and the chain is
+/// another, stops it, said once, and the card asks again for the chain as it is now (no git top: the root's alone).
+#[test]
+fn the_tops_git_written_over_while_it_runs_stops_it() {
+    let dir = crate::scratch::Scratch::new("agentgate-watch-top");
+    let wt = dir.join("wt");
+    let root = wt.join("p");
+    for folder in [&wt, &root] {
+        std::fs::create_dir_all(folder.join(".stand-in")).unwrap();
+        std::fs::write(folder.join(".stand-in/hooks.json"), "{}").unwrap();
+    }
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", dir.join("main/.git/worktrees/wt").display()))
+        .unwrap();
+    let seen = crate::agenttrust::look(&STAND_IN, &root, None).unwrap();
+    crate::trust::record(dir.join("trust.json"), crate::trust::Kind::Agent, seen.file, seen.hash, true)
+        .unwrap();
+    let mut ed = running_editor(&dir, &root);
+    crate::chat::gate_opened(&mut ed);
+    settle_until(&mut ed, |ed| chat(ed).running() && heard_n(&dir, "session/new") == 1);
+    std::fs::write(wt.join(".git"), "not a gitdir\n").unwrap();
+    let card = |ed: &Editor| {
+        let o = ed.offers.iter().find(|o| matches!(o.what, crate::offer::What::AgentFiles { .. }))?;
+        Some(o.question.lines().skip(2).map(String::from).collect::<Vec<_>>())
+    };
+    settle_until(&mut ed, |ed| card(ed).is_some());
+    let words = "stand-in's files in this project changed while it ran — stopped: it and everything it started ended. \
+                 Their card asks again.";
+    assert_eq!(said_n(&ed, words), 1, "said once");
+    assert!(!chat(&ed).running(), "stopped");
+    assert_eq!(card(&ed).unwrap(), ["  .stand-in/hooks.json"]);
     ed.workspace.claude.chat = None;
 }
 

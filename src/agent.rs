@@ -221,8 +221,8 @@ pub struct Recipe {
 #[derive(Debug, Clone, Copy)]
 pub enum Hook {
     /// agy 1.5.4 and 1.5.7, as the design session's probe saw them take it: one `PreToolUse` group, `matcher` `*`,
-    /// one hook of `type` `command` — a bare absolute path, no arguments — and its `timeout` (its unit unmeasured:
-    /// step 4's probe). Its stdin is a JSON object with `toolCall.name`; its answer `{"decision":"allow"}` or
+    /// one hook of `type` `command` — an absolute path, shell-quoted, no arguments: 1.5.9 runs it through a shell
+    /// (step 4's probe, #6) — and its `timeout` (in seconds, enforced: probe 2, run A). Its stdin is a JSON object with `toolCall.name`; its answer `{"decision":"allow"}` or
     /// `{"decision":"deny","reason":…}`.
     Agy { timeout: u32 },
 }

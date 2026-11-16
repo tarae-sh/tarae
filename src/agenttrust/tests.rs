@@ -593,7 +593,7 @@ fn listed_lines(root: &Path) -> Vec<String> {
 fn every_held_folder_up_to_the_git_top_is_one_listing() {
     let dir = Scratch::new("agenttrust-chain");
     let top = dir.join("outer/top");
-    std::fs::create_dir_all(top.join(".git")).unwrap();
+    repository_at(&top);
     held_at(&dir.join("outer"), "o.json", "{}");
     held_at(&top, "t.json", "1");
     held_at(&top.join("mid"), "m.json", "2");
@@ -626,7 +626,7 @@ fn every_held_folder_up_to_the_git_top_is_one_listing() {
 fn a_change_in_a_parents_held_file_asks_again() {
     let dir = Scratch::new("agenttrust-chain-changed");
     let top = dir.join("top");
-    std::fs::create_dir_all(top.join(".git")).unwrap();
+    repository_at(&top);
     held_at(&top.join("mid"), "m.json", "{}");
     let root = top.join("mid/proj");
     held_at(&root, "p.json", "{}");
@@ -668,7 +668,7 @@ fn with_no_git_top_only_the_roots_is_held() {
         "stand-in isn't started until you answer — these run with your permissions, outside tarae's sandbox:";
     assert_eq!(o.question.lines().collect::<Vec<_>>(), [head, "", "  .stand-in/p.json"], "nothing more said");
     ed.workspace.claude.chat = None;
-    std::fs::create_dir(nogit.join(".git")).unwrap();
+    repository_at(&nogit);
     assert_eq!(
         listed_lines(&root),
         ["  .stand-in/n.json", "  a/.stand-in/a.json", "  a/proj/.stand-in/p.json"]
@@ -681,7 +681,7 @@ fn with_no_git_top_only_the_roots_is_held() {
 fn a_parents_held_file_naming_a_server_tarae_refuses_the_start() {
     let dir = Scratch::new("agenttrust-chain-tarae");
     let top = dir.join("top");
-    std::fs::create_dir_all(top.join(".git")).unwrap();
+    repository_at(&top);
     let text = json!({"mcpServers": {"tarae": {"command": "x"}}}).to_string();
     held_at(&top.join("mid"), "mcp_config.json", &text);
     let root = top.join("mid/proj");
@@ -708,7 +708,7 @@ fn a_worktrees_git_file_is_its_top() {
     let dir = Scratch::new("agenttrust-worktree");
     let (flat, wtop) = (dir.join("flat"), dir.join("wtop"));
     let wt = wtop.join("wt");
-    std::fs::create_dir_all(flat.join(".git")).unwrap();
+    repository_at(&flat);
     linked(&flat, &wt);
     held_at(&flat, "f.json", "1");
     held_at(&wtop, "x.json", "2");
@@ -717,4 +717,50 @@ fn a_worktrees_git_file_is_its_top() {
     held_at(&root, "s.json", "4");
     assert!(std::fs::symlink_metadata(wt.join(".git")).unwrap().is_file(), "its .git a file");
     assert_eq!(listed_lines(&root), ["  .stand-in/w.json", "  sub/.stand-in/s.json"]);
+}
+
+/// The design session's note 1 on L-B2: a `.git` that's no repository's — an empty folder, one holding `HEAD` alone, a
+/// file that doesn't start `gitdir:`, a FIFO (opened without waiting) — isn't the top: git walks past it (or refuses
+/// it), and whether agy's top is git's answer is unmeasured, so the chain walks on to the repository above and holds
+/// every folder up to it. The FIFO through the whole look too, bounded by the shared patience (#607: `trust::place_of`
+/// waited on it for good): the answer's place is then the folder's own, no repository's.
+#[test]
+fn a_git_folder_that_is_no_repository_is_not_the_top() {
+    let dir = Scratch::new("agenttrust-not-a-top");
+    let top = dir.join("top");
+    repository_at(&top);
+    let (mid, odd) = (top.join("mid"), top.join("mid/odd"));
+    let root = odd.join("proj");
+    for (at, name) in [(&top, "t"), (&mid, "m"), (&odd, "o"), (&root, "p")] {
+        held_at(at, &format!("{name}.json"), "{}");
+    }
+    std::fs::create_dir(mid.join(".git")).unwrap();
+    std::fs::create_dir(odd.join(".git")).unwrap();
+    std::fs::write(odd.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(root.join(".git"), "not a gitdir\n").unwrap();
+    let all = [
+        "  .stand-in/t.json",
+        "  mid/.stand-in/m.json",
+        "  mid/odd/.stand-in/o.json",
+        "  mid/odd/proj/.stand-in/p.json",
+    ];
+    assert_eq!(listed_lines(&root), all, "an empty folder, HEAD alone, a junk file");
+    std::fs::remove_file(root.join(".git")).unwrap();
+    let fifo = std::ffi::CString::new(root.join(".git").to_str().unwrap()).unwrap();
+    // SAFETY: a plain call on a path of the test's own scratch folder.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    assert_eq!(chain(&root).top, std::fs::canonicalize(&top).unwrap(), "a FIFO, not waited on");
+    // (#607: the whole look too — `trust::place_of` reads the root's `.git` through `allow::common_dir`; bounded by the
+    // shared patience, so a read that waits on the FIFO fails here rather than hangs)
+    let (tx, rx) = std::sync::mpsc::channel();
+    let at = root.clone();
+    std::thread::spawn(move || tx.send(listed_lines(&at)));
+    let listed = rx.recv_timeout(crate::test_results::PATIENCE).expect("a look waited on a FIFO named .git");
+    assert_eq!(listed, all, "a FIFO, through the look");
+    let place = crate::trust::place_of(&root.join(".stand-in"));
+    let real = std::fs::canonicalize(&root).unwrap().join(".stand-in");
+    assert_eq!(place, crate::trust::Place::File(real), "no repository's: the folder's own place");
+    std::fs::remove_file(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git"), "gitdir: /nowhere\n").unwrap();
+    assert_eq!(listed_lines(&root), ["  .stand-in/p.json"], "a gitdir file is a top");
 }

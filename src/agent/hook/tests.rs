@@ -114,6 +114,43 @@ fn the_script_asks_tarae_or_refuses() {
     }
 }
 
+/// L-B3 (#6: agy 1.5.9 runs a hook's `command` through a shell): the hook file names its script shell-quoted, so a
+/// state folder whose path holds a space, a quote, `$` or a backtick still runs it — the stand-in, which runs a hook
+/// as agy does (`sh -c <command>`), reads each file `file` wrote and gets that script's answer — and a `$(touch …)` in
+/// the path runs nothing: no marker (in this test's own folder). Each folder and the marker are under the scratch
+/// folder.
+#[test]
+fn the_hook_files_command_is_the_scripts_path_shell_quoted() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = crate::scratch::Scratch::new("hook-quoted");
+    let marker = dir.join("marker");
+    let plain = dir.join("plain");
+    // (`$(touch <marker>)`: the marker's absolute path makes folders under the scratch one, the `/`s in it)
+    let names =
+        ["plain", "sp ace", "it's", "do$HOME llar", "back`tick", "x'$(touch {m})'y", "z$(touch {m})z"];
+    for (i, name) in names.iter().enumerate() {
+        let folder = dir.join(name.replace("{m}", &marker.display().to_string()));
+        let config = folder.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let script = config.join(SCRIPT_NAME);
+        let said = json!({"decision": "allow", "said": i});
+        std::fs::write(&script, format!("#!/bin/sh\ncat >/dev/null\necho '{said}'\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let text = file(crate::agent::AGY_TOOLS_OFF.hook, script.to_str().unwrap());
+        std::fs::write(config.join("hooks.json"), &text).unwrap();
+        let answer = crate::agent::acp::standin::hook(folder.to_str().unwrap(), "", &json!({}));
+        assert_eq!(answer["said"], i, "{name}: {answer}");
+    }
+    assert!(!marker.exists(), "a `$(…)` in the path ran");
+    // (the usual folder's: the path in single quotes, nothing else)
+    let text =
+        file(crate::agent::AGY_TOOLS_OFF.hook, plain.join("config").join(SCRIPT_NAME).to_str().unwrap());
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let want = format!("'{}/config/{SCRIPT_NAME}'", plain.display());
+    assert_eq!(v[GROUP]["PreToolUse"][0]["hooks"][0]["command"], want.as_str());
+    assert_eq!(quoted("a'b"), r"'a'\''b'");
+}
+
 /// A panic in the hook is a refusal on stdout, exit 0 (`on_panic`, in a process of its own: the test binary re-run on
 /// `panicking`).
 #[test]

@@ -57,15 +57,22 @@ pub const UNREAD: &str = "tarae's hook couldn't read this call — refused";
 const PANIC_LINE: &str =
     "{\"decision\":\"deny\",\"reason\":\"tarae's hook couldn't read this call — refused\"}\n";
 
-/// The hook file for `hook`, naming `script` (an absolute path).
+/// The hook file for `hook`, naming `script` (an absolute path) shell-quoted (`quoted`): agy runs a hook's `command`
+/// through a shell (#6, the first probe: `b2`'s arguments came through one, and `b1`'s path with a space never ran).
 pub fn file(hook: super::Hook, script: &str) -> String {
     match hook {
         super::Hook::Agy { timeout } => {
-            let one = json!({"type": "command", "command": script, "timeout": timeout});
+            let one = json!({"type": "command", "command": quoted(script), "timeout": timeout});
             let file = json!({GROUP: {"PreToolUse": [{"matcher": "*", "hooks": [one]}]}});
             serde_json::to_string_pretty(&file).unwrap_or_default() + "\n"
         }
     }
+}
+
+/// `s` as one word to `sh`: in single quotes, each quote in it as `'\''`. Nothing in it is expanded, whatever it holds
+/// (a space, `$`, a backtick, `$(…)`, a newline).
+pub fn quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 fn deny(reason: &str) -> Value {

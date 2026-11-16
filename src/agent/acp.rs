@@ -131,15 +131,27 @@ fn shown(name: &str) -> String {
 /// a sandboxed run's pty broker (`pty::BROKER`), and your SSH agent's (as no claude gets it, threat model G20).
 pub const SOCKETS: &[&str] = &["TARAE_UI", crate::pty::BROKER, "SSH_AUTH_SOCK"];
 
+/// What moves git's discovery of a repository from a folder: agy runs git (probe 2's `opens.tsv`), and whether its
+/// `.agents/` top is git's answer is unmeasured (the design session's note 1 on L-B2), so none of these reaches it —
+/// its top is then found from its cwd alone, as `agenttrust::chain` finds it.
+pub const GIT_DISCOVERY: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
 /// Whether an agent that isn't Claude never gets `name` from tarae's environment (condition 2): Claude Code's keys
 /// and settings (`ANTHROPIC_*`, `CLAUDE*` — `llm::claudes_own` —, and what a Claude Code session sets for what it
 /// starts — `llm::judged`'s, `AI_AGENT` and its trace context among them), the wikis' tokens (`web.signed-in`'s
-/// `token-env`), and tarae's own sockets (`SOCKETS`). The rest of tarae's environment is its, as it would be any
-/// program's: removed by name, never cleared.
+/// `token-env`), tarae's own sockets (`SOCKETS`), and what moves git's discovery (`GIT_DISCOVERY`). The rest of
+/// tarae's environment is its, as it would be any program's: removed by name, never cleared.
 pub fn left_out(name: &str, signed_in: &[crate::web::signed::Wiki]) -> bool {
     crate::llm::claudes_own(name)
         || crate::llm::judged(name)
         || SOCKETS.contains(&name)
+        || GIT_DISCOVERY.contains(&name)
         || signed_in.iter().any(|w| w.token_env == name)
 }
 

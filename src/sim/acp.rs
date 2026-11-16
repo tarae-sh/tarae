@@ -840,7 +840,7 @@ fn card_run(choices: Choices) -> Vec<String> {
     // (the project a folder of a repository whose top holds a file too — L-B2: the chain, one listing)
     let repo = root.join("repo");
     let project = repo.join("project");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    crate::agenttrust::repository_at(&repo);
     for folder in [&repo, &project] {
         std::fs::create_dir_all(folder.join(".stand-in")).unwrap();
         std::fs::write(folder.join(".stand-in/hooks.json"), "{}").unwrap();

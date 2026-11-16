@@ -664,6 +664,26 @@ fn a_conversation_that_cant_be_continued_is_said_gone() {
     }
 }
 
+/// The design session's note 1 on L-B2: an agent that isn't Claude gets none of the names that move git's discovery
+/// (`GIT_DISCOVERY`), so a git it runs finds its repository from its cwd, as `agenttrust::chain` does — the rest as it
+/// is. (Their values point nowhere: the stand-in runs no git.)
+#[test]
+fn an_agent_gets_none_of_the_names_that_move_gits_discovery() {
+    let mut env: Env =
+        GIT_DISCOVERY.iter().map(|n| (n.to_string(), "tarae-fake-nowhere".to_string())).collect();
+    env.insert("GIT_AUTHOR_NAME".into(), "kept".into());
+    let mut script = handshake();
+    script.push(json!({"eof": true}));
+    let run = start(json!(script), Opts { env, ..Opts::default() });
+    run.until("ready");
+    let heard = run.heard();
+    let names: Vec<&str> = heard[0]["env"].as_array().unwrap().iter().filter_map(|n| n.as_str()).collect();
+    assert!(names.contains(&"GIT_AUTHOR_NAME"), "the rest as it is: {names:?}");
+    let got: Vec<&&str> = GIT_DISCOVERY.iter().filter(|n| names.contains(n)).collect();
+    assert!(got.is_empty(), "passed on: {got:?}");
+    assert_eq!(GIT_DISCOVERY.len(), 5);
+}
+
 /// Step 3, L1: the agent has a session of its own (`spawn::setsid_fed_as`) — its session and group its own pid, the
 /// pid tarae started — and so no controlling terminal: it can't open `/dev/tty`. The session is what's checked first:
 /// a run with no terminal can't open `/dev/tty` whatever the agent's start, so that alone would hold on a runner
@@ -1244,7 +1264,7 @@ fn a_hook_past_its_timeout_fails_the_call_and_nothing_asks() {
     let script = hooks.join("slow");
     std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let one = json!({"type": "command", "command": script, "timeout": 0.3});
+    let one = json!({"type": "command", "command": hook::quoted(script.to_str().unwrap()), "timeout": 0.3});
     let file = json!({"t": {"PreToolUse": [{"matcher": "*", "hooks": [one]}]}});
     let own = json!({"own": {"name": "run_command", "id": "t1", "args": {"CommandLine": "echo ran"}}});
     let mut script = handshake();

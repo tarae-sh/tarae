@@ -696,7 +696,7 @@ impl Where {
         // in `core.worktree`, taken where that checkout's `.git` names it back; a separate git dir names none)
         let mut main_unknown = false;
         if common.file_name().is_none_or(|n| n != ".git") {
-            let config = std::fs::read_to_string(common.join("config")).unwrap_or_default();
+            let config = git_file(&common.join("config")).unwrap_or_default();
             let main = git_config_core(&config, "worktree")
                 .and_then(|w| std::fs::canonicalize(common.join(w)).ok())
                 .filter(|m| has_git(m) && worktree_dir(m).is_some_and(|d| same(&d, &common)));
@@ -1520,20 +1520,40 @@ pub(crate) fn common_dir(root: &Path) -> Option<PathBuf> {
     if !linked_to(&dir).is_some_and(|d| same(&d, &dot)) {
         return None;
     }
-    let common = std::fs::read_to_string(dir.join("commondir")).ok()?;
+    let common = git_file(&dir.join("commondir"))?;
     std::fs::canonicalize(dir.join(common.trim())).ok()
+}
+
+/// The most of one of git's small files `git_file` reads.
+const GIT_FILE_MAX: u64 = 1 << 20;
+
+/// One of git's small files a project's checkout holds (a `.git` file, a `commondir`, a `gitdir`, a `config`), read as
+/// text: opened without waiting and read only when the opened file is a plain one, to `GIT_FILE_MAX` (#607: a FIFO
+/// named `.git` hung `trust::place_of` for good — a project's files are never waited on, #375). None: not there, not a
+/// plain file (a FIFO, a device, a folder), past the bound, or not text.
+fn git_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path).ok()?;
+    // (the opened file's own kind: what's at the path can't change between the look and the read)
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    let n = f.take(GIT_FILE_MAX + 1).read_to_string(&mut text).ok()?;
+    (n as u64 <= GIT_FILE_MAX).then_some(text)
 }
 
 /// The folder a checkout's `.git` file names (`gitdir: …`, relative to the checkout or absolute).
 fn worktree_dir(checkout: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(checkout.join(".git")).ok()?;
+    let text = git_file(&checkout.join(".git"))?;
     let at = text.lines().next()?.strip_prefix("gitdir:")?.trim();
     Some(checkout.join(at))
 }
 
 /// The `.git` file a folder under `<common>/worktrees/` names (its `gitdir`).
 fn linked_to(dir: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(dir.join("gitdir")).ok()?;
+    let text = git_file(&dir.join("gitdir"))?;
     let at = text.lines().next()?.trim();
     (!at.is_empty()).then(|| dir.join(at))
 }
@@ -2761,6 +2781,59 @@ pub(crate) mod tests {
         assert!(
             here.shared(&Grant::Read(base.join("elsewhere"))) && !here.shared(&Grant::Write(main.join("x")))
         );
+    }
+
+    /// #607: a FIFO in place of any of git's small files these paths read — a checkout's `.git` file, an entry's
+    /// `gitdir` or `commondir`, a separate git dir's `config` — is never waited on (`git_file`): read as nothing, so no
+    /// repository's (the config: none read, its main checkout unknown). Each look bounded by the shared patience, so a
+    /// read that waits fails here rather than hangs. git's files written by hand, no git run.
+    #[test]
+    fn a_fifo_among_gits_files_is_never_waited_on() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let dir = crate::scratch::Scratch::new("allow-fifo");
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let (git, w) = (base.join("repo.git"), base.join("w"));
+        let entry = git.join("worktrees/w");
+        let write = |p: &Path, s: String| {
+            let _ = std::fs::remove_file(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, s).unwrap();
+        };
+        let fifo = |p: &Path| {
+            std::fs::remove_file(p).unwrap();
+            let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+            // SAFETY: a path of the test's own scratch folder, live for the call.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        };
+        let put_back = || {
+            write(&w.join(".git"), format!("gitdir: {}\n", entry.display()));
+            write(&entry.join("gitdir"), format!("{}\n", w.join(".git").display()));
+            write(&entry.join("commondir"), "../..\n".into());
+            write(&git.join("config"), "[core]\n\tbare = true\n".into());
+        };
+        let bounded = |at: PathBuf| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            crate::event::thread("tarae-gitfile", move || {
+                let here = Where::of(&at);
+                let _ = tx.send((common_dir(&at), here.repository, here.main_unknown));
+            });
+            rx.recv_timeout(crate::test_results::PATIENCE).expect("a read waited on a FIFO")
+        };
+        put_back();
+        let (common, _, main_unknown) = bounded(w.clone());
+        assert_eq!(common.as_deref(), Some(git.as_path()), "as written: the repository's");
+        assert!(!main_unknown, "its config read: bare");
+        for file in [w.join(".git"), entry.join("gitdir"), entry.join("commondir")] {
+            put_back();
+            fifo(&file);
+            let (common, repository, _) = bounded(w.clone());
+            assert_eq!((common, repository), (None, None), "{}: no repository's", file.display());
+        }
+        put_back();
+        fifo(&git.join("config"));
+        let (common, _, main_unknown) = bounded(w.clone());
+        assert_eq!(common.as_deref(), Some(git.as_path()));
+        assert!(main_unknown, "its config not read: the main checkout unknown, no place shared");
     }
 
     /// Review J 9: an answer of this checkout's own that covers one every checkout uses (a folder holding the

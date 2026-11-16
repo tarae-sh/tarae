@@ -25,11 +25,12 @@
 //! - `{"tty": true}` reads its session and group and tries to open `/dev/tty`, heard as `{"pid": pid, "pgid":
 //!   pgid, "sid": sid, "tty": "opened" or why not}`.
 //! - `{"own": {"name": …, "args": …, "id": …}}` runs a tool as agy 1.5.9 does (`own`): reported, the project's
-//!   `.stand-in/` hooks from the git top down, then its folder's, asked on agy's input (heard as `{"hook": their
-//!   answer}`), then `failed` where they refused or failed, else the ask (`pending`, `session/request_permission`, its
-//!   answer waited for) and, on `allow_once`, the call and `completed`, on any other `in_progress` then `failed`, as
-//!   1.5.9 reported a refusal (`after_refusal`) — with `"mcp": message`, one of tarae's: the message sent to tarae's server (as an `mcp` step) and its
-//!   answer waited for, as agy calls a server's tool. With `NO_ASK` set, no ask: agy 1.5.4 and 1.5.7.
+//!   `.stand-in/` hooks from the git top down, then its folder's, each through `sh -c` (L-B3), asked on agy's input
+//!   (heard as `{"hook": their answer}`), then `failed` where they refused or failed, else the ask (`pending`,
+//!   `session/request_permission`, its answer waited for) and, on `allow_once`, the call and `completed`, on any other
+//!   `in_progress` then `failed`, as 1.5.9 reported a refusal (`after_refusal`) — with `"mcp": message`, one of
+//!   tarae's: the message sent to tarae's server (as an `mcp` step) and its answer waited for, as agy calls a server's
+//!   tool. With `NO_ASK` set, no ask: agy 1.5.4 and 1.5.7.
 //!
 //! It plays agy's part, so its row takes agy's recipe (`agent::AGY_TOOLS_OFF`): its `--gemini-dir <folder>`, which
 //! libtest wouldn't take, is moved by its `sh` into `DIR` before the test binary starts.
@@ -381,7 +382,7 @@ fn after_refusal(id: &Value, name: &Value, args: &Value, kind: &str) -> [Value; 
 /// runs one: the first refusal or failure (a refusal of the stand-in's own words, with `failed` saying why: agy 1.5.9
 /// fails the call, #5 #8), which ends the chain; else the last answer naming a decision; else `"none"` (no decision:
 /// the call goes on to its ask, #8).
-fn hook(dir: &str, cwd: &str, input: &Value) -> Value {
+pub(crate) fn hook(dir: &str, cwd: &str, input: &Value) -> Value {
     // (no session's cwd yet: none of the project's)
     let chain = Some(std::path::Path::new(cwd)).filter(|c| c.is_absolute()).map(crate::agenttrust::chain);
     let project = chain.iter().flat_map(|c| {
@@ -417,18 +418,21 @@ fn hook(dir: &str, cwd: &str, input: &Value) -> Value {
     answer
 }
 
-/// One hook run as agy 1.5.9 was seen to run one, but by its command alone (agy's goes through a shell, #6 — step 4's
-/// L-B3): `input` on stdin, its first line of output read. Err, why it failed and its pid (0: none): it couldn't be
-/// run, it ran past `timeout` (killed, as agy kills it, #5), it exited other than 0, or its line isn't JSON (#8).
-/// Nothing said is `Null`: no decision. Its output read on a thread of its own, so the wait for it is bounded with no
-/// clock read.
+/// One hook run as agy 1.5.9 was seen to run one: its command through a shell, `sh -c <command>` (#6: `b2`'s arguments
+/// came through one, `b1`'s path with a space never ran — L-B3), `input` on stdin, its first line of output read. Err,
+/// why it failed and its pid (0: none): it couldn't be run, it ran past `timeout` (killed, as agy kills it, #5 — its
+/// group here, the shell and what it started), it exited other than 0, or its line isn't JSON (#8). Nothing said is
+/// `Null`: no decision. Its output read on a thread of its own, so the wait for it is bounded with no clock read.
 fn run_hook(
     command: &str,
     timeout: std::time::Duration,
     input: &Value,
 ) -> Result<Value, (&'static str, u32)> {
     use std::io::Read;
-    let child = std::process::Command::new(command)
+    use std::os::unix::process::CommandExt;
+    let child = std::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .process_group(0)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -446,7 +450,8 @@ fn run_hook(
         let _ = tx.send(out);
     });
     let Ok(out) = rx.recv_timeout(timeout) else {
-        let _ = child.kill();
+        // SAFETY: a signal to the group this child leads; it isn't reaped yet, so its pid is no one else's.
+        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
         let _ = child.wait();
         return Err(("timeout", pid));
     };
@@ -529,14 +534,15 @@ fn the_projects_hooks_run_top_down_before_the_configs_and_a_deny_ends_them() {
         let text = format!("#!/bin/sh\necho {name} >> '{}'\necho '{said}'\n", log.display());
         std::fs::write(&script, text).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let hook = json!({"type": "command", "command": script.display().to_string()});
+        let hook =
+            json!({"type": "command", "command": crate::agent::hook::quoted(&script.display().to_string())});
         let file = json!({"g": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}});
         std::fs::write(folder.join("hooks.json"), file.to_string()).unwrap();
     };
     let (allow, deny) = (r#"{"decision": "allow"}"#, r#"{"decision": "deny", "reason": "no"}"#);
     let (repo, home) = (dir.join("outer/repo"), dir.join("home"));
     let proj = repo.join("mid/proj");
-    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    crate::agenttrust::repository_at(&repo);
     hooks_at(&dir.join("outer/.stand-in"), "outer", allow);
     hooks_at(&repo.join(".stand-in"), "top", allow);
     hooks_at(&repo.join("mid/.stand-in"), "mid", "");
@@ -555,7 +561,7 @@ fn the_projects_hooks_run_top_down_before_the_configs_and_a_deny_ends_them() {
     hooks_at(&repo.join("mid/.stand-in"), "mid", allow);
     let all = vec!["top".into(), "mid".into(), "proj".into(), "config".into()];
     assert_eq!(run(), (all, json!("deny")), "the project's allows lift no deny of the config's");
-    std::fs::remove_dir(repo.join(".git")).unwrap();
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
     // (the scratch folder outside any repository: the cwd's alone)
     assert_eq!(run(), (vec!["proj".into(), "config".into()], json!("deny")), "no git top");
 }

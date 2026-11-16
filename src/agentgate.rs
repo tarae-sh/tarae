@@ -503,12 +503,15 @@ fn holds(path: &Path, bytes: &[u8], mode: u32) -> bool {
 
 /// `w`'s files and folders watched: tarae's two, each held path in every folder from the root up to its git top
 /// (`agenttrust::chain`; made, replaced or gone — not there yet: the closest folder above it), and every folder under
-/// one, as deep as `agenttrust::look` reads, for its files added, removed or written.
+/// one, as deep as `agenttrust::look` reads, for its files added, removed or written. And the top's `.git` (none: the
+/// root's), made, replaced, gone or written in place: the chain may have changed (the design session's note 2 on
+/// L-B2), and a look keys the held files from the top, so a chain that holds more or less is another digest.
 fn arm(watcher: &mut crate::fswatch::Watcher, w: &Watched) {
     use crate::agenttrust::{DEPTH_MAX, FILES_MAX};
     w.ours.iter().for_each(|(p, ..)| watcher.file(p));
     let mut folders = 0;
     let chain = crate::agenttrust::chain(&w.root);
+    watcher.file(&chain.top.join(".git"));
     for h in chain.held(w.row.held) {
         let top = chain.top.join(h);
         watcher.file(&top);
