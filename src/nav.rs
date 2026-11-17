@@ -1207,10 +1207,12 @@ impl Lines {
         Lines::new(project_root(ed), crate::reads::Gate::of(ed, Vec::new()))
     }
 
-    /// Whether what's at `real` (a real path) is read.
+    /// Whether what's at `real` (a real path) is read: what the read tool refuses (`Gate::refused`: tarae's own state
+    /// and cache, #292) never, whatever was granted around it — the user's own acts don't come here (`reads::key_shut`).
     fn may(&self, real: &Path) -> bool {
         let root = self.real.get_or_init(|| std::fs::canonicalize(&self.root).ok());
-        root.as_ref().is_some_and(|r| real.starts_with(r)) || self.gate.judge(real, true).is_ok()
+        root.as_ref().is_some_and(|r| real.starts_with(r))
+            || (self.gate.refused(real).is_none() && self.gate.judge(real, true).is_ok())
     }
 
     /// Whether an open buffer of `path` is read — where its file really is, judged (one not on disk yet: by its
@@ -2748,6 +2750,34 @@ mod tests {
         let lines = Lines::new(root.clone(), Gate::for_test(&root));
         let text = defs_text(&root, &d, "ra", &none, &crate::reads::Keys::none_opened(&root), &lines);
         assert!(text.contains(NOT_READ) && !text.contains("stand_in_outside"), "{text}");
+    }
+
+    /// #292: what `references` and `definition` read for Claude never shows tarae's own state, from disk or an open
+    /// buffer, though a grant covers a folder above it (the read tool refuses it first, `Gate::refused`); a file
+    /// beside it under the same grant is read.
+    #[test]
+    fn a_place_in_taraes_own_state_isnt_read_through_a_grant() {
+        use crate::reads::Gate;
+        let s = crate::scratch::Scratch::new("nav-own-granted");
+        let home = crate::paths::real(&s).unwrap();
+        let root = home.join("p");
+        for d in [&root, &home.join(".local/state/tarae/chats"), &home.join(".local/else")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (own, beside) = (home.join(".local/state/tarae/chats/x.json"), home.join(".local/else/b.rs"));
+        std::fs::write(&own, "stand_in_conversation\n").unwrap();
+        std::fs::write(&beside, "fn b() {}\n").unwrap();
+        for granted in [home.join(".local"), home.clone()] {
+            let lines =
+                Lines::new(root.clone(), Gate::for_test(&root).at_home(home.clone()).granting(granted));
+            assert_eq!(lines.read(&own), None, "tarae's own state: not read");
+            assert!(!lines.buffer(&own), "nor its open buffer");
+            assert_eq!(
+                lines.read(&beside),
+                Some(vec!["fn b() {}".to_string()]),
+                "beside it: the grant holds"
+            );
+        }
     }
 
     /// #292: Claude's `search` in tarae's own state or cache, or of a folder holding them, is refused — no card —
