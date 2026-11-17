@@ -16,6 +16,9 @@ use std::io::{BufRead as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+mod look;
+pub use look::{HEADS_MAX, Look, Parts};
+
 /// tarae's index for the checkout's snapshots, in its git folder.
 const INDEX: &str = "tarae-snapshot.index";
 
@@ -242,8 +245,9 @@ impl Change {
     }
 }
 
-/// `changes`' answer: the files, those named only, the names asked about.
-pub type Changes = (Vec<Change>, Vec<String>, Vec<String>);
+/// `changes`' answer: the files, those named only, the names asked about — and the links and submodules changed,
+/// each with whether it's new (`look::Seen`).
+pub type Changes = (Vec<Change>, Vec<String>, Vec<String>, Vec<(String, bool)>);
 
 /// What changed in the project at `root` from tree `then` to `now`: the files (absolute paths), those it
 /// can't take back, named (a symlink, a submodule, only the mode changed) — and, of those, the links and
@@ -251,11 +255,14 @@ pub type Changes = (Vec<Change>, Vec<String>, Vec<String>);
 /// its `.git`).
 pub fn changes(root: &Path, then: &str, now: &str) -> Result<Changes, String> {
     let mut files: Vec<(String, Option<String>, Option<String>)> = Vec::new();
-    let (mut skipped, mut made) = (Vec::new(), Vec::new());
+    let (mut skipped, mut made, mut linked) = (Vec::new(), Vec::new(), Vec::new());
     for Entry { path, modes, ids: (a, b) } in entries(root, then, now)? {
         let regular = |m: &str| m == "000000" || m.starts_with("100");
         if !regular(&modes.0) || !regular(&modes.1) {
             let new = modes.0 != modes.1;
+            if b.is_some() {
+                linked.push((path.clone(), a.is_none()));
+            }
             match modes.1.as_str() {
                 "120000" if (new || a != b) && flagged(root, Path::new(&path)) => made.push(path.clone()),
                 "160000" if new => made.extend(flagged_name(root, &format!("{path}/"))),
@@ -291,7 +298,7 @@ pub fn changes(root: &Path, then: &str, now: &str) -> Result<Changes, String> {
             c
         })
         .collect();
-    Ok((changes, skipped, made))
+    Ok((changes, skipped, made, linked))
 }
 
 /// One path that differs between two trees (or commits): its modes and blobs then and now (None: not there).
@@ -622,6 +629,12 @@ pub struct Before {
     /// The workspace's folders (`folders.rs`), each taken as a checkout of its own (`take_with`) — what the run
     /// changes there joins the turn too.
     pub also: Vec<Before>,
+    /// #610: what each ignored folder's top held (`ignored`'s folders, from the root) — judged again after the run.
+    pub tops: Vec<(String, Parts)>,
+    /// The workspace's remembered folders holding a `HEAD` here (`Workspace.heads`, whole) with what each held, and its
+    /// noted folders git takes for a repository (`Workspace.noted`, whole) — `looked`.
+    pub heads: Vec<(PathBuf, Parts)>,
+    pub noted: Vec<PathBuf>,
 }
 
 /// What a run changed (`Before::since`): the files, those it can't take back (named — `changes`), how many
@@ -640,6 +653,9 @@ pub struct Found {
     /// What the run's report says of the workspace's folders beside the rest: one whose changes can't be told
     /// (not a git checkout — not in the turn), a folder's HEAD moved.
     pub folders: Vec<FolderLine>,
+    /// #610: the folders holding a `HEAD` git doesn't take yet, to look at again after the next run (whole,
+    /// remembered ones first), each with what it holds — `Workspace.heads`.
+    pub heads: Vec<(PathBuf, Parts)>,
 }
 
 /// A line of the run's report on one of the workspace's roots (`Found.folders`).
@@ -697,8 +713,14 @@ impl OutputCode {
 }
 
 /// `OutputCode` for each ignored folder of tools' output among `ignored` (git's entries after the run: a folder
-/// one entry — one of tools' output inside another ignored folder isn't looked at), changed `since`.
-fn output_code(root: &Path, ignored: &[String], since: std::time::SystemTime) -> Vec<OutputCode> {
+/// one entry — one of tools' output inside another ignored folder isn't looked at), changed `since` — and what it
+/// changed there told to `seen` (#610: one git takes for a repository made below tools' output).
+fn output_code(
+    root: &Path,
+    ignored: &[String],
+    since: std::time::SystemTime,
+    looks: &mut look::Seen,
+) -> Vec<OutputCode> {
     use std::os::unix::fs::PermissionsExt;
     let outputs = crate::sandbox::outputs();
     let code = |name: &std::ffi::OsStr, mode: u32| {
@@ -723,6 +745,17 @@ fn output_code(root: &Path, ignored: &[String], since: std::time::SystemTime) ->
             seen += listed.len();
             for (name, e) in listed {
                 let Ok(m) = e.metadata() else { continue };
+                if m.modified().is_ok_and(|t| t >= since)
+                    && let Ok(rel) = e.path().strip_prefix(root)
+                {
+                    // (new: made since — where the system keeps that; else changed only, nothing for `r`)
+                    let (rel, new) = (rel.to_string_lossy(), m.created().is_ok_and(|t| t >= since));
+                    match m.is_dir() {
+                        true if new => looks.folder(&rel),
+                        true => {}
+                        false => looks.path(&rel, new),
+                    }
+                }
                 if m.is_dir() {
                     todo.push(e.path());
                 } else if m.is_file()
@@ -753,6 +786,9 @@ fn output_code(root: &Path, ignored: &[String], since: std::time::SystemTime) ->
 pub struct Made {
     pub path: String,
     pub hash: String,
+    /// A folder git takes for a repository (#610, `look.rs`): `path` the folder, `hash` its `look_hash` — None: a
+    /// protected name.
+    pub look: Option<Look>,
 }
 
 /// Entries a new ignored folder is looked through for at most (names only) — past it the folder itself is
@@ -786,8 +822,8 @@ fn flagged_name(root: &Path, name: &str) -> Option<String> {
 /// The names below `dir` (a new ignored folder, from the root) a run made that are asked about: the folder
 /// itself when its own name is one, else each entry `flagged` — names only, nothing read, no link followed, no
 /// folder of tools' output (`outputs`) gone into, nor one that is or is in one (a first build's `target/`: not
-/// walked, not named); past `max` entries (`WALK_MAX`), the folder.
-fn flagged_below(root: &Path, dir: &str, max: usize, out: &mut Vec<String>) {
+/// walked, not named); past `max` entries (`WALK_MAX`), the folder. What it walks is told to `seen` (#610), all new.
+fn flagged_below(root: &Path, dir: &str, max: usize, out: &mut Vec<String>, looks: &mut look::Seen) {
     let dir = Path::new(dir.trim_end_matches('/'));
     let shown = |p: &Path| p.to_string_lossy().into_owned();
     if dir.iter().any(|p| crate::sandbox::outputs().iter().any(|o| p == o.as_str())) {
@@ -807,6 +843,10 @@ fn flagged_below(root: &Path, dir: &str, max: usize, out: &mut Vec<String>) {
             let rel = folder.join(e.file_name());
             // (`file_type` is the entry's own: a link isn't followed)
             let into = e.file_type().is_ok_and(|t| t.is_dir());
+            match into {
+                true => looks.folder(&shown(&rel)),
+                false => looks.path(&shown(&rel), true),
+            }
             if flagged(root, &rel) {
                 found.push(shown(&rel));
             } else if into && !crate::sandbox::outputs().iter().any(|o| e.file_name() == o.as_str()) {
@@ -835,6 +875,32 @@ impl Made {
     pub fn keepable(&self) -> bool {
         !self.hash.is_empty() && !self.hash.starts_with(BIG)
     }
+
+    /// Whether `r` has something to remove: a protected name itself; of a folder git takes for a repository, what the
+    /// run added that makes it one (`Look.added`) — none where it only edited what was there.
+    pub fn removable(&self) -> bool {
+        self.look.as_ref().is_none_or(|l| !l.added.is_empty())
+    }
+
+    /// The same name holding the same (`made_kept`): a look-alike's what-changed and what-added aside.
+    pub fn same(&self, other: &Made) -> bool {
+        self.path == other.path && self.hash == other.hash
+    }
+}
+
+/// What the run did to the folders git takes for a repository a card asks about, when they're all it asks about (#610):
+/// `made` (one is new) or `changed` (noted ones changed) — None: a protected name among them, or nothing asked.
+pub fn looks_verb(made: &[Made]) -> Option<&'static str> {
+    if made.is_empty() || made.iter().any(|m| m.look.is_none()) {
+        return None;
+    }
+    let new = made.iter().any(|m| m.look.as_ref().is_some_and(|l| l.changed.is_empty()));
+    Some(if new { "made" } else { "changed" })
+}
+
+/// A made name's place, whole: a folder's by its path, else in the project (`made_at`) — what `Workspace.noted` keeps.
+pub fn made_place(roots: &crate::folders::Roots, path: &str) -> Option<PathBuf> {
+    made_at(roots, path).map(|(root, rel)| root.join(rel))
 }
 
 /// What a made name holds, as a digest (`Made.hash`): a link's target, a folder's names, a file's bytes (read
@@ -909,29 +975,49 @@ fn made_at<'a>(roots: &'a crate::folders::Roots, path: &str) -> Option<(&'a Path
 /// link goes itself, never what it leads to); not a folder, nor one that holds something else than when it was
 /// asked about (`made_hash`). Each with how it went.
 pub fn remove_made(roots: &crate::folders::Roots, made: &[Made]) -> Vec<(Made, Result<(), String>)> {
-    made.iter()
-        .map(|m| {
-            let gone = (|| {
-                let Some((root, rel)) = made_at(roots, &m.path) else {
-                    return Err(format!("{}: in none of the workspace's folders now", m.path));
-                };
-                let shown =
-                    if root == roots.project() { "the project".into() } else { root.display().to_string() };
-                let dir = crate::beneath::Dir::root(root).map_err(|e| format!("{shown}: {e}"))?;
-                let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else {
-                    return Err(format!("{}: not a name in {shown}", m.path));
-                };
-                if std::fs::symlink_metadata(root.join(&rel)).is_ok_and(|t| t.is_dir()) {
-                    return Err(format!("{}/ is a folder — only files and links are removed", m.path));
-                }
-                if made_hash(root, &rel.to_string_lossy()) != m.hash {
-                    return Err(format!("{} changed since it was asked about — left as it is", m.path));
-                }
-                dir.folder(parent, false).and_then(|d| d.remove(name)).map_err(|e| e.to_string())
-            })();
-            (m.clone(), gone)
-        })
-        .collect()
+    made.iter().map(|m| (m.clone(), remove_one(roots, m, false))).collect()
+}
+
+/// `remove_made` of one: a folder git takes for a repository by what the run added (#610) — each file or link as a
+/// name is, each folder by `rmdir` only while empty, one already gone left so (`gone_ok`); never the folder itself.
+fn remove_one(roots: &crate::folders::Roots, m: &Made, gone_ok: bool) -> Result<(), String> {
+    if let Some(look) = &m.look {
+        // (only edited: nothing of the run's to remove — asked again, never an edited file put back)
+        if look.added.is_empty() {
+            return Err(format!("{}/: nothing to remove — the run only edited what was there", m.path));
+        }
+        let why: Vec<String> = look.added.iter().filter_map(|a| remove_one(roots, a, true).err()).collect();
+        return if why.is_empty() { Ok(()) } else { Err(why.join("; ")) };
+    }
+    let Some((root, rel)) = made_at(roots, m.path.trim_end_matches('/')) else {
+        return Err(format!("{}: in none of the workspace's folders now", m.path));
+    };
+    let shown = if root == roots.project() { "the project".into() } else { root.display().to_string() };
+    let dir = crate::beneath::Dir::root(root).map_err(|e| format!("{shown}: {e}"))?;
+    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else {
+        return Err(format!("{}: not a name in {shown}", m.path));
+    };
+    let there = std::fs::symlink_metadata(root.join(&rel));
+    if gone_ok && there.is_err() {
+        return Ok(());
+    }
+    // (a folder the run added beside a HEAD: only while nothing is in it)
+    if gone_ok && m.path.ends_with('/') {
+        return match dir.folder(parent, false).and_then(|d| d.remove_folder(name)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) || e.raw_os_error() == Some(libc::EEXIST) => {
+                Err(format!("{} holds something now — left as it is", m.path))
+            }
+            Err(e) => Err(e.to_string()),
+        };
+    }
+    if there.is_ok_and(|t| t.is_dir()) {
+        return Err(format!("{}/ is a folder — only files and links are removed", m.path));
+    }
+    if made_hash(root, &rel.to_string_lossy()) != m.hash {
+        return Err(format!("{} changed since it was asked about — left as it is", m.path));
+    }
+    dir.folder(parent, false).and_then(|d| d.remove(name)).map_err(|e| e.to_string())
 }
 
 /// A made name's text at most, as `v` shows it.
@@ -943,6 +1029,22 @@ pub fn made_shown(roots: &crate::folders::Roots, made: &[Made]) -> String {
     use std::os::unix::fs::OpenOptionsExt as _;
     let mut out = String::new();
     for m in made {
+        // (#610: a folder git takes for a repository — what decides it and what it runs, each as a name is shown)
+        if let Some(look) = &m.look {
+            out.push_str(&format!(
+                "\n── {}/: a folder git takes for a repository ({})\n",
+                m.path,
+                look.takes.said()
+            ));
+            let parts: Vec<Made> = ["HEAD", "commondir", "config", "hooks"]
+                .iter()
+                .map(|n| format!("{}/{n}", m.path))
+                .filter(|p| made_place(roots, p).is_some_and(|p| std::fs::symlink_metadata(p).is_ok()))
+                .map(|path| Made { path, hash: String::new(), look: None })
+                .collect();
+            out.push_str(&made_shown(roots, &parts));
+            continue;
+        }
         let Some(path) = made_at(roots, &m.path).map(|(root, rel)| root.join(rel)) else {
             out.push_str(&format!("\n── {}: (in none of the workspace's folders now)\n", m.path));
             continue;
@@ -992,8 +1094,14 @@ pub fn made_shown(roots: &crate::folders::Roots, made: &[Made]) -> String {
 /// The names (`flagged`) a run made where none was, from the project's root: protected names new in the
 /// tree, ignored files new beside them (`.envrc` and `.tarae.local.toml` are often ignored) and the names in
 /// a new ignored folder (`flagged_below`). Seatbelt refuses protected names by name; Landlock can't (a path
-/// that isn't there has no rule) — so they're said before the next run (`tools::ask_made`).
-fn protected_made(root: &Path, files: &[Change], ignored_new: &[String]) -> Vec<String> {
+/// that isn't there has no rule) — so they're said before the next run (`tools::ask_made`). The new ignored names are
+/// told to `seen` (#610).
+fn protected_made(
+    root: &Path,
+    files: &[Change],
+    ignored_new: &[String],
+    seen: &mut look::Seen,
+) -> Vec<String> {
     let mut out: Vec<String> = files
         .iter()
         .filter(|c| c.before.is_none())
@@ -1003,8 +1111,11 @@ fn protected_made(root: &Path, files: &[Change], ignored_new: &[String]) -> Vec<
         .collect();
     for p in ignored_new {
         match p.ends_with('/') {
-            true => flagged_below(root, p, WALK_MAX, &mut out),
-            false => out.extend(flagged_name(root, p)),
+            true => flagged_below(root, p, WALK_MAX, &mut out, seen),
+            false => {
+                seen.path(p, true);
+                out.extend(flagged_name(root, p))
+            }
         }
     }
     out
@@ -1050,10 +1161,28 @@ impl Before {
             crate::clock::system().checked_sub(FS_TICK_MAX).unwrap_or(std::time::UNIX_EPOCH)
         });
         let ignored = ignored(root).ok();
+        let tops = ignored.iter().flatten().filter(|p| p.ends_with('/'));
+        let tops = tops.map(|p| (p.clone(), Parts::of(&root.join(p)))).collect();
         let (head, refs) = (head(root), tips(root));
         let (tree, wrote) = (snap(root), Vec::new());
-        let also = Vec::new();
-        Before { root: root.to_path_buf(), tree, wrote, ignored, head, refs, started, outputs: false, also }
+        let (also, heads, noted) = (Vec::new(), Vec::new(), Vec::new());
+        let root = root.to_path_buf();
+        Before { root, tree, wrote, ignored, head, refs, started, outputs: false, also, tops, heads, noted }
+    }
+
+    /// With the workspace's remembered folders holding a `HEAD` and its noted folders git takes for a repository
+    /// (#610), each in the checkout it's in — a remembered one with what it held at its last look (nothing looked at).
+    pub fn looked(self, heads: &[(PathBuf, Parts)], noted: &[PathBuf]) -> Before {
+        let mine = |root: &Path| {
+            let h = heads.iter().filter(|h| h.0.starts_with(root)).cloned().collect();
+            (h, noted.iter().filter(|n| n.starts_with(root)).cloned().collect())
+        };
+        let (h, n) = mine(&self.root);
+        let also = self.also.into_iter().map(|b| {
+            let (heads, noted) = mine(&b.root);
+            Before { heads, noted, ..b }
+        });
+        Before { heads: h, noted: n, also: also.collect(), ..self }
     }
 
     /// `take`, and each of the workspace's folders (`folders`, real) as a checkout of its own, in the same job.
@@ -1070,6 +1199,8 @@ impl Before {
             Ok(f) => f,
             Err(e) if self.also.is_empty() => return Err(e),
             Err(why) => Found {
+                // (the remembered ones here looked at again next time)
+                heads: self.heads.clone(),
                 folders: vec![FolderLine {
                     at: self.root.clone(),
                     said: format!(
@@ -1084,7 +1215,9 @@ impl Before {
             let (wrote, outputs) = (self.wrote.clone(), self.outputs);
             match (Before { wrote, outputs, also: Vec::new(), ..b.clone() }).own() {
                 Ok(f) => found.folder(&b.root, f),
-                Err(why) => found.folders.push(FolderLine {
+                Err(why) => {
+                    found.heads.extend(b.heads.iter().cloned());
+                    found.folders.push(FolderLine {
                     at: b.root.clone(),
                     said: format!(
                         "Its changes in folder {} aren't in this turn — {why}: the user can't take them back with \
@@ -1092,7 +1225,8 @@ impl Before {
                         b.root.display()
                     ),
                     standing: true,
-                }),
+                    })
+                }
             }
         }
         Ok(found)
@@ -1104,10 +1238,21 @@ impl Before {
         let now = snap(&self.root)?;
         let left_out = then.left_out.max(now.left_out);
         let now_ignored = ignored(&self.root);
+        // (#610: folders git takes for a repository, from what's listed here anyway — `look.rs`)
+        let rel_of = |p: &Path| p.strip_prefix(&self.root).ok().map(|r| r.to_string_lossy().into_owned());
+        let mut seen = look::Seen::new(self.noted.iter().filter_map(|n| rel_of(n)).collect());
         let output_code = match (&now_ignored, self.outputs) {
-            (Ok(is), true) => output_code(&self.root, is, self.started),
+            (Ok(is), true) => output_code(&self.root, is, self.started, &mut seen),
             _ => Vec::new(),
         };
+        // (each ignored folder's top, judged itself against what it held before the run)
+        // (a few: looked through, no map — a hash map's code for these alone cost the release ~1 KB)
+        if let Ok(is) = &now_ignored {
+            for top in is.iter().filter(|p| p.ends_with('/')) {
+                let then = self.tops.iter().find(|t| t.0 == *top).map(|t| t.1);
+                seen.then(top, then.unwrap_or_default(), false);
+            }
+        }
         let (ignored_gone, ignored_new) = match (&self.ignored, now_ignored) {
             (Some(was), Ok(is)) => {
                 let set = |v: &[String]| v.iter().cloned().collect::<std::collections::HashSet<String>>();
@@ -1118,25 +1263,44 @@ impl Before {
             }
             _ => (Vec::new(), Vec::new()),
         };
-        let (mut files, skipped, links) = match then.id == now.id {
-            true => (Vec::new(), Vec::new(), Vec::new()),
+        let (mut files, skipped, links, linked) = match then.id == now.id {
+            true => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             false => changes(&self.root, &then.id, &now.id)?,
         };
         files.retain(|c| !self.wrote.contains(&c.path));
+        for c in &files {
+            if let Some(rel) = rel_of(&c.path) {
+                seen.path(&rel, c.before.is_none());
+            }
+        }
+        for (p, new) in &linked {
+            seen.path(p, *new);
+        }
         let ignored_new: Vec<String> = ignored_new
             .into_iter()
             .filter(|p| !self.wrote.contains(&self.root.join(p.trim_end_matches('/'))))
             .collect();
         // (a protected name HEAD's move brought is asked about all the same: it runs later outside the sandbox)
-        let mut made = protected_made(&self.root, &files, &ignored_new);
+        let mut made = protected_made(&self.root, &files, &ignored_new, &mut seen);
         // (links and repositories the tree has, and the names past `NEW_MAX` it hasn't — not ones left out
         // before the run too: they were there)
         made.extend(links.into_iter().chain(now.flagged.iter().cloned()));
         made.retain(|p| !then.flagged.contains(p) && !self.wrote.contains(&self.root.join(p)));
         crate::sorting::sort(&mut made);
         made.dedup();
-        let protected =
-            made.into_iter().map(|path| Made { hash: made_hash(&self.root, &path), path }).collect();
+        let mut protected: Vec<Made> = made
+            .into_iter()
+            .map(|path| Made { hash: made_hash(&self.root, &path), path, look: None })
+            .collect();
+        // (the remembered folders holding a HEAD, judged against what each held before the run)
+        for (h, parts) in &self.heads {
+            if let Some(rel) = rel_of(h) {
+                seen.then(&rel, *parts, true);
+            }
+        }
+        let (looks, heads) = seen.judge(&self.root);
+        protected.extend(looks);
+        let heads = heads.into_iter().map(|(rel, parts)| (self.root.join(rel), parts)).collect();
         // (HEAD moved: what came with it isn't the run's — said instead; can't tell — all of it stays)
         let head = match (&self.head, head(&self.root)) {
             (Some(from), Some(to)) if *from != to => {
@@ -1153,6 +1317,7 @@ impl Before {
             head,
             output_code,
             folders: Vec::new(),
+            heads,
         })
     }
 }
@@ -1167,7 +1332,11 @@ impl Found {
         self.skipped.extend(f.skipped.iter().map(|s| whole(s)));
         self.left_out += f.left_out;
         self.ignored_gone.extend(f.ignored_gone.iter().map(|s| whole(s)));
-        self.protected.extend(f.protected.into_iter().map(|m| Made { path: whole(&m.path), ..m }));
+        self.protected.extend(f.protected.into_iter().map(|m| {
+            let added = |l: Look| l.added.into_iter().map(|a| Made { path: whole(&a.path), ..a }).collect();
+            Made { path: whole(&m.path), look: m.look.map(|l| Look { added: added(l.clone()), ..l }), ..m }
+        }));
+        self.heads.extend(f.heads);
         if let Some(h) = f.head {
             let said = format!("In folder {}: {}.", at.display(), h.said());
             self.folders.push(FolderLine { at: at.to_path_buf(), said, standing: false });

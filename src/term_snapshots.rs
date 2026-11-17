@@ -7819,7 +7819,8 @@ fn the_terminal_says_what_claudes_run_made() {
     });
     let mark = "▲ Claude's run made build.rs — its card first";
     assert!(!screen_text(&mut s).contains(mark), "nothing waits: not said");
-    s.ed.workspace.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+    s.ed.workspace.made_protected =
+        vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None }];
     let text = screen_text(&mut s);
     assert!(text.contains(mark), "{text}");
     s.frames_both("terminal_made");

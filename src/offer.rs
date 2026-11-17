@@ -1472,16 +1472,26 @@ impl Offer {
             }
             W::NoSandbox { .. } => vec![plain('y', "Once"), lasts('s', "This session"), plain('n', "No")],
             // (the paused servers': nothing runs on the answer — they come back)
-            W::ProtectedMade { then, .. } if then.servers() => {
-                vec![lasts('y', "Keep"), lasts('r', "Remove"), plain('v', "See them"), plain('n', "Not now")]
+            // (#610: no `r` where it has nothing to remove — a noted folder git takes for a repository only edited)
+            W::ProtectedMade { then, made } if then.servers() => {
+                let mut v = vec![
+                    lasts('y', "Keep"),
+                    lasts('r', "Remove"),
+                    plain('v', "See them"),
+                    plain('n', "Not now"),
+                ];
+                v.retain(|a| a.0 != 'r' || made.iter().any(crate::snapshot::Made::removable));
+                v
             }
-            W::ProtectedMade { .. } => {
-                vec![
+            W::ProtectedMade { made, .. } => {
+                let mut v = vec![
                     lasts('y', "Keep, run"),
                     lasts('r', "Remove, run"),
                     plain('v', "See them"),
                     plain('n', "No"),
-                ]
+                ];
+                v.retain(|a| a.0 != 'r' || made.iter().any(crate::snapshot::Made::removable));
+                v
             }
             W::Read { keep, pending, .. } => {
                 let mut v = match keep {
@@ -2221,6 +2231,13 @@ impl crate::editor::Editor {
             && let Some(why) = crate::recovery::refuses(self, f)
         {
             return self.offer_refused(why);
+        }
+        // (#610: nothing to remove — a noted folder git takes for a repository only edited: refused in words, it stays)
+        if key == 'r'
+            && matches!(&self.offers[0].what, What::ProtectedMade { made, .. }
+                if !made.iter().any(crate::snapshot::Made::removable))
+        {
+            return self.offer_refused(crate::tools::MADE_NOTHING_TO_REMOVE);
         }
         if self.offer_holds(key) {
             return;

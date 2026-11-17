@@ -277,6 +277,15 @@ pub struct Workspace {
     /// Those kept on that card (`y`), as they were then — one a later run makes again holding the same isn't
     /// asked about; holding something else, it is.
     pub made_kept: Vec<crate::snapshot::Made>,
+    /// #610: folders holding a `HEAD` git doesn't take for a repository yet, whole, at most `snapshot::HEADS_MAX`, each
+    /// with what it held at its last look — looked at again after each run (`Before::looked`); how many more weren't kept since tarae started, and how many
+    /// of those Claude was told of (`tools::run_changes_now`). In memory only.
+    pub heads: Vec<(std::path::PathBuf, crate::snapshot::Parts)>,
+    pub heads_past: usize,
+    pub heads_told: usize,
+    /// #610: the folders git takes for a repository noted on the protected-made card (`y`), whole, sorted — named
+    /// again when a run changes what decides one (`look.rs`). In memory only.
+    pub noted: Vec<std::path::PathBuf>,
     /// A commit's tree being written for a run of its Claude's (`basetree.rs`) — another such run waits for
     /// that one's answer: they'd write the same tree.
     pub base_writing: bool,
@@ -513,6 +522,10 @@ impl Workspace {
             servers_held: false,
             servers_asked: Vec::new(),
             made_kept: Vec::new(),
+            heads: Vec::new(),
+            heads_past: 0,
+            heads_told: 0,
+            noted: Vec::new(),
             base_writing: false,
             spawned: Vec::new(),
             viewed: Default::default(),
@@ -1274,6 +1287,7 @@ impl Editor {
     fn servers_hold(&mut self, id: WorkspaceId) {
         let Some(l) = self.workspace_mut(id) else { return };
         l.servers_held = true;
+        let looks = crate::snapshot::looks_verb(&l.made_protected);
         crate::share::served_moved();
         let (root, docs) = (l.root.clone(), l.docs.clone());
         let serving: Vec<crate::lsp::ClientId> = self
@@ -1321,7 +1335,14 @@ impl Editor {
             self.attach_lsp(d);
         }
         if id == self.workspace.id && !paused.is_empty() {
-            self.set_warning(format!("{} {}", paused.join(", "), crate::tools::MADE_PAUSED));
+            let names = paused.join(", ");
+            // (#610: folders git takes for a repository alone — what you do first, so a cut falls on the cause)
+            match looks {
+                Some(verb) => self.set_warning(format!(
+                    "{names} paused until you answer the card — Claude's run {verb} a folder git takes for a repository"
+                )),
+                None => self.set_warning(format!("{} {}", paused.join(", "), crate::tools::MADE_PAUSED)),
+            }
         }
     }
 

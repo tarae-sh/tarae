@@ -181,6 +181,90 @@ fn a_bare_looking_folder_is_no_repository() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #610: `git_would_take` is git's own test — each of the plan's thirteen layouts judged by real git as well
+/// (`rev-parse --absolute-git-dir` from the folder: a scratch `HOME` and global config, no system one, the climb
+/// stopped above the layouts), and named exactly where git takes the folder itself. Each entry: `name/` a folder,
+/// `name->to` a link, `name=text` a file.
+#[test]
+fn git_would_take_is_gits_own_test() {
+    let s = crate::scratch::Scratch::new("git-would-take");
+    let (home, at) = (s.join("home"), s.join("layouts"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("gitconfig"), "").unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        let mut c = Command::new("git");
+        c.args(["-c", "safe.bareRepository=all", "-c", "init.defaultBranch=main"])
+            .args(args)
+            .current_dir(dir);
+        c.env("HOME", &home).env("GIT_CONFIG_GLOBAL", home.join("gitconfig")).env("GIT_CONFIG_NOSYSTEM", "1");
+        c.env("GIT_CEILING_DIRECTORIES", &at);
+        for v in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_INDEX_FILE"] {
+            c.env_remove(v);
+        }
+        c.output().unwrap()
+    };
+    let head = "HEAD=ref: refs/heads/main\n";
+    let whole = [head, "objects/", "refs/"];
+    let with = |more: &[&'static str]| whole.iter().copied().chain(more.iter().copied()).collect::<Vec<_>>();
+    let layouts: Vec<(&str, Vec<&str>, bool)> = vec![
+        ("1-ref", with(&[]), true),
+        ("5-id", vec!["HEAD=0123456789abcdef0123456789abcdef01234567\n", "objects/", "refs/"], true),
+        ("6-link-head", vec!["HEAD->refs/heads/main", "objects/", "refs/"], true),
+        ("9-linked-folders", vec![head, "o/", "r/", "objects->o", "refs->r"], true),
+        ("7-commondir", vec![head, "commondir=common\n", "common/", "common/objects/", "common/refs/"], true),
+        ("2-head-alone", vec![head], false),
+        ("3-one-folder", vec![head, "objects/"], false),
+        ("4-junk-head", vec!["HEAD=not a head\n", "objects/", "refs/"], false),
+        ("8-files", vec![head, "objects=x", "refs=x"], false),
+        (
+            "18-a-git-too",
+            with(&[".git/", ".git/HEAD=ref: refs/heads/main\n", ".git/objects/", ".git/refs/"]),
+            false,
+        ),
+        ("19-junk-git-file", with(&[".git=junk\n"]), false),
+        ("20-empty-git-folder", with(&[".git/"]), true),
+    ];
+    for (name, entries, _) in &layouts {
+        let dir = at.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for e in entries {
+            if let Some(d) = e.strip_suffix('/') {
+                std::fs::create_dir_all(dir.join(d)).unwrap();
+            } else if let Some((n, to)) = e.split_once("->") {
+                std::os::unix::fs::symlink(to, dir.join(n)).unwrap();
+            } else if let Some((n, text)) = e.split_once('=') {
+                std::fs::write(dir.join(n), text).unwrap();
+            }
+        }
+    }
+    // (21: a checkout's own top, its HEAD, objects/ and refs/ beside its `.git`)
+    let root = at.join("21-root");
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(git(&root, &["init", "-q"]).status.success());
+    for e in whole {
+        match e.split_once('=') {
+            Some((n, text)) => std::fs::write(root.join(n), text).unwrap(),
+            None => std::fs::create_dir_all(root.join(e)).unwrap(),
+        }
+    }
+    let all = layouts.iter().map(|(n, _, named)| (*n, *named)).chain([("21-root", false)]);
+    let mut wrong = Vec::new();
+    for (name, named) in all {
+        let dir = at.join(name);
+        let out = git(&dir, &["rev-parse", "--absolute-git-dir"]);
+        let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let gits = out.status.success()
+            && std::fs::canonicalize(&said).ok() == Some(std::fs::canonicalize(&dir).unwrap());
+        let ours = git_would_take(&dir).is_some();
+        if ours != gits || ours != named {
+            wrong.push(format!("{name}: ours {ours}, git's {gits} ({said:?}), the plan's {named}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert_eq!(git_would_take(&at.join("7-commondir")), Some(Takes::Common));
+    assert_eq!(git_would_take(&at.join("1-ref")), Some(Takes::Folders));
+}
+
 /// A linked checkout: its own git folder, the common one, and its own top; the common one named alone runs
 /// what outlives the checkout (`worktree list`).
 #[test]

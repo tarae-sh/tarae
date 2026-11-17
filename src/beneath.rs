@@ -206,6 +206,20 @@ impl Dir {
         }
     }
 
+    /// Folder `name` removed from this folder while it's empty (`unlinkat`, `AT_REMOVEDIR`: refused when anything is in
+    /// it; a link there isn't a folder — refused, nothing it leads to touched).
+    pub fn remove_folder(&self, name: &OsStr) -> io::Result<()> {
+        let (cn, fd) = (c(name)?, self.fd.as_raw_fd());
+        // SAFETY: a folder descriptor of ours and a name, live for the call.
+        match unsafe { libc::unlinkat(fd, cn.as_ptr(), libc::AT_REMOVEDIR) } {
+            0 => Ok(()),
+            _ => {
+                let e = io::Error::last_os_error();
+                Err(io::Error::new(e.kind(), format!("{}: {e}", self.at.join(name).display())))
+            }
+        }
+    }
+
     /// File `name` here moved to `to_name` in `to`: linked there first (`linkat` — never over anything there,
     /// and a link at `name` is linked as itself, not followed), then unlinked here.
     pub fn move_to(&self, name: &OsStr, to: &Dir, to_name: &OsStr) -> io::Result<()> {

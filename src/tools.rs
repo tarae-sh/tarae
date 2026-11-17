@@ -4447,10 +4447,12 @@ fn go(ed: &mut Editor, who: For, job: Job, guard: Option<Guard>, ride: Ride) {
                 call.step("snapshot");
                 // (and each of the workspace's folders: its runs write there as in the project — `folders.rs`)
                 let (root, folders) = (ed.workspace.root.clone(), ed.workspace.roots().folders().to_vec());
+                // (#610: what's remembered of folders git may take for a repository, looked at again after it)
+                let (heads, noted) = (ed.workspace.heads.clone(), ed.workspace.noted.clone());
                 let mut ride = ride;
                 let answered = ride.answered.take();
                 ed.events.jobs().spawn(move || {
-                    let snap = crate::snapshot::Before::take_with(&root, &folders);
+                    let snap = crate::snapshot::Before::take_with(&root, &folders).looked(&heads, &noted);
                     let answered = answered.map(|mut a| {
                         let tree = || snap.tree.as_ref().map(|t| t.id.clone()).map_err(String::clone);
                         a.kept = crate::sinceyes::take_with(&root, &a.cwd, &a.cmd, tree);
@@ -4807,9 +4809,11 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
     use crate::cards::{Past, Request, Why};
     let label = then.label();
     let made = ed.workspace.made_protected.clone();
-    let paths: Vec<String> = made.iter().map(|m| m.path.clone()).collect();
+    // (#610: folders git takes for a repository said apart, after the names)
+    let (looks, plain): (Vec<&crate::snapshot::Made>, Vec<_>) = made.iter().partition(|m| m.look.is_some());
+    let paths: Vec<String> = plain.iter().map(|m| m.path.clone()).collect();
     let (named, it) = made_named(&paths);
-    let among = if made.len() == 1 { "it's" } else { "they're" };
+    let among = if plain.len() == 1 { "it's" } else { "they're" };
     // (a card about the same names for Claude's run, your task or preflight takes the paused servers' place —
     // theirs is put up again once that one is answered and the names still wait: `made_hold_sync`)
     if !then.servers() {
@@ -4820,7 +4824,7 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
         MadeThen::Servers => (
             MADE_SERVERS_TITLE,
             format!(
-                "{label}\n\nClaude's last run made {named} the sandbox keeps from its commands: a language server \
+                "Claude's last run made {named} the sandbox keeps from its commands: a language server \
                  loads what's in {it} outside the sandbox (rust-analyzer's check runs a new build.rs), so this \
                  checkout's servers are paused until you answer.\n\nLook at {it} first — {among} among Claude's \
                  changes (space u takes its turn back); y keeps {it} and brings the servers back, r removes {it} \
@@ -4831,7 +4835,7 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
         MadeThen::Claude { .. } => (
             MADE_TITLE,
             format!(
-                "{label}\n\nIts last run made {named} the sandbox keeps from Claude's commands: what's in {it} \
+                "Its last run made {named} the sandbox keeps from Claude's commands: what's in {it} \
                  runs outside the sandbox, in your builds and your terminal. The sandbox couldn't refuse {it}: \
                  none was there yet.\n\nLook at {it} before this runs — {among} among this turn's changes \
                  (space u takes the turn back); r removes {it} — a link itself, never what it leads to."
@@ -4840,12 +4844,31 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
         _ => (
             MADE_YOURS_TITLE,
             format!(
-                "{label}\n\nClaude's last run made {named} the sandbox keeps from its commands: what's in {it} \
+                "Claude's last run made {named} the sandbox keeps from its commands: what's in {it} \
                  runs in this, outside the sandbox. The sandbox couldn't refuse {it}: none was there yet.\n\n\
                  Look at {it} before this runs — {among} among Claude's changes (space u takes its turn back); \
                  r removes {it} — a link itself, never what it leads to."
             ),
         ),
+    };
+    let (title, question) = match (plain.is_empty(), looks.is_empty()) {
+        (false, true) => (title.to_string(), format!("{label}\n\n{question}")),
+        (false, false) => {
+            (title.to_string(), format!("{label}\n\n{question}\n\n{}", looks_card(&looks, &then)))
+        }
+        (true, _) => {
+            let verb = crate::snapshot::looks_verb(&made).unwrap_or("made");
+            let title = match &then {
+                MadeThen::Servers => format!(
+                    "Language servers paused — Claude's run {verb} a folder git takes for a repository"
+                ),
+                MadeThen::Claude { .. } => {
+                    format!("Claude wants to run — after it {verb} a folder git takes for a repository")
+                }
+                _ => format!("Before your run — Claude's run {verb} a folder git takes for a repository"),
+            };
+            (title, format!("{label}\n\n{}", looks_card(&looks, &then)))
+        }
     };
     let at = label.split('\n').count() + 1;
     if let Some(call) = then.call() {
@@ -4860,8 +4883,115 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
     );
     let asked = crate::cards::Asked { run, ..asked.about(&label) };
     let what = crate::offer::What::ProtectedMade { then: Box::new(then), made };
-    let o = crate::offer::Offer::new(title.into(), &question, "", String::new(), what);
+    let o = crate::offer::Offer::new(title, &question, "", String::new(), what);
     ed.push_offer(o.asked(asked).warning(at..at + 1));
+}
+
+/// S2 (#610): the protected-made card's lines on folders git takes for a repository — each on a line of its own (made,
+/// or a noted one changed: what), what that means, and what `r` removes: what made it one, or what a run added in a
+/// noted one — never the folder. None to remove (only edited): no `r` line, and the card takes no `r`
+/// (`MADE_NOTHING_TO_REMOVE`).
+fn looks_card(looks: &[&crate::snapshot::Made], then: &MadeThen) -> String {
+    let line = |m: &&crate::snapshot::Made| match m.look.as_ref().map(|l| &l.changed) {
+        Some(changed) if !changed.is_empty() => format!("{}/ — its {} changed", m.path, changed.join(", ")),
+        _ => format!("{}/ — a folder git takes for a repository", m.path),
+    };
+    let (it, its) = if looks.len() == 1 { ("it", "its") } else { ("them", "their") };
+    let mut s = looks.iter().map(line).collect::<Vec<_>>().join("\n");
+    s += &format!(
+        "\n\ngit run from there or below — your terminal, a prompt's git status — uses {it} instead of this project's \
+         repository and runs what {its} config and hooks name. tarae's own git doesn't."
+    );
+    if then.servers() {
+        s += " This checkout's language servers are paused until you answer.";
+    }
+    let added: Vec<String> = looks
+        .iter()
+        .flat_map(|m| m.look.iter().flat_map(|l| l.added.iter().map(|a| a.path.clone())))
+        .collect();
+    let made =
+        looks.iter().any(|m| m.look.as_ref().is_some_and(|l| l.changed.is_empty() && !l.added.is_empty()));
+    match (added.is_empty(), made) {
+        (true, _) => {}
+        (false, true) => {
+            s += &format!("\n\nr removes what made {it} one — {} — never the folder.", some_named(&added))
+        }
+        (false, false) => {
+            s += &format!(
+                "\n\nr removes what the run added there — {} — never the folder; what it edited stays as it is.",
+                some_named(&added)
+            )
+        }
+    }
+    s
+}
+
+/// `r` refused on a protected-made card with nothing to remove: the run only edited a noted folder git takes for a
+/// repository (#610).
+pub const MADE_NOTHING_TO_REMOVE: &str =
+    "r: nothing to remove — the run only edited what was there, and tarae never puts an edited file back";
+
+/// S1 (#610): what Claude's run report says of the folders git takes for a repository it made, or changed in one the
+/// user noted.
+fn looks_said(looks: &[crate::snapshot::Made]) -> String {
+    let (made, changed): (Vec<_>, Vec<_>) =
+        looks.iter().partition(|m| m.look.as_ref().is_some_and(|l| l.changed.is_empty()));
+    let rest = |n: usize| {
+        let (it, its) = if n == 1 { ("it", "its") } else { ("them", "their") };
+        format!(
+            "the user's own git, run from there or below, uses {it} instead of the project's and runs what {its} config \
+             and hooks name, outside the sandbox. tarae's own git doesn't. The user is asked about {it} before your next \
+             command or test runs.\n"
+        )
+    };
+    let folders = |v: &[&crate::snapshot::Made]| {
+        some_named(&v.iter().map(|m| format!("{}/", m.path)).collect::<Vec<_>>())
+    };
+    let mut out = String::new();
+    match &made[..] {
+        [] => {}
+        [m] => {
+            let takes = m.look.as_ref().map_or("", |l| l.takes.said());
+            out += &format!("It made {}/ a folder git takes for a repository ({takes}): {}", m.path, rest(1));
+        }
+        v => out += &format!("It made {} folders git takes for a repository: {}", folders(v), rest(v.len())),
+    }
+    match &changed[..] {
+        [] => {}
+        [m] => {
+            let what = m.look.as_ref().map(|l| l.changed.join(", ")).unwrap_or_default();
+            out += &format!(
+                "It changed {what} in {}/, a folder git takes for a repository: {}",
+                m.path,
+                rest(1)
+            );
+        }
+        v => {
+            out += &format!(
+                "It changed what decides {}, folders git takes for a repository: {}",
+                folders(v),
+                rest(v.len())
+            )
+        }
+    }
+    out
+}
+
+/// What a run made, for Claude's no: `made a, a name the sandbox keeps (what's in it runs outside it)` — and the
+/// folders git takes for a repository it made or changed (#610).
+fn made_what(made: &[crate::snapshot::Made]) -> String {
+    let (looks, plain): (Vec<_>, Vec<_>) = made.iter().partition(|m| m.look.is_some());
+    let mut said = Vec::new();
+    if !plain.is_empty() {
+        let (named, it) = made_named(&plain.iter().map(|m| m.path.clone()).collect::<Vec<_>>());
+        said.push(format!("made {named} the sandbox keeps (what's in {it} runs outside it)"));
+    }
+    if !looks.is_empty() {
+        let folders = some_named(&looks.iter().map(|m| format!("{}/", m.path)).collect::<Vec<_>>());
+        let what = if looks.len() == 1 { "a folder" } else { "folders" };
+        said.push(format!("made or changed {folders}, {what} git takes for a repository (its config and hooks run outside it)"));
+    }
+    said.join(", and ")
 }
 
 /// The answer on that card: `y` runs it (the names kept — not asked about again while they hold what they
@@ -4883,6 +5013,15 @@ pub fn made_answer(
             ed.offer_finished(id, Ok(()));
             ed.workspace.made_protected.retain(|p| !made.iter().any(|m| m.path == p.path));
             ed.workspace.made_kept.retain(|p| !made.iter().any(|m| m.path == p.path));
+            // (#610: a folder git takes for a repository noted — named again when a run changes what decides it)
+            let roots = ed.workspace.roots();
+            for m in made.iter().filter(|m| m.look.is_some()) {
+                if let Some(p) = crate::snapshot::made_place(&roots, &m.path)
+                    && let Err(i) = ed.workspace.noted.binary_search(&p)
+                {
+                    ed.workspace.noted.insert(i, p);
+                }
+            }
             // (one past what's hashed isn't kept: asked about whenever a run makes it — `Made::keepable`)
             ed.workspace.made_kept.extend(made.into_iter().filter(crate::snapshot::Made::keepable));
             made_go(ed, then)
@@ -4894,8 +5033,28 @@ pub fn made_answer(
                 move |ed: &mut Editor| {
                     ed.offer_finished(id, Ok(()));
                     let (removed, left): (Vec<_>, Vec<_>) = gone.into_iter().partition(|(_, r)| r.is_ok());
+                    // (#610: a folder git took for a repository, what made it one removed — looked at again after
+                    // runs while it holds a HEAD; Claude told apart)
+                    let (looks, removed): (Vec<_>, Vec<_>) = removed.into_iter().partition(|(m, _)| m.look.is_some());
+                    let looks: Vec<String> = looks.into_iter().map(|(m, _)| m.path).collect();
+                    let roots = ed.workspace.roots();
+                    for p in looks.iter().filter_map(|l| crate::snapshot::made_place(&roots, l)) {
+                        let heads = &mut ed.workspace.heads;
+                        if !heads.iter().any(|h| h.0 == p) && heads.len() < crate::snapshot::HEADS_MAX {
+                            heads.push((p, crate::snapshot::Parts::head_only()));
+                        }
+                    }
+                    ed.workspace.made_protected.retain(|p| !looks.contains(&p.path));
+                    if !looks.is_empty() {
+                        let folders = some_named(&looks.iter().map(|l| format!("{l}/")).collect::<Vec<_>>());
+                        ed.workspace.claude.checkpoints.tell.push(format!(
+                            "The user removed what your last run added to {folders}, which git took for a repository — \
+                             don't add it again"
+                        ));
+                    }
                     let removed: Vec<String> = removed.into_iter().map(|(m, _)| m.path).collect();
                     ed.workspace.made_protected.retain(|p| !removed.contains(&p.path));
+                    let removed_all: Vec<String> = removed.iter().chain(&looks).cloned().collect();
                     if !removed.is_empty() {
                         let (named, _) = made_named(&removed);
                         ed.workspace.claude.checkpoints.tell.push(format!(
@@ -4907,7 +5066,7 @@ pub fn made_answer(
                         let why: Vec<String> = left.into_iter().filter_map(|(_, r)| r.err()).collect();
                         ed.set_error(format!("not removed — asked about again: {}", why.join("; ")));
                     } else {
-                        ed.set_success(format!("removed {}", some_named(&removed)));
+                        ed.set_success(format!("removed {}", some_named(&removed_all)));
                     }
                     made_go(ed, then)
                 }
@@ -4916,12 +5075,11 @@ pub fn made_answer(
         MadeAnswer::No => {
             ed.offer_finished(id, Ok(()));
             let paths: Vec<String> = made.iter().map(|m| m.path.clone()).collect();
-            let (named, it) = made_named(&paths);
             match then {
                 MadeThen::Claude { job, call, ride } => {
                     let e = format!(
-                        "Your last run made {named} the sandbox keeps (what's in {it} runs outside it), and the \
-                         user chose not to run `{}` after it — ask them how to go on",
+                        "Your last run {}, and the user chose not to run `{}` after it — ask them how to go on",
+                        made_what(&made),
                         job.label()
                     );
                     for c in std::iter::once(call).chain(ride.joined.into_iter().map(|j| j.call)) {
@@ -5431,151 +5589,190 @@ fn run_changes_now(
     snap.outputs = !builds(&cmd);
     ed.events.jobs().spawn(move || {
         let found = snap.since();
+        // (all but `told` in a function of its own: generic over `told`, this was copied for each of its three kinds)
         move |ed: &mut Editor| {
-            // (how a folder stands — no git checkout — is said once a turn, not in every run's report)
-            let found = found.map(|mut f| {
-                let said = &mut ed.workspace.claude.checkpoints.told;
-                f.folders.retain(|l| !l.standing || !said.contains(&l.at));
-                said.extend(f.folders.iter().filter(|l| l.standing).map(|l| l.at.clone()));
-                f
-            });
-            let said = match found {
-                Ok(crate::snapshot::Found {
+            let said = run_found(ed, found, generation, &cmd);
+            told(ed, said);
+            crate::queued::run_next(ed);
+        }
+    });
+}
+
+/// What run `cmd` changed (`Before::since`), taken in on the main loop — its files into the turn, what it made that
+/// waits for its card, the folders holding a `HEAD` to look at again (#610) — and what its report says of it.
+fn run_found(
+    ed: &mut Editor,
+    found: Result<crate::snapshot::Found, String>,
+    generation: u64,
+    cmd: &str,
+) -> String {
+    // (how a folder stands — no git checkout — is said once a turn, not in every run's report)
+    let found = found.map(|mut f| {
+        let said = &mut ed.workspace.claude.checkpoints.told;
+        f.folders.retain(|l| !l.standing || !said.contains(&l.at));
+        said.extend(f.folders.iter().filter(|l| l.standing).map(|l| l.at.clone()));
+        // (#610: the folders holding a HEAD to look at again, within their bound — the rest counted)
+        let mut heads = std::mem::take(&mut f.heads);
+        ed.workspace.heads_past += heads.len().saturating_sub(crate::snapshot::HEADS_MAX);
+        heads.truncate(crate::snapshot::HEADS_MAX);
+        ed.workspace.heads = heads;
+        f
+    });
+    // (S11: past the bound, said to Claude once a count — what isn't looked at)
+    let past = ed.workspace.heads_past;
+    let clause = match past > ed.workspace.heads_told {
+        true => {
+            ed.workspace.heads_told = past;
+            format!(
+                "Folders git takes for a repository are looked for after each run ({past} folders holding a HEAD \
+                         aren't looked at after runs: past {}).\n",
+                crate::snapshot::HEADS_MAX
+            )
+        }
+        false => String::new(),
+    };
+    let said = match found {
+        Ok(crate::snapshot::Found {
+            files,
+            skipped,
+            left_out,
+            ignored_gone,
+            protected,
+            head,
+            output_code,
+            folders,
+            heads: _,
+        }) if !files.is_empty()
+            || !skipped.is_empty()
+            || left_out > 0
+            || !ignored_gone.is_empty()
+            || !protected.is_empty()
+            || head.is_some()
+            || !output_code.is_empty()
+            || !folders.is_empty() =>
+        {
+            let root = ed.workspace.root.clone();
+            // (its tree moved: taken again for overlaps — `overlap.rs`)
+            if !files.is_empty() || head.is_some() {
+                crate::overlap::moved(ed, &root);
+            }
+            let named: Vec<String> = files
+                .iter()
+                .map(|c| {
+                    let name = crate::chat::shown(&root, &c.path);
+                    match (&c.before, &c.after) {
+                        (None, _) => format!("{name} (new)"),
+                        (_, None) => format!("{name} (deleted)"),
+                        _ => name,
+                    }
+                })
+                .collect();
+            let said = some_named(&named);
+            let turn =
+                ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() == generation && c.busy());
+            // HEAD moved (a merge, a checkout): the files it brought aren't the turn's — said, in the
+            // chat and in the turn's review, instead of counted with its changes
+            let moved = head.as_ref().map(crate::snapshot::HeadMove::said);
+            if let (Some(said), Some(h)) = (&moved, &head) {
+                if turn {
+                    ed.workspace.claude.checkpoints.head.push(h.clone());
+                }
+                if let Some(c) = &mut ed.workspace.claude.chat {
+                    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, said.clone(), ""));
+                }
+            }
+            // (an open buffer it rewrote dries as it takes the text — §2)
+            ed.run_wrote(&files);
+            if turn && !files.is_empty() {
+                crate::checkpoint::record_run(ed, files);
+            } else if !files.is_empty()
+                && let Some(n) = crate::checkpoint::record_run_alone(
+                    ed,
+                    &format!("ran `{cmd}`"),
                     files,
-                    skipped,
-                    left_out,
-                    ignored_gone,
-                    protected,
-                    head,
-                    output_code,
-                    folders,
-                }) if !files.is_empty()
-                    || !skipped.is_empty()
-                    || left_out > 0
-                    || !ignored_gone.is_empty()
-                    || !protected.is_empty()
-                    || head.is_some()
-                    || !output_code.is_empty()
-                    || !folders.is_empty() =>
-                {
-                    let root = ed.workspace.root.clone();
-                    // (its tree moved: taken again for overlaps — `overlap.rs`)
-                    if !files.is_empty() || head.is_some() {
-                        crate::overlap::moved(ed, &root);
-                    }
-                    let named: Vec<String> = files
-                        .iter()
-                        .map(|c| {
-                            let name = crate::chat::shown(&root, &c.path);
-                            match (&c.before, &c.after) {
-                                (None, _) => format!("{name} (new)"),
-                                (_, None) => format!("{name} (deleted)"),
-                                _ => name,
-                            }
-                        })
-                        .collect();
-                    let said = some_named(&named);
-                    let turn =
-                        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() == generation && c.busy());
-                    // HEAD moved (a merge, a checkout): the files it brought aren't the turn's — said, in the
-                    // chat and in the turn's review, instead of counted with its changes
-                    let moved = head.as_ref().map(crate::snapshot::HeadMove::said);
-                    if let (Some(said), Some(h)) = (&moved, &head) {
-                        if turn {
-                            ed.workspace.claude.checkpoints.head.push(h.clone());
-                        }
-                        if let Some(c) = &mut ed.workspace.claude.chat {
-                            c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, said.clone(), ""));
-                        }
-                    }
-                    // (an open buffer it rewrote dries as it takes the text — §2)
-                    ed.run_wrote(&files);
-                    if turn && !files.is_empty() {
-                        crate::checkpoint::record_run(ed, files);
-                    } else if !files.is_empty()
-                        && let Some(n) = crate::checkpoint::record_run_alone(
-                            ed,
-                            &format!("ran `{cmd}`"),
-                            files,
-                            head.clone().into_iter().collect(),
-                        )
-                        && let Some(c) = &mut ed.workspace.claude.chat
-                    {
-                        let row = format!("its run changed {n} after the turn · space v t · space u undo");
-                        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
-                    }
-                    let mut out = String::new();
-                    match (&moved, &head) {
-                        (Some(said), Some(h)) if h.files > 0 => {
-                            let brought = match h.files {
-                                1 => "the file it brought isn't one of this turn's changes".to_string(),
-                                n => format!("the {n} files it brought aren't this turn's changes"),
-                            };
-                            out.push_str(&format!(
-                                "\n{said} — {brought}: not in its review, not taken back with it.\n"
-                            ))
-                        }
-                        // (any move but a pure fast-forward: its files stayed the turn's — the sentence says so)
-                        (Some(said), _) => out.push_str(&format!("\n{said}.\n")),
-                        _ => {}
-                    }
-                    if !named.is_empty() {
-                        out.push_str(&format!(
-                            "\nIt changed in the checkout: {said} — part of this turn's changes, which the \
+                    head.clone().into_iter().collect(),
+                )
+                && let Some(c) = &mut ed.workspace.claude.chat
+            {
+                let row = format!("its run changed {n} after the turn · space v t · space u undo");
+                c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
+            }
+            let mut out = String::new();
+            match (&moved, &head) {
+                (Some(said), Some(h)) if h.files > 0 => {
+                    let brought = match h.files {
+                        1 => "the file it brought isn't one of this turn's changes".to_string(),
+                        n => format!("the {n} files it brought aren't this turn's changes"),
+                    };
+                    out.push_str(&format!(
+                        "\n{said} — {brought}: not in its review, not taken back with it.\n"
+                    ))
+                }
+                // (any move but a pure fast-forward: its files stayed the turn's — the sentence says so)
+                (Some(said), _) => out.push_str(&format!("\n{said}.\n")),
+                _ => {}
+            }
+            if !named.is_empty() {
+                out.push_str(&format!(
+                    "\nIt changed in the checkout: {said} — part of this turn's changes, which the \
                              user reviews and can take back.\n"
-                        ));
-                    }
-                    if !skipped.is_empty() {
-                        out.push_str(&format!("Changed, and not taken back with the turn: {}.\n", skipped.join(", ")));
-                    }
-                    if left_out > 0 {
-                        out.push_str(&format!(
-                            "{left_out} new untracked files in the checkout (not ignored) weren't kept — too many at \
+                ));
+            }
+            if !skipped.is_empty() {
+                out.push_str(&format!(
+                    "Changed, and not taken back with the turn: {}.\n",
+                    skipped.join(", ")
+                ));
+            }
+            if left_out > 0 {
+                out.push_str(&format!(
+                    "{left_out} new untracked files in the checkout (not ignored) weren't kept — too many at \
                              once: its changes to them can't be taken back.\n"
-                        ));
-                    }
-                    if !ignored_gone.is_empty() {
-                        out.push_str(&format!(
-                            "It deleted ignored files, which aren't kept — the user can't take them back: {}.\n",
-                            some_named(&ignored_gone)
-                        ));
-                    }
-                    out.push_str(&crate::snapshot::OutputCode::said(&output_code));
-                    // (the workspace's folders: one whose changes can't be told, a folder's HEAD moved)
-                    for f in &folders {
-                        out.push_str(&format!("{}\n", f.said));
-                    }
-                    // (kept for the card before its next run — Landlock couldn't refuse them)
-                    // (one kept on its card, holding what it held then: not asked about again)
-                    let kept = &ed.workspace.made_kept;
-                    let protected: Vec<_> = protected.into_iter().filter(|m| !kept.contains(m)).collect();
-                    if !protected.is_empty() {
-                        let paths: Vec<String> = protected.iter().map(|m| m.path.clone()).collect();
-                        let (named, it) = made_named(&paths);
-                        out.push_str(&format!(
+                ));
+            }
+            if !ignored_gone.is_empty() {
+                out.push_str(&format!(
+                    "It deleted ignored files, which aren't kept — the user can't take them back: {}.\n",
+                    some_named(&ignored_gone)
+                ));
+            }
+            out.push_str(&crate::snapshot::OutputCode::said(&output_code));
+            // (the workspace's folders: one whose changes can't be told, a folder's HEAD moved)
+            for f in &folders {
+                out.push_str(&format!("{}\n", f.said));
+            }
+            // (kept for the card before its next run — Landlock couldn't refuse them)
+            // (one kept on its card, holding what it held then: not asked about again)
+            let kept = &ed.workspace.made_kept;
+            let protected: Vec<_> =
+                protected.into_iter().filter(|m| !kept.iter().any(|k| k.same(m))).collect();
+            let looks: Vec<_> = protected.iter().filter(|m| m.look.is_some()).cloned().collect();
+            out.push_str(&looks_said(&looks));
+            let plain: Vec<String> =
+                protected.iter().filter(|m| m.look.is_none()).map(|m| m.path.clone()).collect();
+            if !plain.is_empty() {
+                let (named, it) = made_named(&plain);
+                out.push_str(&format!(
                             "It made {named} the sandbox keeps from your commands: what's in {it} runs later \
                              outside it (the user's builds, their terminal). The sandbox couldn't refuse {it} \
                              (none was there yet); the user is asked about {it} before your next command or \
                              test runs. To change one, edit it with your edit tool.\n"
                         ));
-                        for p in protected {
-                            ed.workspace.made_protected.retain(|m| m.path != p.path);
-                            ed.workspace.made_protected.push(p);
-                        }
-                    }
-                    out
-                }
-                Ok(_) => String::new(),
-                Err(e) => {
-                    let line = format!("snapshot: what `{cmd}` changed can't be told — {e}");
-                    ed.workspace.log().line("tarae", "info", &line);
-                    String::new()
-                }
-            };
-            told(ed, said);
-            crate::queued::run_next(ed);
+            }
+            for p in protected {
+                ed.workspace.made_protected.retain(|m| m.path != p.path);
+                ed.workspace.made_protected.push(p);
+            }
+            out
         }
-    });
+        Ok(_) => String::new(),
+        Err(e) => {
+            let line = format!("snapshot: what `{cmd}` changed can't be told — {e}");
+            ed.workspace.log().line("tarae", "info", &line);
+            String::new()
+        }
+    };
+    said + &clause
 }
 
 /// Places reported at most; output lines sent whole up to `OUTPUT_WHOLE`, else its first `OUTPUT_HEAD` and

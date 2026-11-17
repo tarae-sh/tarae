@@ -1906,7 +1906,7 @@ mod tests {
             }
             "protected-made" => {
                 ed.workspace.made_protected =
-                    vec![crate::snapshot::Made { path: "build.rs".into(), hash: "0".into() }];
+                    vec![crate::snapshot::Made { path: "build.rs".into(), hash: "0".into(), look: None }];
                 let job = crate::tools::Job::Command(cmd.clone(), root.to_path_buf());
                 let then = crate::tools::MadeThen::Claude { job, call, ride: Box::default() };
                 crate::tools::ask_made(&mut ed, then);

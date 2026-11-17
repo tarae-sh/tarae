@@ -240,6 +240,26 @@ fn frame(ed: &mut Editor) -> String {
     crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 160, 40).unwrap()
 }
 
+/// #610: the status line carries the newest toast by when it was said (`term::status_toast`) — one said again after a
+/// newer one keeps its place on the card's list, and is still the newest. Both on the card already: none waits.
+#[test]
+fn a_toast_said_again_after_a_newer_one_is_the_newest() {
+    let mut ed = editor();
+    ed.set_warning("disk full — nothing saved");
+    ed.set_success("server ready");
+    ed.set_warning("disk full — nothing saved");
+    for t in &mut ed.toasts {
+        t.shown = true;
+    }
+    assert_eq!(
+        ed.toasts.last().map(|t| t.text.as_str()),
+        Some("server ready"),
+        "said again, it kept its place"
+    );
+    let carried = crate::term::status_toast(&ed).map(|t| t.text.clone());
+    assert_eq!(carried.as_deref(), Some("disk full — nothing saved"));
+}
+
 /// Keys, a frame after each (`<C-w>`, `<esc>`, `<ret>` as written).
 fn feed(ed: &mut Editor, keys: &str) {
     let mut chars = keys.chars();

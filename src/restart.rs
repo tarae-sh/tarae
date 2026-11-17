@@ -2753,7 +2753,7 @@ mod tests {
     fn restarts_build_waits_on_what_claudes_run_made() {
         let dir = temp("made");
         let bin = fake_tarae(&dir, "tarae 9.9.9");
-        let made = || vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+        let made = || vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None }];
         let mut ed = editing(&dir, "touch built", &bin);
         ed.workspace.made_protected = made();
         // (the restart's — not the paused servers' card the names put up too)
@@ -3583,7 +3583,7 @@ mod tests {
                 call: crate::tools::Call::test(1),
                 ride: Box::default(),
             }),
-            made: vec![crate::snapshot::Made { path: "Makefile".into(), hash: String::new() }],
+            made: vec![crate::snapshot::Made { path: "Makefile".into(), hash: String::new(), look: None }],
         };
         ed.workspace_by_id(id).unwrap().parked.push(card("Run it after it made Makefile?", made));
         // (a rebase held back by its checkout's changes: `:workspace-bring` raises it again, looking afresh)

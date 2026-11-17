@@ -1069,13 +1069,97 @@ fn outside(folder: &Path, writes: &[PathBuf]) -> Option<Arc<Repo>> {
     }
 }
 
-/// Whether something from `folder` up to `top` passes for a git repository: a `.git`, or a git folder's own
-/// layout (`HEAD`, `objects/`, `refs/`) — files only looked at, no git run.
+/// Whether something from `folder` up to `top` passes for a git repository: a `.git`, or a folder git takes for
+/// one (`git_would_take`) — files only looked at, no git run.
 fn looks_like_git(folder: &Path, top: &Path) -> bool {
-    folder.ancestors().take_while(|d| d.starts_with(top)).any(|d| {
-        std::fs::symlink_metadata(d.join(".git")).is_ok()
-            || (d.join("HEAD").is_file() && d.join("objects").is_dir() && d.join("refs").is_dir())
-    })
+    folder
+        .ancestors()
+        .take_while(|d| d.starts_with(top))
+        .any(|d| std::fs::symlink_metadata(d.join(".git")).is_ok() || git_would_take(d).is_some())
+}
+
+/// What makes a folder one git takes for a repository (`git_would_take`): its `HEAD` with `objects/` and `refs/`, or
+/// with a `commondir` (the two folders where that names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Takes {
+    Folders,
+    Common,
+}
+
+impl Takes {
+    /// `HEAD, objects/, refs/` · `HEAD, commondir`.
+    pub fn said(self) -> &'static str {
+        match self {
+            Takes::Folders => "HEAD, objects/, refs/",
+            Takes::Common => "HEAD, commondir",
+        }
+    }
+}
+
+/// Whether git, run from `dir` or below, takes `dir` itself for a repository (#610) — git's own test (setup.c's
+/// climb and `is_git_directory`), files only, no git run. A `.git` there stops it, git uses that instead: a file
+/// (a valid one leads elsewhere — #609's —, an invalid one is fatal, "invalid gitfile format"), or a folder that passes
+/// the test (an empty or invalid one falls through to `dir`). Else `dir`'s `HEAD` is valid — a link into `refs/`, or
+/// its first bytes `ref: refs/…` or an object id — and `objects/` and `refs/` can be entered (links count), in the
+/// folder its `commondir` names when it has one.
+pub fn git_would_take(dir: &Path) -> Option<Takes> {
+    let git = dir.join(".git");
+    match std::fs::metadata(&git) {
+        Ok(m) if m.is_file() => return None,
+        Ok(_) if is_git_directory(&git).is_some() => return None,
+        _ => {}
+    }
+    is_git_directory(dir)
+}
+
+/// setup.c's `is_git_directory`: `HEAD` (`validate_headref`), then `objects` and `refs` entered (`access(X_OK)`) in the
+/// common folder — `commondir`'s, relative to `dir` unless whole; one git can't read stops git (`die`).
+fn is_git_directory(dir: &Path) -> Option<Takes> {
+    use std::io::Read as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let head = dir.join("HEAD");
+    let valid = match std::fs::symlink_metadata(&head).ok()? {
+        m if m.file_type().is_symlink() => {
+            std::fs::read_link(&head).ok()?.as_os_str().as_bytes().starts_with(b"refs/")
+        }
+        _ => {
+            // (git reads 255 bytes; a FIFO isn't waited on)
+            let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&head).ok()?;
+            let mut b = Vec::new();
+            f.take(255).read_to_end(&mut b).ok()?;
+            let b = &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())];
+            let hex = |n: usize| b.len() >= n && b[..n].iter().all(u8::is_ascii_hexdigit);
+            match b.strip_prefix(b"ref:") {
+                Some(r) => r.trim_ascii_start().starts_with(b"refs/"),
+                None => hex(64) || hex(40),
+            }
+        }
+    };
+    if !valid {
+        return None;
+    }
+    let named = dir.join("commondir");
+    let (common, takes) = match std::fs::metadata(&named) {
+        Err(_) => (dir.to_path_buf(), Takes::Folders),
+        Ok(_) => {
+            let mut b = Vec::new();
+            std::fs::File::open(&named).ok()?.take(4096).read_to_end(&mut b).ok()?;
+            // (an empty one: git dies; only line ends taken off its end, as git does)
+            if b.is_empty() {
+                return None;
+            }
+            let end = b.iter().rposition(|&c| c != b'\n' && c != b'\r').map_or(0, |i| i + 1);
+            (dir.join(std::ffi::OsStr::from_bytes(&b[..end])), Takes::Common)
+        }
+    };
+    let enter = |p: PathBuf| {
+        use std::os::unix::ffi::OsStringExt as _;
+        std::ffi::CString::new(p.into_os_string().into_vec())
+            // SAFETY: a NUL-ended path of ours, live for the call.
+            .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0)
+    };
+    (enter(common.join("objects")) && enter(common.join("refs"))).then_some(takes)
 }
 
 /// `rel` in `repo`'s work tree — down into a submodule on the way when there's one.

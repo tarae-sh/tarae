@@ -515,6 +515,343 @@ fn protected_names_a_run_made_are_found() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #610: the folders a run makes that git takes for a repository, as `Found.protected` has them, and what `r` would
+/// remove of each.
+fn looks(found: &Found) -> Vec<(String, Vec<String>)> {
+    let of =
+        |m: &Made| Some((m.path.clone(), m.look.as_ref()?.added.iter().map(|a| a.path.clone()).collect()));
+    let mut v: Vec<_> = found.protected.iter().filter_map(of).collect();
+    v.sort();
+    v
+}
+
+/// A folder's own entries as the layouts write them: `name/` a folder, `name->to` a link, `name=text` a file.
+fn lay(dir: &Path, entries: &[&str]) {
+    for e in entries {
+        if let Some(d) = e.strip_suffix('/') {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        } else if let Some((n, to)) = e.split_once("->") {
+            std::fs::create_dir_all(dir.join(n).parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(to, dir.join(n)).unwrap();
+        } else if let Some((n, text)) = e.split_once('=') {
+            std::fs::create_dir_all(dir.join(n).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(n), text).unwrap();
+        }
+    }
+}
+
+/// #610: a folder a run makes that git takes for a repository is named — a plain `HEAD`, a link, the `commondir` form,
+/// a lower-case `head` (where the file system finds it as `HEAD`), one in a new ignored folder, one below tools' output,
+/// an old ignored `build/` made one — each with what made it one, what `r` removes; a `HEAD` alone isn't, it's
+/// remembered. Breaks if the hook goes.
+#[test]
+fn a_run_made_look_alike_is_named() {
+    let (_s, dir) = repo("look");
+    std::fs::write(dir.join(".gitignore"), "build/\n.env.local\ncache/\ntarget/\n").unwrap();
+    lay(&dir, &["target/debug/old.txt=x\n"]);
+    let mut before = Before::take(&dir);
+    before.outputs = true;
+    let head = "HEAD=ref: refs/heads/main\n";
+    lay(&dir.join("plain"), &[head, "objects/", "refs/"]);
+    lay(&dir.join("link"), &["HEAD->refs/heads/main", "objects/", "refs/"]);
+    lay(&dir.join("common"), &[head, "commondir=../.git\n"]);
+    lay(&dir.join("lower"), &["head=ref: refs/heads/main\n", "objects/", "refs/"]);
+    lay(&dir.join("cache/x"), &[head, "objects/", "refs/"]);
+    lay(&dir.join("target/debug/repo"), &[head, "objects/", "refs/"]);
+    lay(&dir.join("build"), &[head, "objects/", "refs/"]);
+    lay(&dir.join("half"), &[head]);
+    let found = before.since().unwrap();
+    let one =
+        |p: &str, added: &[&str]| (p.to_string(), added.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+    // (a lower-case `head` is git's HEAD only where the file system finds it so — APFS's default)
+    let folds = std::fs::symlink_metadata(dir.join("lower/HEAD")).is_ok();
+    // (below tools' output a HEAD is the run's own where the system keeps when a file was made)
+    let born = std::fs::metadata(dir.join("target/debug/repo/HEAD")).and_then(|m| m.created()).is_ok();
+    let mut want = vec![
+        one("build", &["build/HEAD"]),
+        one("cache/x", &["cache/x/HEAD"]),
+        one("common", &["common/HEAD"]),
+        one("link", &["link/HEAD"]),
+        one("plain", &["plain/HEAD"]),
+        one("target/debug/repo", if born { &["target/debug/repo/HEAD"] } else { &[] }),
+    ];
+    if folds {
+        want.push(one("lower", &["lower/head"]));
+    }
+    want.sort();
+    assert_eq!(looks(&found), want);
+    let takes =
+        |p: &str| found.protected.iter().find(|m| m.path == p).and_then(|m| Some(m.look.as_ref()?.takes));
+    assert_eq!(takes("common"), Some(crate::gitrepo::Takes::Common));
+    assert_eq!(takes("plain"), Some(crate::gitrepo::Takes::Folders));
+    assert_eq!(found.heads, [(dir.join("half"), Parts::head_only())], "a HEAD alone: remembered, not named");
+}
+
+/// #610: empty `objects/` and `refs/` a run adds beside a `HEAD` from before are named — the remembered folders holding
+/// a `HEAD` (`Workspace.heads`, `Before::looked`) are judged against what they held; what `r` removes is the two
+/// folders. Breaks if the remembered list goes.
+#[test]
+fn empty_folders_beside_a_head_from_before_are_named() {
+    let (_s, dir) = repo("look-heads");
+    let first = Before::take(&dir);
+    lay(&dir.join("x"), &["HEAD=ref: refs/heads/main\n"]);
+    let heads = first.since().unwrap().heads;
+    assert_eq!(heads, [(dir.join("x"), Parts::head_only())]);
+    let unremembered = Before::take(&dir);
+    let second = Before::take(&dir).looked(&heads, &[]);
+    lay(&dir.join("x"), &["objects/", "refs/"]);
+    assert_eq!(looks(&unremembered.since().unwrap()), [], "no file changed: not seen without the list");
+    let found = second.since().unwrap();
+    assert_eq!(looks(&found), [("x".to_string(), vec!["x/objects/".to_string(), "x/refs/".to_string()])]);
+    assert!(found.heads.is_empty(), "whole now: named, not remembered");
+}
+
+/// #610: past `HEADS_MAX` remembered folders holding a `HEAD` the rest aren't looked at after runs — the run's report
+/// says how many, once that count (S11); the list stays at its bound.
+#[test]
+fn past_the_bound_the_heads_not_looked_at_are_counted() {
+    let (_s, dir) = repo("look-bound");
+    let (mut ed, generation) = turn_in(&dir);
+    let me = (generation, dir.as_path());
+    let n = crate::snapshot::HEADS_MAX + 44;
+    let cmd = format!("for i in $(seq 1 {n}); do mkdir h$i && echo 'ref: refs/heads/main' > h$i/HEAD; done");
+    claude_runs(&mut ed, me, 1, &cmd);
+    pump_until(&mut ed, &|_| answered(1).is_some(), "the run");
+    let report = answered(1).unwrap().unwrap();
+    assert!(report.contains("(44 folders holding a HEAD aren't looked at after runs: past 256)"), "{report}");
+    assert_eq!(ed.workspace.heads.len(), crate::snapshot::HEADS_MAX);
+    claude_runs(&mut ed, me, 2, "touch two");
+    pump_until(&mut ed, &|_| answered(2).is_some(), "the next run");
+    assert!(!answered(2).unwrap().unwrap().contains("aren't looked at"), "said once a count");
+}
+
+/// #610: after a `y`, a run's change to what decides a noted folder git takes for a repository names it again — a
+/// hook it adds (`r` removes it), its `config` edited (nothing for `r`); a change under `objects/` isn't named, nor
+/// one in a folder not noted. Breaks if the prefix check goes.
+#[test]
+fn a_change_in_a_noted_look_alike_is_named_again() {
+    let (_s, dir) = repo("look-noted");
+    let fx = dir.join("fx");
+    let made = Before::take(&dir);
+    lay(&fx, &["HEAD=ref: refs/heads/main\n", "objects/", "refs/", "config=[core]\n"]);
+    lay(&dir.join("other"), &["HEAD=ref: refs/heads/main\n", "objects/", "refs/"]);
+    assert_eq!(looks(&made.since().unwrap()).len(), 2);
+    let noted = vec![fx.clone()];
+    let run = |change: &dyn Fn()| {
+        let b = Before::take(&dir).looked(&[], &noted);
+        change();
+        b.since().unwrap()
+    };
+    let hook = run(&|| lay(&fx, &["hooks/post-checkout=#!/bin/sh\n"]));
+    let m = hook.protected.iter().find(|m| m.path == "fx").expect("named again");
+    let look = m.look.as_ref().unwrap();
+    assert_eq!(look.changed, ["hooks/post-checkout"]);
+    assert_eq!(paths(&look.added), ["fx/hooks/post-checkout"]);
+    assert!(m.removable());
+    let config = run(&|| lay(&fx, &["config=[core]\n\thooksPath = /elsewhere\n"]));
+    let m = config.protected.iter().find(|m| m.path == "fx").expect("named again");
+    assert_eq!(m.look.as_ref().unwrap().changed, ["config"]);
+    assert!(!m.removable(), "only edited: nothing for r");
+    let objects = run(&|| lay(&fx, &["objects/ab/cd=x\n", "refs/heads/main=x\n"]));
+    assert_eq!(looks(&objects), [], "objects/ and refs/ run nothing");
+    let elsewhere = run(&|| lay(&dir.join("other"), &["config=[core]\n"]));
+    assert_eq!(looks(&elsewhere), [], "not noted: a config alone doesn't make it one");
+}
+
+/// #610's work budget, counts not time: a run that touches no `HEAD`, `commondir`, `objects/` or `refs/` makes no `lstat`
+/// beyond the ignored folders' tops (4 each before the run, 4 after) and three per remembered folder, and no git test;
+/// the noted folders' check makes none (sorted lookups over the lists). Breaks if the remembered ones are judged anew.
+#[test]
+fn a_run_touching_no_deciding_name_looks_at_only_the_tops_and_the_remembered() {
+    let (_s, dir) = repo("look-work");
+    std::fs::write(dir.join(".gitignore"), "build/\ncache/\n").unwrap();
+    lay(&dir, &["build/out.txt=x\n", "cache/c.txt=x\n"]);
+    let n = 100;
+    let heads: Vec<(PathBuf, Parts)> = (0..n)
+        .map(|i| {
+            lay(&dir.join(format!("h{i}")), &["HEAD=ref: refs/heads/main\n"]);
+            (dir.join(format!("h{i}")), Parts::head_only())
+        })
+        .collect();
+    let noted: Vec<PathBuf> = (0..600).map(|i| dir.join(format!("n{i}/fx"))).collect();
+    let run = |noted: &[PathBuf], i: usize| {
+        let b = Before::take(&dir).looked(&heads, noted);
+        // (a build: a source file and an ignored output changed, nothing that decides a folder)
+        lay(&dir, &[format!("src.txt={i}\n").as_str(), format!("build/out.txt={i}\n").as_str()]);
+        look::WORK.with(|w| w.set((0, 0)));
+        let found = b.since().unwrap();
+        assert_eq!(found.files.len(), 1, "the source file");
+        assert_eq!(looks(&found), []);
+        assert_eq!(found.heads.len(), n, "all still remembered");
+        look::WORK.with(|w| w.get())
+    };
+    // (taken before the run: its 4 for each ignored top — counted apart from what's after it)
+    look::WORK.with(|w| w.set((0, 0)));
+    let _ = Before::take(&dir);
+    assert_eq!(look::WORK.with(|w| w.get()), (2 * 4, 0), "before: the two tops");
+    assert_eq!(run(&[], 1), (2 * 4 + 3 * n, 0), "after: the tops and three a remembered folder, no git test");
+    assert_eq!(run(&noted, 2), (2 * 4 + 3 * n, 0), "600 noted folders: nothing more");
+}
+
+/// #610: a noted folder git takes for a repository that a run changed (only edited) holds what a made one holds — the
+/// checkout's servers paused, your tests, your task and Claude's next run waiting on its card, each card saying
+/// "changed". (Harmless commands and markers in the test's own repository.)
+#[test]
+fn a_changed_noted_look_alike_holds_what_a_made_one_holds() {
+    let (_s, dir) = repo("look-noted-holds");
+    let (mut ed, generation) = turn_in(&dir);
+    let me = (generation, dir.as_path());
+    let card = |ed: &crate::editor::Editor| !ed.offers.is_empty() && !ed.offers[0].installing();
+    let make = "mkdir -p fx/objects fx/refs && printf 'ref: refs/heads/main\\n' > fx/HEAD && printf '[core]\\n' > fx/config";
+    claude_runs(&mut ed, me, 1, make);
+    pump_until(&mut ed, &|_| answered(1).is_some(), "the run that makes it");
+    claude_runs(&mut ed, me, 2, "touch two");
+    pump_until(&mut ed, &card, "its card");
+    press(&mut ed, 'y');
+    pump_until(&mut ed, &|_| answered(2).is_some(), "the run after y");
+    assert_eq!(ed.workspace.noted, [dir.join("fx")]);
+    ed.workspaces_sync();
+    assert!(!ed.workspace.servers_held, "noted: nothing waits");
+    claude_runs(&mut ed, me, 3, "printf '\\thooksPath = /elsewhere\\n' >> fx/config");
+    pump_until(&mut ed, &|_| answered(3).is_some(), "the run that edits its config");
+    ed.workspaces_sync();
+    assert!(ed.workspace.servers_held, "the servers paused, as for a made one");
+    let titled = |ed: &crate::editor::Editor, t: &str| ed.offers.iter().any(|o| o.title == t);
+    let yours = "Before your run — Claude's run changed a folder git takes for a repository";
+    let how = crate::testing::How::Pack {
+        lang: "rust".into(),
+        argv: vec!["touch".into(), "tested".into()],
+        lines: None,
+        junit: None,
+    };
+    ed.test_start(crate::testing::Target { label: "all".into(), cwd: dir.clone(), how, holds: None });
+    pump_until(&mut ed, &|ed| titled(ed, yours), "the card before your tests");
+    settled(&mut ed);
+    ed.offer_dismiss();
+    assert!(!dir.join("tested").exists(), "n: your tests didn't run");
+    ed.task_start(crate::task::Task { name: "build".into(), cmd: "touch built".into(), cwd: PathBuf::new() });
+    pump_until(&mut ed, &|ed| titled(ed, yours), "the card before your task");
+    settled(&mut ed);
+    ed.offer_dismiss();
+    assert!(!dir.join("built").exists(), "n: your task didn't run");
+    claude_runs(&mut ed, me, 4, "touch four");
+    let claudes = "Claude wants to run — after it changed a folder git takes for a repository";
+    pump_until(&mut ed, &|ed| titled(ed, claudes), "the card before Claude's next run");
+    assert!(!dir.join("four").exists() && ed.workspace.servers_held, "it waits, the servers still paused");
+}
+
+/// The front card drawn, focused and read, then key `c` pressed on it — as a person's hand does.
+fn press(ed: &mut crate::editor::Editor, c: char) {
+    crate::term::render(ed, &mut Vec::new(), 140, 40).unwrap();
+    settled(ed);
+    ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
+}
+
+/// The front card as a protected-made card's names (none up: empty).
+fn card_names(ed: &crate::editor::Editor) -> Vec<String> {
+    match ed.offers.first().map(|o| &o.what) {
+        Some(crate::offer::What::ProtectedMade { made, .. }) => paths(made),
+        _ => Vec::new(),
+    }
+}
+
+/// #610, keys: `r` on the card removes only what made a folder one — a `HEAD` file, a link `HEAD` (itself), the empty
+/// folders beside a `HEAD` from before (`rmdir`); one holding a file stays and is asked again; the folder itself always
+/// stays. A noted one a run only edited: the card has no `r`, a pressed `r` is refused in words, the card stays.
+/// Breaks if `r` reaches the folder. (Harmless commands in the test's own repository.)
+#[test]
+fn r_removes_only_what_made_it_one() {
+    let (_s, dir) = repo("look-r");
+    let (mut ed, generation) = turn_in(&dir);
+    let me = (generation, dir.as_path());
+    let card = |ed: &crate::editor::Editor| !ed.offers.is_empty() && !ed.offers[0].installing();
+    claude_runs(
+        &mut ed,
+        me,
+        1,
+        "mkdir -p a/objects a/refs b/objects b/refs && printf 'ref: refs/heads/main\\n' > a/HEAD && \
+         ln -s refs/heads/main b/HEAD",
+    );
+    pump_until(&mut ed, &|_| answered(1).is_some(), "the first run");
+    let report = answered(1).unwrap().unwrap();
+    assert!(
+        report.contains("It made a/, b/ folders git takes for a repository: the user's own git"),
+        "{report}"
+    );
+    claude_runs(&mut ed, me, 2, "touch two");
+    pump_until(&mut ed, &card, "the card");
+    let q = ed.offers[0].question.clone();
+    assert!(q.contains("a/ — a folder git takes for a repository\nb/ — a folder git takes"), "{q}");
+    assert!(q.contains("r removes what made them one — a/HEAD, b/HEAD — never the folder."), "{q}");
+    press(&mut ed, 'r');
+    pump_until(&mut ed, &|_| answered(2).is_some(), "the run after r");
+    assert!(dir.join("two").exists(), "it ran");
+    assert!(
+        std::fs::symlink_metadata(dir.join("a/HEAD")).is_err()
+            && std::fs::symlink_metadata(dir.join("b/HEAD")).is_err()
+    );
+    assert!(dir.join("a/objects").is_dir() && dir.join("b/refs").is_dir(), "never the folder");
+    // A HEAD from before, the folders beside it added: empty ones go, one holding a file stays and is asked again
+    claude_runs(&mut ed, me, 3, "mkdir c e && printf 'ref: refs/heads/main\\n' > c/HEAD && cp c/HEAD e/HEAD");
+    pump_until(&mut ed, &|_| answered(3).is_some(), "the third run");
+    claude_runs(
+        &mut ed,
+        me,
+        4,
+        "mkdir c/objects c/refs e/objects e/refs && touch e/objects/keep e/refs/keep",
+    );
+    pump_until(&mut ed, &|_| answered(4).is_some(), "the fourth run");
+    claude_runs(&mut ed, me, 5, "touch five");
+    pump_until(&mut ed, &card, "the card for c and e");
+    assert_eq!(card_names(&ed), ["c", "e"]);
+    press(&mut ed, 'r');
+    pump_until(&mut ed, &|ed| card(ed) && card_names(ed) == ["e"], "asked again for e");
+    assert!(!dir.join("c/objects").exists() && !dir.join("c/refs").exists(), "empty: removed");
+    assert!(
+        dir.join("c/HEAD").is_file() && dir.join("e/objects/keep").exists() && dir.join("e/HEAD").is_file()
+    );
+    assert!(!dir.join("five").exists(), "the run waits");
+    // y: noted. A run adds its config (r has it), y; a run only edits it: no r, a pressed r refused in words
+    press(&mut ed, 'y');
+    pump_until(&mut ed, &|_| answered(5).is_some(), "the fifth run");
+    assert_eq!(ed.workspace.noted, [dir.join("e")]);
+    claude_runs(&mut ed, me, 6, "printf '[core]\\n' > e/config");
+    pump_until(&mut ed, &|_| answered(6).is_some(), "the sixth run");
+    assert!(
+        answered(6)
+            .unwrap()
+            .unwrap()
+            .contains("It changed config in e/, a folder git takes for a repository")
+    );
+    claude_runs(&mut ed, me, 7, "touch seven");
+    pump_until(&mut ed, &card, "the card for e's new config");
+    let q = ed.offers[0].question.clone();
+    assert!(
+        q.contains("e/ — its config changed") && q.contains("r removes what the run added there — e/config"),
+        "{q}"
+    );
+    press(&mut ed, 'y');
+    pump_until(&mut ed, &|_| answered(7).is_some(), "the seventh run");
+    claude_runs(&mut ed, me, 8, "printf '\\thooksPath = /elsewhere\\n' >> e/config");
+    pump_until(&mut ed, &|_| answered(8).is_some(), "the eighth run");
+    claude_runs(&mut ed, me, 9, "touch nine");
+    pump_until(&mut ed, &card, "the card for e's edited config");
+    let o = &ed.offers[0];
+    assert!(
+        o.question.contains("e/ — its config changed") && !o.question.contains("r removes"),
+        "{}",
+        o.question
+    );
+    assert!(!o.answers(false).iter().any(|a| a.0 == 'r'), "no r on it");
+    press(&mut ed, 'r');
+    assert_eq!(ed.offer_said_now(), Some(crate::tools::MADE_NOTHING_TO_REMOVE));
+    assert!(card(&ed), "the card stays: {:?}", ed.offers.iter().map(|o| &o.title).collect::<Vec<_>>());
+    assert!(dir.join("e/config").exists() && !dir.join("nine").exists(), "nothing removed, nothing ran");
+    press(&mut ed, 'y');
+    pump_until(&mut ed, &|_| answered(9).is_some(), "the ninth run");
+    assert!(dir.join("nine").exists() && dir.join("e").is_dir());
+}
+
 /// The names of what a run made, as `Found.protected` has them (sorted).
 fn paths(made: &[Made]) -> Vec<String> {
     made.iter().map(|m| m.path.clone()).collect()
@@ -578,7 +915,7 @@ fn a_made_name_past_the_cap_isnt_read_and_isnt_kept() {
     std::fs::File::create(dir.join("build.rs")).unwrap().set_len(64 << 20).unwrap();
     let hash = made_hash_within(&dir, "build.rs", cap);
     assert!(hash.starts_with(BIG), "{hash}");
-    assert!(!Made { path: "build.rs".into(), hash: hash.clone() }.keepable());
+    assert!(!Made { path: "build.rs".into(), hash: hash.clone(), look: None }.keepable());
     std::fs::OpenOptions::new().append(true).open(dir.join("build.rs")).unwrap().write_all(b"x").unwrap();
     assert_ne!(made_hash_within(&dir, "build.rs", cap), hash, "written since: told apart");
     std::fs::create_dir_all(dir.join(".cargo")).unwrap();
@@ -589,7 +926,7 @@ fn a_made_name_past_the_cap_isnt_read_and_isnt_kept() {
     std::fs::write(dir.join("Makefile"), "all:\n").unwrap();
     let small = made_hash_within(&dir, "Makefile", cap);
     assert!(!small.starts_with(BIG) && !small.is_empty(), "{small}");
-    assert!(Made { path: "Makefile".into(), hash: small }.keepable());
+    assert!(Made { path: "Makefile".into(), hash: small, look: None }.keepable());
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -610,7 +947,7 @@ fn a_made_name_that_cant_be_read_isnt_kept() {
     let root = unsafe { libc::geteuid() } == 0;
     let names: &[&str] = if root { &["Makefile"] } else { &["Makefile", "build.rs"] };
     for &p in names {
-        let made = Made { path: p.into(), hash: made_hash(&dir, p) };
+        let made = Made { path: p.into(), hash: made_hash(&dir, p), look: None };
         assert_eq!(made.hash, "", "{p}");
         assert!(!made.keepable(), "{p}");
     }
@@ -629,7 +966,7 @@ fn r_leaves_a_folder_and_a_file_changed_since_it_was_asked() {
     std::fs::write(dir.join(".cargo/config.toml"), "[build]\n").unwrap();
     std::fs::write(dir.join("Makefile"), "all:\n").unwrap();
     std::fs::write(dir.join("sub/Cargo.toml"), "[package]\n").unwrap();
-    let made = |p: &str| Made { path: p.into(), hash: made_hash(&dir, p) };
+    let made = |p: &str| Made { path: p.into(), hash: made_hash(&dir, p), look: None };
     let asked = [made(".cargo"), made("Makefile"), made("sub/Cargo.toml")];
     std::fs::write(dir.join("Makefile"), "all: changed\n").unwrap();
     let gone = remove_made(&crate::folders::Roots::new(dir.clone(), Vec::new()), &asked);
@@ -701,7 +1038,7 @@ fn a_new_output_folder_is_neither_walked_nor_named() {
     }
     let walked = |folder: &str| {
         let mut out = Vec::new();
-        flagged_below(&dir, folder, 2, &mut out);
+        flagged_below(&dir, folder, 2, &mut out, &mut look::Seen::new(Vec::new()));
         out
     };
     assert_eq!(walked("target/"), Vec::<String>::new());

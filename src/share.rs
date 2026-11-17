@@ -1884,7 +1884,8 @@ mod tests {
         assert_eq!(ed.client(b).unwrap().roots, [t.join("main"), t.join("wt1")], "shared by both");
 
         let held = ed.workspaces.iter_mut().find(|l| l.id == wt).unwrap();
-        held.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+        held.made_protected =
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None }];
         ed.workspaces_sync();
         assert!(ed.client(b).is_none(), "the shared server stopped");
         let c = main_of(&ed, main).expect("main's file has a server again at once");
@@ -1916,7 +1917,8 @@ mod tests {
         quiescent(&mut ed, a);
         let wt = ed.workspace_add(t.join("wt1"));
         let held = ed.workspaces.iter_mut().find(|l| l.id == wt).unwrap();
-        held.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+        held.made_protected =
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None }];
         ed.workspaces_sync();
         assert!(ed.share_held(&t.join("wt1")));
         // (the decision as the worker brings it back, its list made before the pause)

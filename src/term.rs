@@ -6415,14 +6415,7 @@ fn draw(
         lay.chat_at().is_some() && editor.workspace.claude.chat.as_ref().is_some_and(|c| c.busy());
     let follow_says = follow_says || column_says;
     // Folded into the status line: an error or warning still waiting for the card before the newest (U7)
-    let folded = toast_folded
-        .then(|| {
-            use crate::editor::ToastKind as K;
-            let toasts = editor.card_toasts();
-            let waiting = toasts.iter().rev().find(|t| !t.shown && matches!(t.kind, K::Error | K::Warning));
-            waiting.or(toasts.last()).copied()
-        })
-        .flatten();
+    let folded = toast_folded.then(|| status_toast(editor)).flatten();
     draw_statusline(editor, ui, lay, folded, follow_says, out)?;
     let y = lay.status_y as usize;
     drew(editor, Kind::StatusRest, Some((0, y, lay.width, 1)));
@@ -14380,6 +14373,16 @@ fn toast_rows(
     }
     let w = (w..=limit).min_by_key(|&x| (folds(&lay(x)), x)).unwrap_or(w);
     (w, lay(w))
+}
+
+/// The toast the status line carries when the notification card can't be drawn: an error or warning not on the card
+/// yet, else the newest by when it was said — one said again keeps its place on the card (#610: a pause said again after
+/// a server's "ready").
+pub(crate) fn status_toast(editor: &Editor) -> Option<&crate::editor::Toast> {
+    use crate::editor::ToastKind as K;
+    let toasts = editor.card_toasts();
+    let waiting = toasts.iter().rev().find(|t| !t.shown && matches!(t.kind, K::Error | K::Warning));
+    waiting.or_else(|| toasts.iter().max_by_key(|t| t.id)).copied()
 }
 
 fn draw_toasts(

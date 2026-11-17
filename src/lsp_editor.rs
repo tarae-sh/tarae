@@ -4119,7 +4119,7 @@ mod tests {
         ed.workspace.root = dir.clone();
         let first = ready(&mut ed);
         ed.workspace.made_protected =
-            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None }];
         ed.workspaces_sync();
         assert!(ed.lsp.clients.is_empty() && ed.doc().lsp.client.is_none(), "stopped");
         assert!(ed.workspace.servers_held && ed.workspace.asleep.contains(&ed.doc().id));
@@ -4146,6 +4146,69 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #610: a protected name's pause keeps `MADE_PAUSED`'s words, and said again after a "ready" it's still what the
+    /// status line carries (a toast said again keeps its place on the card: the line reads the newest — the noted shot's
+    /// "marksman ready"). A folder git takes for a repository pauses the servers as a name does, said with what you do
+    /// first (a cut falls on the cause): made, then, back and ready, a noted one changed. (A stand-in server; the names
+    /// only listed, nothing made.)
+    #[test]
+    fn a_look_alikes_pause_says_the_answer_first_made_or_changed() {
+        let (_s, mut ed, file, _log) = setup("look-hold", "fn main() {}\n");
+        ed.workspace.root = file.parent().unwrap().to_path_buf();
+        ready(&mut ed);
+        let look = |changed: &[&str]| crate::snapshot::Made {
+            path: "fx".into(),
+            hash: format!("h{}", changed.len()),
+            look: Some(crate::snapshot::Look {
+                takes: crate::gitrepo::Takes::Folders,
+                changed: changed.iter().map(|c| c.to_string()).collect(),
+                added: Vec::new(),
+            }),
+        };
+        let name = || crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None };
+        let hold = |ed: &mut Editor, made: crate::snapshot::Made, says: &str| {
+            ed.workspace.made_protected = vec![made];
+            ed.workspaces_sync();
+            assert!(ed.workspace.servers_held && ed.doc().lsp.client.is_none(), "paused");
+            assert_eq!(ed.lsp_state().map(|s| s.0), Some(LspDot::Paused));
+            // (a frame drew them on the notification card before the protected-made card took its room — the shot's
+            // order: then the status line carries one)
+            for t in &mut ed.toasts {
+                t.shown = true;
+            }
+            let s = crate::term::status_toast(ed).map(|t| t.text.clone()).unwrap_or_default();
+            assert!(s.starts_with(says), "{s}");
+        };
+        let back = |ed: &mut Editor| {
+            ed.workspace.made_protected.clear();
+            ed.workspaces_sync();
+            ready(ed);
+            assert!(!ed.workspace.servers_held);
+        };
+        // (from here what's said is this test's: a protected name's pause, a "ready", the pause again — the shot's order)
+        ed.toasts.clear();
+        let made = "fake paused — Claude's run made a protected file";
+        assert!(crate::tools::MADE_PAUSED.starts_with(&made["fake ".len()..]));
+        hold(&mut ed, name(), made);
+        back(&mut ed);
+        hold(&mut ed, name(), made);
+        back(&mut ed);
+        let act = "fake paused until you answer the card";
+        hold(&mut ed, look(&[]), act);
+        let newest =
+            |ed: &Editor| ed.toasts.iter().max_by_key(|t| t.id).map(|t| t.text.clone()).unwrap_or_default();
+        assert_eq!(
+            newest(&ed),
+            "fake paused until you answer the card — Claude's run made a folder git takes for a repository"
+        );
+        back(&mut ed);
+        hold(&mut ed, look(&["config"]), act);
+        assert_eq!(
+            newest(&ed),
+            "fake paused until you answer the card — Claude's run changed a folder git takes for a repository"
+        );
+    }
+
     /// compat7 review 8: the paused servers' card is its session's — another session in front doesn't see it (nor
     /// would its `y` keep that one's names); back in front, it's up again and answered there.
     #[test]
@@ -4156,7 +4219,7 @@ mod tests {
         ready(&mut ed);
         let a = ed.workspace.id;
         ed.workspace.made_protected =
-            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None }];
         ed.workspaces_sync();
         assert!(ed.offers.first().is_some_and(crate::offer::Offer::made), "the card");
         let other = crate::scratch::Scratch::new("made-hold-other").into_path();
@@ -4185,7 +4248,7 @@ mod tests {
         ready(&mut ed);
         std::fs::create_dir_all(dir.join("build.rs")).unwrap();
         ed.workspace.made_protected =
-            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into(), look: None }];
         ed.workspaces_sync();
         let servers = |ed: &Editor| {
             ed.offers

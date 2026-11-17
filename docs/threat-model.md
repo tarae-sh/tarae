@@ -204,8 +204,32 @@ Kept:
 - Claude changes a protected file only through an edit you review, with a warning — even with review at the end.
   test: `edits::tests::review_at_the_end_still_asks_for_a_protected_file_with_its_warning` ·
   `refactor::tests::a_protected_file_in_a_change_set_is_reviewed_with_its_warning`
+- **A folder git takes for a repository** (#610). A folder a run makes git take for a repository (`HEAD` with
+  `objects/` and `refs/`, or with `commondir` — git's own test, `gitrepo::git_would_take`), or changes inside one
+  you noted (its `HEAD`, `config`, `commondir`, `hooks/`), is named after the run and held as a protected name made
+  is (Claude's next command or test, your task, tests, preflight, `:restart`'s build, the language servers); `r`
+  removes only what the run added that makes it one — a `HEAD` or `commondir` file or link, the empty `objects/` and
+  `refs/` beside a `HEAD` from before (`rmdir`: one holding anything stays and is asked again), a deciding file it
+  added in a noted one — never the folder, never an edited file put back (a run that only edited: no `r`, refused in
+  words). Found from what the snapshot lists anyway (no walk, no git): the folder of a new or changed `HEAD` or
+  `commondir` in any case, the folder above a new `objects/` or `refs/`, the same in a new ignored folder's names and
+  below tools' output, the top of each ignored folder judged against what it held before the run, and the folders
+  holding a `HEAD` remembered since tarae started. tarae's own git never uses one (`safe.bareRepository=explicit` on
+  every run).
+  test: `gitrepo::tests::git_would_take_is_gits_own_test` · `snapshot::tests::a_run_made_look_alike_is_named` ·
+  `snapshot::tests::empty_folders_beside_a_head_from_before_are_named` ·
+  `snapshot::tests::a_change_in_a_noted_look_alike_is_named_again` · `snapshot::tests::r_removes_only_what_made_it_one` ·
+  `sim::lookalike::a_look_alike_a_run_made_is_held_until_answered`
 
 Not kept:
+- **A folder git takes for a repository, past what the look sees** (#610). Your own git before you answer, or outside
+  tarae (a prompt's `git status` there runs its config's commands): only git's own `safe.bareRepository=explicit`
+  closes that. Below the top of an ignored folder that was there before the run and isn't tools' output — now on macOS
+  too (Seatbelt refuses `.git` by name, never a look-alike's names). Past 256 remembered folders holding a `HEAD`,
+  empty `objects/` and `refs/` added beside one (the count said in Claude's run report). Below tools' output, `r`
+  removes a `HEAD` only where the file system keeps when a file was made; else the folder is named with nothing for
+  `r`. What's noted and remembered lives until tarae quits. A folder opened for writing outside the project.
+  test: `snapshot::tests::past_the_bound_the_heads_not_looked_at_are_counted`
 - **A protected name made where none is yet, or moved in inside a folder.** Linux: Landlock only grants. Where a
   run has a mount namespace of its own (tier own), each protected name is bound read-only over itself and every
   folder takes new files, so a new `build.rs` beside a `Cargo.toml` is made; each folder between the project and a

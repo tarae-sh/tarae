@@ -8214,6 +8214,8 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "maskedother",
     "runtime",
     "rmcard",
+    "lookalike",
+    "lookalikenoted",
     "big",
     "fork",
     "foot41",
@@ -8410,6 +8412,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
             "rmcard" => turn.rm_card()?,
+            // (#610: a run makes a folder git takes for a repository — its card before the next run; `noted`: that card
+            // answered y, then a run only edits its config — the card again, with no r)
+            "lookalike" => turn.look_alike(false)?,
+            "lookalikenoted" => turn.look_alike(true)?,
             // (Short 4's second turn: what tarae sent by itself as your run again of the `.env` read ended)
             "runtime" if turns > 1 => turn.runtime_allowed()?,
             "runtime" => turn.runtime()?,
@@ -9581,6 +9587,25 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "reason": "the release script stages into that folder and refuses a stale one"});
         self.call(1, "run", run)?;
         self.words("Removed.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #610's turn: a test fixture made where git takes it for a repository (`HEAD`, `objects/`, `refs/`), then the tests
+    /// — held on the protected-made card; `noted`: after its `y`, the fixture's config edited and the tests again, held
+    /// on the card once more (only edited: no `r`). Run in the scene's own project.
+    fn look_alike(&mut self, noted: bool) -> io::Result<()> {
+        self.words("I'll set up the fixture repository the parser tests read, then run them.")?;
+        self.text("\n")?;
+        let make = "mkdir -p tests/fixture/objects tests/fixture/refs && printf 'ref: refs/heads/main\\n' > \
+                    tests/fixture/HEAD && printf '[core]\\n\\tbare = true\\n' > tests/fixture/config";
+        self.call(1, "run", json!({"command": make}))?;
+        self.call(2, "run", json!({"command": "cargo test -q parser"}))?;
+        if noted {
+            let edit = "printf '\\thooksPath = .githooks\\n' >> tests/fixture/config";
+            self.call(3, "run", json!({"command": edit}))?;
+            self.call(4, "run", json!({"command": "cargo test -q parser"}))?;
+        }
+        self.words("Done.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
