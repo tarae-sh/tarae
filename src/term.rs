@@ -3580,7 +3580,11 @@ fn draw_terminal_panel(
         let paths: Vec<String> = editor.workspace.made_protected.iter().map(|m| m.path.clone()).collect();
         let warn = Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..card };
         head.push((
-            format!("  ▲ Claude's run made {} — its card first", crate::tools::some_named(&paths)),
+            format!(
+                "  ▲ {}'s run made {} — its card first",
+                crate::llm::session_row(editor).shown,
+                crate::tools::some_named(&paths)
+            ),
             warn,
         ));
     }
@@ -4183,7 +4187,8 @@ fn draw_queued(
     let dim = Style { fg: ui.virt.fg, ..card };
     let faint = Style { fg: ui.linenr.fg, ..card };
     let key = Style { bold: true, ..dim };
-    let rows = crate::queued::rows(&editor.workspace, slot, crate::clock::now(), editor.disk.held());
+    let by = crate::llm::session_row(editor).name;
+    let rows = crate::queued::rows(&editor.workspace, by, slot, crate::clock::now(), editor.disk.held());
     let shown = if rows.len() > n { n - 1 } else { rows.len() };
     let room = w.saturating_sub(PAD + 2);
     // (the labels as one column: where each is in line starts under the one above)
@@ -10181,10 +10186,11 @@ fn draw_review(
     apply(out, if rev.focused { accent } else { faint })?;
     queue!(out, Print(" ▎ "))?;
     apply(out, strong)?;
-    queue!(out, Print("Claude"))?;
+    let who = crate::llm::session_row(editor).shown;
+    queue!(out, Print(who))?;
     let right = format!("{decided} of {n} decided ");
     let said = format!("   “{}”", rev.instruction);
-    let head = 3 + "Claude".width();
+    let head = 3 + who.width();
     // Which file it changes — the path bar names the one in front, which may be another (#82)
     // (cut from the left — its name matters most — leaving the instruction a few words)
     let room = width.saturating_sub(head + right.len() + 2);
@@ -10316,7 +10322,7 @@ fn review_peek_at(
     // (its way in only where `C-q` reaches it — #544)
     let way = editor.way_in(crate::inbox::Waiting::Review);
     let tail = way.as_ref().map_or(0, |k| k.width() + " answer".len());
-    let title = format!("Claude's change · {}", review_file(editor, doc));
+    let title = format!("{}'s change · {}", crate::llm::session_row(editor).shown, review_file(editor, doc));
     // (` ▎ `, the title, three cells, its way in, a cell of air; a cell of air each side of it)
     let w = (3 + title.width() + 3 + tail + 1).min(aw.saturating_sub(2));
     if w < 3 + 12 + 3 + tail + 1 {
@@ -12228,7 +12234,10 @@ fn code_line(
                 });
                 if let Some((at, f)) = &p.copy {
                     let ago = crate::term::ago(crate::clock::since(*at), true);
-                    let said = if p.claudes { format!("the copy Claude read {ago}") } else { ago };
+                    let said = match p.claudes {
+                        true => format!("the copy {} read {ago}", crate::llm::session_row(editor).shown),
+                        false => ago,
+                    };
                     left.push(Seg { cut: None, text: format!(" · {said}"), style: faint, keep: 240 });
                     if let Some(from) = f.from.first() {
                         left.push(Seg {
@@ -13043,13 +13052,14 @@ fn draw_statusline(
         });
         right.push(gap(ZOOMED));
     }
+    let who = crate::llm::session_row(editor).name;
     match &editor.workspace.claude.review {
         // (the change in review in front: the mode says it — `● change` on the left — once is enough)
         Some(r) if r.ready && keys == crate::chrome::Keys::Change => {}
         Some(r) if r.ready => {
             right.push(Seg {
                 cut: None,
-                text: "claude ● change".into(),
+                text: format!("{who} ● change"),
                 style: Style { bold: true, ..accent },
                 keep: CLAUDE_CHANGE,
             });
@@ -13058,7 +13068,7 @@ fn draw_statusline(
         Some(_) => {
             right.push(Seg {
                 cut: None,
-                text: wave_here(editor, false, ("ask", 0)).map_or("claude".into(), |w| format!("{w} claude")),
+                text: wave_here(editor, false, ("ask", 0)).map_or(who.into(), |w| format!("{w} {who}")),
                 style: accent,
                 keep: CLAUDE_CHANGE,
             });
@@ -14020,7 +14030,7 @@ fn draw_welcome(
     let mut rows: Vec<Vec<(String, Style)>> = vec![
         vec![("t a r a e".into(), Style { fg: ui.accent.fg, bold: true, ..ui.base })],
         vec![],
-        vec![("타래 · Helix keys, Claude inside".into(), dim)],
+        vec![(brand_line(editor), dim)],
         vec![],
     ];
     // (each row's keys, where it has some: a press on the row presses them — `Screen.welcome_rows`)
@@ -14037,11 +14047,12 @@ fn draw_welcome(
         rows.push(vec![]);
         keys.extend([Some("r".to_string()), None]);
     }
+    let chat = format!("Chat with {}", crate::llm::session_row(editor).shown);
     for (k, d) in [
         ("space f", "Open a file"),
         ("space e", "Browse the files"),
         ("space /", "Search in project"),
-        ("space l", "Chat with Claude"),
+        ("space l", chat.as_str()),
         ("space ?", "Find a command"),
         (":tutor", "Learn the keys in 10 minutes"),
         (":q", "Quit"),
@@ -15493,7 +15504,7 @@ impl OfferCard {
                     // (a parent's Claude proposed it: who and why, faint under the title — two rows at most, then
                     // `…`, whole on its card)
                     if let Some(p) = &o.proposed {
-                        v.extend(wrapped(&p.line(), 2));
+                        v.extend(wrapped(&p.line(editor), 2));
                     }
                     for (k, part) in o.question.split('\n').enumerate() {
                         if skip.contains(&k) {
@@ -16467,6 +16478,9 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
         (None, Some(k)) => (editor.keymaps.run_children(k.mode, &k.pending), k.pending.as_slice()),
         (None, None) => (editor.keymaps.children(editor.mode, &editor.pending), editor.pending.as_slice()),
     };
+    // (a command's doc says the session's agent by its row — `llm::agent_doc`)
+    let entries: Vec<_> =
+        entries.into_iter().map(|(k, d, node)| (k, crate::llm::agent_doc(editor, "", &d), node)).collect();
     if entries.is_empty() {
         return Ok(());
     }
@@ -16937,7 +16951,8 @@ fn draw_ask_stream(
     let sign = rule_through(wave_here(editor, false, ("ask", 0)).unwrap_or_else(|| crate::shimmer::mark("")));
     let secs = timer(rev.started.elapsed(), !editor.moving());
     let styles = AskHeadStyles { strong, card, dim, accent, faint, line };
-    let (names, details, right) = ask_head(width, (state, &said), (sign, secs), styles);
+    let who = crate::llm::session_row(editor).name;
+    let (names, details, right) = ask_head(width, who, (state, &said), (sign, secs), styles);
     let head = TopLine {
         names: &names,
         details: &details,
@@ -16974,12 +16989,13 @@ struct AskHeadStyles {
 #[allow(clippy::type_complexity)]
 fn ask_head(
     width: usize,
+    who: &str,
     (state, said): (&str, &str),
     (sign, secs): (String, String),
     st: AskHeadStyles,
 ) -> (Vec<(Fit, Style)>, Vec<(Fit, Style)>, Vec<(Fit, Style)>) {
     let wide = |spans: &[(Fit, Style)]| spans.iter().map(|(s, _)| s.width()).sum::<usize>();
-    let claude = (Fit::from("claude"), st.strong);
+    let claude = (Fit::from(who), st.strong);
     let state = (Fit::from(state), st.card);
     let right =
         vec![(Fit::from(sign), st.accent), (Fit::from(" "), st.dim), (Fit::from(secs.as_str()), st.faint)];
@@ -17970,7 +17986,7 @@ fn draw_sidebar(
             }
             _ => [
                 h(&[("s u", "stage"), ("d", "discard"), ("?", "keys")]),
-                h(&[("c", "commit"), ("C", "Claude drafts")]),
+                h(&[("c", "commit"), ("C", &format!("{} drafts", crate::llm::session_row(editor).shown))]),
             ],
         }
     } else if editor.workspace.is_at(Here::Side) && sb.mode == SMode::Plugin {
@@ -19847,9 +19863,14 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             // parent chose) — its bar and words a step down from yours: the person reading the child knows who asked
             Role::User if m.from.is_some() => {
                 let from = m.from.as_deref().unwrap_or_default();
-                let head = crate::whole::fit(&format!("{} Claude", crate::workspace::possessive(from)), w);
                 let mut sessions = std::iter::once(&editor.workspace).chain(&editor.workspaces);
-                let colour = sessions.find(|l| l.label() == from).map(|l| l.claude.colour);
+                let parent = sessions.find(|l| l.label() == from);
+                // (its own agent's name, by its row — step 4's C.3)
+                let who =
+                    parent.map_or(crate::llm::session_row(editor), |l| crate::llm::workspace_row(editor, l));
+                let head =
+                    crate::whole::fit(&format!("{} {}", crate::workspace::possessive(from), who.shown), w);
+                let colour = parent.map(|l| l.claude.colour);
                 let spans = match colour.filter(|_| !from.is_empty() && head.shown().starts_with(from)) {
                     Some(c) => {
                         let (name, rest) = head.split_at(from.len());
@@ -20267,7 +20288,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
         pieces.push((Of::Queued, rows));
         aired = true;
     }
-    if let Some((said, last)) = c.queued_said().filter(|_| w > 14) {
+    if let Some((said, last)) = c.queued_said(crate::orchestra::parent_shown(editor)).filter(|_| w > 14) {
         let key = hash_of((&said, &last, w, look));
         let kept = c.queued_laid.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, rows)| rows.clone());
         let rows = kept.unwrap_or_else(|| {
@@ -20313,7 +20334,7 @@ fn details_w(details: &[(String, Style)], upto: usize) -> usize {
     pieces.iter().sum::<usize>() + NAMES_SEP.width() * pieces.len().saturating_sub(1)
 }
 
-/// A parent chat's `told Claude: …` row (`orchestra::TOLD`): a note's `· ` and its words on one row, cut at its end
+/// A parent chat's `told Claude: …` row (`orchestra::told`): a note's `· ` and its words on one row, cut at its end
 /// (`fit_ellipsis`) as a tool row is, the transcript keeping it whole (`chatdoc::keep_whole`) and its card saying it
 /// whole (`cut_card`) — a child's reply can be a long line, and wrapped it took four or five rows at 100 columns. A
 /// reply's inline markdown drawn as an answer's is (`markdown::inline_spans`: bold, code, no markers), on the row and its
@@ -20586,7 +20607,6 @@ fn held_rows(
     use crate::markdown::Span;
     let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     // (its agent tripped, the config reading: why, alone — there's no way out but to quit)
-    #[cfg(test)]
     if editor.config_unread.is_empty()
         && let Some(why) = crate::llm::held_for(editor, crate::agent::Role::Chat)
     {
@@ -20595,7 +20615,7 @@ fn held_rows(
             .collect();
     }
     // (the head wrapped too, its rows after the first under its words)
-    let head = toast_wrap("no claude until your config reads", w.saturating_sub(2).max(1), false);
+    let head = toast_wrap("no agent until your config reads", w.saturating_sub(2).max(1), false);
     let mut rows: Vec<Vec<Span>> = (head.into_iter().enumerate())
         .map(|(i, l)| vec![sp(if i == 0 { "▲ " } else { "  " }.into(), warn), sp(l, strong)])
         .collect();
@@ -20609,10 +20629,22 @@ fn held_rows(
     rows
 }
 
-/// Whether the chat's claude is held where it would start (`llm::held_for`): the config doesn't read, none running — or
+/// The welcome's brand line: its "Claude inside" names the agent chosen (the user's decision, chat 2026-11-16, item 6)
+/// — the config's row (`llm.agent`) by its name on screen, `…, agy inside`. One rule: while the config doesn't read
+/// every setting stands at its default, and so does the line (Claude's, as the docs name it).
+fn brand_line(editor: &Editor) -> String {
+    format!("타래 · Helix keys, {} inside", crate::agent::row_of(&editor.config.llm).shown)
+}
+
+/// What the chat's top line names where it's held (`held_here`): `agent` while the config doesn't read (its row unknown
+/// then — `llm::config_held`'s word), else its own row's that tripped.
+fn held_name(editor: &Editor, c: &crate::chat::Chat) -> &'static str {
+    if editor.config_unread.is_empty() { c.agent.name } else { "agent" }
+}
+
+/// Whether the chat's agent is held where it would start (`llm::held_for`): the config doesn't read, none running — or
 /// its agent tripped (`llm::held_for`, guard 3), until you quit.
 fn held_here(editor: &Editor, c: &crate::chat::Chat) -> bool {
-    #[cfg(test)]
     if c.held && !c.running() && editor.agents_tripped.contains(&c.agent.name) {
         return true;
     }
@@ -20908,14 +20940,15 @@ fn draw_ask_line(
             (format!("{sep}{g}{end}"), if i > 0 { accent } else { dim })
         })
         .collect();
-    let names = [(Fit::from("ask claude"), strong)];
+    let row = crate::llm::session_row(editor);
+    let names = [(Fit::from(format!("ask {}", row.name)), strong)];
     let head =
         TopLine { names: &names, details: &fits(&details), key, faint, plain: true, ..TopLine::default() };
     top_line(out, line, card, (x0, top, cw + 1), ("╭", "╮", "┬"), &[], true, &head)?;
     // Its input's rows, as the chat's (`draw_chat`)
     let placeholder = match editor.front_file() {
         Some(d) => format!("Ask about {}…", d.display_name_short()),
-        None => "Ask Claude…".to_string(),
+        None => format!("Ask {}…", row.shown),
     };
     let input = c.input.laid(w);
     let (cur_row, cur_col) = input.cursor();
@@ -21080,7 +21113,7 @@ fn draw_chat(
     // (the file in front — never a view of tarae's: the file seen before it, `front_file`)
     let placeholder = match editor.front_file() {
         Some(d) => format!("Ask about {}…", d.display_name_short()),
-        None => "Ask Claude…".to_string(),
+        None => format!("Ask {}…", c.agent.shown),
     };
     // (its text and rows from one read — `chatinput::Laid`: the rows only ever slice the text they were made from)
     let input = c.input.laid(w);
@@ -21152,7 +21185,8 @@ fn draw_chat(
             Some(name) => vec!["It reads the whole project,".to_string(), format!("starting from {name}.")],
             None => vec!["It reads the whole project.".to_string()],
         };
-        let mut intro = vec![vec![sp("▎ ".into(), accent), sp("Ask Claude".into(), strong)], vec![]];
+        let mut intro =
+            vec![vec![sp("▎ ".into(), accent), sp(format!("Ask {}", c.agent.shown), strong)], vec![]];
         intro.extend(reads.iter().map(|l| vec![crate::whole::fit(l, w).span(dim)]));
         intro.push(vec![]);
         // (`tab` and its suggestions: gone while the slash list is up — `tab` completes a name then, #232)
@@ -21355,7 +21389,14 @@ fn draw_chat(
         }
         // (no claude until the config reads — `llm::held_for`: what needs you, in warning, never "ready")
         State::Idle if held_here(editor, c) => match left {
-            11.. => vec![sp("▲ no claude".into(), warn_fg)],
+            // (the config's row unknown while it doesn't read: `agent`, as its words below; a tripped one's own name)
+            11.. => vec![sp(format!("▲ no {}", held_name(editor, c)), warn_fg)],
+            1.. => vec![sp("▲".into(), warn_fg)],
+            _ => Vec::new(),
+        },
+        // (stopped at its start — `agent::Ended::Unfit`: never "ready", until the next start)
+        State::Idle if c.unfit => match left {
+            9.. => vec![sp("▲ stopped".into(), warn_fg)],
             1.. => vec![sp("▲".into(), warn_fg)],
             _ => Vec::new(),
         },
@@ -21396,7 +21437,7 @@ fn draw_chat(
     // `claude`
     let (names, spots): (Vec<(Fit, Style)>, Vec<_>) = match editor.workspaces.is_empty() {
         true => (
-            vec![("claude".into(), if editor.workspace.is_at(Here::Chat) { strong } else { dim })],
+            vec![(c.agent.name.into(), if editor.workspace.is_at(Here::Chat) { strong } else { dim })],
             Vec::new(),
         ),
         false => {
@@ -23668,7 +23709,8 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
     // The key that does what a press does: following Claude, from where the keys are
     let key = if editor.workspace.is_at(Here::Chat) { "C-f" } else { "space F" };
     let key_style = Style { fg: ui.virt.fg.or(card.fg), ..ground };
-    rows.push(hint_spans(ui, &[(key, "follow Claude — a click here too")], key_style, faint));
+    let follow = format!("follow {} — a click here too", c.agent.shown);
+    rows.push(hint_spans(ui, &[(key, &follow)], key_style, faint));
     // (as tall as it takes, up to the rows above the line — the newest kept: the key and the step first)
     let cap = y.saturating_sub(lay.text_top as usize).max(1);
     if rows.len() > cap {
@@ -32649,7 +32691,8 @@ mod tests {
         let s = Style::default();
         let styles = AskHeadStyles { strong: s, card: s, dim: s, accent: s, faint: s, line: s };
         let head = |w: usize, state: &str, sign: &str, secs: &str| {
-            let (names, details, right) = ask_head(w, (state, said), (sign.into(), secs.into()), styles);
+            let (names, details, right) =
+                ask_head(w, "claude", (state, said), (sign.into(), secs.into()), styles);
             let line = TopLine {
                 names: &names,
                 details: &details,

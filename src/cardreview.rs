@@ -484,7 +484,6 @@ pub const AUTO: &[(&str, Auto)] = &[
     ("outside", Auto::Never),
     ("project-trust", Auto::Own),
     ("claude-settings", Auto::Own),
-    #[cfg(test)]
     ("agent-files", Auto::Own),
     ("git-trust", Auto::Own),
     ("repo-trust", Auto::Own),
@@ -806,5 +805,17 @@ mod tests {
         kinds.dedup();
         assert_eq!(kinds.len(), n, "a kind twice");
         assert!(PROPOSED.iter().all(|k| auto(k) == Some(Auto::Never)));
+    }
+
+    /// The release's table is the tests' (step 4's L3, an L2 leftover as `llm::held_rows`' was): every card kind is in
+    /// `offer::KINDS` in a release, so a row kept to test builds left a release's `agent-files` card with no class —
+    /// and `every_card_kind_has_an_auto_class`, a test, can't see it.
+    #[test]
+    fn the_auto_table_has_no_row_only_tests_have() {
+        let src = include_str!("cardreview.rs");
+        let at = src.find("pub const AUTO: &[(&str, Auto)] = &[").expect("the table");
+        let table = &src[at..at + src[at..].find("\n];").expect("its end")];
+        let gate = concat!("#[cfg(", "test)]");
+        assert!(!table.contains(gate), "a row of AUTO only test builds have");
     }
 }

@@ -1323,7 +1323,8 @@ impl Editor {
                 .collect();
             let log = self.server_log(cid);
             let Some(name) = self.lsp_stopped(cid) else { continue };
-            let msg = format!("{name} for {} paused — Claude's run made a protected name", root.display());
+            let who = crate::llm::session_row(self).shown;
+            let msg = format!("{name} for {} paused — {who}'s run made a protected name", root.display());
             log.line(&name, "stop", &msg);
             if !paused.contains(&name) {
                 paused.push(name);
@@ -1350,7 +1351,8 @@ impl Editor {
             // (#610: folders git takes for a repository alone — what you do first, so a cut falls on the cause)
             match looks {
                 Some(verb) => self.set_warning(format!(
-                    "{names} paused until you answer the card — Claude's run {verb} a folder git takes for a repository"
+                    "{names} paused until you answer the card — {}'s run {verb} a folder git takes for a repository",
+                    crate::llm::session_row(self).shown
                 )),
                 None => self.set_warning(format!("{} {}", paused.join(", "), crate::tools::MADE_PAUSED)),
             }
@@ -1433,7 +1435,8 @@ impl Editor {
                     }
                 }
                 // (`set_warning` names a session behind itself)
-                ed.set_warning(format!("a card went missing ({}) — Claude was told nothing ran", a.what));
+                let who = crate::llm::session_row(ed).shown;
+                ed.set_warning(format!("a card went missing ({}) — {who} was told nothing ran", a.what));
             };
             match id == front {
                 true => tell(self),

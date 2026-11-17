@@ -2530,8 +2530,9 @@ impl Editor {
             return Some(format!("end {name}: {}", r.why(name)));
         }
         if session.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-            let whose = crate::workspace::possessive(name);
-            return Some(format!("{whose} Claude is answering — stop it (C-c) or let it finish first"));
+            let (whose, who) =
+                (crate::workspace::possessive(name), crate::llm::workspace_row(self, session).shown);
+            return Some(format!("{whose} {who} is answering — stop it (C-c) or let it finish first"));
         }
         let unsaved: Vec<String> = self
             .docs

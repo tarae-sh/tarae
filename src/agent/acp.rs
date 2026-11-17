@@ -651,9 +651,12 @@ impl Wire {
                 self.request("session/set_mode", params, Asked::Mode(Some((id, model))));
                 true
             }
+            // (nothing the person does mends it: what happened, and that's all)
             _ => {
                 self.end = true;
-                send(Event::Done(Err(format!("{name} offers no mode {mode}"))))
+                let said = format!("{name} stopped — it offers no mode named {mode}");
+                self.ended_as = Some(Exit { said: said.clone(), kind: Ended::Unfit { mode: mode.into() } });
+                send(Event::Done(Err(said)))
             }
         }
     }

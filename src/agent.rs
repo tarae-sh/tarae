@@ -164,8 +164,12 @@ pub struct Caps {
 /// An agent tarae can start: data, as a language pack is a row ("agents are rows of data", 2026-11-13).
 #[derive(Debug)]
 pub struct Row {
-    /// What a kept conversation records (`chats::Saved.agent`): `claude`.
+    /// What a kept conversation records (`chats::Saved.agent`): `claude`. On screen it's the word for the agent's
+    /// program and process (`claude exited`, `▲ no claude`, `this session stays on claude`).
     pub name: &'static str,
+    /// The agent's name on screen where it's the one at work (`Claude is still answering`, `Ask Claude…`, `Claude's
+    /// change`) — step 4's C.3. Claude's capitalized; agy's is its own lowercase name, the same as `name`.
+    pub shown: &'static str,
     pub wire: Wire,
     /// Its program and arguments. Claude's are `llm.command`/`llm.args`' defaults (the user's own override them).
     pub command: &'static str,
@@ -189,11 +193,7 @@ pub struct Row {
 
 /// Every row's held paths (`Row.held`): what a folder's answer of `trust::Kind::Agent` is about (`trust::carried_rel`).
 pub fn held_paths() -> impl Iterator<Item = &'static str> {
-    #[cfg(test)]
-    let rows = ROWS.iter().copied().chain([&STAND_IN]);
-    #[cfg(not(test))]
-    let rows = ROWS.iter().copied();
-    rows.flat_map(|r| r.held.iter().copied())
+    every_row().flat_map(|r| r.held.iter().copied())
 }
 
 /// A config folder of tarae's own (`$state/agent-homes/<row>/<key>/`, one a project, `agentgate.rs`), and the files tarae writes there
@@ -237,6 +237,7 @@ pub enum Wire {
 /// Claude Code's row.
 pub static CLAUDE: Row = Row {
     name: "claude",
+    shown: "Claude",
     wire: Wire::Claude,
     command: "claude",
     args: claude::DEFAULT_ARGS,
@@ -254,6 +255,7 @@ pub static CLAUDE: Row = Row {
 /// them (`acp::args`). Chosen by `llm.agent` for a session that has no row yet (`llm::session_row`).
 pub static AGY: Row = Row {
     name: "agy",
+    shown: "agy",
     wire: Wire::Acp,
     command: "agy",
     args: &["acp"],
@@ -269,6 +271,7 @@ pub static AGY: Row = Row {
 #[cfg(test)]
 pub static STAND_IN: Row = Row {
     name: "stand-in",
+    shown: "stand-in",
     wire: Wire::Acp,
     command: "sh",
     args: acp::standin::ARGS,
@@ -281,6 +284,26 @@ pub static STAND_IN: Row = Row {
 
 /// Every row tarae has: what a kept conversation's name is looked up in (`row_named`), and `llm.agent`'s choices.
 static ROWS: &[&Row] = &[&CLAUDE, &AGY];
+
+/// Every row, the stand-in's too in tests.
+fn every_row() -> impl Iterator<Item = &'static Row> {
+    #[cfg(test)]
+    let rows = ROWS.iter().copied().chain([&STAND_IN]);
+    #[cfg(not(test))]
+    let rows = ROWS.iter().copied();
+    rows
+}
+
+/// Whether `s` is a row's name on screen (`Row.shown`): what reads a row tarae wrote back (`orchestra::is_told`).
+pub fn is_shown(s: &str) -> bool {
+    every_row().any(|r| r.shown == s)
+}
+
+/// The name on screen (`Row.shown`) of the row named `name` (`Row.name`) — `name` itself when no row is: what a
+/// process's row, titled by its program's word, says of it in words (`procs::detail`).
+pub fn shown_of(name: &str) -> &str {
+    every_row().find(|r| r.name == name).map_or(name, |r| r.shown)
+}
 
 /// `llm.agent`'s choices: each row's name, in `ROWS`' order (`every_row_is_a_choice`).
 pub const NAMES: &[&str] = &["claude", "agy"];
@@ -728,6 +751,9 @@ pub enum Ended {
     /// Guard 3, the tripwire: it ran `tool` itself — one of its own reported done, or one of tarae's that tarae never
     /// ran — and was stopped, its group ended (`acp::Wire::trip`). The chat holds its row until you quit.
     Tripped { tool: String },
+    /// Stopped at its start: it can't run as its row needs (guard 2: it offers no `mode` the row names). Said as an
+    /// error, as a trip is; the chat's top line says it stopped until its next start.
+    Unfit { mode: String },
 }
 
 impl Exit {
@@ -1048,6 +1074,7 @@ mod tests {
         // (and it sees each: a row on `acp::CAPS` with no recipe, and one whose asks are read)
         let row = |caps, own_tools| Row {
             name: "x",
+            shown: "x",
             wire: Wire::Acp,
             command: "x",
             args: &[],
@@ -1131,6 +1158,7 @@ mod tests {
         use super::{Caps, RoleKind, Row, Wire};
         static EVERY: Row = Row {
             name: "every",
+            shown: "every",
             wire: Wire::Acp,
             command: "x",
             args: &[],
@@ -1302,7 +1330,13 @@ mod tests {
         ("chat.rs", "made"),
         ("chat.rs", "restore"),
         ("chat.rs", "reset_said"),
+        // (its toast names the row the new conversation starts on — step 4's L3)
+        ("chat.rs", "reset"),
         ("chat.rs", "agent_moved"),
+        // (the set card names the row its sessions, having none, start on — step 4's L3)
+        ("orchestra.rs", "card"),
+        // (the welcome's brand line names the agent chosen — the user's decision, chat 2026-11-16, item 6)
+        ("term.rs", "brand_line"),
         ("editor.rs", "with_root"),
         ("editor.rs", "reload_config_ours"),
         ("typed.rs", "set_value"),
@@ -1357,5 +1391,161 @@ mod tests {
         ];
         let found = ["ask.rs: agent_start", "web/search.rs: start", "chat.rs: agent_moved"];
         assert_eq!(config_row_read(&made_up), found);
+    }
+
+    /// Step 4's L3: a parent's chat says what its agent was told by its row (`told stand-in: …`), and reads back as a
+    /// told row whatever the row — never a note that only starts so.
+    #[test]
+    fn a_told_row_names_its_agent_and_reads_back() {
+        use crate::agent::{AGY, CLAUDE, STAND_IN, shown_of};
+        assert_eq!(crate::orchestra::told(&STAND_IN), "told stand-in: ");
+        for row in [&CLAUDE, &AGY, &STAND_IN] {
+            assert!(crate::orchestra::is_told(&format!("{}k's turn ended", crate::orchestra::told(row))));
+        }
+        assert!(!crate::orchestra::is_told("told someone: k's turn ended"));
+        assert_eq!(shown_of("stand-in"), "stand-in");
+        assert_eq!(shown_of("claude"), "Claude");
+        assert_eq!(shown_of("cargo"), "cargo");
+    }
+
+    /// The literals of `src` (code as a non-test build compiles it, comments out) that say `Claude`, each its text.
+    fn claude_literals(src: &str) -> Vec<String> {
+        let (mut out, mut cs) = (Vec::new(), src.chars().peekable());
+        while let Some(c) = cs.next() {
+            match c {
+                // (a char literal: `'"'`, `'\''` — else a lifetime, nothing to skip)
+                '\'' => {
+                    let rest: String = cs.clone().take(3).collect();
+                    if rest.starts_with('\\') {
+                        cs.by_ref().take_while(|&c| c != '\'').for_each(drop);
+                    } else if rest.chars().nth(1) == Some('\'') {
+                        cs.nth(1);
+                    }
+                }
+                '"' => {
+                    let mut lit = String::new();
+                    while let Some(c) = cs.next() {
+                        match c {
+                            '\\' => lit.extend(cs.next()),
+                            '"' => break,
+                            c => lit.push(c),
+                        }
+                    }
+                    if lit.contains("Claude") {
+                        out.push(lit);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Step 4's C.3, §4's check: the literals naming Claude in every file of the code's roots, counted — a file not
+    /// listed is allowed none, so a new file can't skip it. One about the session's agent — its process, turn,
+    /// conversation, edits — says `Row.shown`; one about Claude Code itself (its settings, login, environment,
+    /// billing, usage, update), a prompt's or a tool's words to the agent stays. A new one fails here with its text.
+    ///
+    /// For now the list is two things in one (frozen at L3, as the walk found them): Claude Code's own literals, which
+    /// stay, and those not yet moved to the row's name. It only shrinks, as the clock and sleep lists do — lower a
+    /// file's count when you move one. Part C's naming landing, before the push, splits the two: the ones left moved
+    /// to the row, the rest counted as Claude Code's own with their reasons — so "shrinks" has an end.
+    #[test]
+    fn every_literal_naming_claude_on_screen_is_claudes_own() {
+        // (the command docs, `cmdline.rs`' and `commands.rs`', are written once and drawn by `llm::agent_doc`: the
+        // session's row's name where it isn't Claude, but `llm::CLAUDE_ONLY_COMMANDS`')
+        const CLAUDE_ONLY: &[(&str, usize)] = &[
+            ("agent.rs", 2),
+            ("allow.rs", 5),
+            ("attach.rs", 1),
+            ("billing.rs", 6),
+            ("blocked.rs", 8),
+            ("board.rs", 3),
+            ("cardreview.rs", 1),
+            ("cards.rs", 1),
+            // (the system prompt)
+            ("chat.rs", 1),
+            ("checkpoint.rs", 4),
+            ("claudetrust.rs", 18),
+            ("client.rs", 1),
+            ("cmdline.rs", 22),
+            // (the reviewer's words in a prompt)
+            ("codereview.rs", 2),
+            ("commands.rs", 18),
+            ("compaction.rs", 3),
+            ("diskroom.rs", 4),
+            ("edits.rs", 8),
+            ("edittool.rs", 1),
+            ("endsave.rs", 1),
+            ("envkey.rs", 4),
+            ("features.rs", 3),
+            ("folders.rs", 8),
+            ("follow.rs", 6),
+            ("gitpanel.rs", 5),
+            ("gitrepo/held.rs", 2),
+            ("granted.rs", 3),
+            ("hooks.rs", 2),
+            ("hosts.rs", 3),
+            ("idlecompact.rs", 2),
+            ("instructions.rs", 6),
+            ("keepclose.rs", 4),
+            ("kubeconfig.rs", 2),
+            ("limits.rs", 1),
+            // (Claude Code's install, login and environment)
+            ("llm.rs", 9),
+            ("models.rs", 1),
+            ("offer.rs", 2),
+            // (billing's two, the cap's and two tools' words to the agent, a prompt's frame, the restart for the
+            // project's Claude settings)
+            ("orchestra.rs", 7),
+            ("plugin/install.rs", 1),
+            ("reads.rs", 10),
+            // (the bring card's `(Claude's draft, :w)`, two)
+            ("rebase.rs", 2),
+            ("refactor.rs", 3),
+            ("relay.rs", 1),
+            ("repotrust.rs", 2),
+            ("reviewer.rs", 2),
+            ("rundoc.rs", 2),
+            ("sandbox.rs", 5),
+            ("sandbox/apparmor.rs", 2),
+            ("sandbox/runenv.rs", 1),
+            ("sandboxpack.rs", 1),
+            ("settings.rs", 37),
+            ("sound.rs", 1),
+            ("testing.rs", 1),
+            ("tokens.rs", 2),
+            ("tools.rs", 33),
+            ("uisocket.rs", 3),
+            ("uistate/watch.rs", 4),
+            ("usage.rs", 5),
+            ("view.rs", 1),
+            ("web/page.rs", 1),
+            ("web/search.rs", 6),
+            ("web/signed.rs", 1),
+            ("web/tool.rs", 9),
+            ("wordspot.rs", 1),
+            // (billing's line, and the commit first's `Claude drafts it`)
+            ("worktree.rs", 2),
+        ];
+        // (every file of the code's roots: one not listed is allowed none, so a new file can't skip it)
+        let sources = crate::sim::lint::sources();
+        let missing: Vec<&str> =
+            CLAUDE_ONLY.iter().map(|(f, _)| *f).filter(|f| !sources.iter().any(|(k, _)| k == f)).collect();
+        assert!(missing.is_empty(), "listed but not in the code: {missing:?}");
+        let mut wrong = Vec::new();
+        for (file, src) in &sources {
+            let want = CLAUDE_ONLY.iter().find(|(f, _)| f == file).map_or(0, |(_, n)| *n);
+            let found = claude_literals(src);
+            if found.len() != want {
+                let cut: Vec<String> = found.iter().map(|l| l.chars().take(90).collect()).collect();
+                wrong.push(format!("{file}: {} (listed {want}):\n  {}", found.len(), cut.join("\n  ")));
+            }
+        }
+        assert!(wrong.is_empty(), "literals naming Claude:\n{}", wrong.join("\n"));
+        // (and it sees one, past a char literal of a quote and a lifetime)
+        let made_up =
+            "fn f<'a>(s: &'a str) { s.replace(['\"', '<'], \"\"); g(\"Ask Claude\\\"s\"); h('\\'', \"x\") }";
+        assert_eq!(claude_literals(made_up), ["Ask Claude\"s"]);
     }
 }

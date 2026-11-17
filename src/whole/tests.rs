@@ -606,7 +606,7 @@ fn a_told_row_is_one_row_whole_on_its_card() {
     let told = format!(
         "{}knot-count's turn ended — “Each thread keeps its knots in a list, so the count is its length. I'll sort \
          by it, most-knotted first, and say goodbye”",
-        crate::orchestra::TOLD
+        crate::orchestra::told(&crate::agent::CLAUDE)
     );
     let mut ed = chat(vec![
         Msg::new(Role::User, "split the work", ""),
@@ -636,7 +636,7 @@ fn a_told_row_is_one_row_whole_on_its_card() {
 fn a_told_rows_markdown_is_drawn_not_its_markers() {
     let told = format!(
         "{}k's turn ended — “**src/thread.rs** sorts by `count()`, most-knotted first, ties by name, and says goodbye”",
-        crate::orchestra::TOLD
+        crate::orchestra::told(&crate::agent::CLAUDE)
     );
     let mut ed = chat(vec![
         Msg::new(Role::User, "split the work", ""),

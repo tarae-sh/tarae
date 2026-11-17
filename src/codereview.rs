@@ -2468,7 +2468,8 @@ pub(crate) fn reopen_turn(ed: &mut Editor, v: &Value) {
 pub fn review_turn(ed: &mut Editor) {
     let list = &ed.workspace.claude.checkpoints.list;
     let Some(at) = list.iter().rposition(|c| !c.undone) else {
-        return ed.set_status("no turn of Claude's changed files — nothing to review");
+        let who = crate::llm::session_row(ed).shown;
+        return ed.set_status(format!("no turn of {who}'s changed files — nothing to review"));
     };
     // The turns before it that went in unseen, since the last one looked at (#49)
     let unseen = list[..at].iter().rev().filter(|c| !c.undone).take_while(|c| !c.seen).count();
@@ -2920,8 +2921,10 @@ fn open_at(
                 .map(|h| format!("{} that came with HEAD → {}", crate::nav::count(h.files, "file"), h.short))
                 .collect();
             match moves.is_empty() {
-                true => "Claude changed".to_string(),
-                false => format!("Claude changed (not the {})", moves.join(", ")),
+                true => format!("{} changed", crate::llm::session_row(ed).shown),
+                false => {
+                    format!("{} changed (not the {})", crate::llm::session_row(ed).shown, moves.join(", "))
+                }
             }
         }
         Base::Replay { label, .. } => format!("resolved, against {label}"),
@@ -5532,7 +5535,8 @@ fn close_said(ed: &Editor) -> Option<CloseSaid> {
     }
     // (#535: asked by a card's `c` — its `y` goes on to the commit; said while it has a `y`)
     if let Some(w) = ed.workspace.commit_waits.as_ref().filter(|_| high.is_empty()) {
-        let how = if w.message.is_none() { "Claude's draft, :w" } else { ":w" };
+        let draft = format!("{}'s draft, :w", crate::llm::session_row(ed).shown);
+        let how = if w.message.is_none() { draft.as_str() } else { ":w" };
         q.push_str(&format!("\n\ny ends it, then {} commit ({how}).", crate::workspace::possessive(&w.name)));
     }
     q.push_str("\n\nDrafts stay. Opened again, its marks are kept: a file changed since asks only for its lines since.");
@@ -5847,9 +5851,10 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
         }
         let k = drafts.len();
         return ed.set_status(format!(
-            "review queued — its {} go{} when Claude's turn ends",
+            "review queued — its {} go{} when {}'s turn ends",
             crate::nav::count(k, "comment"),
-            if k == 1 { "es" } else { "" }
+            if k == 1 { "es" } else { "" },
+            crate::llm::session_row(ed).shown
         ));
     }
     if ed.workspace.claude.chat.is_none() {
@@ -5976,7 +5981,9 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
             if !c.sends.contains(&later()) {
                 c.sends.push(later());
             }
-            let why = if c.held { "no claude until your config reads" } else { "claude is starting" };
+            let who = c.agent.name;
+            let why =
+                if c.held { "no agent until your config reads".into() } else { format!("{who} is starting") };
             let k = drafts.len();
             return ed.set_status(format!(
                 "review queued — {why}; its {} go{} once it's up",
@@ -5984,8 +5991,10 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
                 if k == 1 { "es" } else { "" }
             ));
         }
-        not_sent(ed, "couldn't reach its claude — the findings are kept unsent");
-        return ed.set_warning("couldn't reach claude — the chat panel says why (the drafts are kept)");
+        let who = crate::llm::session_row(ed).name;
+        not_sent(ed, &format!("couldn't reach its {who} — the findings are kept unsent"));
+        return ed
+            .set_warning(format!("couldn't reach {who} — the chat panel says why (the drafts are kept)"));
     }
     // (sent, they leave the code: their words are the message's, their lines places of its answer — flags, #388 Q9)
     let notes = &mut ed.workspace.claude.notes;
@@ -6010,8 +6019,15 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     };
     match by {
         Some(b) => ed.set_success(format!(
-            "{} Claude sent {} reviewer's {}",
+            "{} {} sent {} reviewer's {}",
             crate::workspace::possessive(&b.from),
+            {
+                // (the parent's agent, by its row — step 4's C.3)
+                let mut all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+                all.find(|l| l.label() == b.from)
+                    .map_or(crate::llm::session_row(ed), |l| crate::llm::workspace_row(ed, l))
+                    .shown
+            },
             crate::workspace::possessive(ed.workspace.label()),
             crate::nav::count(k, "finding")
         )),

@@ -912,7 +912,8 @@ impl Editor {
                 crate::cards::ran_warned(&self.workspace.log(), &task.cmd, &warned);
                 warned
             });
-            crate::chat::Ran::of(g, ride.card, ride.reason.as_deref(), warned)
+            let reason = ride.reason.as_deref().map(|r| (crate::llm::session_row(self).shown, r));
+            crate::chat::Ran::of(g, ride.card, reason, warned)
         });
         // What a warning with `start` says (a manifest tool's changes, piece F): with no card that said it, said
         // as it starts — one calm toast, its chat row marked from now (`run_done` finds it marked)
@@ -1259,7 +1260,7 @@ impl Editor {
         // The same task again: its panel starts as tall as it was (no shrink and grow back)
         let tall =
             self.workspace.task_run.as_ref().filter(|r| r.task.name == task.name).map_or(0, |r| r.tall.get());
-        let label = format!("Claude's command `{}`", traced(&task.cmd));
+        let label = format!("{}'s command `{}`", crate::llm::session_row(self).shown, traced(&task.cmd));
         let containers =
             containers.map(|(p, reach)| crate::containers::Run::new(p, label, self.events.sender(), reach));
         self.workspace.task_run = Some(Run {

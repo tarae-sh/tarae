@@ -217,8 +217,16 @@ fn makings(
 /// The set's card: each session a row — its name and its brief's first line, cut (whole under the mouse, every
 /// brief whole on `v`) —, where their checkouts go and build, what's copied in, who pays, and what their reports
 /// carry back.
-pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
+pub fn card(ed: &Editor, mut s: Set) -> crate::offer::Offer {
     let n = s.sessions.len();
+    // (who pays only where the children's row has tarae choose it, `Caps.billing`: on agy's, "Its Claude runs on …"
+    // would be false. Left out, `$` with it; what such a card says instead is step 4's L4)
+    let bills = crate::agent::row_of(&ed.config.llm).caps.billing;
+    if !bills {
+        for (m, _) in &mut s.sessions {
+            (m.billing_ask, m.billing_note) = (None, None);
+        }
+    }
     let Some((first, _)) = s.sessions.first() else {
         return crate::offer::Offer::new(
             String::new(),
@@ -232,13 +240,17 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
         1 => "Start a session?".to_string(),
         _ => format!("Start {n} sessions?"),
     };
+    // (the children start on the config's row, the parent's is its own — step 4's C.3: each said by its row)
+    let child = crate::agent::row_of(&ed.config.llm).shown;
+    let mut all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    let parent = all.find(|l| l.id == s.parent).map_or(child, |l| crate::llm::workspace_row(ed, l).shown);
     let mut q = match n {
         1 => format!(
-            "A branch from {}, its own checkout and Claude — the brief its first message:",
+            "A branch from {}, its own checkout and {child} — the brief its first message:",
             first.base_said()
         ),
         _ => format!(
-            "Each a branch from {}, its own checkout and Claude — its brief its first message:",
+            "Each a branch from {}, its own checkout and {child} — its brief its first message:",
             first.base_said()
         ),
     };
@@ -306,7 +318,7 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
             .filter(|_| money)
             .map(|(c, _)| format!(" — ≈ API {} a time", crate::usage::dollars(c)));
         q += &format!(
-            "\n{} Claude is woken as {ends}{}, {} an hour at most.",
+            "\n{} {parent} is woken as {ends}{}, {} an hour at most.",
             crate::workspace::possessive(&s.parent_name),
             cost.unwrap_or_default(),
             ed.config.llm.parent_wakes
@@ -321,18 +333,20 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
     if let Some(note) = &first.billing_note {
         q += &format!("\n\n{note}");
     }
-    let warn = (api && ed.weakness_due()).then(|| {
+    let warn = (api && bills && ed.weakness_due()).then(|| {
         let at = q.split('\n').count() + 1;
         q += &format!("\n\n{}", crate::billing::WEAKNESS);
         at..at + 1
     });
     // (the threat model's §2.x: what a child read reaches its parent's Claude through its reports)
     q += &match n {
-        1 => {
-            format!("\n\nWhat its Claude reads, its reports carry to {} Claude.", possessive(&s.parent_name))
-        }
+        1 => format!(
+            "\n\nWhat its {child} reads, its reports carry to {} {parent}.",
+            possessive(&s.parent_name)
+        ),
         _ => format!(
-            "\n\nWhat their Claudes read, their reports carry to {} Claude.",
+            "\n\nWhat their {} read, their reports carry to {} {parent}.",
+            child.to_string() + "s",
             possessive(&s.parent_name)
         ),
     };
@@ -578,7 +592,11 @@ fn to_child(ed: &mut Editor, (from, conversation, wake): (&str, Option<&str>, bo
             format!("{} checkout is moving onto its base; it goes once that lands", possessive(&name))
         }
         _ if busy => format!("{name} is working; it goes when this turn ends"),
-        _ if starting => format!("{} claude is starting; it goes once it's up", possessive(&name)),
+        _ if starting => format!(
+            "{} {} is starting; it goes once it's up",
+            possessive(&name),
+            crate::llm::session_row(ed).name
+        ),
         _ if users > 0 => format!("a message of the user's waits in {name}; it goes after it"),
         _ => format!("what you sent {name} before still waits; it goes after it"),
     };
@@ -621,7 +639,12 @@ fn anew(ed: &mut Editor, from: &str) -> Result<(), String> {
     let at = ed.workspace.here();
     let hidden = ed.workspace.claude.chat.as_ref().map(|c| c.hidden);
     // (its toast says whose it was in its row's words — not yours: `:chat-new`'s)
-    let said = format!("a new conversation — {} Claude asked for it", crate::workspace::possessive(from));
+    let parent = ed.workspace.claude.parent.map(|p| row_of_session(ed, p));
+    let said = format!(
+        "a new conversation — {} {} asked for it",
+        crate::workspace::possessive(from),
+        parent.unwrap_or_else(|| crate::llm::session_row(ed)).shown
+    );
     crate::chat::reset_said(ed, &said);
     ed.workspace.set_at(at);
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
@@ -994,9 +1017,10 @@ pub fn wake(ed: &mut Editor) {
         // of this conversation's news, the ones said; another's are its own)
         let now = conversation_of(ed);
         ed.workspace.claude.news.iter_mut().filter(|n| n.conversation == now).for_each(|n| n.wake = false);
+        let who = crate::llm::session_row(ed).shown;
         if let Some(c) = ed.workspace.claude.chat.as_mut() {
             c.note(&format!(
-                "not woken for {}: {why} — Claude hears it with your next message",
+                "not woken for {}: {why} — {who} hears it with your next message",
                 asked.join(", ")
             ));
         }
@@ -1092,16 +1116,33 @@ fn take_news(ed: &mut Editor) -> Option<(Vec<String>, String)> {
         lines.push(format!("+{} more — sessions lists them", news.len() - NEWS_SHOWN));
     }
     let rows: Vec<String> = news.iter().map(News::row).collect();
-    Some((lines, format!("{TOLD}{}", rows.join(" · "))))
+    Some((lines, format!("{}{}", told(crate::llm::session_row(ed)), rows.join(" · "))))
 }
 
-/// The start of a parent chat's row saying what its Claude was told (`take_news`) — drawn as one row, cut at its end,
-/// whole on its card (`term::told_row`).
-pub const TOLD: &str = "told Claude: ";
+/// The start of a parent chat's row saying what its agent, of `row`, was told (`take_news`): `told Claude: ` — drawn
+/// as one row, cut at its end, whole on its card (`term::told_row`).
+pub fn told(row: &crate::agent::Row) -> String {
+    format!("told {}: ", row.shown)
+}
 
-/// Whether a chat's note is a `TOLD` row.
+/// Whether a chat's note is a `told` row: `told <a row's name>: `.
 pub fn is_told(text: &str) -> bool {
-    text.starts_with(TOLD)
+    let who = text.strip_prefix("told ").and_then(|r| r.split_once(": ")).map(|(who, _)| who);
+    who.is_some_and(crate::agent::is_shown)
+}
+
+/// The name of the agent of the parent of the session in front, by its row (its own for one that has no parent): whose
+/// messages wait in its chat (`Chat::queued_said`).
+pub fn parent_shown(ed: &Editor) -> &'static str {
+    let parent = ed.workspace.claude.parent.map(|p| row_of_session(ed, p));
+    parent.unwrap_or_else(|| crate::llm::session_row(ed)).shown
+}
+
+/// Session `id`'s row (`llm::workspace_row`), wherever its workspace is; the one in front's for one that's gone.
+pub fn row_of_session(ed: &Editor, id: SessionId) -> &'static crate::agent::Row {
+    let mut all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    all.find(|l| l.claude.id == id)
+        .map_or_else(|| crate::llm::session_row(ed), |l| crate::llm::workspace_row(ed, l))
 }
 
 /// The news for the next message of the chat in `ed.workspace` (`chat::submit_as`, in its `<editor-note>`): its lines,
@@ -1318,11 +1359,12 @@ pub struct Proposal {
 }
 
 impl Proposal {
-    /// The card's first line under its title.
-    pub fn line(&self) -> String {
+    /// The card's first line under its title: the parent said by its row (`proposed by main's Claude`).
+    pub fn line(&self, ed: &Editor) -> String {
+        let who = row_of_session(ed, self.parent).shown;
         match self.why.is_empty() {
-            true => format!("proposed by {} Claude", possessive(&self.by)),
-            false => format!("proposed by {} Claude — “{}”", possessive(&self.by), self.why),
+            true => format!("proposed by {} {who}", possessive(&self.by)),
+            false => format!("proposed by {} {who} — “{}”", possessive(&self.by), self.why),
         }
     }
 }
@@ -1399,6 +1441,7 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
     };
     let child = child_named(ed, name).ok_or(NOT_YOURS)?;
     let (id, label, base) = (child.id, child.label().to_string(), child.base.clone());
+    let who = crate::llm::workspace_row(ed, child).shown;
     let busy = child.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy);
     let proposal = Proposal {
         act,
@@ -1411,7 +1454,7 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
     };
     match act {
         Act::Bring | Act::End if busy => {
-            Err(format!("{} Claude is answering — propose it once its turn ends", possessive(&label)))
+            Err(format!("{} {who} is answering — propose it once its turn ends", possessive(&label)))
         }
         Act::Bring | Act::End => {
             match act {

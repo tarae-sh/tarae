@@ -636,6 +636,17 @@ fn snapshot_welcome_80() {
     s.check("welcome_80");
 }
 
+/// The brand line names the agent chosen (the user's decision, chat 2026-11-16, item 6): the config's row by its name
+/// on screen — Claude's by default (above), agy's when `llm.agent` says agy.
+#[test]
+fn the_welcomes_brand_line_names_the_agent_chosen() {
+    let mut s = Shot::new(80, 24);
+    s.ed.config.llm.agent = &crate::agent::AGY;
+    let shown = screen_text(&mut s);
+    let line = |shown: &str| shown.lines().find(|r| r.contains("타래 ·")).map(|r| r.trim().to_string());
+    assert_eq!(line(&shown).as_deref(), Some("타래 · Helix keys, agy inside"), "{shown}");
+}
+
 /// Started in a subfolder (`project.rs`): the colophon names the project, then where you are in it, as the path bar
 /// does (`tarae › src › deep`) — the same row, the same left edge.
 #[test]

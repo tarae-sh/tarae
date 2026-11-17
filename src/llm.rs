@@ -262,7 +262,7 @@ pub const HELD_WAY: &str = "fix it, then :config-reload";
 /// load); one already running goes on. The file's own words, with its line.
 pub fn config_held(ed: &Editor) -> Option<String> {
     (!ed.config_unread.is_empty())
-        .then(|| format!("no claude until your config reads — {}: {HELD_WAY}", ed.config_unread.join("; ")))
+        .then(|| format!("no agent until your config reads — {}: {HELD_WAY}", ed.config_unread.join("; ")))
 }
 
 /// The row every start of the session in front runs (step 4's L2, inside the user's 2026-11-13 decision: "a session
@@ -272,6 +272,21 @@ pub fn config_held(ed: &Editor) -> Option<String> {
 /// (`every_start_takes_the_sessions_row`).
 pub fn session_row(ed: &Editor) -> &'static crate::agent::Row {
     workspace_row(ed, &ed.workspace)
+}
+
+/// The typed commands whose docs name Claude Code itself (its settings, its usage, its billing — step 4's §4 rule),
+/// kept as written on any row (`agent_doc`).
+pub const CLAUDE_ONLY_COMMANDS: &[&str] = &["claude-settings", "usage", "session-billing"];
+
+/// A command's doc as which-key, the palette and `:`'s completion draw it for the session in front (step 4's C.3,
+/// §4's command docs): its `Claude` the session's agent's name by its row (`Row.shown`) — as written on Claude's row
+/// and for `CLAUDE_ONLY_COMMANDS` (`name`: a typed command's first name, else empty).
+pub fn agent_doc(ed: &Editor, name: &str, doc: &str) -> String {
+    let shown = session_row(ed).shown;
+    match shown == crate::agent::CLAUDE.shown || CLAUDE_ONLY_COMMANDS.contains(&name) {
+        true => doc.to_string(),
+        false => doc.replace(crate::agent::CLAUDE.shown, shown),
+    }
 }
 
 /// `session_row` for workspace `w`'s session, in front or not: a start for a session other than the one in place
@@ -314,7 +329,7 @@ pub fn held_on(ed: &Editor, row: &'static crate::agent::Row, role: crate::agent:
 pub fn config_said(ed: &Editor, warnings: &[String]) -> String {
     match ed.config_unread.is_empty() {
         true => format!("config: {}", warnings.join("; ")),
-        false => format!("config: no claude until it reads — {}: {HELD_WAY}", warnings.join("; ")),
+        false => format!("config: no agent until it reads — {}: {HELD_WAY}", warnings.join("; ")),
     }
 }
 
@@ -750,7 +765,7 @@ pub fn draft(
     to: usize,
 ) -> Result<(), String> {
     if ed.workspace.claude.review.is_some() {
-        return Err("Claude is already answering (:ask-cancel)".into());
+        return Err(format!("{} is already answering (:ask-cancel)", session_row(ed).shown));
     }
     let doc = ed.docs.iter().find(|d| d.id == doc_id).ok_or("the buffer is gone")?;
     if from > to || to > doc.text.len_bytes() {
@@ -812,7 +827,7 @@ pub fn stop_waiting(ed: &mut Editor, generation: Option<u64>, said: &str) {
         crate::sessionpane::ended(ed, crate::sessionpane::Kind::Draft, said, what.clone());
     }
     ed.llm_generation += 1;
-    ed.set_warning(format!("Claude's {what}: {said}"));
+    ed.set_warning(format!("{}'s {what}: {said}", session_row(ed).shown));
 }
 
 /// A commit draft's start on `row` (the session's) and `cfg`: `llm.args` as given.
@@ -920,7 +935,7 @@ pub fn cancel(ed: &mut Editor) {
     if ed.workspace.claude.review.is_some() {
         close_review(ed);
         ed.llm_generation += 1;
-        ed.set_status("claude: cancelled");
+        ed.set_status(format!("{}: cancelled", session_row(ed).name));
     }
 }
 
@@ -952,7 +967,7 @@ pub fn review_with(
         if let Some(cb) = on_done {
             cb(ed, false);
         }
-        return ed.set_status("claude: no changes");
+        return ed.set_status(format!("{}: no changes", session_row(ed).name));
     }
     let mut rev =
         Review { ready: true, on_done, ..Review::new(ed.llm_generation, doc_id, instruction, hunks) };
@@ -1095,6 +1110,7 @@ pub fn preview(streamed: &str, rows: usize) -> Vec<&str> {
 }
 
 fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, String>) {
+    let name = session_row(ed).name;
     let Some(rev) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) else {
         return;
     };
@@ -1111,14 +1127,14 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
         Err(e) => {
             ed.workspace.claude.review = None;
             draft(ed, "failed", Ink::Warn);
-            ed.set_error(format!("claude: {e}"));
+            ed.set_error(format!("{name}: {e}"));
             return;
         }
     };
     let Some(doc_idx) = ed.docs.iter().position(|d| d.id == rev.doc_id) else {
         ed.workspace.claude.review = None;
         draft(ed, "failed", Ink::Warn);
-        ed.set_error("claude: buffer was closed");
+        ed.set_error(format!("{name}: buffer was closed"));
         return;
     };
     let text = &ed.docs[doc_idx].text;
@@ -1137,9 +1153,9 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
     }
     if rev.hunks.iter().all(|h| h.decision == Decision::Reject || h.conflict) {
         let msg = if rev.hunks.iter().any(|h| h.conflict) {
-            "claude: text changed while waiting — nothing applied"
+            format!("{name}: text changed while waiting — nothing applied")
         } else {
-            "claude: no changes"
+            format!("{name}: no changes")
         };
         ed.workspace.claude.review = None;
         draft(ed, "no changes", Ink::Faint);
@@ -1152,7 +1168,7 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
     let yours = rev.asked_by.is_some() && rev.asked_by == Some(ed.input_seq);
     draft(ed, "done", Ink::Accent);
     ed.current = doc_idx;
-    ed.set_status(format!("claude answered in {}", crate::term::run_duration(took)));
+    ed.set_status(format!("{name} answered in {}", crate::term::run_duration(took)));
     // (asked by your key, nothing typed since: focused as it lands — else it waits for `C-q`, #528)
     match yours {
         true => review_focus(ed),
@@ -1376,7 +1392,7 @@ fn apply_accepted(ed: &mut Editor, rev: &Review) -> bool {
     let accepted: Vec<&Hunk> =
         rev.hunks.iter().filter(|h| h.decision == Decision::Accept && !h.conflict).collect();
     if accepted.is_empty() {
-        ed.set_status("claude: nothing applied");
+        ed.set_status(format!("{}: nothing applied", session_row(ed).name));
         return false;
     }
     let Some(idx) = ed.docs.iter().position(|d| d.id == rev.doc_id) else { return false };
@@ -1393,7 +1409,7 @@ fn apply_accepted(ed: &mut Editor, rev: &Review) -> bool {
         // (on your `y`, Claude's lines — not your edit)
         doc.own.not_yours();
     });
-    ed.set_status(format!("claude: applied {n} change(s) — u to undo"));
+    ed.set_status(format!("{}: applied {n} change(s) — u to undo", session_row(ed).name));
     true
 }
 

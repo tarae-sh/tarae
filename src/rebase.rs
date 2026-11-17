@@ -1808,11 +1808,13 @@ impl Editor {
                 c.hidden = true;
             }
         }
+        // (§4: the ask goes to the session's chat — its agent named by its row)
+        let who = crate::llm::session_row(self).shown;
         let Some(r) = self.workspace.rebase.as_mut() else { return };
         let files = named(&r.stop.files);
         if self.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
             r.waiting = Some(a);
-            return self.set_status(format!("conflicts in {files} — Claude is asked once its turn ends"));
+            return self.set_status(format!("conflicts in {files} — {who} is asked once its turn ends"));
         }
         // (by itself: it goes as git stops at the conflicts, or once a turn or claude's start lets it — no key of
         // yours sends it)
@@ -1827,16 +1829,16 @@ impl Editor {
             (true, _) => {
                 r.asked = true;
                 self.set_status(format!(
-                    "conflicts in {files} — Claude is resolving them; you review them before the rebase goes on"
+                    "conflicts in {files} — {who} is resolving them; you review them before the rebase goes on"
                 ))
             }
             (false, true) => {
                 r.waiting = Some(a);
-                self.set_status(format!("conflicts in {files} — Claude is asked once it starts"))
+                self.set_status(format!("conflicts in {files} — {who} is asked once it starts"))
             }
             // (not asked: it waits on you — the inbox lists it, its card goes on or aborts)
             (false, false) => self.set_warning(format!(
-                "conflicts in {files} — couldn't reach Claude (the chat says why); resolve them, then \
+                "conflicts in {files} — couldn't reach {who} (the chat says why); resolve them, then \
                  :rebase-continue"
             )),
         }
@@ -1848,8 +1850,9 @@ impl Editor {
     fn rebase_checked(&mut self, left: Vec<String>, also: Besides) {
         let Some(r) = self.workspace.rebase.as_mut().filter(|r| r.stage == Stage::Stopped) else { return };
         if !left.is_empty() {
+            let who = crate::llm::session_row(self).shown;
             return self.set_warning(format!(
-                "conflict markers still in {} — ask Claude again, or fix them and :rebase-continue",
+                "conflict markers still in {} — ask {who} again, or fix them and :rebase-continue",
                 named(&left)
             ));
         }
@@ -1973,11 +1976,11 @@ impl Editor {
         let message = resolved && stop.message.is_some();
         let said = match (message, r.messages.proposed.is_some()) {
             (false, _) => String::new(),
-            (true, true) => {
-                "Claude says the commit's message no longer holds — m shows its version; :w there \
-                             goes on with it.\n\n"
-                    .to_string()
-            }
+            (true, true) => format!(
+                "{} says the commit's message no longer holds — m shows its version; :w there goes on with \
+                 it.\n\n",
+                crate::llm::session_row(self).shown
+            ),
             (true, false) => {
                 "m writes the commit's message first — :w there goes on with it.\n\n".to_string()
             }
@@ -2257,12 +2260,13 @@ impl Editor {
             let at = r.stop.at();
             let root = ed.workspace.root.clone();
             let said = "writing the commit's message…";
+            let who = crate::llm::session_row(ed).shown;
             let work = move || -> Result<PathBuf, String> {
                 let dir = git_dir(&root).ok_or("no git folder")?;
                 let file = dir.join(MESSAGE_FILE);
                 let whose = match proposed.is_some() {
-                    true => "Claude's version of the message",
-                    false => "the message as it is",
+                    true => format!("{who}'s version of the message"),
+                    false => "the message as it is".to_string(),
                 };
                 let text = format!(
                     "{}\n\n{MESSAGE_CUT}\n{whose} — for {at}, after its conflicts were resolved.\n:w stages the files \

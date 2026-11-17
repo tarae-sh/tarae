@@ -222,9 +222,6 @@ pub fn slash_refused(c: &Chat, act: SlashAct) -> bool {
     c.busy() && matches!(act, SlashAct::Clear | SlashAct::Resume)
 }
 
-/// What a refusal mid-turn says (`continue_from`, `slash_refused`).
-const STILL_ANSWERING: &str = "Claude is still answering — stop it (C-c) first";
-
 /// The answer to an ask of an agent whose asks tarae can't read by name (`Caps::asks`): its own tools don't run.
 const OWN_TOOLS_REFUSED: &str = "tarae refuses this agent's own tools — read, change and run through tarae's";
 
@@ -619,6 +616,9 @@ pub struct Chat {
     again: Option<crate::agent::Again>,
     /// Its claude would have started but the config doesn't read (`llm::held_for`): it starts once it does (`config_read`).
     pub(crate) held: bool,
+    /// Its agent was stopped at its start (`agent::Ended::Unfit`): the top line says so, never "ready", until the next
+    /// start.
+    pub(crate) unfit: bool,
     /// A new conversation was asked for (`C-l`, `:chat-new`) — a session brought back doesn't continue its own when
     /// the project's are read.
     pub started_new: bool,
@@ -887,17 +887,18 @@ pub struct Ran {
 }
 
 impl Ran {
-    /// Of a run under `guard`, from card `card` with Claude's `reason` (None: none asked), that warned of `warned`.
+    /// Of a run under `guard`, from card `card` with its agent's `reason` (who — its row's `shown` — and why; None: none
+    /// asked), that warned of `warned`.
     pub fn of(
         guard: &crate::sandbox::Guard,
         card: Option<u64>,
-        reason: Option<&str>,
+        reason: Option<(&str, &str)>,
         warned: Vec<crate::cardwarn::Warned>,
     ) -> Ran {
         let (mark, past, mut why) = guard.where_ran();
         if let Some(c) = card {
             why.push_str(&format!(" From card#{c}"));
-            why.push_str(&reason.map(|r| format!(" — Claude's reason: {r}")).unwrap_or_default());
+            why.push_str(&reason.map(|(who, r)| format!(" — {who}'s reason: {r}")).unwrap_or_default());
             why.push('.');
         }
         Ran { mark, past, why, warned }
@@ -1149,8 +1150,9 @@ impl Chat {
     }
 
     /// What waits for this turn's end, as its row and the state say it — (`2 messages queued` · `review notes
-    /// queued`, the last message's text when there's one): frictions29 18. None: nothing waits.
-    pub fn queued_said(&self) -> Option<(String, String)> {
+    /// queued`, the last message's text when there's one): frictions29 18. None: nothing waits. `parent`: the name of
+    /// the parent session's agent, by its row (`orchestra::parent_shown`) — whose messages wait.
+    pub fn queued_said(&self, parent: &str) -> Option<(String, String)> {
         let n = self.queued.as_ref().map_or(0, |_| self.queued_n.max(1));
         let reviews =
             self.sends.iter().filter(|l| matches!(l, Later::Review(_) | Later::Findings(_))).count();
@@ -1170,8 +1172,8 @@ impl Chat {
         if let Some(from) = parents.first() {
             let n = parents.len();
             parts.push(match n {
-                1 => format!("a message from {} Claude", crate::workspace::possessive(from)),
-                _ => format!("{n} messages from {} Claude", crate::workspace::possessive(from)),
+                1 => format!("a message from {} {parent}", crate::workspace::possessive(from)),
+                _ => format!("{n} messages from {} {parent}", crate::workspace::possessive(from)),
             });
         }
         if n > 0 {
@@ -1236,6 +1238,7 @@ impl Chat {
             follow: Default::default(),
             again: None,
             held: false,
+            unfit: false,
             started_new: false,
             clear_asked: None,
             continued: None,
@@ -1582,7 +1585,8 @@ impl Chat {
 pub fn restart_process(ed: &mut Editor) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if c.state != State::Idle {
-        return ed.set_status("claude is answering — s stops it, or wait for the end of its turn");
+        let who = c.agent.name;
+        return ed.set_status(format!("{who} is answering — s stops it, or wait for the end of its turn"));
     }
     // (one running goes on while the config doesn't read: a new one wouldn't start — `llm::held_for`)
     if let Some(why) = llm::held_for(ed, crate::agent::Role::Chat) {
@@ -1594,8 +1598,9 @@ pub fn restart_process(ed: &mut Editor) {
         c.resume = Some(id);
     }
     c.kill();
+    let who = c.agent.name;
     ensure_proc(ed);
-    ed.set_success("claude restarted · the conversation goes on");
+    ed.set_success(format!("{who} restarted · the conversation goes on"));
 }
 
 /// The session's billing changed (`:session-billing`, between turns): the next claude continues the same
@@ -1874,7 +1879,8 @@ fn continue_as(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back: b
 fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back: bool) {
     let Some(c) = &ed.workspace.claude.chat else { return };
     if c.busy() {
-        return ed.set_status(STILL_ANSWERING);
+        let who = c.agent.shown;
+        return ed.set_status(format!("{who} is still answering — stop it (C-c) first"));
     }
     // (its agent's, which this tarae may not have: then it isn't continued — nor offered, `chats::Past::row`)
     let Some(row) = crate::agent::row_named(&saved.agent) else {
@@ -2355,7 +2361,9 @@ pub fn clear_key(c: &Chat) -> &'static str {
 /// New chat — fresh process (drops memory of the previous conversation): `C-l` in the chat, `:chat-new`
 /// (the chat opened first if it's closed — and a session brought back not continuing its own when it's read).
 pub fn reset(ed: &mut Editor) {
-    reset_said(ed, "New conversation with Claude");
+    // (the config's row: a new conversation takes it at its start — `llm::session_row`)
+    let who = crate::agent::row_of(&ed.config.llm).shown;
+    reset_said(ed, &format!("New conversation with {who}"));
 }
 
 /// `reset`, its toast `said` — whose the new conversation was where it isn't yours (orchestra's fresh send).
@@ -2575,6 +2583,43 @@ fn settings_again(ed: &mut Editor) -> bool {
     true
 }
 
+/// Whether a turn's final text (`Done`'s) is on screen from its stream (`turn`: its rows): the last row an answer (as
+/// ever), else one answer row (Claude's `result` is its last message's text) or all of them joined (an ACP agent's is
+/// the turn's whole text, `acp::stopped`) — a row after the text (guard 3 judges agy's reports of tarae's tools at the
+/// turn's end) put it in twice. Judged on the text as the wire sent it, trimmed: an answer row's text is only ever
+/// appended to by `Event::Text`, its notes and cites read from it, never taken out.
+fn streamed_already(turn: &[Msg], text: &str) -> bool {
+    let text = text.trim();
+    let answers = || turn.iter().filter(|m| m.role == Role::Assistant).map(|m| m.text.as_str());
+    turn.last().is_some_and(|m| m.role == Role::Assistant)
+        || answers().any(|t| t.trim() == text)
+        || answers().collect::<String>().trim() == text
+}
+
+/// Tests: one turn's `events` (a wire's, as it hands them up) through a chat on the stand-in's row, after a message of
+/// yours — its rows then, each its role and text.
+#[cfg(test)]
+pub(crate) fn turn_rows(events: impl IntoIterator<Item = Event>) -> Vec<(Role, String)> {
+    let mut ed = crate::uistate::tests::editor();
+    let mut c = Chat::new();
+    let _lines = stand_in(&mut c);
+    c.msgs.push(Msg::new(Role::User, "fix it", ""));
+    (c.state, c.started) = (State::Thinking, crate::clock::now());
+    let g = c.generation();
+    ed.workspace.claude.chat = Some(c);
+    for ev in events {
+        stream_event(&mut ed, g, ev);
+    }
+    let c = ed.workspace.claude.chat.as_ref().expect("its chat");
+    c.msgs.iter().map(|m| (m.role, m.text.clone())).collect()
+}
+
+/// Tests: the answer rows of `rows` (`turn_rows`), their texts.
+#[cfg(test)]
+pub(crate) fn answers(rows: &[(Role, String)]) -> Vec<&str> {
+    rows.iter().filter(|(r, _)| *r == Role::Assistant).map(|(_, t)| t.as_str()).collect()
+}
+
 /// A stand-in claude for the chat (no process — a simulation's): the lines sent to it, read from the receiver.
 #[cfg(test)]
 pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
@@ -2661,6 +2706,8 @@ fn ensure_proc(ed: &mut Editor) {
         return;
     }
     c.agent = row;
+    // (a start tried again: the last one's stop is no longer what its top line says)
+    c.unfit = false;
     // (none while the config doesn't read — `llm::held_for`: the chat says why where it would start, and it starts once it
     // reads, `config_read`)
     c.held = held;
@@ -3188,6 +3235,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             };
             crate::uistate::watch::turn(ed, "ended", calls, Some(took));
             let ok = r.is_ok();
+            // (its end carried words: the turn's last, wherever their row sits — `chatnotes::turn_over_worded`)
+            let worded = r.as_ref().is_ok_and(|t| !t.trim().is_empty());
             // (refused by the plan, in Claude Code's own words — `limits::of_words`)
             let refused = r.as_ref().err().and_then(|e| crate::limits::of_words(e));
             // (a parent's news, once its reply is in — below)
@@ -3201,9 +3250,12 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             // (an error said only here, not your stop: the reader opens with it — `said_here`)
             let mut failed = None;
             match r {
-                // Answers with no streamed pieces (short answers, CLIs without partials) get the final text
+                // The final text, unless it's on screen from this turn's stream (`streamed_already`): answers with no streamed
+                // pieces (short answers, CLIs without partials) get it, and so does one that streamed only before its
+                // last tools — a lost answer is silent, a doubled one in sight
                 Ok(text) => {
-                    if !text.is_empty() && !c.msgs.last().is_some_and(|m| m.role == Role::Assistant) {
+                    let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
+                    if !text.is_empty() && !streamed_already(&c.msgs[turn..], &text) {
                         c.msgs.push(Msg::new(Role::Assistant, text, ""));
                     }
                     crate::uistate::claude::cite(c);
@@ -3258,7 +3310,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             keep(ed);
             crate::notes::stale_check(ed);
             // (what its answer names of the code, flagged there — #388: a whole answer's only)
-            crate::chatnotes::turn_over(ed, ok);
+            crate::chatnotes::turn_over_worded(ed, ok, worded);
             crate::restart::turn_over(ed);
             crate::rebase::turn_over(ed);
             // (whatever the turn changed on disk, the git tab shows it — #29)
@@ -3308,6 +3360,9 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             // below, its parent told), never "claude exited"
             if let crate::agent::Ended::Tripped { tool } = &kind {
                 let name = c.agent.name;
+                // (held from here, the state the next send would find: the top line `▲ no …` and its row under the
+                // trip's note at once, never "ready" — `term::held_here`; a send then adds only its toast)
+                c.held = true;
                 if !c.msgs.iter().any(|m| m.role == Role::Note && m.text == err) {
                     c.msgs.push(Msg::new(Role::Note, err.clone(), ""));
                 }
@@ -3319,6 +3374,15 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 if cut {
                     crate::orchestra::turn_ended(ed, &Err(err.clone()), crate::orchestra::Stop::No);
                 }
+            }
+            // (stopped at its start — the turn's end said it in the transcript: an error, as a trip's, and its top line
+            // "stopped" until the next start)
+            if let crate::agent::Ended::Unfit { mode } = &kind
+                && let Some(c) = ed.workspace.claude.chat.as_mut()
+            {
+                c.unfit = true;
+                let name = c.agent.name;
+                ed.set_error(format!("{name} stopped — it offers no mode named {mode}"));
             }
             // (stopped by its watch — `agentgate::changed_now`: said once, its watch ended with it; its gate opens again
             // below where the held files changed or a message waits)
@@ -3382,7 +3446,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 };
                 c.msgs.push(Msg::new(
                     Role::Note,
-                    format!("Claude no longer has this conversation — a new one starts{note}"),
+                    format!("{} no longer has this conversation — a new one starts{note}", c.agent.shown),
                     "",
                 ));
                 if dropped {
@@ -3399,18 +3463,15 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 c.again = Some(again);
                 if c.state != State::Idle {
                     c.state = State::Idle;
-                    c.msgs.push(Msg::new(Role::Note, "restarted claude — send again", ""));
+                    c.msgs.push(Msg::new(Role::Note, format!("restarted {} — send again", c.agent.name), ""));
                 }
                 return ensure_proc(ed);
             }
             let mut cut_off = None;
             if c.state != State::Idle {
                 c.state = State::Idle;
-                let e = if err.is_empty() {
-                    "claude exited".to_string()
-                } else {
-                    format!("claude exited: {err}")
-                };
+                let who = c.agent.name;
+                let e = if err.is_empty() { format!("{who} exited") } else { format!("{who} exited: {err}") };
                 // (stopped for the project's settings: said already, and it starts again below — its parent told so,
                 // never "claude exited")
                 let stop = match c.settings.again {
@@ -3806,10 +3867,10 @@ pub fn steer(ed: &mut Editor) {
     let key = ed.keymaps.chat.keys_for("chat_steer").into_iter().next().unwrap_or_else(|| "tab".into());
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let Some(what) = steerable(c, asking) else {
-        let busy = c.busy();
+        let (busy, who) = (c.busy(), c.agent.shown);
         return ed.set_status(match busy {
             true => format!("nothing to steer — enter queues your message, then {key} steers it"),
-            false => "nothing to steer — Claude isn't working; enter sends".into(),
+            false => format!("nothing to steer — {who} isn't working; enter sends"),
         });
     };
     let text = match what {
@@ -3905,7 +3966,8 @@ fn send_from(ed: &mut Editor, slash: bool) {
     // leave it, refused mid-turn (the line kept); `/compact` goes on below (bare, or waiting alone)
     if let Some(s) = slash_named(&question).filter(|s| slash && s.act != SlashAct::Compact) {
         if slash_refused(c, s.act) {
-            return ed.set_status(STILL_ANSWERING);
+            let who = c.agent.shown;
+            return ed.set_status(format!("{who} is still answering — stop it (C-c) first"));
         }
         c.input.clear();
         c.slash = None;
@@ -4455,11 +4517,12 @@ pub fn stop(ed: &mut Editor) {
         Some(_) => Some(false),
         None => None,
     };
+    let who = c.agent.name;
     // (said at once: the turn ends as claude answers the interrupt, a moment later — never a key gone in silence)
     ed.set_status(match stops {
-        Some(true) => "stopping the turn",
-        Some(false) => "its agent can't stop a turn — it ends as it answers",
-        None => "nothing to stop: its claude isn't running",
+        Some(true) => "stopping the turn".to_string(),
+        Some(false) => "its agent can't stop a turn — it ends as it answers".to_string(),
+        None => format!("nothing to stop: its {who} isn't running"),
     });
 }
 
@@ -6069,7 +6132,7 @@ mod tests {
             let r = ran(g);
             assert_eq!((r.mark.as_str(), r.past), (mark, true));
         }
-        let carded = Ran::of(&Guard::Outside, Some(12), Some("it needs the network"), Vec::new());
+        let carded = Ran::of(&Guard::Outside, Some(12), Some(("Claude", "it needs the network")), Vec::new());
         assert!(
             carded.why.ends_with(" From card#12 — Claude's reason: it needs the network."),
             "{}",
@@ -6106,7 +6169,7 @@ mod tests {
         m.ran = Some(Ran::of(
             &crate::sandbox::Guard::Outside,
             Some(12),
-            Some("it needs the network"),
+            Some(("Claude", "it needs the network")),
             vec![warned],
         ));
         c.msgs.push(m);
@@ -6534,6 +6597,37 @@ mod tests {
     /// once in the transcript and as an error, and its row is held until you quit: a message after it starts nothing
     /// and stays in the input, why said on the status line and where it would start. The hold is judged by the chat's
     /// own row: a Claude conversation in the same tarae starts, and a new tarae holds nothing.
+    /// Step 4's L3: the chat says its session's row where it names the agent at work — the stand-in standing for agy, no
+    /// process started: a steer with nothing to steer (`:chat-steer`; `tab` is insert's then), the empty chat's words and
+    /// its input's.
+    #[test]
+    fn the_chat_names_its_sessions_agent() {
+        let mut ed = editor("");
+        ed.config.llm.agent = &crate::agent::STAND_IN;
+        let mut c = Chat::new();
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+        c.hidden = false;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.set_at(crate::workspace::Here::Chat);
+        steer(&mut ed);
+        let status = ed.status.as_ref().map(|s| s.0.as_str());
+        assert_eq!(status, Some("nothing to steer — stand-in isn't working; enter sends"));
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 140, 30).unwrap();
+        let mut p = vt100::Parser::new(30, 140, 0);
+        p.process(&bytes);
+        // (the chat's column: right of the code's edge — the welcome's brand line is the user's call, §4)
+        let chat: Vec<String> = p
+            .screen()
+            .rows(0, 140)
+            .map(|r| r.split_once('│').map(|(_, c)| c.to_string()).unwrap_or_default())
+            .collect();
+        let s = chat.join("\n");
+        assert!(s.contains("▎ Ask stand-in") && s.contains("stand-in"), "{s}");
+        assert!(!s.to_lowercase().contains("claude"), "no other agent named:\n{s}");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().proc.is_none(), "nothing started");
+    }
+
     #[test]
     fn a_tripped_agent_isnt_started_again_until_you_quit() {
         let mut ed = Editor::new(crate::config::Config::default());
@@ -6562,6 +6656,20 @@ mod tests {
         assert_eq!(ed.agents_tripped, ["stand-in"]);
         let why = "no stand-in until you quit — it ran a tool of its own";
         assert_eq!(llm::held_for(&ed, crate::agent::Role::Chat).as_deref(), Some(why));
+        let screen = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 140, 30).unwrap();
+            let mut p = vt100::Parser::new(30, 140, 0);
+            p.process(&bytes);
+            p.screen().contents()
+        };
+        // (its hold said at once, before any send: the top line and the row under the trip's note, once)
+        let row = "▲ no stand-in until you quit";
+        let s = screen(&mut ed);
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().held, "held from the trip");
+        assert!(!s.contains("ready") && s.matches(row).count() == 1, "the hold at the trip's end:\n{s}");
+        let top = s.lines().find(|l| l.contains("▲ no stand-in") && !l.contains(row));
+        assert!(top.is_some(), "the top line's `▲ no stand-in`:\n{s}");
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.input.set("again");
         send_from(&mut ed, true);
@@ -6570,12 +6678,8 @@ mod tests {
         assert_eq!(c.input.text(), "again", "the message stays in the input");
         let status = format!("not sent, it stays in the input — {why}");
         assert!(ed.status.as_ref().is_some_and(|s| s.0 == status), "{:?}", ed.status);
-        let mut bytes = Vec::new();
-        crate::term::render(&mut ed, &mut bytes, 140, 30).unwrap();
-        let mut p = vt100::Parser::new(30, 140, 0);
-        p.process(&bytes);
-        let s = p.screen().contents();
-        assert!(s.contains("▲ no stand-in until you quit"), "said where it would start:\n{s}");
+        let s = screen(&mut ed);
+        assert_eq!(s.matches(row).count(), 1, "said where it would start, once:\n{s}");
         // (judged by the chat's row: Claude's conversation starts — §9.1)
         ed.workspace.claude.chat.as_mut().unwrap().agent = &crate::agent::CLAUDE;
         assert_eq!(llm::held_for(&ed, crate::agent::Role::Chat), None);
@@ -6583,6 +6687,51 @@ mod tests {
         assert!(ed.workspace.claude.chat.as_ref().unwrap().proc.is_some(), "Claude's starts");
         // (you quit and came back: a new tarae holds nothing)
         assert!(Editor::new(crate::config::Config::default()).agents_tripped.is_empty());
+    }
+
+    /// Stopped at its start (guard 2: no mode the row names — `agent::Ended::Unfit`): what happened, said once in the
+    /// transcript and as an error, as a trip's is; its top line says it stopped, never "ready", until the next start.
+    #[test]
+    fn an_agent_stopped_at_its_start_is_an_error_and_never_ready() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        let (tx, _lines) = std::sync::mpsc::channel();
+        ed.claude_lines = Some(tx);
+        let mut c = Chat::new();
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+        c.hidden = false;
+        ed.workspace.claude.chat = Some(c);
+        ensure_proc(&mut ed);
+        assert!(submit(&mut ed, "go", None, None));
+        let g = ed.workspace.claude.chat.as_ref().unwrap().generation;
+        let screen = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 140, 30).unwrap();
+            let mut p = vt100::Parser::new(30, 140, 0);
+            p.process(&bytes);
+            p.screen().contents()
+        };
+        // (the column in sight, as in the shot: the turn's end says it there, no toast of its own — `said_here`)
+        screen(&mut ed);
+        let said = "stand-in stopped — it offers no mode named default";
+        stream_event(&mut ed, g, Event::Done(Err(said.into())));
+        let is_error = |ed: &Editor| ed.toasts.iter().any(|t| t.kind == crate::editor::ToastKind::Error);
+        assert!(!is_error(&ed), "the turn's end alone: in the transcript");
+        let kind = crate::agent::Ended::Unfit { mode: "default".into() };
+        let exit = crate::agent::Exit { said: said.into(), kind };
+        stream_event(&mut ed, g, Event::Exit(exit));
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!(c.msgs.iter().filter(|m| m.text.contains("no mode named")).count(), 1, "said once");
+        assert!(c.proc.is_none() && c.state == State::Idle && c.unfit);
+        let error =
+            ed.toasts.iter().rfind(|t| t.kind == crate::editor::ToastKind::Error).map(|t| t.text.clone());
+        assert_eq!(error.as_deref(), Some(said), "an error, not a faint note only");
+        let s = screen(&mut ed);
+        assert!(s.contains("▲ stopped") && !s.contains("ready"), "the top line:\n{s}");
+        // (not held: the next start is tried, and clears it)
+        assert_eq!(llm::held_for(&ed, crate::agent::Role::Chat), None);
+        ensure_proc(&mut ed);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.proc.is_some() && !c.unfit, "started again, stopped no more");
     }
 
     #[track_caller]

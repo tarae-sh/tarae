@@ -110,8 +110,9 @@ pub struct Chat {
     pub paused: bool,
 }
 
-/// A run: Claude's, the user's or tarae's own (an install, a restart's build, git), in the task panel or the
-/// test pane, or waiting in line for one.
+/// A run: the agent's, the user's or tarae's own (an install, a restart's build, git), in the task panel or the
+/// test pane, or waiting in line for one. `of`: whose — `agent` (the session's agent, whichever its row), `user` or
+/// `tarae`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub id: String,
@@ -361,7 +362,7 @@ impl Editor {
                 unread: c.unread(),
                 busy: c.busy(),
                 queued: c.queued.is_some() || !c.sends.is_empty(),
-                queued_said: c.queued_said().map(|q| q.0),
+                queued_said: c.queued_said(crate::orchestra::parent_shown(self)).map(|q| q.0),
                 draft: c.input.text(),
                 follow: c.follow.on,
                 paused: c.follow.paused,
@@ -381,7 +382,7 @@ impl Editor {
                 use crate::task::State as S;
                 let preflight = l.preflight.as_ref().is_some_and(|p| p.generation == r.generation());
                 let (of, kind) = match () {
-                    _ if r.by_claude => ("claude", "task"),
+                    _ if r.by_claude => ("agent", "task"),
                     _ if r.install => ("tarae", "install"),
                     _ if r.git => ("tarae", "git"),
                     _ if preflight => ("user", "preflight"),
@@ -432,7 +433,7 @@ impl Editor {
                 out.push(Run {
                     id: format!("run#{}", r.trace.id()),
                     session: session.clone(),
-                    of: if r.by_claude { "claude" } else { "user" },
+                    of: if r.by_claude { "agent" } else { "user" },
                     kind: "tests",
                     label: r.target.label.clone(),
                     state: state.into(),
@@ -453,9 +454,9 @@ impl Editor {
                     out.push(Run {
                         id: format!("run#{}", n.id),
                         session: session.clone(),
-                        of: if claudes { "claude" } else { "user" },
+                        of: if claudes { "agent" } else { "user" },
                         kind: if slot == crate::queued::Slot::Task { "task" } else { "tests" },
-                        label: n.what.label(),
+                        label: n.what.label(crate::llm::workspace_row(self, l).name),
                         state: "queued".into(),
                         waiting: Some(crate::queued::ordinal(pos + 1)),
                         silent: None,

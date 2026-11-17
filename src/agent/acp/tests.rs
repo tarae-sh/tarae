@@ -94,6 +94,7 @@ fn said(ev: Event) -> Option<String> {
         Event::Exit(Exit { said, kind: Ended::Exited }) => format!("exit {said}"),
         Event::Exit(Exit { said, kind: Ended::Gone }) => format!("exit gone: {said}"),
         Event::Exit(Exit { said, kind: Ended::Tripped { tool } }) => format!("exit tripped {tool}: {said}"),
+        Event::Exit(Exit { said, kind: Ended::Unfit { mode } }) => format!("exit unfit {mode}: {said}"),
         Event::Mcp { id, message } => format!("mcp {id} {message}"),
         _ => return None,
     })
@@ -888,6 +889,7 @@ fn a_test_never_starts_a_real_agent() {
     for program in ["agy", "/opt/homebrew/bin/gemini", "/nonexistent/claude"] {
         let row: &'static crate::agent::Row = Box::leak(Box::new(crate::agent::Row {
             name: "real",
+            shown: "real",
             wire: crate::agent::Wire::Acp,
             command: program,
             args: &["--acp"],
@@ -1197,7 +1199,8 @@ fn a_session_in_another_mode_is_set_to_the_rows() {
 }
 
 /// Guard 2, fail-closed: a session that won't take the row's mode (an error at `session/set_mode`, on the stand-in),
-/// doesn't offer it, or says no mode at all ends the start, said; no prompt is written.
+/// doesn't offer it, or says no mode at all ends the start, said; no prompt is written. One it doesn't offer is said
+/// as what happened ("stopped —"), its exit unfit: nothing the person does mends it.
 #[test]
 fn a_mode_it_wont_take_ends_the_start() {
     let session = |modes: Value| expect("session/new", json!({"sessionId": "s-1", "modes": modes}));
@@ -1210,16 +1213,19 @@ fn a_mode_it_wont_take_ends_the_start() {
         ),
         (
             json!([expect("initialize", agy_initialize()), session(only_plan), {"eof": true}]),
-            "failed stand-in offers no mode default",
+            "failed stand-in stopped — it offers no mode named default",
         ),
         (
             json!([expect("initialize", agy_initialize()), session(Value::Null), {"eof": true}]),
-            "failed stand-in offers no mode default",
+            "failed stand-in stopped — it offers no mode named default",
         ),
     ] {
         let run = start(script, Opts { prompt: Some("go"), ..Opts::default() });
         let got = run.until("exit");
         assert!(got.contains(&words.to_string()), "{words}: {got:?}");
+        let unfit = words.contains("stopped");
+        let exit = format!("exit unfit default: {}", words.trim_start_matches("failed "));
+        assert_eq!(got.contains(&exit), unfit, "{words}: {got:?}");
         assert!(!got.iter().any(|g| g.starts_with("conversation")), "{got:?}");
         assert!(run.of("session/prompt").is_empty(), "{words}");
     }
@@ -1652,4 +1658,172 @@ fn a_tripping_tools_name_is_cut_and_made_plain() {
     }
     assert_eq!(super::shown("run_command"), "run_command", "a plain short name as it is");
     assert_eq!(super::shown("é\t"), "??");
+}
+
+/// The L3 shots' trip scene's first turn, its text.
+const TRIP_TEXT: &str = "I could not write a.txt.";
+
+/// The L3 shots' trip scene's first turn as the stand-in agy sent it, through the wire: its events.
+fn trip_turn(st: &mut Staged) -> Vec<Event> {
+    let tool = |id: &str, name: &str| {
+        update_line(json!({"sessionUpdate": "tool_call", "toolCallId": id, "name": name, "title": name,
+            "kind": "other", "status": "pending", "rawInput": {}}))
+    };
+    let failed = |id: &str| {
+        update_line(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"}))
+    };
+    let lines = [
+        tool("t1", "write_file"),
+        failed("t1"),
+        tool("t2", "mcp_tarae_read"),
+        failed("t2"),
+        update_line(
+            json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": TRIP_TEXT}}),
+        ),
+        json!({"jsonrpc": "2.0", "id": 2, "result": {"stopReason": "end_turn"}}),
+    ];
+    lines.iter().flat_map(|l| st.line(l)).collect()
+}
+
+/// The L3 shots' trip turn as the stand-in agy sent it: one of its own refused, a report of tarae's read it never
+/// ran (failed: judged at the turn's end, its row after the text), then one text. In the chat the text shows once —
+/// the turn's end carries it again, and a row after it once put it in twice.
+#[test]
+fn one_text_after_two_tool_lines_shows_as_one_text() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    let text = TRIP_TEXT;
+    let events = trip_turn(&mut st);
+    assert!(matches!(events.last(), Some(Event::Done(Ok(t))) if t == text), "the end carries the text");
+    let mut ed = crate::uistate::tests::editor();
+    let mut c = crate::chat::Chat::new();
+    let _lines = crate::chat::stand_in(&mut c);
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "fix it", ""));
+    (c.state, c.started) = (crate::chat::State::Thinking, crate::clock::now());
+    let g = c.generation();
+    ed.workspace.claude.chat = Some(c);
+    for ev in events {
+        crate::chat::stream_event(&mut ed, g, ev);
+    }
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let shown: Vec<_> = c.msgs.iter().filter(|m| m.text.contains(text)).collect();
+    assert_eq!(shown.len(), 1, "{:?}", c.msgs.iter().map(|m| (&m.role, &m.text)).collect::<Vec<_>>());
+    let tools = c.msgs.iter().filter(|m| m.role == crate::chat::Role::Tool).count();
+    assert_eq!(tools, 2, "both tool lines");
+}
+
+/// The hop, in a person's terms: a turn ending on a tool row (the trip scene's first turn: the judged report after its
+/// text), the keys in the chat. From the ask line (`space l`): its message sent, it goes and the keys are back in the
+/// code (`chat::send`, as before L3); the turn over, they stay there and the conversation opens by itself as the reader,
+/// its answer in sight — as it did when the text was put in again after the row (`chatnotes::turn_over_worded`). In the
+/// docked column: the keys stay in its input, it and its hint row in sight, after that turn and after the trip.
+#[test]
+fn a_turn_ending_on_a_tool_row_keeps_the_keys_and_shows_its_answer() {
+    use crate::editor::Editor;
+    let keys = |ed: &mut Editor, k: &str| {
+        for w in k.split(' ') {
+            ed.handle_key(w.parse::<crate::key::Key>().unwrap_or_else(|_| panic!("a key: {w}")));
+        }
+        crate::uistate::tests::frame(ed);
+    };
+    let text =
+        |ed: &Editor| crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+    let region = |ed: &Editor| ed.keys_to().region.name();
+    let settled = |ed: &mut Editor| {
+        ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
+        crate::uistate::tests::frame(ed);
+    };
+    let chat = |hidden: bool| {
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let lines = crate::chat::stand_in_own(c);
+        c.hidden = hidden;
+        if hidden {
+            ed.workspace.viewer.keys_to_code();
+        }
+        crate::uistate::tests::frame(&mut ed);
+        (ed, lines)
+    };
+    let turn = |ed: &mut Editor| {
+        let (mut st, agent, _) = staged(agy_session("s-1"));
+        prompted(&mut st, &agent);
+        let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
+        for ev in trip_turn(&mut st) {
+            crate::chat::stream_event(ed, g, ev);
+        }
+        settled(ed);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let last: Vec<_> = c.msgs.iter().rev().take(2).map(|m| m.role).collect();
+        assert_eq!(last, [crate::chat::Role::Note, crate::chat::Role::Tool], "over, on a tool row");
+    };
+    // The ask line
+    let (mut ed, _lines) = chat(true);
+    keys(&mut ed, "space l");
+    keys(&mut ed, "f i x enter");
+    assert!(region(&ed) == "code" && !ed.chat_asking(), "sent: the ask line gone\n{}", text(&ed));
+    turn(&mut ed);
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert_eq!(region(&ed), "code", "the keys where they were");
+    let shown = !c.hidden && !ed.chat_floating() && text(&ed).contains(TRIP_TEXT);
+    assert!(shown, "the reader by itself, its answer:\n{}", text(&ed));
+    // The docked column
+    let (mut ed, _lines) = chat(false);
+    let docked = |ed: &Editor, what: &str, hint: &str| {
+        let s = text(ed);
+        let both = s.contains("› Ask about") && s.contains(hint);
+        assert!(region(ed) == "chat" && both, "{what}: its input and hints ({})\n{s}", region(ed));
+    };
+    docked(&ed, "before", "enter send");
+    keys(&mut ed, "f i x enter");
+    docked(&ed, "sent", "C-c stop");
+    turn(&mut ed);
+    docked(&ed, "a turn ending on a tool row", "enter send");
+    keys(&mut ed, "a g a i n enter");
+    let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    let said = "stand-in ran a tool of its own, run_command — stopped: it and everything it started ended.";
+    crate::chat::stream_event(&mut ed, g, Event::Done(Err(said.into())));
+    let exit = Exit { said: said.into(), kind: Ended::Tripped { tool: "run_command".into() } };
+    crate::chat::stream_event(&mut ed, g, Event::Exit(exit));
+    settled(&mut ed);
+    docked(&ed, "the trip", "enter send");
+}
+
+/// Two texts with a tool between them, the turn ending on a judged report of tarae's read (its row after the texts):
+/// the turn's end carries them joined (ACP's `Done` is the turn's whole text, `stopped`), so it equals no one row —
+/// the chat judges it against the turn's streamed text whole, and shows each once.
+#[test]
+fn two_texts_with_a_tool_between_show_each_once() {
+    let (mut st, agent, _) = staged(agy_session("s-1"));
+    prompted(&mut st, &agent);
+    let text = |t: &str| {
+        update_line(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": t}}))
+    };
+    let tool = |id: &str, name: &str| {
+        update_line(json!({"sessionUpdate": "tool_call", "toolCallId": id, "name": name, "title": name,
+            "kind": "other", "status": "pending", "rawInput": {}}))
+    };
+    let failed = |id: &str| {
+        update_line(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "failed"}))
+    };
+    let (first, last) = ("Let me look at a.txt.\n", "I could not write a.txt.");
+    let lines = [
+        text(first),
+        tool("t1", "write_file"),
+        failed("t1"),
+        tool("t2", "mcp_tarae_read"),
+        failed("t2"),
+        text(last),
+        json!({"jsonrpc": "2.0", "id": 2, "result": {"stopReason": "end_turn"}}),
+    ];
+    let events: Vec<Event> = lines.iter().flat_map(|l| st.line(l)).collect();
+    let joined = format!("{first}{last}");
+    assert!(
+        matches!(events.last(), Some(Event::Done(Ok(t))) if *t == joined),
+        "the end carries both, joined"
+    );
+    let rows = crate::chat::turn_rows(events);
+    assert_eq!(crate::chat::answers(&rows), [first, last], "{rows:?}");
+    let ends: Vec<_> = rows.iter().rev().take(2).map(|(r, _)| *r).collect();
+    assert_eq!(ends, [crate::chat::Role::Note, crate::chat::Role::Tool], "ending on the report: {rows:?}");
 }

@@ -280,9 +280,10 @@ impl Editor {
                 v.push((e, now.saturating_duration_since(since), u64::MAX));
             }
             let Some(c) = l.claude.chat.as_ref() else { continue };
+            let who = c.agent.shown;
             for p in &c.reads {
                 let at = p.look.at.as_deref().map_or_else(|| p.look.given.clone(), crate::allow::tilde);
-                let asks = format!("Claude's {} of {at}", p.look.tool);
+                let asks = format!("{who}'s {} of {at}", p.look.tool);
                 v.push(entry(format!("read#{}:{}", s(), p.request_id), "read", asks, p.since, "queued"));
             }
             for (i, set) in c.edits.sets.iter().enumerate().filter(|(_, set)| set.waiting() > 0) {
@@ -524,7 +525,8 @@ impl Editor {
             self.slot_show(slot);
             self.bottom_take_keys();
             let stop = if slot == Slot::Task { "space m c" } else { "space x c" };
-            return self.set_status(format!("Claude's run: {said} — {stop} stops it, Claude hears why"));
+            let who = crate::llm::session_row(self).shown;
+            return self.set_status(format!("{who}'s run: {said} — {stop} stops it, {who} hears why"));
         }
         // An edit or a read: what holds it back here goes (insert mode, a prompt), then the queues go on
         if self.prompt.is_some() || self.mode != crate::editor::Mode::Normal {

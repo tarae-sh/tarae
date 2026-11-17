@@ -1228,15 +1228,17 @@ fn take(ed: &mut Editor) {
         let n = lines(text.lines().count());
         // (whose words: one message's role, else the chat's)
         let role = |l: usize| t.msg_at(l).and_then(|m| Some(c.msgs.get(m)?.role));
+        // (whose: the session's agent, by its row — step 4's C.3)
+        let who = crate::llm::session_row(ed).shown;
         let (role, label) = match (role(l0), role(l1)) {
             (Some(a), Some(b)) if a == b => match a {
-                Role::User => ("user", "your message"),
-                Role::Assistant => ("assistant", "Claude's answer"),
-                Role::Thought => ("thinking", "Claude's thinking"),
-                Role::Tool => ("tool calls", "Claude's tool calls"),
-                Role::Note => ("note", "the chat"),
+                Role::User => ("user", "your message".to_string()),
+                Role::Assistant => ("assistant", format!("{who}'s answer")),
+                Role::Thought => ("thinking", format!("{who}'s thinking")),
+                Role::Tool => ("tool calls", format!("{who}'s tool calls")),
+                Role::Note => ("note", "the chat".to_string()),
             },
-            _ => ("several", "the chat"),
+            _ => ("several", "the chat".to_string()),
         };
         Some(Taken {
             attrs: vec![("from", "chat".into()), ("role", role.into())],

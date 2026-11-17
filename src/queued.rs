@@ -109,8 +109,9 @@ impl What {
         }
     }
 
-    /// What its row calls it: `claude · cargo clippy`, `build` (a task), `tests editor::tests::undo`.
-    pub fn label(&self) -> String {
+    /// What its row calls it: `claude · cargo clippy`, `build` (a task), `tests editor::tests::undo` — `by`: its
+    /// session's agent's name, by its row (`Row.name`).
+    pub fn label(&self, by: &str) -> String {
         match self {
             What::Guarded { who, job, .. } => {
                 let job = match job {
@@ -118,7 +119,7 @@ impl What {
                     Job::Tests(t) => format!("tests {}", t.label),
                 };
                 match who {
-                    For::Claude(_) => format!("claude · {job}"),
+                    For::Claude(_) => format!("{by} · {job}"),
                     For::User(_) => format!("again · {job}"),
                 }
             }
@@ -290,7 +291,7 @@ fn push_at(ed: &mut Editor, mut what: What, front: bool, trace: Option<crate::tr
     {
         queued.behind.push(h.clone());
     }
-    let label = what.label();
+    let label = what.label(crate::llm::session_row(ed).name);
     let users = what.users();
     // (Claude's call carries its trace; the user's run comes with one, or begins it here)
     let trace = match &what {
@@ -412,7 +413,7 @@ pub fn run_now(ed: &mut Editor, slot: Slot) -> bool {
 pub fn leave(ed: &mut Editor, id: u64, why: &str) {
     let Some(i) = ed.workspace.runs_next.iter().position(|n| n.id == id) else { return };
     let Some(n) = ed.workspace.runs_next.remove(i) else { return };
-    let label = n.what.label();
+    let label = n.what.label(crate::llm::session_row(ed).name);
     if let What::Guarded { who: For::Claude(call), ride, .. } = n.what {
         for c in std::iter::once(call).chain(ride.joined.into_iter().map(|j| j.call)) {
             crate::tools::answer(ed, c, Err(format!("not run — {why}")));
@@ -449,13 +450,13 @@ impl Row {
 }
 
 /// The rows of what waits in session `l`'s `slot`, first in line first — Claude's behind the disk's reserve too
-/// while it holds them (`held`, `diskroom::Room::held`).
-pub fn rows(l: &Workspace, slot: Slot, now: Instant, held: Option<String>) -> Vec<Row> {
+/// while it holds them (`held`, `diskroom::Room::held`). `by`: its agent's name, by its row (`What::label`).
+pub fn rows(l: &Workspace, by: &str, slot: Slot, now: Instant, held: Option<String>) -> Vec<Row> {
     let holder = holder(l, slot);
     line(&l.runs_next, slot)
         .enumerate()
         .map(|(i, n)| Row {
-            label: n.what.label(),
+            label: n.what.label(by),
             pos: i + 1,
             behind: holder.clone().or_else(|| held.clone().filter(|_| !n.what.users())),
             waited: now.saturating_duration_since(n.queued.since),
@@ -566,7 +567,8 @@ impl Editor {
         for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             for slot in [Slot::Task, Slot::Tests] {
                 let ids = line(&l.runs_next, slot).map(|n| n.id);
-                for (id, r) in ids.zip(rows(l, slot, now, self.disk.held())) {
+                let by = crate::llm::workspace_row(self, l).name;
+                for (id, r) in ids.zip(rows(l, by, slot, now, self.disk.held())) {
                     // (whole seconds: `:procs` looks again each second, a tenth would stand still between)
                     let said = r.said(true, true).trim_start_matches("queued · ").to_string();
                     out.push((l.id, id, r.label, said));
@@ -680,6 +682,7 @@ mod tests {
         assert_eq!(ed.workspace.runs_next[0].queued.behind, ["disk 18.0 GB free"]);
         let row = crate::queued::rows(
             &ed.workspace,
+            "claude",
             crate::queued::Slot::Task,
             crate::clock::now(),
             ed.disk.held(),

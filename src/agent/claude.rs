@@ -1314,4 +1314,54 @@ echo closed > "$1/eof""#;
         assert_eq!(args[at("--allowedTools") + 1], "Read,Grep,Glob,mcp__tarae__note");
         assert!(args.windows(2).all(|w| w[0] != "--setting-sources" || w[1].is_empty()), "rest kept");
     }
+
+    /// claude's stream-json lines as the pump hands them up: a complete message's tool calls and results
+    /// (`tool_events`), else the line's own event (`parse_line`).
+    fn events_of(lines: &[serde_json::Value]) -> Vec<Event> {
+        lines.iter().flat_map(|l| tool_events(l).into_iter().chain(parse_line(l))).collect()
+    }
+
+    fn said(t: &str) -> serde_json::Value {
+        serde_json::json!({"type": "stream_event", "event": {"type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": t}}})
+    }
+
+    /// A Read called and answered: its two lines.
+    fn read_lines(id: &str) -> [serde_json::Value; 2] {
+        [
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": id, "name": "Read", "input": {"file_path": "/p/src/lib.rs"}}]}}),
+            serde_json::json!({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": "1: fn a"}]}]}}),
+        ]
+    }
+
+    fn result(t: &str) -> serde_json::Value {
+        serde_json::json!({"type": "result", "subtype": "success", "is_error": false, "result": t})
+    }
+
+    /// A text streamed early, tools, and the final text only in the result (it never streamed): shown — a turn that
+    /// streamed something isn't taken to have streamed its answer.
+    #[test]
+    fn a_final_text_only_in_the_result_is_shown() {
+        let (early, last) = ("Let me look at lib.rs.", "`a` returns nothing yet.");
+        let mut lines = vec![said(early)];
+        lines.extend(read_lines("t1"));
+        lines.extend(read_lines("t2"));
+        lines.push(result(last));
+        let rows = crate::chat::turn_rows(events_of(&lines));
+        assert_eq!(crate::chat::answers(&rows), [early, last], "{rows:?}");
+    }
+
+    /// The final text streamed, a row after it (a tool's), and the result repeating it: shown once — matched against
+    /// the row as it streamed, trimmed, not only when it's the last row.
+    #[test]
+    fn a_streamed_final_text_the_result_repeats_shows_once() {
+        let last = "`a` returns nothing yet.";
+        let mut lines = vec![said("`a` returns "), said("nothing yet.\n")];
+        lines.extend(read_lines("t1"));
+        lines.push(result(last));
+        let rows = crate::chat::turn_rows(events_of(&lines));
+        assert_eq!(crate::chat::answers(&rows), ["`a` returns nothing yet.\n"], "{rows:?}");
+    }
 }

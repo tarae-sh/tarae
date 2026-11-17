@@ -83,7 +83,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
       "sessions": [{ "id": "s1", "doing": "waiting" }] }
   ],
   "cards": [
-    { "id": "card#12", "session": "s1", "whose": "claude", "kind": "run",
+    { "id": "card#12", "session": "s1", "whose": "agent", "kind": "run",
       "title": "Claude wants to run a command", "asks": "cargo test -p tarae",
       "answers": [{ "key": "y", "does": "run it" }, { "key": "a", "does": "also `cargo test` unasked, this chat" },
                   { "key": "n", "does": "tell Claude no" }],
@@ -100,7 +100,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
   "panels": { "code": {…}, "side": {…}, "review": {…}, "edit_review": null, "picker": null,
               "slot": {…}, "chat": {…}, "follow": {…},
               "lists": [ { "kind": "messages", "rows": [ { "id": "messages:toast#311", "label": "…" } ] } ] },
-  "runs": [ { "id": "run#7", "of": "claude", "label": "cargo test", "state": "waiting",
+  "runs": [ { "id": "run#7", "of": "agent", "label": "cargo test", "state": "waiting",
               "waiting": "cargo's lock · 0:37", "session": "s1" } ]
 }
 ```
@@ -279,7 +279,7 @@ side git · 4 rows · in hand git:src/term.rs
   or null: `get_usage` doesn't say), `from` (`rate_limit_event` · `get_usage`). A window past its reset is left
   out. `{}` when nothing said.
 - **`cards`** — every card: up front, stacked behind it, or parked in a session behind.
-  - `whose`: `claude` when `Offer::claudes`, else `tarae`.
+  - `whose`: `agent` when `Offer::claudes` (the session's agent's, whichever it is: `claude`, `agy`), else `tarae`.
   - `kind`: the `What` variant in kebab case.
   - `title`.
   - `asks`: the title plus the question's `decided_lines` — the part drawn at full strength, not a hook's
@@ -363,6 +363,8 @@ side git · 4 rows · in hand git:src/term.rs
     members after it naming it; the session list floating is `{shows: list:sessions, place: floating}` with the front
     session's panes, `keys.region` `list:sessions` while it has the keys; `C-w m` moving one is `keys.region` `move`.
 - **`runs`** — task, tests, preflight steps, Claude's runs, and queued ones (`runs_next`).
+  - `of`: whose — `agent` (the session's agent's, whichever it is: `claude`, `agy`), `user`, or `tarae` (an
+    install, git).
   - State: `queued` · `running` · `waiting` (with `Waiting::shown`) · `quiet` (cardburden 5: a run of
     Claude's printing nothing, held from being said `◦ stuck?` — under its own time limit still to come, or its work
     maybe elsewhere and not yet `llm.stuck-after-outside` quiet: `stuck::held`) · `passed` · `failed` ·

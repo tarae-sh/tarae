@@ -2006,14 +2006,15 @@ fn command_palette(cx: &mut Context) {
         .iter()
         .filter(|c| c.name != "command_palette")
         .map(|c| Item {
-            label: c.doc.trim_end_matches(" (LSP)").to_string(),
+            // (its doc says the session's agent by its row — `llm::agent_doc`)
+            label: crate::llm::agent_doc(cx.editor, "", c.doc.trim_end_matches(" (LSP)")),
             action: Action::Command(c.name),
             hint: keys.get(c.name).cloned().unwrap_or_default(),
             glyph: None,
         })
         .collect();
     items.extend(TYPED_IN_PALETTE.iter().map(|(doc, line)| Item {
-        label: doc.to_string(),
+        label: crate::llm::agent_doc(cx.editor, line.split(' ').next().unwrap_or_default(), doc),
         action: Action::Typed(line.to_string()),
         hint: format!(":{line}"),
         glyph: None,

@@ -94,7 +94,7 @@
       "waited_ms": 0,
       "waits": null,
       "weighty": true,
-      "whose": "claude",
+      "whose": "agent",
       "withheld": []
     }
   ],

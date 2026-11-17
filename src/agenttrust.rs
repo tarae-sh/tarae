@@ -380,8 +380,8 @@ pub fn detail(name: &str, seen: &Seen) -> String {
     lines.push(format!(
         "{name} loads these from the project by itself, with no question: a hook runs a command as you on its first \
          tool call, an MCP server or a plugin runs as you while it works. tarae can't hold them back one by one, so \
-         {name} waits for your answer. After a yes they run outside tarae's sandbox, which no command of Claude's ever \
-         does."
+         {name} waits for your answer. After a yes they run outside tarae's sandbox, which no command run through \
+         tarae's tools ever does."
     ));
     lines.join("\n")
 }

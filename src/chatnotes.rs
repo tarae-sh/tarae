@@ -279,10 +279,19 @@ pub fn plain_words(text: &str) -> String {
 /// turn cut short (a partial answer) and one that began with no message of the user's (`Chat.turn_bare`: idle
 /// compaction's `/compact` — its answer isn't an answer, and the last user message's would be the previous turn's,
 /// placed again) place nothing.
+#[cfg(test)]
 pub fn turn_over(ed: &mut Editor, ok: bool) {
+    turn_over_worded(ed, ok, false);
+}
+
+/// `turn_over`, `worded` when the turn's end carried words (`Done`'s final text): its last words wherever their row
+/// sits — a row after them (guard 3 judges agy's reports of tarae's tools at the turn's end) is a report placed late,
+/// not a call after them, and the column shows by itself as it did when that text was put in again after the row.
+pub fn turn_over_worded(ed: &mut Editor, ok: bool, worded: bool) {
     let Some(c) = ed.workspace.claude.chat.as_ref().filter(|c| ok && !c.turn_bare) else { return };
     let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
     let (mut said, words) = read_answer(&c.msgs[turn..]);
+    let words = words || worded;
     let users = c.msgs[..turn].iter().filter(|m| m.role == Role::User).count();
     let hid = c.hid_at == Some(users);
     if words && !hid {

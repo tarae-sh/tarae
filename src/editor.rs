@@ -2350,7 +2350,8 @@ impl Editor {
         let card = crate::offer::Offer::new(
             format!("Close {name}?"),
             &format!(
-                "A change to {name} waits for your answer.\n\ny declines it (Claude hears so) {closes} · n keeps both"
+                "A change to {name} waits for your answer.\n\ny declines it ({} hears so) {closes} · n keeps both",
+                crate::llm::session_row(self).shown
             ),
             "",
             String::new(),
@@ -2449,7 +2450,10 @@ impl Editor {
         for id in reviewing {
             self.with_workspace(id, |ed| {
                 crate::llm::close_review(ed);
-                ed.set_warning("the buffer of Claude's edit under review was closed — Claude was told");
+                let who = crate::llm::session_row(ed).shown;
+                ed.set_warning(format!(
+                    "the buffer of {who}'s edit under review was closed — {who} was told"
+                ));
             });
         }
         // A rebase's commit message being written (`m`), closed some way but `:w`/`:q`: its card back
@@ -2787,8 +2791,9 @@ impl Editor {
             glyph: None,
             action: Action::Typed(format!("show-here {word}")),
         };
+        let with = format!("the conversation with {}", crate::llm::session_row(self).shown);
         let items = vec![
-            item("chat", "the conversation with Claude", "chat"),
+            item("chat", &with, "chat"),
             item("side panel", "files, outline, the list, git", "side"),
             item("bottom panel", "tests, tasks, the terminal", "bottom"),
             item("code", "a pane of the file last focused", "code"),
@@ -7021,7 +7026,14 @@ impl Editor {
         let p = self.prompt.as_ref().filter(|p| p.kind == PromptKind::Command)?;
         let base = p.cycle.as_ref().map_or_else(|| p.split().0, |(b, _)| b.clone());
         // (from where you started, as the path you type — `typed::typed_path`)
-        Some(crate::cmdline::complete(&base, &self.workspace.start(), &self.cmd_lists))
+        let mut c = crate::cmdline::complete(&base, &self.workspace.start(), &self.cmd_lists);
+        // (a command's doc says the session's agent by its row — `llm::agent_doc`)
+        if c.command {
+            for cand in &mut c.cands {
+                cand.hint = crate::llm::agent_doc(self, &cand.insert, &cand.hint);
+            }
+        }
+        Some(c)
     }
 
     /// If the lists a candidate needs (folders, themes) aren't read yet, read them on a worker thread.
@@ -7367,6 +7379,33 @@ mod tests {
 
     fn text(ed: &Editor) -> String {
         ed.doc().text.to_string()
+    }
+
+    /// Step 4's L3: a command's doc names the session's agent by its row — `:`'s completion and the palette
+    /// (`space ?`), the stand-in standing for agy, nothing started — but Claude Code's own (`:usage`) stays.
+    #[test]
+    fn the_command_docs_name_the_sessions_agent() {
+        let mut ed = editor("");
+        let mut c = crate::chat::Chat::new();
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+        ed.workspace.claude.chat = Some(c);
+        let hint =
+            |ed: &Editor| ed.cmdline_completion().and_then(|c| c.cands.first().map(|c| c.hint.clone()));
+        feed(&mut ed, ":ask-cancel");
+        assert_eq!(hint(&ed).as_deref(), Some("Cancel the stand-in request"));
+        feed(&mut ed, "<esc>:usage");
+        assert_eq!(hint(&ed).as_deref(), Some("What Claude's turns cost here and today, and its cache"));
+        feed(&mut ed, "<esc><space>?chat with");
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 160, 40).unwrap();
+        let mut p = vt100::Parser::new(40, 160, 0);
+        p.process(&bytes);
+        let s = p.screen().contents();
+        assert!(s.contains("Chat with stand-in") && !s.contains("Chat with Claude"), "{s}");
+        // (on Claude's row, as written)
+        ed.workspace.claude.chat = None;
+        feed(&mut ed, "<esc>:ask-cancel");
+        assert_eq!(hint(&ed).as_deref(), Some("Cancel the Claude request"));
     }
 
     #[test]
@@ -11387,7 +11426,7 @@ mod tests {
         assert!(ed.workspace.claude.notes.list.iter().any(|n| n.id == id), "a draft until sent");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(matches!(c.sends[..], [crate::chat::Later::Review(None)]));
-        let said = ed.workspace.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0);
+        let said = ed.workspace.claude.chat.as_ref().unwrap().queued_said("Claude").map(|q| q.0);
         assert_eq!(said.as_deref(), Some("review notes and 2 messages queued"));
         let s = draw(&mut ed);
         assert!(s.contains("queued · third"), "{s}");
@@ -11418,7 +11457,7 @@ mod tests {
         assert!(last.contains("second") && last.contains("third"), "{last}");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(c.queued.is_none() && c.sends.is_empty() && c.queued_said().is_none());
+        assert!(c.queued.is_none() && c.sends.is_empty() && c.queued_said("Claude").is_none());
         // Idle, nothing waiting: a failed run of the last turn goes on by itself — not while something waits, which
         // is the conversation expected back too (review 1)
         let key = crate::blocked::RunKey { tests: false, generation: 7 };

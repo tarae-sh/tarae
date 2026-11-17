@@ -346,6 +346,7 @@ fn said(s: &Stuck) -> String {
 /// Its threads read: into its output (from `s.at`) — then it's marked stuck where it's drawn (`Waiting.stuck`), if
 /// it's still running and still quiet. What it was let reach and is connected to goes in its output too.
 fn ask(ed: &mut Editor, mut s: Stuck, lines: Vec<String>, peers: Vec<String>) {
+    let who = crate::llm::session_row(ed).shown;
     // (connected outside its processes — a container engine, another host: its work may go on there, and it
     // isn't asked before `llm.stuck-after-outside`; marked so, the next looks wait that long)
     let (_, outside) = afters(&ed.config.llm);
@@ -378,7 +379,7 @@ fn ask(ed: &mut Editor, mut s: Stuck, lines: Vec<String>, peers: Vec<String>) {
             for line in std::iter::once(head).chain(lines.iter().cloned()).chain(held) {
                 r.push_line(false, line, false);
             }
-            task_label(&r.task.cmd)
+            task_label(who, &r.task.cmd)
         }
         _ => {
             let Some(r) = ed.workspace.test_run.as_mut().filter(|r| {
@@ -390,7 +391,7 @@ fn ask(ed: &mut Editor, mut s: Stuck, lines: Vec<String>, peers: Vec<String>) {
             };
             s.at = r.output.len();
             r.output.extend(std::iter::once(&head).chain(lines.iter()).map(|l| (false, l)));
-            format!("Claude's tests {} in the test pane", r.target.label)
+            format!("{who}'s tests {} in the test pane", r.target.label)
         }
     };
     ed.workspace.log().line("stuck", "said", &format!("{label}: {}", said(&s)));
@@ -436,9 +437,9 @@ pub fn shorter(s: &Stuck) -> [String; 2] {
 /// The card's label for Claude's command `cmd` in the task panel (`card`'s `label`) — and what it can't see, said
 /// (frictions34 39): a filter holds what it writes into the run's pipe, or one asked for its lines lets only part
 /// of the output through.
-pub fn task_label(cmd: &str) -> String {
+pub fn task_label(who: &str, cmd: &str) -> String {
     let held = held_said(cmd).map(|h| format!(". I{}", &h[1..])).unwrap_or_default();
-    format!("Claude's command {} in the task panel{held}", crate::task::traced(cmd))
+    format!("{who}'s command {} in the task panel{held}", crate::task::traced(cmd))
 }
 
 /// What a stuck run's output can't show, for its output (frictions34 39): `its output goes through tail: what it lets
@@ -500,7 +501,8 @@ pub fn stop(ed: &mut Editor, s: &Stuck) {
         let done = crate::procs::stop_tree(pid, KILL_AFTER);
         move |ed: &mut Editor| stopped(ed, slot, run, pid, done)
     });
-    ed.set_status("stopping it — its output stays in the panel, and Claude hears how it ended");
+    let who = crate::llm::session_row(ed).shown;
+    ed.set_status(format!("stopping it — its output stays in the panel, and {who} hears how it ended"));
 }
 
 /// How many of run `run`'s processes a stop shows at most, of those that outlived it.
@@ -546,7 +548,7 @@ fn stopped(ed: &mut Editor, slot: Slot, run: u64, pid: u32, done: crate::procs::
     let log = format!("pid {pid}: {} apart, {n} outlived {:?}", done.apart, done.outlived);
     ed.workspace.log().line("stuck", "stopped", &log);
     match outlived {
-        Some(o) => ed.set_warning(format!("Stopped Claude's run — but {o}")),
+        Some(o) => ed.set_warning(format!("Stopped {}'s run — but {o}", crate::llm::session_row(ed).shown)),
         // (nothing apart, nothing left: nothing new on screen)
         None if done.apart == 0 => ed.unchanged = true,
         None => {}

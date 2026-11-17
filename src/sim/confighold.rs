@@ -95,7 +95,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, file: &Path, seen: &RefCell<Seen>) -> S
             let mut vt = vt100::Parser::new(34, 120, 0);
             vt.process(&bytes);
             let held = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.held && !c.running());
-            if held && !vt.screen().contents().contains("no claude until your config reads") {
+            if held && !vt.screen().contents().contains("no agent until your config reads") {
                 seen.borrow_mut().unsaid = Some(vt.screen().contents());
             }
             "a frame".into()

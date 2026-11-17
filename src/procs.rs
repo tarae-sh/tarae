@@ -957,6 +957,8 @@ pub struct Group {
     pub id: WorkspaceId,
     pub name: String,
     pub root: PathBuf,
+    /// Its agent's name on screen, by its row (`Row.shown`): whose a run left running was.
+    pub agent: &'static str,
 }
 
 /// A row of the list.
@@ -1039,6 +1041,7 @@ pub fn rows(
     me: u32,
     held: &[Held],
     groups: &[Group],
+    front: &str,
     now: u64,
 ) -> Vec<Row> {
     let by_pid: HashMap<u32, &Os> = sample.procs.iter().map(|(o, _)| (o.pid, o)).collect();
@@ -1128,11 +1131,15 @@ pub fn rows(
         .map(|os| match (known.iter().find(|k| k.is(os)), &os.left) {
             (Some(k), _) => (k.kind.clone(), k.title.clone(), k.what.clone(), *os, grouped(k.session)),
             (None, Some((_, root))) => {
-                let what = match root {
-                    Some(r) => format!("left by a run of Claude's in {}", crate::allow::tilde(r)),
-                    None => "left by a run of Claude's before tarae restarted".into(),
-                };
                 let session = root.as_deref().and_then(run_in).or_else(|| working_in(os));
+                // (whose run: its session's agent, by its row — the session in front's when none is named: one
+                // session, no groups)
+                let who =
+                    session.and_then(|id| groups.iter().find(|g| g.id == id)).map_or(front, |g| g.agent);
+                let what = match root {
+                    Some(r) => format!("left by a run of {who}'s in {}", crate::allow::tilde(r)),
+                    None => format!("left by a run of {who}'s before tarae restarted"),
+                };
                 (Kind::Other, format!("{} · left by a run", os.name), what, *os, session)
             }
             (None, None) => (Kind::Other, os.name.clone(), String::new(), *os, working_in(os)),
@@ -1804,8 +1811,11 @@ impl Editor {
         }
         for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             let session = sessions.then_some(l.id);
+            // (its agent's processes named by its row — step 4's C.3)
+            let agent = crate::llm::workspace_row(self, l).name;
             if let Some(r) = &l.task_run {
-                let title = if r.by_claude { "claude's command" } else { r.task.name.as_str() };
+                let by = format!("{agent}'s command");
+                let title = if r.by_claude { by.as_str() } else { r.task.name.as_str() };
                 add(r.pid(), Kind::Task, title, r.task.cmd.clone(), session);
                 // (its sandbox's `log stream`, watching what it blocks — a stray child otherwise, #E16)
                 let watch = r.guard.as_ref().and_then(|g| g.watch()).and_then(|w| w.pid());
@@ -1832,7 +1842,7 @@ impl Editor {
                 add(t.pid(), Kind::Terminal, "terminal", t.title.clone(), session);
             }
             if let Some(c) = &l.claude.chat {
-                add(c.pid(), Kind::Chat, "claude", "the chat".into(), session);
+                add(c.pid(), Kind::Chat, agent, "the chat".into(), session);
             }
             if let Some(r) = &l.reviewer {
                 for (i, m) in r.members.iter().enumerate().filter(|(_, m)| m.pid().is_some()) {
@@ -1840,7 +1850,7 @@ impl Editor {
                         true => format!("the board · {} · {}", r.member_name(i), r.label),
                         false => format!("the reviewer · {}", r.label),
                     };
-                    add(m.pid(), Kind::Reviewer, "claude", what, session);
+                    add(m.pid(), Kind::Reviewer, agent, what, session);
                 }
             }
         }
@@ -1891,7 +1901,7 @@ impl Editor {
                     out.push(Known { pid, kind, title: title.to_string(), what, session, at: None });
                 }
             };
-        add(self.llm_pid, Kind::Ask, "claude", "space i".into(), None);
+        add(self.llm_pid, Kind::Ask, crate::llm::session_row(self).name, "space i".into(), None);
         add(
             crate::stall::sampling(),
             Kind::Helper,
@@ -1931,6 +1941,7 @@ impl Editor {
             id: l.id,
             name: l.label().to_string(),
             root: l.root.clone(),
+            agent: crate::llm::workspace_row(self, l).shown,
         };
         self.sessions_in_order().into_iter().map(group).collect()
     }
@@ -1972,7 +1983,9 @@ impl Editor {
             l.spawned.retain(alive);
         }
         let groups = self.procs_groups();
-        let mut rows = rows(&s, &self.procs_known(), std::process::id(), &self.procs.held, &groups, secs);
+        let front = crate::llm::session_row(self).shown;
+        let mut rows =
+            rows(&s, &self.procs_known(), std::process::id(), &self.procs.held, &groups, front, secs);
         with_queued(&mut rows, &self.procs_queued(), &groups);
         self.procs.restoring = self.restoring();
         let (found, learned) = self.procs.check(&rows, &self.procs_lsp_facts(), Instant::now());
@@ -2195,11 +2208,11 @@ impl Editor {
                         c.stop_process();
                     }
                 });
-                gone(self, "claude", Some(CHAT_AGAIN));
+                gone(self, &r.title, Some(CHAT_AGAIN));
             }
             Kind::Ask => {
                 crate::agent::kill(r.pid);
-                gone(self, "space i's claude", None);
+                gone(self, &format!("space i's {}", r.title), None);
             }
             Kind::Reviewer => {
                 let pid = r.pid;
@@ -2284,7 +2297,10 @@ impl Editor {
                         let task = t.task.clone();
                         ed.task_start(task);
                     }
-                    None => ed.set_status("Claude's command — Claude runs it again if it needs to"),
+                    None => {
+                        let who = crate::llm::session_row(ed).shown;
+                        ed.set_status(format!("{who}'s command — {who} runs it again if it needs to"))
+                    }
                 }
             }),
             Kind::Test => self.procs_in(&r, Editor::test_rerun),
@@ -3235,7 +3251,7 @@ pub(crate) mod tests {
         let (known, groups, held) = (ed.procs_known(), ed.procs_groups(), ed.procs.held.clone());
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let sample = Sampler::default().sample(std::process::id());
-        let rows = rows(&sample, &known, std::process::id(), &held, &groups, now);
+        let rows = rows(&sample, &known, std::process::id(), &held, &groups, "Claude", now);
         // SAFETY: stops the process group of this test's own stand-in.
         unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
         let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
@@ -3332,7 +3348,7 @@ pub(crate) mod tests {
             },
         ];
         let held = [Held { name: "pyright".into(), root: "/w".into(), what: String::new() }];
-        let rows = rows(&s, &known, 1, &held, &[], 1_060);
+        let rows = rows(&s, &known, 1, &held, &[], "Claude", 1_060);
         let got: Vec<(u32, usize, &str, &Kind)> =
             rows.iter().map(|r| (r.pid, r.depth, r.title.as_str(), &r.kind)).collect();
         assert_eq!(
@@ -3391,10 +3407,15 @@ pub(crate) mod tests {
         ];
         let held = [Held { name: "pyright".into(), root: "/wt/fix-login/py".into(), what: String::new() }];
         let groups = [
-            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
-            Group { id: WorkspaceId::here(1), name: "fix-login".into(), root: "/wt/fix-login".into() },
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into(), agent: "Claude" },
+            Group {
+                id: WorkspaceId::here(1),
+                name: "fix-login".into(),
+                root: "/wt/fix-login".into(),
+                agent: "Claude",
+            },
         ];
-        let rows = rows(&s, &known, 1, &held, &groups, 1_060);
+        let rows = rows(&s, &known, 1, &held, &groups, "Claude", 1_060);
         let got: Vec<(u32, usize, &str, Option<WorkspaceId>)> =
             rows.iter().map(|r| (r.pid, r.depth, r.title.as_str(), r.session)).collect();
         assert_eq!(
@@ -3454,10 +3475,11 @@ pub(crate) mod tests {
             at: None,
         };
         let groups = [
-            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
-            Group { id: fix, name: "fix".into(), root: "/wt/fix".into() },
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into(), agent: "Claude" },
+            Group { id: fix, name: "fix".into(), root: "/wt/fix".into(), agent: "Claude" },
         ];
-        ed.procs.rows = rows(&s(), &[chat(5, WorkspaceId::HOME), chat(6, fix)], 1, &[], &groups, 1_060);
+        ed.procs.rows =
+            rows(&s(), &[chat(5, WorkspaceId::HOME), chat(6, fix)], 1, &[], &groups, "Claude", 1_060);
         crossterm::style::force_color_output(true);
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 160, 40).unwrap();
@@ -3518,10 +3540,15 @@ pub(crate) mod tests {
         // (pid 11's start doesn't match what was remembered: another process now)
         let known = [remembered(8, 1_001), remembered(11, 500)];
         let groups = [
-            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
-            Group { id: WorkspaceId::here(1), name: "ra-swap".into(), root: "/wt/ra-swap".into() },
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into(), agent: "Claude" },
+            Group {
+                id: WorkspaceId::here(1),
+                name: "ra-swap".into(),
+                root: "/wt/ra-swap".into(),
+                agent: "Claude",
+            },
         ];
-        let rows = rows(&s, &known, 1, &[], &groups, 1_060);
+        let rows = rows(&s, &known, 1, &[], &groups, "Claude", 1_060);
         let got: Vec<(u32, &str, Option<WorkspaceId>)> =
             rows.iter().map(|r| (r.pid, r.title.as_str(), r.session)).collect();
         assert_eq!(
@@ -3703,10 +3730,10 @@ pub(crate) mod tests {
             before,
         ]);
         let groups = [
-            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
-            Group { id: WorkspaceId::here(1), name: "fix".into(), root: "/wt/fix".into() },
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into(), agent: "Claude" },
+            Group { id: WorkspaceId::here(1), name: "fix".into(), root: "/wt/fix".into(), agent: "Claude" },
         ];
-        let rows = rows(&s, &[], 1, &[], &groups, 1_000 + STRAY_AFTER.as_secs() + 60);
+        let rows = rows(&s, &[], 1, &[], &groups, "Claude", 1_000 + STRAY_AFTER.as_secs() + 60);
         let r = |pid| rows.iter().find(|r| r.pid == pid).unwrap();
         assert_eq!((r(5).title.as_str(), r(5).session), ("java · left by a run", Some(WorkspaceId::here(1))));
         assert_eq!(r(5).what, "left by a run of Claude's in /wt/fix/app");

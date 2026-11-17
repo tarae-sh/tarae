@@ -181,7 +181,8 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     let (agent, pid) = match stand_in(ed) {
         Some(agent) => {
             let sent = agent.initialize().and_then(|_| first.prompt.map_or(Ok(()), |p| agent.prompt(p)));
-            sent.map_err(|e| format!("claude: {e}"))?;
+            let name = llm::session_row(ed).name;
+            sent.map_err(|e| format!("{name}: {e}"))?;
             (agent, None)
         }
         None => {
@@ -331,7 +332,8 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
         }
         Event::Done(r) => ended(ed, generation, r),
         Event::Exit(e) => {
-            ended(ed, generation, Err(if e.said.is_empty() { "claude stopped".into() } else { e.said }))
+            let name = llm::session_row(ed).name;
+            ended(ed, generation, Err(if e.said.is_empty() { format!("{name} stopped") } else { e.said }))
         }
         Event::Requesting(_)
         | Event::Retry(_)
@@ -358,7 +360,7 @@ fn stop(ed: &mut Editor, generation: u64, said: &str) {
             if let Some(a) = &a {
                 over(ed, a, "stopped", Ink::Warn);
             }
-            ed.set_warning(format!("Claude's {what}: {said}"));
+            ed.set_warning(format!("{}'s {what}: {said}", llm::session_row(ed).shown));
         }
     }
 }
@@ -394,11 +396,11 @@ fn ended(ed: &mut Editor, generation: u64, r: Result<String, String>) {
     match r {
         Err(e) => {
             over(ed, &a, "failed", Ink::Warn);
-            ed.set_error(format!("claude: {e}"))
+            ed.set_error(format!("{}: {e}", llm::session_row(ed).name))
         }
         Ok(_) if !a.reviewed && a.edits.sets.is_empty() => {
             over(ed, &a, "no changes", Ink::Faint);
-            ed.set_status("claude: no changes")
+            ed.set_status(format!("{}: no changes", llm::session_row(ed).name))
         }
         Ok(_) => over(ed, &a, "done", Ink::Accent),
     }
@@ -440,7 +442,8 @@ pub fn reviewing(ed: &mut Editor) {
     let Some(a) = ed.workspace.claude.ask.as_mut().filter(|a| !a.reviewed) else { return };
     a.reviewed = true;
     let took = crate::clock::since(a.started);
-    ed.set_status(format!("claude answered in {}", crate::term::run_duration(took)));
+    let name = llm::session_row(ed).name;
+    ed.set_status(format!("{name} answered in {}", crate::term::run_duration(took)));
 }
 
 /// Its MCP server's answer (`response` a JSON-RPC message) to ask `id` — to its process only.

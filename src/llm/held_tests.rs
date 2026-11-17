@@ -60,7 +60,7 @@ fn no_claude_starts_until_the_config_reads() {
     let c = ed.workspace.claude.chat.as_ref().expect("the chat is open");
     assert!(!c.running() && c.held, "no claude started");
     let shown = screen(&mut ed, 120, 34);
-    assert!(shown.contains("no claude until your config reads"), "{shown}");
+    assert!(shown.contains("no agent until your config reads"), "{shown}");
     assert!(shown.contains("config.toml:2:"), "the file and its line: {shown}");
     assert!(shown.contains("fix it, then :config-reload"), "{shown}");
     feed(&mut ed, "hello<ret>");
@@ -70,26 +70,26 @@ fn no_claude_starts_until_the_config_reads() {
     // Every other claude from the config holds alike, said as an error
     feed(&mut ed, "<esc><esc>:ask make it shorter<ret>");
     assert!(
-        last_error(&ed).contains("no claude until your config reads — config.toml:2:"),
+        last_error(&ed).contains("no agent until your config reads — config.toml:2:"),
         "{}",
         last_error(&ed)
     );
     assert!(ed.workspace.claude.ask.is_none() && ed.workspace.claude.review.is_none(), "no ask started");
     ed.toasts.clear();
     feed(&mut ed, ":claude-update<ret>");
-    assert!(last_error(&ed).contains("no claude until your config reads"), "{}", last_error(&ed));
+    assert!(last_error(&ed).contains("no agent until your config reads"), "{}", last_error(&ed));
     let doc = ed.doc().id;
     ed.toasts.clear();
     assert!(
         crate::llm::draft(&mut ed, doc, "draft", "a commit message", 0, 0)
-            .is_err_and(|e| e.contains("no claude until"))
+            .is_err_and(|e| e.contains("no agent until"))
     );
     // It reads: the chat's claude starts, the message goes
     ed.reload_config(reads(), Vec::new());
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.running() && !c.held, "started once it reads");
     assert!(rx.try_iter().any(|l| l.contains("hello")), "the message went");
-    assert!(!screen(&mut ed, 120, 34).contains("no claude until"), "nothing said once it reads");
+    assert!(!screen(&mut ed, 120, 34).contains("no agent until"), "nothing said once it reads");
 }
 
 /// Agents beside Claude, step 4, C.2: on a config whose agent can chat and nothing else (the stand-in's ACP row, as
@@ -112,7 +112,7 @@ fn space_i_and_a_draft_are_held_on_a_row_that_can_only_chat() {
     let (broken, warnings) = parse(BROKEN);
     ed.reload_config(broken, warnings);
     let held = crate::llm::held_for(&ed, crate::agent::Role::Ask).unwrap_or_default();
-    assert!(held.starts_with("no claude until your config reads"), "{held}");
+    assert!(held.starts_with("no agent until your config reads"), "{held}");
 }
 
 /// A reload that doesn't read: said as an error toast with the hold, once; a claude already running goes on (its
@@ -125,13 +125,13 @@ fn a_reload_that_doesnt_read_holds_what_would_start() {
     let (broken, warnings) = parse(BROKEN);
     ed.reload_config(broken, warnings);
     let said: Vec<_> =
-        ed.toasts.iter().filter(|t| t.text.contains("config: no claude until it reads — ")).collect();
+        ed.toasts.iter().filter(|t| t.text.contains("config: no agent until it reads — ")).collect();
     assert_eq!(said.len(), 1, "one error toast: {:?}", ed.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
     assert!(said[0].text.contains("config.toml:2:") && said[0].text.contains(":config-reload"));
     assert!(ed.workspace.claude.chat.as_ref().unwrap().running(), "the running one goes on");
     crate::chat::restart_process(&mut ed);
     assert!(ed.workspace.claude.chat.as_ref().unwrap().running(), "not stopped for one that won't start");
-    assert!(last_error(&ed).contains("no claude until"), "{}", last_error(&ed));
+    assert!(last_error(&ed).contains("no agent until"), "{}", last_error(&ed));
     assert!(crate::chat::submit(&mut ed, "hi", None, None), "a message to the running one goes");
     assert!(rx.try_iter().any(|l| l.contains("hi")));
     ed.toasts.clear();

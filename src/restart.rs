@@ -234,10 +234,11 @@ fn under_way_of(ed: &Editor, ending: bool) -> Vec<(Work, String)> {
         let at = |what: String| if several { format!("{}: {what}", l.label()) } else { what };
         if l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) || l.claude.checkpoints.gathering {
             let (edits, files) = edits_waiting(ed, l);
+            let who = crate::llm::workspace_row(ed, l).shown;
             let said = match edits {
-                _ if !ending || edits == 0 => "Claude's turn".to_string(),
-                1 => format!("Claude's turn — its unanswered edit to {} is dropped", files.join(", ")),
-                n => format!("Claude's turn — its {n} unanswered edits to {} are dropped", files.join(", ")),
+                _ if !ending || edits == 0 => format!("{who}'s turn"),
+                1 => format!("{who}'s turn — its unanswered edit to {} is dropped", files.join(", ")),
+                n => format!("{who}'s turn — its {n} unanswered edits to {} are dropped", files.join(", ")),
             };
             out.push((Work::Turn { session: l.id, edits: edits > 0 }, at(said)));
         }
@@ -639,8 +640,9 @@ pub(crate) fn build_or_check(ed: &mut Editor, t: Target) {
             return crate::tools::ask_made(ed, crate::tools::MadeThen::Restart { target: t });
         }
         let why = format!(
-            "{} Claude made a name the sandbox keeps there — answer its card first",
-            crate::workspace::possessive(w.label())
+            "{} {} made a name the sandbox keeps there — answer its card first",
+            crate::workspace::possessive(w.label()),
+            crate::llm::workspace_row(ed, w).shown
         );
         return cancel(ed, why);
     }

@@ -127,8 +127,9 @@ fn for_words(r: &Row) -> String {
         Kind::Task => "a task".into(),
         Kind::Test => "tests".into(),
         Kind::Terminal => "the terminal".into(),
-        Kind::Chat => "Claude's chat".into(),
-        Kind::Ask => "space i's Claude, answering".into(),
+        // (its title is its agent's row's name: said as the row says it on screen — step 4's C.3)
+        Kind::Chat => format!("{}'s chat", crate::agent::shown_of(&r.title)),
+        Kind::Ask => format!("space i's {}, answering", crate::agent::shown_of(&r.title)),
         Kind::Reviewer => "the session's reviewer".into(),
         Kind::Plugin(p, _) => format!("plugin {p}'s program"),
         Kind::Other if r.left => "left by a program tarae ran".into(),

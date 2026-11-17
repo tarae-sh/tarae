@@ -187,6 +187,8 @@ fn the_state_says_a_refused_y_whose_card_it_is_and_where_an_answer_leaves_a_sess
     focus(&mut ed);
     let front = |ed: &Editor| ed.ui_state().json()["cards"][0].clone();
     assert_eq!(front(&ed)["answers"][0]["key"], "v", "v first while y waits: {}", front(&ed));
+    // (whose: the session's agent's, never named "claude" — on an agy session's card that was false)
+    assert_eq!(front(&ed)["whose"], "agent", "{}", front(&ed));
     assert!(front(&ed)["refused"].is_null());
     feed(&mut ed, &["y"]);
     assert_eq!(ed.offers.len(), 1, "not taken");
@@ -3264,7 +3266,7 @@ fn a_regions_watcher_is_told_them_as_they_change() {
 }
 
 /// A run keeps one id from its ask to its end: the user's task waiting in line behind Claude's command is
-/// `run#N` queued, and the same `run#N` once it runs.
+/// `run#N` queued, and the same `run#N` once it runs. The agent's run is `of` `agent`, the user's `user`.
 #[test]
 fn a_run_keeps_its_id_from_the_line_to_its_end() {
     let mut ed = editor();
@@ -3276,6 +3278,9 @@ fn a_run_keeps_its_id_from_the_line_to_its_end() {
     let runs = ed.ui_runs();
     let queued = runs.iter().find(|r| r.state == "queued").expect("waiting in line");
     assert_eq!((queued.of, queued.label.as_str(), queued.waiting.as_deref()), ("user", "check", Some("1st")));
+    // (the agent's, whichever its row — never a name that would be false in an agy session)
+    let running = runs.iter().find(|r| r.state != "queued").expect("the agent's run");
+    assert_eq!(running.of, "agent");
     let id = queued.id.clone();
     // Claude's ends; the line moves
     ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Passed;

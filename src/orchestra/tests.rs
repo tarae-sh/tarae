@@ -24,6 +24,28 @@ fn a_short_base_is_said_whole_on_the_set_card() {
     assert!(q.contains("\n\nb — from abc instead"), "{q}");
 }
 
+/// Who pays is on the set card only where its children's row has tarae choose it (`Caps.billing`): Claude's says
+/// "Its Claude runs on …" and takes `$`; on agy's (`llm.agent`, which the children start on) the lines are left out —
+/// they'd be false — and `$` with them.
+#[test]
+fn the_set_cards_billing_lines_are_only_for_a_row_that_bills() {
+    for (row, bills) in [(&crate::agent::CLAUDE, true), (&crate::agent::AGY, false)] {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.config.llm.agent = row;
+        let mut set = super::stand_in_set(&ed, &["one"]);
+        let m = &mut set.sessions[0].0;
+        m.billing = crate::billing::Billing::Api;
+        m.billing_ask = Some("weekly window is at 92%".into());
+        m.billing_note = Some("The plan's 5-hour window is at 97% — wait for it to pass.".into());
+        let o = super::card(&ed, set);
+        let said = ["Its Claude runs on", "5-hour window", crate::billing::WEAKNESS];
+        let found: Vec<bool> = said.iter().map(|w| o.question.contains(w)).collect();
+        assert_eq!(found[..2], [bills, bills], "{}: {}", row.name, o.question);
+        assert!(bills || !found[2], "{}: no key's warning: {}", row.name, o.question);
+        assert_eq!(o.bills(), bills, "{}: `$` steps who pays", row.name);
+    }
+}
+
 /// A chat that may not start sessions (a child, another session under `home`) lists today's tools, none of the
 /// session tools; a parent's list is today's with the three after it (the cache's prefix kept).
 #[test]
@@ -1777,7 +1799,7 @@ fn a_regraded_proposal_keeps_its_card_and_its_answer_is_news() {
     let cards = proposed_cards(&p.ed);
     assert_eq!(cards.len(), 1, "one card a session");
     assert!(matches!(cards[0].what, What::Rebase(_)), "graded again: rebase first — {}", cards[0].title);
-    assert!(cards[0].proposed.as_ref().unwrap().line().ends_with("“done”"));
+    assert!(cards[0].proposed.as_ref().unwrap().line(&p.ed).ends_with("“done”"));
     assert!(news_of(&p.ed).is_empty(), "nothing said of the card it replaced");
     p.ed.card_focus_front();
     p.ed.offer_dismiss();
@@ -1796,7 +1818,7 @@ fn a_queued_send_takes_only_what_is_still_the_reviewers() {
     assert_eq!(r, "queued — its reviewer's 2 findings go to two as its turn ends");
     let queued = |ed: &Editor| {
         let l = ed.workspaces.iter().find(|l| l.id == kids[1]).unwrap();
-        l.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0).unwrap_or_default()
+        l.claude.chat.as_ref().unwrap().queued_said("Claude").map(|q| q.0).unwrap_or_default()
     };
     assert!(queued(&p.ed).contains("review"), "{}", queued(&p.ed));
     p.ed.with_workspace(kids[1], |ed| ed.workspace.claude.notes.list.retain(|n| n.id != ids[1]));
@@ -1826,7 +1848,7 @@ fn a_proposed_end_is_the_parents_card() {
     let o = p.ed.offers.iter().find(|o| o.proposed.is_some()).expect("the act's card, carrying its proposal");
     assert!(matches!(o.what, What::WorkspaceEnd(_)), "{}", o.title);
     assert_eq!(o.about, Some(p.ed.workspace.id));
-    assert!(o.proposed.as_ref().unwrap().line().ends_with("“its work is in”"));
+    assert!(o.proposed.as_ref().unwrap().line(&p.ed).ends_with("“its work is in”"));
 }
 
 /// `session_act bring`: the bring card in the parent's stack, its first line who proposed it and why, `main asks` —
@@ -1848,7 +1870,7 @@ fn a_proposed_bring_is_the_parents_card_and_its_answer_its_news() {
     assert!(bring(&mut p.ed, 96, "one").starts_with("proposed"));
     settle_until(&mut p.ed, |ed| came(ed, &root, None));
     let o = p.ed.offers.iter().find(|o| o.proposed.is_some()).expect("the act's card, carrying its proposal");
-    let (id, line) = (o.id, o.proposed.as_ref().unwrap().line());
+    let (id, line) = (o.id, o.proposed.as_ref().unwrap().line(&p.ed));
     assert_eq!(
         line,
         format!("proposed by {}'s Claude — “tests pass, reviewer clean”", p.ed.workspace.label())

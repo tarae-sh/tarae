@@ -485,7 +485,7 @@ fn a_queued_message_keeps_its_own_quotes() {
     feed(&mut ed, "jx >second<ret>");
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!((c.quotes.len(), c.queued_quotes.len(), c.with.len()), (0, 1, 0), "waits with it");
-    assert_eq!(c.queued_said().map(|s| s.0).as_deref(), Some("a message with 1 quote queued"));
+    assert_eq!(c.queued_said("Claude").map(|s| s.0).as_deref(), Some("a message with 1 quote queued"));
     unfocus(&mut ed);
     feed(&mut ed, "jx >");
     crate::chat::stand_in_done(&mut ed);
@@ -558,7 +558,10 @@ fn a_queued_message_keeps_its_own_screen_and_points() {
     feed(&mut ed, "second<ret>");
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     assert!(c.with_chips().is_empty(), "they wait with it");
-    assert_eq!(c.queued_said().map(|s| s.0).as_deref(), Some("a message with the screen and card#1 queued"));
+    assert_eq!(
+        c.queued_said("Claude").map(|s| s.0).as_deref(),
+        Some("a message with the screen and card#1 queued")
+    );
     (c.screen, c.pointed, c.with) =
         (shot("a later screen"), vec!["card#2".into()], vec![With::Screen, With::Pointed]);
     crate::chat::stand_in_done(&mut ed);

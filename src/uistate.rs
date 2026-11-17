@@ -1660,6 +1660,7 @@ impl UsageState {
 pub struct CardState {
     pub id: String,
     pub session: String,
+    /// `agent` (the session's agent's, whichever its row) or `tarae`.
     pub whose: &'static str,
     pub kind: &'static str,
     pub title: String,
@@ -1989,7 +1990,8 @@ impl Editor {
                 session: session_id(self.claude_of(about)),
                 shown_in: (about != sid).then(|| session_id(self.claude_of(sid))),
                 refused,
-                whose: if o.claudes() { "claude" } else { "tarae" },
+                // (the session's agent, whichever its row: "claude" on an agy session's card was false data told to agy)
+                whose: if o.claudes() { "agent" } else { "tarae" },
                 kind: o.kind(),
                 title: o.title.clone(),
                 asks: asks(o),
