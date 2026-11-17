@@ -4003,7 +4003,7 @@ fn send_from(ed: &mut Editor, slash: bool) {
     if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.held && c.proc.is_none())
         && let Some(why) = llm::held_for(ed, crate::agent::Role::Chat)
     {
-        ed.set_status(why);
+        ed.set_status(format!("not sent, it stays in the input — {why}"));
     }
 }
 
@@ -6568,7 +6568,8 @@ mod tests {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(c.proc.is_none() && c.held, "nothing started");
         assert_eq!(c.input.text(), "again", "the message stays in the input");
-        assert!(ed.status.as_ref().is_some_and(|s| s.0 == why), "{:?}", ed.status);
+        let status = format!("not sent, it stays in the input — {why}");
+        assert!(ed.status.as_ref().is_some_and(|s| s.0 == status), "{:?}", ed.status);
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 140, 30).unwrap();
         let mut p = vt100::Parser::new(30, 140, 0);
