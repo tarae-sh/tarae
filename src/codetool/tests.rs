@@ -1,5 +1,6 @@
 //! The host's own logic on a stand-in engine (every machine), then the real engine where `cargo xtask quickjs` built
-//! it (else those skip, as a grammar's tests do).
+//! it (else those skip, as a grammar's tests do — but under `TARAE_EXPECT_ENGINE=1`, `:preflight-full`'s engine
+//! step, they fail, naming the command: `module`).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -441,9 +442,256 @@ fn the_clock_counts_the_steps_not_the_waits() {
 
 // —— the real engine ——
 
-/// The engine `cargo xtask quickjs` built, if it's there.
+/// The switch `:preflight-full`'s engine step sets (`.tarae.toml`), as Linux's `TARAE_EXPECT_TIER` is: at `1` an
+/// engine test that would skip for want of the module fails, naming the command, and the engine must be the pinned
+/// one (`MODULE`). CI doesn't set it: it has no module, and the tests skip there.
+const EXPECT_ENGINE: &str = "TARAE_EXPECT_ENGINE";
+
+/// The pin as build.sh reads it (`NAME=value` lines): the release, for the archive's name, and the built module's
+/// sha256.
+fn pinned(name: &str) -> &'static str {
+    const PIN: &str = include_str!("../../xtask/quickjs/pin");
+    PIN.lines()
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix('='))
+        .unwrap_or_else(|| panic!("xtask/quickjs/pin has no {name}="))
+}
+
+/// What an engine test finds at `path` — its bytes, or None: the test skips. Every test that finds the engine or
+/// the probe does it here (`every_engine_test_that_skips_is_listed`), so the switch reaches them all.
+fn module(path: &str, want: Option<&str>) -> Option<Vec<u8>> {
+    let expect = std::env::var(EXPECT_ENGINE).is_ok_and(|v| v.trim() == "1");
+    let dir = Path::new(ENGINE_DEV).parent().unwrap();
+    found(Path::new(path), want, expect, dir, pinned("TAG")).unwrap_or_else(|why| panic!("{why}"))
+}
+
+/// `module`'s answer: a missing module is a skip, or under the switch (`expect`) a failure naming the command — the
+/// fetch first where `dir` lacks the pinned archive; a module whose sha256 isn't `want` fails under the switch.
+fn found(
+    path: &Path,
+    want: Option<&str>,
+    expect: bool,
+    dir: &Path,
+    tag: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let build = match dir.join(format!("quickjs-{tag}.tar.xz")).exists() {
+        true => "cargo xtask quickjs",
+        false => "cargo xtask quickjs fetch, then cargo xtask quickjs",
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) if !expect => return Ok(None),
+        Err(e) => {
+            return Err(format!(
+                "{}: {e}, and {EXPECT_ENGINE}=1 expects it — build it: {build}",
+                path.display()
+            ));
+        }
+    };
+    if let Some(want) = want.filter(|_| expect) {
+        let got = crate::sha256::hex(&bytes);
+        if got != want {
+            return Err(format!(
+                "{}: sha256 {got}, not the pinned MODULE {want} (xtask/quickjs/pin), and {EXPECT_ENGINE}=1 expects \
+                 that one — build it again: {build}",
+                path.display()
+            ));
+        }
+    }
+    Ok(Some(bytes))
+}
+
+/// The engine `cargo xtask quickjs` built, if it's there (checked once: under the switch, its sha256 against the
+/// pin's).
 pub(crate) fn real() -> Option<Arc<Engine>> {
-    Path::new(ENGINE_DEV).exists().then(|| Engine::at(Path::new(ENGINE_DEV)).expect("the built engine loads"))
+    static THERE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let there = *THERE.get_or_init(|| module(ENGINE_DEV, Some(pinned("MODULE"))).is_some());
+    there.then(|| Engine::at(Path::new(ENGINE_DEV)).expect("the built engine loads"))
+}
+
+#[test]
+fn the_switch_makes_a_missing_engine_a_failure_naming_the_command() {
+    let dir = crate::scratch::Scratch::new("codetool-engine-missing");
+    let path = dir.join("quickjs.wasm");
+    assert_eq!(found(&path, None, false, dir.path(), "T"), Ok(None), "no switch: a skip");
+    let why = found(&path, None, true, dir.path(), "T").unwrap_err();
+    assert!(why.contains(EXPECT_ENGINE), "{why}");
+    assert!(why.ends_with("build it: cargo xtask quickjs fetch, then cargo xtask quickjs"), "{why}");
+    std::fs::write(dir.join("quickjs-T.tar.xz"), b"").unwrap();
+    let why = found(&path, Some("any"), true, dir.path(), "T").unwrap_err();
+    assert!(why.ends_with("build it: cargo xtask quickjs"), "the archive there: no fetch — {why}");
+}
+
+#[test]
+fn the_switch_refuses_a_module_that_isnt_the_pinned_one() {
+    let dir = crate::scratch::Scratch::new("codetool-engine-other");
+    let path = dir.join("quickjs.wasm");
+    std::fs::write(&path, b"another module").unwrap();
+    std::fs::write(dir.join("quickjs-T.tar.xz"), b"").unwrap();
+    let pin = pinned("MODULE");
+    assert_eq!(pin.len(), 64, "the pin's MODULE is a sha256: {pin}");
+    let why = found(&path, Some(pin), true, dir.path(), "T").unwrap_err();
+    assert!(why.contains(&crate::sha256::hex(b"another module")) && why.contains(pin), "{why}");
+    assert!(why.ends_with("build it again: cargo xtask quickjs"), "{why}");
+    assert_eq!(
+        found(&path, Some(pin), false, dir.path(), "T"),
+        Ok(Some(b"another module".to_vec())),
+        "no switch"
+    );
+    let ours = crate::sha256::hex(b"another module");
+    assert!(found(&path, Some(&ours), true, dir.path(), "T").unwrap().is_some(), "the pinned one passes");
+    // (the probe has no sha to match: none is asked of it)
+    assert!(found(&path, None, true, dir.path(), "T").unwrap().is_some());
+}
+
+/// Every place in the code that finds the engine or the probe, by file and item, and how: `ENGINE_DEV` and `PROBE`
+/// (the modules' paths) read only through `module` — a test reading one itself would skip around the switch — and
+/// each test calling `real()` or `probe()`, which skips where the module is missing and fails under the switch.
+const SKIPS: &[(&str, &str, &str)] = &[
+    ("src/codetool.rs", "const ENGINE_DEV", "ENGINE_DEV"),
+    ("src/codetool.rs", "fn here", "ENGINE_DEV"),
+    ("src/codetool/tests.rs", "const PROBE", "PROBE"),
+    (
+        "src/codetool/tests.rs",
+        "fn a_loop_meets_the_step_limit_before_the_fuel_and_the_task_meets_neither",
+        "real()",
+    ),
+    ("src/codetool/tests.rs", "fn a_refusal_doesnt_end_the_next_program", "real()"),
+    ("src/codetool/tests.rs", "fn a_refusal_in_a_builtin_ends_at_the_next_poll", "real()"),
+    ("src/codetool/tests.rs", "fn a_trap_after_a_refusal_in_the_compile_ends_at_the_memory_limit", "probe()"),
+    ("src/codetool/tests.rs", "fn a_trap_with_no_refusal_noted_says_the_engine_stopped", "probe()"),
+    ("src/codetool/tests.rs", "fn deep_recursion_is_an_error_the_program_sees", "real()"),
+    ("src/codetool/tests.rs", "fn every_reply_after_a_refusal_is_out_of_memory", "probe() real()"),
+    ("src/codetool/tests.rs", "fn measure", "real()"),
+    ("src/codetool/tests.rs", "fn module", "ENGINE_DEV"),
+    ("src/codetool/tests.rs", "fn out_of_memory_caught_again_and_again_ends_it", "real()"),
+    ("src/codetool/tests.rs", "fn out_of_memory_caught_and_carried_on_still_ends_it", "real()"),
+    ("src/codetool/tests.rs", "fn perf_code_engine_dispatch", "real()"),
+    ("src/codetool/tests.rs", "fn probe", "PROBE"),
+    ("src/codetool/tests.rs", "fn real", "ENGINE_DEV"),
+    ("src/codetool/tests.rs", "fn the_engine_never_retries_a_refused_allocation", "probe()"),
+    ("src/codetool/tests.rs", "fn the_hosts_stop_ends_the_work_the_steps_dont_see", "real()"),
+    (
+        "src/codetool/tests.rs",
+        "fn the_real_engine_counts_the_same_steps_under_the_jit_and_the_interpreter",
+        "real()",
+    ),
+    ("src/codetool/tests.rs", "fn the_real_engine_runs_a_program_and_its_calls", "real()"),
+    ("src/codetool/tests.rs", "fn the_real_engine_says_plain_javascript_for_type_annotations", "real()"),
+    (
+        "src/codetool/tests.rs",
+        "fn the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean",
+        "real()",
+    ),
+    ("src/codetool/tests.rs", "fn the_shipped_engine_holds_nothing_of_the_probe", "ENGINE_DEV probe()"),
+    ("src/codetool/tests.rs", "fn what_the_real_engine_printed_past_the_limit_is_cut_for_claude", "real()"),
+    (
+        "src/codetool/tool/tests.rs",
+        "fn a_kept_outputs_words_reach_claude_only_as_the_program_prints_them",
+        "real()",
+    ),
+    ("src/codetool/tool/tests.rs", "fn the_real_engine_calls_the_bindings_as_described", "real()"),
+    ("src/sim/codeclock.rs", "fn heavy", "real()"),
+];
+
+/// What `SKIPS` lists, found in `src/`: `ENGINE_DEV` anywhere; `PROBE` and the calls in the engine's test files
+/// (under `src/codetool/`, or naming `codetool::tests::`). Code lines only; an item is the last `fn` begun, or a
+/// `const`/`static` at the top level.
+fn engine_sites(root: &Path) -> Vec<(String, String, String)> {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let word = |t: &str, w: &str| {
+        t.match_indices(w).any(|(at, _)| !t[..at].ends_with(ident) && !t[at + w.len()..].starts_with(ident))
+    };
+    // (a call of the helper: bare, or `…tests::real()`; never its `fn` line, nor another's `x.real()`/`X::real()`)
+    let calls = |t: &str, name: &str| {
+        t.match_indices(&format!("{name}()")).any(|(at, _)| {
+            let before = &t[..at];
+            !before.ends_with("fn ")
+                && (before.ends_with("tests::")
+                    || !before.ends_with(|c: char| ident(c) || c == ':' || c == '.'))
+        })
+    };
+    let mut files = Vec::new();
+    let mut dirs = vec![root.join("src")];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            match p.is_dir() {
+                true => dirs.push(p),
+                false if p.extension().is_some_and(|x| x == "rs") => files.push(p),
+                false => {}
+            }
+        }
+    }
+    let mut found = std::collections::BTreeMap::<(String, String), BTreeSet<&str>>::new();
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        let name = f.strip_prefix(root).unwrap().display().to_string();
+        let engines = name.starts_with("src/codetool/") || text.contains("codetool::tests::");
+        let mut item = String::new();
+        for l in text.lines() {
+            let t = l.trim();
+            let u = t.trim_start_matches("pub(crate) ").trim_start_matches("pub ");
+            for kind in ["fn ", "const ", "static "] {
+                if let Some(rest) = u.strip_prefix(kind).filter(|_| kind == "fn " || t.len() == l.len()) {
+                    item = format!("{kind}{}", rest.chars().take_while(|c| ident(*c)).collect::<String>());
+                }
+            }
+            // (this lint's own words aren't sites)
+            let lint = ["const SKIPS", "fn engine_sites", "fn every_engine_test_that_skips_is_listed"];
+            if t.starts_with("//") || lint.contains(&item.as_str()) {
+                continue;
+            }
+            let mut how = Vec::new();
+            how.extend(word(t, "ENGINE_DEV").then_some("ENGINE_DEV"));
+            if engines {
+                how.extend(word(t, "PROBE").then_some("PROBE"));
+                how.extend(calls(t, "real").then_some("real()"));
+                how.extend(calls(t, "probe").then_some("probe()"));
+            }
+            if !how.is_empty() {
+                found.entry((name.clone(), item.clone())).or_default().extend(how);
+            }
+        }
+    }
+    found.into_iter().map(|((f, i), how)| (f, i, how.into_iter().collect::<Vec<_>>().join(" "))).collect()
+}
+
+/// A new test that finds the engine is listed in `SKIPS` — so it can't skip around the switch unseen — and each
+/// that skips is in reach of `:preflight-full`'s engine step (`.tarae.toml`: its filter takes the test's module).
+/// Broken once: a `let Some(e) = real() else { return };` in a new test, and `fs::read(ENGINE_DEV)` in one.
+#[test]
+fn every_engine_test_that_skips_is_listed() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let found = engine_sites(root);
+    let listed: Vec<(String, String, String)> =
+        SKIPS.iter().map(|(f, i, h)| (f.to_string(), i.to_string(), h.to_string())).collect();
+    let new: Vec<String> = found
+        .iter()
+        .filter(|s| !listed.contains(s))
+        .map(|(f, i, h)| format!("    (\"{f}\", \"{i}\", \"{h}\"),"))
+        .collect();
+    let gone: Vec<String> =
+        listed.iter().filter(|l| !found.contains(l)).map(|(f, i, h)| format!("{f}: {i} ({h})")).collect();
+    assert!(
+        new.is_empty() && gone.is_empty(),
+        "finds the code tool's engine, not in SKIPS (a module read goes through `module`; a test through `real()` or \
+         `probe()`):\n{}\nlisted, not there any more:\n{}",
+        new.join("\n"),
+        gone.join("\n")
+    );
+    let tarae: toml::Table = std::fs::read_to_string(root.join(".tarae.toml")).unwrap().parse().unwrap();
+    let steps = tarae["preflight"]["steps"].as_array().unwrap();
+    let step = steps.iter().find(|s| s["name"].as_str() == Some("engine")).expect("the engine step");
+    let cmd = step["cmd"].as_str().unwrap();
+    let filters: Vec<&str> = cmd.split(" -- ").nth(1).unwrap_or_default().split_whitespace().collect();
+    for (f, i, how) in SKIPS.iter().filter(|(_, _, h)| h.contains("()")) {
+        let module = f.trim_start_matches("src/").trim_end_matches(".rs").replace('/', "::");
+        let test = format!("{module}::{}", i.trim_start_matches("fn "));
+        assert!(
+            filters.iter().any(|w| test.contains(w)),
+            "{test} ({how}): out of the engine step's reach — {cmd}"
+        );
+    }
 }
 
 /// The tests' limits on the real engine: `LIMITS`, on machine code wherever there is some (the interpreter at
@@ -719,12 +967,13 @@ fn a_refusal_doesnt_end_the_next_program() {
     assert_eq!((head.as_str(), &body["done"]), ("done", &json!(2)), "{body}");
 }
 
-/// The probe module (`inside.sh`, glue.c's GLUE_PROBE): the tests' alone, never shipped.
+/// The probe module (`inside.sh`, glue.c's GLUE_PROBE): the tests' alone, never shipped — so no sha256 of its own
+/// in the pin (see there).
 const PROBE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/target/quickjs/out/quickjs-probe.wasm");
 const PROBE_EXPORTS: [&str; 3] = ["refuse_at", "grows", "compile_grows"];
 
 fn probe() -> Option<Engine> {
-    let bytes = std::fs::read(PROBE).ok()?;
+    let bytes = module(PROBE, None)?;
     Some(Engine::new(&bytes).expect("the probe loads"))
 }
 
@@ -777,7 +1026,7 @@ impl Program {
 /// after a trap (`Program::oom_noted`).
 #[test]
 fn the_shipped_engine_holds_nothing_of_the_probe() {
-    let Ok(shipped) = std::fs::read(ENGINE_DEV) else { return };
+    let Some(shipped) = module(ENGINE_DEV, Some(pinned("MODULE"))) else { return };
     let e = Engine::new(&shipped).expect("the engine loads");
     assert!(e.module.func("oom").is_some(), "quickjs.wasm exports the glue's flag");
     for name in PROBE_EXPORTS {

@@ -48,6 +48,10 @@ steps = [
   { name = "test", cmd = "cargo test --workspace" },
   { name = "test bundled", cmd = "cargo test --workspace --features bundled-grammars", full = true },
   { name = "perf", cmd = "cargo perf", note = "SLOWER", full = true },
+  # The code tool's engine tests on the module `cargo xtask quickjs` built (preflight doesn't build it): with
+  # TARAE_EXPECT_ENGINE=1 a missing module, or one not the pin's MODULE, fails them, naming the command — never a silent
+  # pass (the user's decision 2026-11-17). This Mac's own: CI has no module, and they skip there
+  { name = "engine", cmd = "TARAE_EXPECT_ENGINE=1 cargo test --bin tarae -- codetool:: sim::codeclock::", full = true },
   # The bundled plugins' own suites under `tarae plugin test`, the SDK's mock host's, and a new plugin's (CI's network job runs the same)
   { name = "plugins", cmd = "cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_plugins_pass_their_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin", full = true },
   # (a new plugin crate builds in a sandboxed run, cargo's build files inside it — PD1's H2; cargo's cache warm)

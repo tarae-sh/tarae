@@ -33,10 +33,11 @@ cargo fmt                                # rustfmt.toml: max_width = 110
 Before sending a change, these checks must all pass — `:preflight-full` runs them in tarae (`.tarae.toml`'s
 `[preflight]`), and CI runs the same ones. `:preflight` alone — and bringing a session in — runs the quick
 set: fmt, clippy, Linux's clippy and test (the bundled-grammars builds, perf and the plugins' suites — CI's network
-job's tests of `tarae plugin test`, by name — are marked `full = true`). The last two lines are this Mac's own
-(`:preflight-full` only): a new plugin crate built in a sandboxed run (macOS's sandbox and cargo's cache warm — CI has
-neither), and the toolchain tripwire (#533: a live test with the real rust-analyzer and rustup, about 2.5 minutes; where
-either is missing it passes with a note saying so). Linux's
+job's tests of `tarae plugin test`, by name — are marked `full = true`). The engine line and the last two are this
+Mac's own (`:preflight-full` only): the code tool's engine tests with `TARAE_EXPECT_ENGINE=1` (below), a new plugin
+crate built in a sandboxed run (macOS's sandbox and cargo's cache warm — CI has neither), and the toolchain tripwire
+(#533: a live test with the real rust-analyzer and rustup, about 2.5 minutes; where either is missing it passes with a
+note saying so). Linux's
 clippy is `cargo xtask linux clippy` in Docker — CI's clippy job, both its lines, on the pinned toolchain; where Docker
 isn't reachable it fails saying so (`--no-skip`), never a pass:
 
@@ -49,6 +50,7 @@ cargo clippy --workspace --all-targets --features bundled-grammars -- -D warning
 cargo test --workspace
 cargo test --workspace --features bundled-grammars
 cargo perf
+TARAE_EXPECT_ENGINE=1 cargo test --bin tarae -- codetool:: sim::codeclock::
 cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_plugins_pass_their_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin
 cargo test --bin tarae -- --ignored --exact plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run
 RUST_TEST_NOCAPTURE=1 cargo test --test live -- --ignored --exact a_jump_into_a_dependency_runs_nothing_there_nor_the_toolchain_it_names
@@ -107,6 +109,9 @@ The code tool's engine (the original QuickJS as a WebAssembly module, `xtask/qui
 sha256 serves, put in `target/quickjs/`), and `cargo xtask quickjs` compiles it in Docker into `target/quickjs/`,
 where a dev build and the code tool's tests find it — without it those tests skip themselves. The archive is a
 `.tar.xz`: macOS's `tar` reads it itself, GNU `tar` needs `xz` installed.
+`:preflight-full`'s engine step runs those tests with `TARAE_EXPECT_ENGINE=1`: a missing module, or one whose sha256
+isn't the pin's `MODULE`, fails them, naming the command (preflight doesn't build it). CI doesn't set it — it has no
+module, and they skip there: the engine's tests run on this Mac, in `:preflight-full`.
 
 The sandbox's tiers ([design](docs/design/sandbox-keeper.md#tiers)) are reached by how the container runs:
 

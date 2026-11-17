@@ -1605,6 +1605,10 @@ mod tests {
                 "#533's tripwire, a live test: the real rust-analyzer and rustup — CI's runners have no rust-analyzer",
             ),
         ];
+        // (on purpose: the engine step, this Mac's own — CI has no engine module, its tests skip there)
+        let engine =
+            ours.iter().find(|c| c.starts_with("TARAE_EXPECT_ENGINE=1 ")).expect("the engine step").clone();
+        expected.remove(&engine);
         let network = ci.lines().find(|l| l.contains("-- --ignored")).expect("the network job");
         let mut named = Vec::new();
         for step in ours.iter().filter(|c| c.contains("-- --ignored --exact ")) {
@@ -1698,6 +1702,26 @@ mod tests {
         for c in &clippy {
             assert!(c.split_whitespace().any(|w| w == "--workspace"), "{c}: lints only the root package");
         }
+    }
+
+    /// `:preflight-full`'s engine step runs the code tool's engine tests with `TARAE_EXPECT_ENGINE=1` (a skip for want
+    /// of the module fails, naming the command); the quick set carries no switch (the user's decision 2026-11-17:
+    /// the full set only). Broken once: the quick set given the full set's steps (`Set::of`).
+    #[test]
+    fn only_the_full_preflight_expects_the_engine() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let tarae: toml::Table = std::fs::read_to_string(root.join(".tarae.toml")).unwrap().parse().unwrap();
+        let all = parse_config(&tarae["preflight"], ".tarae.toml", &mut Vec::new());
+        let expects = |s: &&Step| s.cmd.split_whitespace().any(|w| w == "TARAE_EXPECT_ENGINE=1");
+        let full: Vec<String> = Set::Full.of(&all).iter().filter(expects).map(|s| s.name.clone()).collect();
+        assert_eq!(full, ["engine"], "the full set's engine step carries the switch");
+        let quick: Vec<Step> = Set::Quick.of(&all);
+        assert!(
+            quick.iter().all(|s| !s.cmd.contains("TARAE_EXPECT_ENGINE")),
+            "the quick set expects no engine"
+        );
+        let engine = all.iter().find(|s| s.name == "engine").unwrap();
+        assert!(engine.cmd.starts_with("TARAE_EXPECT_ENGINE=1 cargo test "), "{}", engine.cmd);
     }
 
     /// Stand-in pack defaults for `preflight_start_with`: one step that `echo`es.

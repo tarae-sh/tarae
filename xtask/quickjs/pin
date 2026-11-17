@@ -4,11 +4,19 @@
 # TAG          the original QuickJS's release (Fabrice Bellard's, bellard.org/quickjs): the date naming its archive
 # SOURCE       the sha256 of quickjs-TAG.tar.xz — fetch checks it, and build again before use
 # IMAGE        wasi-sdk's image by digest (wasi-sdk 25, clang 19.1.5): never a moving tag
+# MODULE       the sha256 of the built quickjs.wasm (the stripped one, target/quickjs/quickjs.wasm): the build is
+#              byte-identical from these three, so build says where its output differs, and the engine's tests
+#              refuse any other module under TARAE_EXPECT_ENGINE=1 (:preflight-full's engine step). The probe
+#              (out/quickjs-probe.wasm) has none: it is the tests' alone, never shipped, and made by the same build
+#              from the same glue.c — the command that makes the pinned module makes it too
 #
 # The archive comes from one host, bellard.org/quickjs/quickjs-TAG.tar.xz, with no mirror. Any copy with SOURCE's
 # sha256 serves as well (main's .sb/quickjs-bellard-2026-06-04/ keeps one): put at target/quickjs/, build checks it.
 #
 # At a re-pin, re-read what tarae says of the engine (src/codetool.rs), each against the new build:
+# - MODULE, the new build's sha256 (build prints it, and says it differs from the old one); the engine's tests run
+#   in :preflight-full's engine step, on this Mac (TARAE_EXPECT_ENGINE=1: a missing module or another fails them;
+#   CI has no module, and they skip there) — run that step on the new build;
 # - the figures glue.c builds in: CALLS (MAX_CALLS), PRINTED_MAX, ENGINE_HEAP (MEMORY_LIMIT, the memory
 #   ending's figure; `the_engines_heap_limit_is_glues` holds it to glue.c);
 # - ENGINE_OUT_OF_MEMORY, the words for the heap limit met (glue.c's OUT_OF_MEMORY, the engine's own throw's);
@@ -29,3 +37,4 @@
 TAG=2026-06-04
 SOURCE=b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a
 IMAGE=ghcr.io/webassembly/wasi-sdk@sha256:fdebde86990902087ecc470bf993ffec4d646e8fbd2e68c290a44120437622d0
+MODULE=2024e6efcbbeb8ad35c6286e282be9888233290885b3b19313966b1ba7868de2

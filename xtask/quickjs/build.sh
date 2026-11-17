@@ -7,7 +7,8 @@
 #   xtask/quickjs/build.sh build <dir>   the compile: the wasi-sdk image (pulled by colima's Docker if it isn't
 #                                        there, its digest said), run with --network none and no mounts — the
 #                                        sources go in on stdin, the modules come out on stdout into <dir>/out,
-#                                        and the stripped one is copied to <dir>/quickjs.wasm
+#                                        and the stripped one is copied to <dir>/quickjs.wasm, its sha256
+#                                        checked against the pin's MODULE: a difference is said (a re-pin's step)
 #
 # What it builds from — the release, the archive's sha256, the image's digest — is `pin`, beside this script, alone.
 # Any copy of the archive with that sha256 serves as the fetched one: put at <dir>/quickjs-TAG.tar.xz, build checks it.
@@ -16,9 +17,12 @@ set -eu
 recipe=$(cd "$(dirname "$0")" && pwd)
 . "$recipe/pin"
 
+sha() {
+    (shasum -a 256 "$1" 2>/dev/null || sha256sum "$1") | cut -d' ' -f1
+}
 # the archive is the pinned one, or nothing goes on
 check() {
-    got=$( (shasum -a 256 "$1" 2>/dev/null || sha256sum "$1") | cut -d' ' -f1)
+    got=$(sha "$1")
     if [ "$got" != "$SOURCE" ]; then
         echo "$1: sha256 $got, not the pinned $SOURCE (xtask/quickjs/pin)" >&2
         exit 1
@@ -52,6 +56,14 @@ build)
         tar -C "$dir/out" -xf -
     cp "$dir/out/quickjs.wasm" "$dir/quickjs.wasm"
     ls -l "$dir/out" "$dir/quickjs.wasm"
+    # the module is the pinned one — or this build is a new engine: said, not refused (a re-pin builds one first)
+    built=$(sha "$dir/quickjs.wasm")
+    if [ "$built" = "$MODULE" ]; then
+        echo "quickjs.wasm, sha256 $built (as pinned)"
+    else
+        echo "quickjs.wasm: sha256 $built, not the pinned MODULE $MODULE (xtask/quickjs/pin) — a new engine:" \
+            "the engine's tests refuse it under TARAE_EXPECT_ENGINE=1 until MODULE is re-pinned, in its own commit" >&2
+    fi
     ;;
 *)
     echo "usage: build.sh fetch|build <dir>" >&2
