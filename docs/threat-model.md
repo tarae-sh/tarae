@@ -467,6 +467,14 @@ Kept:
   `sandbox::linux::tests::a_place_runs_write_is_walked_after_those_they_dont` ·
   `sandbox::linux::tests::the_keys_outside_are_hidden_as_room_is_left_and_the_rest_said` (Linux) ·
   `sandbox::tests::a_hidden_key_the_run_couldnt_change_is_said`
+- Your own sends count a file in a place that holds keys as one named like a key (the `SECRETS` widening,
+  2026-11-18: `~/.ssh/config`, `~/.aws/config`, and a Windows profile's on WSL): in front it isn't sent as the
+  message's context (said once a conversation, in the chat), pointing at it (`C-o`) asks `y · n` on a card that says
+  it's where keys are, `space i` refuses it, review comments on its lines ask first, `C-s` blanks its pane and the
+  `ui` tool lists its rows without their text. Runs, Claude's `read` and what's kept don't change.
+  test: `chat::tests::a_file_where_keys_are_reaches_claude_only_when_the_user_lets_it` ·
+  `chat::tests::space_i_on_a_file_where_keys_are_is_refused_said` ·
+  `chat::tests::the_screen_and_ui_rows_leave_out_a_file_where_keys_are`
 - Settings a tool reads that hold a token (git's `extraHeader`, Go's env, pip's index URL, `~/.npmrc`) are read
   from a copy without the token lines.
   test: `sandbox::tests::settings_holding_a_token_are_read_from_copies` ·

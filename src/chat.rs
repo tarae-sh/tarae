@@ -661,7 +661,7 @@ pub struct Chat {
     /// The folders a read's card offered for `a`/`A`, looked through for tokens on a worker (None: under way)
     /// — a folder is offered once its card can say what it holds (`reads::refold`).
     pub scanned: std::collections::HashMap<PathBuf, Option<crate::tokens::Found>>,
-    /// Files named like keys in the project, for the message's context (`reads::key_shut`): those the project
+    /// Files named like keys (or where keys are), for the message's context (`reads::key_shut`): those the project
     /// keeps open (`A`), as last read on a worker (`reads::kept_keys_load`; None: not read yet) · those the
     /// user let go with the input's message, by the chip it was for (`y` on the card their pointing raised —
     /// `reads::point`; gone with the chip, `reads::input_pass`) · those the chat said weren't sent, once each
@@ -4232,8 +4232,7 @@ fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
 pub fn pointed_said(ed: &Editor, id: &str, pass: &[std::path::PathBuf]) -> String {
     match crate::reads::pointed_key(ed, id, pass) {
         Some(k) => {
-            let name = k.strip_prefix(&ed.workspace.root).unwrap_or(&k).display().to_string();
-            format!("{id} — {name}, {}", crate::reads::NOT_SENT)
+            format!("{id} — {}, {}", crate::reads::named(ed, &k), crate::reads::not_sent_said(ed, &k))
         }
         None => crate::uistate::claude::pointed_said(ed, id),
     }
@@ -4554,7 +4553,8 @@ pub fn stop(ed: &mut Editor) {
 pub const PAGE_NOT_SENT: &str = "web page, read-only; its text isn't sent — read takes its address";
 
 /// Whether a message's context carries `doc`'s text (its selection, its lines, its diagnostics): not a file named like
-/// a key Claude may not read (`pass`: what this message may carry), nor a woven view, nor a web page.
+/// a key or where keys are, Claude may not read (`reads::key_shut`; `pass`: what this message may carry), nor a woven
+/// view, nor a web page.
 fn text_goes(ed: &Editor, doc: &crate::document::Document, pass: &[PathBuf]) -> bool {
     doc.path.as_deref().is_none_or(|p| !crate::reads::key_shut(ed, p, pass))
         && doc.woven.is_none()
@@ -4667,7 +4667,9 @@ fn context(
                 (None, false) => format!(" ({lang})"),
             },
             if doc.is_modified() && doc.path.is_some() { " (unsaved)" } else { "" },
-            if withheld.is_empty() { String::new() } else { format!(" — {}", crate::reads::NOT_SENT) },
+            withheld
+                .first()
+                .map_or_else(String::new, |k| format!(" — {}", crate::reads::not_sent_said(ed, k))),
             line + 1
         ),
     };
@@ -4769,16 +4771,18 @@ fn context(
     let others: Vec<_> =
         ed.docs.iter().filter(|d| d.id != doc.id && d.path.is_some() && !d.loading).collect();
     if !others.is_empty() {
-        // (an unsaved one named like a key, not open to Claude: named, its text not sent)
+        // (an unsaved one named like a key or where keys are, not open to Claude: named, its text not sent)
         let unsaved_key = |d: &crate::document::Document| d.is_modified().then(|| shut(d)).flatten();
         ctx.push_str("<open-files>\n");
         for d in others.iter().take(30) {
             ctx.push_str(&d.display_name(&ed.workspace.root));
-            ctx.push_str(match (d.is_modified(), unsaved_key(d).is_some()) {
-                (true, true) => " (unsaved — named like a key, not sent)\n",
-                (true, false) => " (unsaved)\n",
-                _ => "\n",
-            });
+            match (d.is_modified(), unsaved_key(d)) {
+                (true, Some(k)) => {
+                    ctx.push_str(&format!(" (unsaved — {}, not sent)\n", crate::reads::shut_why(ed, &k)))
+                }
+                (true, None) => ctx.push_str(" (unsaved)\n"),
+                _ => ctx.push('\n'),
+            }
         }
         ctx.push_str("</open-files>\n");
         let mut budget = UNSAVED_MAX;
@@ -7801,6 +7805,12 @@ mod tests {
 
     /// `C-o` and the label of element `id` typed, on the frame drawn now — the read card asks.
     fn point_at(ed: &mut Editor, id: &str) {
+        label_typed(ed, id);
+        assert!(ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE), "the read card asks");
+    }
+
+    /// `C-o` and the label of element `id` typed, on the frame drawn now.
+    fn label_typed(ed: &mut Editor, id: &str) {
         crate::term::render(ed, &mut Vec::<u8>::new(), 140, 40).unwrap();
         crate::uistate::point::start(ed);
         let i = ed.pointing.as_ref().unwrap().targets.iter().position(|t| t.id == id).expect("its label");
@@ -7808,7 +7818,6 @@ mod tests {
         for c in [a, b] {
             crate::uistate::point::key(ed, c.to_string().parse().unwrap());
         }
-        assert!(ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE), "the read card asks");
     }
 
     /// `k` on the front card, drawn and in sight long enough for an answer.
@@ -8230,6 +8239,158 @@ mod tests {
         turn_done(&mut ed);
         assert!(!last().contains("tarae-fake-token"), "y was for that review only");
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().allowed.keys.contains(&env), "nothing opened");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `key_editor` with a home of the test's own (`Editor.caps_home` — never yours): its `.ssh/config`, in a place
+    /// that holds keys (`allow::SECRETS`) though not named like one, holding a fake token, in front — (dir, that
+    /// file, notes.txt, the log, the editor).
+    fn place_editor(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, Editor) {
+        let (dir, _, plain, log, mut ed) = key_editor(name);
+        std::fs::create_dir_all(dir.join("home/.ssh")).unwrap();
+        let home = std::fs::canonicalize(dir.join("home")).unwrap();
+        let config = home.join(".ssh/config");
+        // (the token on the first line: a grammar's notice may cover the second's end)
+        std::fs::write(&config, "IdentityFile tarae-fake-token-place\nHost tarae-fake-host\n").unwrap();
+        ed.caps_home = Some(home);
+        ed.open(&config).unwrap();
+        (dir, config, plain, log, ed)
+    }
+
+    /// The `SECRETS` widening (2026-11-18): a file where keys are counts as one named like a key for the user's own
+    /// sends. In front, what reaches claude names it only, said once a conversation in the chat; pointing at its pane
+    /// asks on the card that says where it is, `y · n` — `y` sends its text with that message only, `n` its name.
+    /// The home is the test's own, the token a fake, the claude a logging stand-in.
+    #[test]
+    fn a_file_where_keys_are_reaches_claude_only_when_the_user_lets_it() {
+        let (dir, config, _, log, mut ed) = place_editor("place-messages");
+        open(&mut ed);
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.kept_keys.is_some()));
+        let ask = |ed: &mut Editor, q: &str| {
+            ed.workspace.claude.chat.as_mut().unwrap().input = q.into();
+            let n = messages(&log).len();
+            send(ed);
+            turn_done(ed);
+            assert_eq!(messages(&log).len(), n + 1, "{q} went");
+            messages(&log).pop().unwrap()
+        };
+        let notes = |ed: &Editor| {
+            let msgs = &ed.workspace.claude.chat.as_ref().unwrap().msgs;
+            msgs.iter()
+                .filter(|m| m.role == Role::Note && m.text.contains("wasn't sent"))
+                .map(|m| m.text.clone())
+                .collect::<Vec<_>>()
+        };
+        // (the file's line: its path, its language where tarae knows one — `(sshclientconfig)` with the grammars
+        // downloaded, none in a bare home —, then the marker, ending the line)
+        for q in ["first", "second"] {
+            let m = ask(&mut ed, q);
+            assert!(
+                !m.contains("tarae-fake-token")
+                    && m.contains("/.ssh/config")
+                    && m.contains(" — where keys are — not sent\\ncursor:"),
+                "{m}"
+            );
+        }
+        let said = notes(&ed);
+        assert_eq!(said.len(), 1, "said once a conversation: {said:?}");
+        assert!(said[0].starts_with("~/.ssh/config is where keys are — its text wasn't sent"), "{}", said[0]);
+        assert!(
+            said[0].contains("point at it (C-o) and answer y") && !said[0].contains(" A "),
+            "{}",
+            said[0]
+        );
+        // Pointing at its pane: the card says where it is, and offers `y · n` only
+        let pane = format!("pane#{}", ed.workspace.viewer.focus);
+        let point = |ed: &mut Editor| {
+            label_typed(ed, &pane);
+            let title = crate::reads::pointed_place_title(ed);
+            let card = ed.offers.iter().find(|o| o.title == title).expect("the card asks");
+            assert!(
+                card.question.contains("It's where keys are, and you pointed at it."),
+                "{}",
+                card.question
+            );
+            let keys: Vec<char> = card.answers(false).iter().map(|(k, _)| *k).collect();
+            assert!(keys.contains(&'y') && keys.contains(&'n'), "{keys:?}");
+            assert!(!keys.iter().any(|k| matches!(k, 'a' | 'A' | 's')), "{keys:?}");
+        };
+        point(&mut ed);
+        answer_card(&mut ed, "y");
+        let m = ask(&mut ed, "this one");
+        assert!(m.contains("tarae-fake-token-place"), "y: this message carries it: {m}");
+        let m = ask(&mut ed, "and after");
+        assert!(!m.contains("tarae-fake-token"), "y was for that message only: {m}");
+        point(&mut ed);
+        answer_card(&mut ed, "n");
+        let m = ask(&mut ed, "no");
+        assert!(!m.contains("tarae-fake-token"), "n: its name only: {m}");
+        assert!(m.contains(&format!("{pane} — ~/.ssh/config, where keys are — not sent")), "{m}");
+        assert_eq!(notes(&ed).len(), 1, "still said once");
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().allowed.keys.contains(&config), "nothing opened");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `space i` on a file where keys are is refused as on one named like a key, with the way that can: nothing
+    /// starts. The home is the test's own.
+    #[test]
+    fn space_i_on_a_file_where_keys_are_is_refused_said() {
+        let (dir, _, _, _, mut ed) = place_editor("place-ask");
+        let (tx, rx) = std::sync::mpsc::channel();
+        ed.ask_lines = Some(tx);
+        let said = crate::ask::start(&mut ed, "make it shorter").expect_err("refused");
+        assert!(
+            said.contains("~/.ssh/config is where keys are — point at its pane (space @) to choose"),
+            "{said}"
+        );
+        assert_eq!(rx.try_iter().count(), 0, "nothing started");
+        assert!(ed.workspace.claude.review.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `C-s` blanks a pane showing a file where keys are (its marker in its place) and keeps the rest; Claude's `ui`
+    /// tool lists a row carrying one of its lines by its path and line, without its text — the user's own state
+    /// unchanged. The home is the test's own, the token a fake.
+    #[test]
+    fn the_screen_and_ui_rows_leave_out_a_file_where_keys_are() {
+        let (dir, config, plain, _, mut ed) = place_editor("place-screen");
+        let mut c = Chat::new();
+        c.kept_keys = Some(Vec::new());
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.set_at(crate::workspace::Here::Chat);
+        ed.split_view(crate::split::Dir::Horizontal);
+        ed.open(&plain).unwrap();
+        crate::term::render(&mut ed, &mut Vec::<u8>::new(), 140, 40).unwrap();
+        let (f, w, h) = ed.last_frame.clone().unwrap();
+        let drawn = crate::screen::text(&f, w, h).unwrap();
+        assert!(drawn.contains("tarae-fake-token-place"), "(its pane shows it) {drawn}");
+        attach_screen(&mut ed).unwrap();
+        let s = ed.workspace.claude.chat.as_mut().unwrap().screen.take().unwrap().text;
+        assert!(!s.contains("tarae-fake-token") && s.contains("plain words"), "{s}");
+        assert!(s.contains("[~/.ssh/config — where keys are — not sent]"), "{s}");
+        // A search's hit rows: the one in it listed by its path and line, its text the marker; the other as it is
+        let hit = |path: &Path, text: &str| crate::picker::Item {
+            label: format!("{}:1: {text}", path.file_name().unwrap().to_string_lossy()),
+            action: crate::picker::Action::Goto { path: path.to_path_buf(), line: 0, col: 0 },
+            hint: String::new(),
+            glyph: None,
+        };
+        let hits = vec![hit(&config, "IdentityFile tarae-fake-token-place"), hit(&plain, "plain words")];
+        ed.open_picker(crate::picker::Picker::new("search", hits, true), None);
+        crate::term::render(&mut ed, &mut Vec::<u8>::new(), 140, 40).unwrap();
+        let rows = |s: &crate::uistate::UiState| {
+            let p = s.panels.picker.as_ref().expect("the picker's rows");
+            p.rows.iter().map(|r| format!("{} | {}", r.id, r.label)).collect::<Vec<_>>().join("\n")
+        };
+        let claudes = ed.ui_state_claude();
+        let (listed, text) = (rows(&claudes), claudes.text_claude(false));
+        assert!(
+            !listed.contains("tarae-fake-token") && !text.contains("tarae-fake-token"),
+            "{listed}\n{text}"
+        );
+        assert!(listed.contains("~/.ssh/config:1: (where keys are — not sent)"), "{listed}");
+        assert!(listed.contains("plain words"), "{listed}");
+        assert!(rows(&ed.ui_state()).contains("tarae-fake-token-place"), "the user's own state");
         std::fs::remove_dir_all(&dir).ok();
     }
 

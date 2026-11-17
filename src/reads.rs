@@ -410,9 +410,9 @@ fn reply(ed: &mut Editor, p: Pending, allowed: bool, no: &str) {
     }
 }
 
-/// What the user's own act sends that holds a file named like a key Claude may not read — asked on the same
-/// card (`ask_own`) before it goes: `y` its text goes with that one thing, `a`/`A` open the file, `n` its name
-/// goes alone.
+/// What the user's own act sends that holds a file Claude may not read — named like a key, or in a place that holds
+/// keys (`key_shut`) — asked on the same card (`ask_own`) before it goes: `y` its text goes with that one thing, `n`
+/// its name goes alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Own {
     /// An element pointed at (`C-o`), by its chip's id: the chat input's message with that chip (`point`).
@@ -711,13 +711,78 @@ pub const KEY_LINE: &str = "(named like a key — not read)";
 /// What the message's context says of such a file in place of its text (`chat::context`).
 pub const NOT_SENT: &str = "named like a key — not sent";
 
+/// `NOT_SENT` for a file in a place that holds keys, not named like one itself (`by_place`).
+pub const NOT_SENT_PLACE: &str = "where keys are — not sent";
+
+/// Home as the user's own sends judge a place by: the process's — a test's own, when it set one
+/// (`Editor.caps_home`). No disk.
+fn home(ed: &Editor) -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(h) = &ed.caps_home {
+        return Some(h.clone());
+    }
+    #[cfg(not(test))]
+    let _ = ed;
+    crate::allow::home()
+}
+
+/// Whether `path` (real) is shut to the user's own sends by its place alone: in a place that holds keys — home's
+/// `allow::SECRETS`, a Windows profile's on WSL (`allow::secret`, as `cards::class` sorts a read there) — and not
+/// named like a key itself (`~/.ssh/config`, `~/.aws/config`). The words then say where it is.
+pub fn by_place(ed: &Editor, path: &Path) -> bool {
+    !crate::sandbox::key_named(&ed.workspace.root, path) && crate::allow::secret(path, home(ed).as_deref())
+}
+
+/// What a file `key_shut` keeps out is, in the words the user reads: `named like a key`, or `where keys are`
+/// (`by_place`).
+pub fn shut_why(ed: &Editor, path: &Path) -> &'static str {
+    match by_place(ed, path) {
+        true => "where keys are",
+        false => "named like a key",
+    }
+}
+
+/// `shut_why` said once for several files: the one word they share, else both.
+fn shut_whys<'a>(ed: &Editor, paths: impl IntoIterator<Item = &'a PathBuf>) -> &'static str {
+    let (mut place, mut name) = (false, false);
+    for p in paths {
+        match by_place(ed, p) {
+            true => place = true,
+            false => name = true,
+        }
+    }
+    match (place, name) {
+        (true, false) => "where keys are",
+        (true, true) => "named like a key or where keys are",
+        _ => "named like a key",
+    }
+}
+
+/// The marker in place of `path`'s text: `NOT_SENT`, or `NOT_SENT_PLACE` (`by_place`).
+pub fn not_sent_said(ed: &Editor, path: &Path) -> &'static str {
+    match by_place(ed, path) {
+        true => NOT_SENT_PLACE,
+        false => NOT_SENT,
+    }
+}
+
+/// A file the user's own sends keep out, as they name it: from the project's root, else with home as `~`.
+pub fn named(ed: &Editor, path: &Path) -> String {
+    match path.strip_prefix(&ed.workspace.root) {
+        Ok(rel) => rel.display().to_string(),
+        Err(_) => crate::crash::tilde(path, home(ed).as_deref()),
+    }
+}
+
 /// Whether the file at `path` (a document's — real since it was opened, `Editor::open`) is named like a key
-/// (in the project, or outside it by its name — `sandbox::key_named`) and not open to Claude: not opened for this conversation nor kept for the project
-/// (`Grant::Key` — the read card's `a`/`A`, the run's panel), nor in `pass` (what this one message may carry
-/// — `input_pass`). The main thread's, for the message's context and the screen: no disk — the kept ones are
-/// the chat's copy (`Chat.kept_keys`; not read yet, none counts as kept).
+/// (in the project, or outside it by its name — `sandbox::key_named`) or in a place that holds keys (`by_place`:
+/// the `SECRETS` widening, 2026-11-18 — for the user's own sends only, Claude's reads and runs go by their own
+/// rules) and not open to Claude: not opened for this conversation nor kept for the project (`Grant::Key` — an
+/// earlier build's `A`, the run's panel), nor in `pass` (what this one message may carry — `input_pass`). The main
+/// thread's, for the message's context and the screen: no disk — the kept ones are the chat's copy
+/// (`Chat.kept_keys`; not read yet, none counts as kept).
 pub fn key_shut(ed: &Editor, path: &Path, pass: &[PathBuf]) -> bool {
-    if !crate::sandbox::key_named(&ed.workspace.root, path) {
+    if !crate::sandbox::key_named(&ed.workspace.root, path) && !by_place(ed, path) {
         return false;
     }
     let path = path.to_path_buf();
@@ -734,19 +799,20 @@ pub fn input_pass(ed: &Editor) -> Vec<PathBuf> {
     c.key_pass.iter().filter(|(id, _)| c.pointed.contains(id)).map(|(_, k)| k.clone()).collect()
 }
 
-/// The panes on the last frame showing a file named like a key Claude may not read, as parts of the screen's
-/// text to blank (`screen::text_hiding`) — what `C-s` attaches, with the context's marker in their place.
+/// The panes on the last frame showing a file Claude may not read (`key_shut`: named like a key, or where keys
+/// are), as parts of the screen's text to blank (`screen::text_hiding`) — what `C-s` attaches, with the context's
+/// marker in their place.
 pub fn key_panes(ed: &Editor) -> Vec<crate::screen::Hidden> {
     let s = &ed.screen;
     let hidden = |path: PathBuf, (x, y, w, h): (usize, usize, usize, usize)| {
         if !key_shut(ed, &path, &[]) || h == 0 || w == 0 {
             return None;
         }
-        let name = path.strip_prefix(&ed.workspace.root).unwrap_or(&path).display().to_string();
+        let (name, marker) = (named(ed, &path), not_sent_said(ed, &path));
         // (too narrow for the file's name — the side panel: the marker alone, its heading names the file)
-        let note = match format!("[{name} — {NOT_SENT}]") {
+        let note = match format!("[{name} — {marker}]") {
             n if n.chars().count() <= w => n,
-            _ => format!("[{NOT_SENT}]"),
+            _ => format!("[{marker}]"),
         };
         Some(crate::screen::Hidden { rows: (y, y + h - 1), cols: (x, x + w), note })
     };
@@ -822,13 +888,12 @@ pub fn row_file(ed: &Editor, row: Row) -> Option<(PathBuf, Option<usize>)> {
 }
 
 /// What Claude's `ui` tool lists in place of a row's label when the row (`row_file`) shows a line of a file
-/// named like a key Claude may not read: its path (and line) kept, the text the context's marker
+/// Claude may not read (`key_shut`): its path (and line) kept, the text the context's marker
 /// (`uistate/claude.rs`) — None: the row as it is.
 pub fn row_shut(ed: &Editor, row: Row) -> Option<String> {
     let (path, at) = row_file(ed, row)?;
-    let name = path.strip_prefix(&ed.workspace.root).unwrap_or(&path).display().to_string();
     let at = at.map(|l| format!(":{}", l + 1)).unwrap_or_default();
-    key_shut(ed, &path, &[]).then(|| format!("{name}{at}: ({NOT_SENT})"))
+    key_shut(ed, &path, &[]).then(|| format!("{}{at}: ({})", named(ed, &path), not_sent_said(ed, &path)))
 }
 
 /// `row_shut` for the picker's visible row `line`.
@@ -927,23 +992,24 @@ pub fn wait_for_kept(ed: &mut Editor, paths: &[PathBuf], own: Own) -> bool {
 }
 
 /// The message went without these files' text (`chat::context`): said once a conversation in the chat, with
-/// how to send it.
+/// how to send it — pointing at it, its card's `y`.
 pub fn not_sent(ed: &mut Editor, keys: &[PathBuf]) {
-    let root = ed.workspace.root.clone();
-    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
-    let new: Vec<&PathBuf> = keys.iter().filter(|k| !c.keys_said.contains(k)).collect();
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
+    let new: Vec<PathBuf> = keys.iter().filter(|k| !c.keys_said.contains(k)).cloned().collect();
     if new.is_empty() {
         return;
     }
-    let names: Vec<String> =
-        new.iter().map(|k| k.strip_prefix(&root).unwrap_or(k).display().to_string()).collect();
-    let (it, is) = if new.len() == 1 { ("its", "is") } else { ("their", "are") };
+    let names: Vec<String> = new.iter().map(|k| named(ed, k)).collect();
+    let (its, is, it) = if new.len() == 1 { ("its", "is", "it") } else { ("their", "are", "them") };
     let row = format!(
-        "{} {is} named like a key — {it} text wasn't sent to Claude. To send it, point at it (C-o): y this \
-         message, a this conversation, A always — as when Claude asks to read it, or the run's panel opens it",
-        names.join(", ")
+        "{} {is} {} — {its} text wasn't sent to {}. To send {it}, point at {it} (C-o) and answer y: your message \
+         carries {its} text",
+        names.join(", "),
+        shut_whys(ed, &new),
+        crate::llm::session_row(ed).shown
     );
-    c.keys_said.extend(new.into_iter().cloned());
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    c.keys_said.extend(new);
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
 }
 
@@ -985,9 +1051,10 @@ pub fn point(ed: &mut Editor, id: &str) {
     }
 }
 
-/// The user's own act would send `keys` (files named like keys in the project, not open to Claude) — their
-/// act, so they aren't sent silently, nor left out silently: the read card asks first, holding `own` until
-/// the answer (`own_answer`) — `y` this one thing · `a` this conversation · `A` always · `n` their names only.
+/// The user's own act would send `keys` (files not open to Claude — named like keys, or where keys are: `key_shut`)
+/// — their act, so they aren't sent silently, nor left out silently: the read card asks first, holding `own` until
+/// the answer (`own_answer`) — `y` this one thing · `n` their names only (a key is opened once at a time:
+/// `Caps::storable`). Its title and question say what they are (`shut_why`).
 pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
     // (one card for the same thing — a chip, a note, the review)
@@ -999,11 +1066,14 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     if ed.session_cards().any(|o| own_card(&o.what, same)) {
         return;
     }
-    let root = &ed.workspace.root;
-    let names: Vec<String> =
-        keys.iter().map(|k| k.strip_prefix(root).unwrap_or(k).display().to_string()).collect();
+    let names: Vec<String> = keys.iter().map(|k| named(ed, k)).collect();
     let given = names.join(", ");
     let (it, is) = if keys.len() == 1 { ("it", "It's") } else { ("them", "They're") };
+    let why = shut_whys(ed, &keys);
+    let title = match keys.iter().all(|k| by_place(ed, k)) {
+        true => pointed_place_title(ed),
+        false => POINTED_TITLE.to_string(),
+    };
     let (what, y) = match &own {
         Own::Chip(_) => (
             format!("you pointed at {it}"),
@@ -1046,7 +1116,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
         .keys
         .iter()
         .all(|k| crate::caps::Caps::storable(&crate::allow::Grant::Key(k.clone())) == Scope::Always);
-    let mut q = format!("{}\n\n{is} named like a key, and {what}. {y}.", p.look.given);
+    let mut q = format!("{}\n\n{is} {why}, and {what}. {y}.", p.look.given);
     if keep {
         let only = if p.look.keys.len() == 1 { "that file only" } else { "those files only" };
         q.push_str(&format!("\n\na, s and A open {it} to Claude and its commands too — {only}."));
@@ -1054,7 +1124,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     let asked = crate::cards::Asked::new(crate::cards::Why::Read, crate::cards::Request::Read(p.class))
         .about(&p.look.given);
     let what = crate::offer::What::Read { pending: Box::new(p), keep, folder: None };
-    ed.push_offer(crate::offer::Offer::new(POINTED_TITLE.into(), &q, "", String::new(), what).asked(asked));
+    ed.push_offer(crate::offer::Offer::new(title, &q, "", String::new(), what).asked(asked));
 }
 
 /// A chip taken off the chat's input: its `y` goes, and a card its pointing raised goes with it — never those of an
@@ -1563,6 +1633,12 @@ pub const SCRIPT_KEYS_TITLE: &str = "Claude's program wants to read — named li
 /// The user pointed at a file named like a key (`point`).
 pub const POINTED_TITLE: &str = "Send to Claude — named like a key";
 
+/// `POINTED_TITLE` for files in a place that holds keys, none named like one (`by_place`): where they are, the
+/// session's agent by its row's name.
+pub fn pointed_place_title(ed: &Editor) -> String {
+    format!("Send to {} — where keys are", crate::llm::session_row(ed).shown)
+}
+
 /// The places other reads go (waiting, or let through once) — a card's folder for longer is offered beside
 /// them (#102). Not the files named like keys: those are opened one by one.
 fn others(c: &crate::chat::Chat) -> Vec<PathBuf> {
@@ -1876,10 +1952,10 @@ fn answer_batch(ed: &mut Editor, id: u64, mut p: Pending, yes: bool) {
     next(ed);
 }
 
-/// The answer on the card asking about files named like keys the user's own act would send (`ask_own`):
-/// `a`/`A` open them as the read card's do; then a chip's `y` lets the chat input's message with that chip
-/// carry them — that message only (`input_pass`) —, `n` keeps them to their names, said where the user looks,
-/// the message still waiting in the input; a note or the review goes now, with their lines or (`n`) without.
+/// The answer on the card asking about files the user's own act would send (`ask_own`): a chip's `y` lets the
+/// chat input's message with that chip carry them — that message only (`input_pass`) —, `n` keeps them to their
+/// names, said where the user looks, the message still waiting in the input; a note or the review goes now, with
+/// their lines or (`n`) without.
 fn own_answer(ed: &mut Editor, p: Pending, own: Own, scope: Option<Scope>, keep: bool) {
     if let Some(scope) = scope.filter(|s| *s != Scope::Once && keep) {
         crate::allow::grant_keys(ed, &p.look.keys, scope);

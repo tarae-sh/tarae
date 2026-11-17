@@ -375,13 +375,14 @@ pub fn from_code(ed: &Editor) -> Option<Result<Vec<Taken>, String>> {
 }
 
 /// The current buffer's `ranges`, one quote each, named by its path — or, with `buffer` (`space i`'s id for a
-/// buffer that isn't a file of the project, `ask.rs`), by that id and its name. A file named like a key Claude may not
-/// read is refused, said.
+/// buffer that isn't a file of the project, `ask.rs`), by that id and its name. A file Claude may not read — named
+/// like a key, or where keys are (`reads::key_shut`) — is refused, said.
 pub fn taken(ed: &Editor, ranges: &[(usize, usize)], buffer: Option<&str>) -> Result<Vec<Taken>, String> {
     let d = ed.doc();
     let name = d.display_name(&ed.workspace.root);
-    if d.path.as_ref().is_some_and(|p| crate::reads::key_shut(ed, p, &[])) {
-        return Err(format!("{name} is named like a key — point at its pane (space @) to choose"));
+    if let Some(p) = d.path.as_ref().filter(|p| crate::reads::key_shut(ed, p, &[])) {
+        let (name, why) = (crate::reads::named(ed, p), crate::reads::shut_why(ed, p));
+        return Err(format!("{name} is {why} — point at its pane (space @) to choose"));
     }
     let taken = ranges
         .iter()

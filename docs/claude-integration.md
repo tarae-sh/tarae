@@ -48,8 +48,8 @@ outside it, is named to this Claude by an id of its own (`buffer-…`, new each 
 that id, and only this one buffer's. The change is reviewed in that buffer and not saved: `:w` saves it, as
 always. Any path it names goes the way every edit's does, inside the project or refused. It reads nothing that would
 ask you on a card, and no pages. What tarae shows read-only (a page, the woven view, a run's output) isn't
-`space i`'s to change, and the status line says so. A file named like a key isn't sent, as `space >` doesn't send
-one.
+`space i`'s to change, and the status line says so. A file named like a key, or one where keys are (`~/.ssh`,
+`~/.aws`, …), isn't sent, as `space >` doesn't send one.
 
 | Key | In the review |
 |---|---|
@@ -415,6 +415,12 @@ tabs, the path bar. Type a label, or click the element, and its id goes into the
 (`card#12 goes with it`; Backspace in the empty input takes it off). The message tells Claude what you pointed
 at. Esc stops pointing ([screenshot](screenshots/chat-point-hanji.png)).
 
+A file named like a key, or one in a place that holds keys (`~/.ssh/config`, `~/.aws/config`), isn't sent with a
+message by being in front: its name goes, "not sent", and the chat says so once a conversation. Pointing at its pane
+is how it goes: a card asks first, saying it's named like a key or where keys are — `y` your message carries its
+text, that message only; `n` its name only. A key is opened once at a time, so `y` and `n` are all it offers. `C-s`
+blanks its pane, and the `ui` tool lists its rows without their text.
+
 For the turn in hand, what went to Claude carries a faint `◦` — a card at its title row's end (before `1/N`), a
 panel row in its right margin, the path bar after the file — and what its answer cites a `•`. They go with the
 next question. Toasts carry none.
@@ -691,9 +697,9 @@ where it came from said:
 - `enter` with nothing typed sends nothing — it says to type your question, what's over the input going with it.
 - **Tokens stay out**: the terminal's lines that look like a token (`env`'s output, an `Authorization` header) are
   taken out — `· 1 line hidden` on the chip, `hidden=` in the tag. The code's and the conversation's go as they are.
-- **What can't go is said**: the terminal's rows with `llm.screen-terminal` off; a file named like a key Claude
-  may not read (point at its pane, `space @`, to choose). The code's selection still goes with every message by
-  itself — once: quoted, it isn't sent again beside the quote.
+- **What can't go is said**: the terminal's rows with `llm.screen-terminal` off; a file named like a key, or one
+  where keys are, Claude may not read (point at its pane, `space @`, to choose). The code's selection still goes
+  with every message by itself — once: quoted, it isn't sent again beside the quote.
 
 The sent message's row lists its quotes; it opens a copy of what went.
 

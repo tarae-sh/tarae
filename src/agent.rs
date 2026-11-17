@@ -1501,7 +1501,7 @@ mod tests {
             // project's Claude settings)
             ("orchestra.rs", 7),
             ("plugin/install.rs", 1),
-            ("reads.rs", 10),
+            ("reads.rs", 9),
             // (the bring card's `(Claude's draft, :w)`, two)
             ("rebase.rs", 2),
             ("refactor.rs", 3),

@@ -5901,9 +5901,9 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     for id in &drafts {
         let Some(n) = ed.workspace.claude.notes.list.iter().find(|n| n.id == *id) else { continue };
         files.insert(n.path.clone());
-        // (on a file named like a key the user kept to its name — `n` on the card)
+        // (on a file named like a key, or where keys are, the user kept to its name — `n` on the card)
         let diff = match lines == Some(false) && keys.contains(&n.path) {
-            true => format!("({})\n", crate::reads::NOT_SENT),
+            true => format!("({})\n", crate::reads::not_sent_said(ed, &n.path)),
             false => ed
                 .docs
                 .iter()
