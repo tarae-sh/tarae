@@ -944,6 +944,37 @@ pub(crate) fn init(dir: &Path) -> Result<(), String> {
     finish(&cmd, None).map(|_| ())
 }
 
+/// Whose global git config `global` reads and writes (#610 L3, `safebare.rs`): the person's own — git as tarae was
+/// started, its `HOME` and `GIT_CONFIG_GLOBAL` — never in a test build; a test build's only a scratch folder's: its
+/// `.gitconfig` the global, `HOME` the folder, no system config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitHome {
+    #[cfg(not(test))]
+    Yours,
+    #[cfg(test)]
+    Scratch(PathBuf),
+}
+
+/// git in no repository, on `home`'s global config — `git version`, `git config …` (`safebare.rs`) — with `SAFE`, no
+/// prompt, its words untranslated: in `/`, or the scratch folder. Blocks: a worker's.
+pub(crate) fn global(home: &GitHome, args: &[&str]) -> Result<Ran, String> {
+    let mut cmd = match home {
+        #[cfg(not(test))]
+        GitHome::Yours => base(Path::new("/")),
+        #[cfg(test)]
+        GitHome::Scratch(dir) => {
+            not_in_this_repository(dir, args);
+            let mut c = base(dir);
+            c.env("HOME", dir)
+                .env("GIT_CONFIG_GLOBAL", dir.join(".gitconfig"))
+                .env("GIT_CONFIG_NOSYSTEM", "1");
+            c
+        }
+    };
+    cmd.env(ENGLISH.0, ENGLISH.1).args(SAFE).args(args);
+    ran(&cmd, None)
+}
+
 /// `git` with `NO_HOOKS`.
 pub(crate) fn git_no_hooks(root: &Path, args: &[&str]) -> Result<String, String> {
     repo(root)?.run_no_hooks(args)

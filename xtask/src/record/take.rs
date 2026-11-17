@@ -384,6 +384,12 @@ pub(crate) fn homes_of_its_own(home: &Path, cache: &Path) -> Result<Vec<(&'stati
         std::fs::DirBuilder::new().mode(0o700).create(&at).map_err(|e| format!("{}: {e}", at.display()))?;
         env.push((var, at.into_os_string()));
     }
+    // (#610: answered `no` — the offer about git's bare repositories never comes on camera by accident)
+    let own = home.join("state/tarae");
+    std::fs::DirBuilder::new().mode(0o700).create(&own).map_err(|e| format!("{}: {e}", own.display()))?;
+    let seed = own.join("safe-bare");
+    std::fs::write(&seed, format!("no {}\n", crate::perf::today()))
+        .map_err(|e| format!("{}: {e}", seed.display()))?;
     folder_for_a_take(cache)?;
     env.push(("XDG_CACHE_HOME", cache.as_os_str().to_owned()));
     Ok(env)

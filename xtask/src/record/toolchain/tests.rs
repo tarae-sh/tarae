@@ -214,8 +214,15 @@ fn the_take_has_a_state_a_data_and_a_cache_home_of_its_own() {
     for ((_, v), at) in env.iter().zip([home.join("state"), home.join("data"), cache.clone()]) {
         assert_eq!(Path::new(v), at);
         assert_eq!(std::fs::metadata(v).unwrap().mode() & 0o777, 0o700, "{}", at.display());
-        assert!(std::fs::read_dir(v).unwrap().next().is_none(), "{} empty", at.display());
+        // (#610: the state holds one thing — the offer about git's bare repositories answered `no`, never on camera)
+        let held: Vec<_> = std::fs::read_dir(v).unwrap().map(|e| e.unwrap().file_name()).collect();
+        match at == home.join("state") {
+            true => assert_eq!(held, ["tarae"], "{} holds the answer only", at.display()),
+            false => assert!(held.is_empty(), "{} empty", at.display()),
+        }
     }
+    let seed = std::fs::read_to_string(home.join("state/tarae/safe-bare")).unwrap();
+    assert!(seed.starts_with("no ") && seed.lines().count() == 1, "{seed:?}");
     // (never one that's there: a home made new holds none)
     assert!(super::super::take::homes_of_its_own(&home, &cache).is_err());
     // (a cache that holds anything — the last take's — refused, an empty one taken)

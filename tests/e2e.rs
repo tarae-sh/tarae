@@ -20,6 +20,29 @@ use std::time::Duration;
 
 use harness::*;
 
+/// #610: no tarae the harness starts goes without git's global config in its sandbox — and its home there, but a live
+/// run's (your home by design) — so none reads or writes yours; a child without either is refused. Live runs start with
+/// the offer answered `no`. Breaks if the harness's env leaves `GIT_CONFIG_GLOBAL` out, or the refusal goes.
+#[test]
+fn no_child_starts_without_a_scratch_git_config() {
+    let sb = Sandbox::new("scratch-git");
+    let env = sb.env();
+    assert_eq!(git_home_refused(&env, sb.root(), false), Ok(()));
+    for left in ["HOME", "GIT_CONFIG_GLOBAL"] {
+        let without: Vec<_> = env.iter().filter(|(k, _)| k != left).cloned().collect();
+        assert!(git_home_refused(&without, sb.root(), false).is_err(), "{left} left out");
+    }
+    let mut yours = env.clone();
+    yours.retain(|(k, _)| k != "GIT_CONFIG_GLOBAL");
+    yours.push(("GIT_CONFIG_GLOBAL".into(), "/elsewhere/.gitconfig".into()));
+    assert!(git_home_refused(&yours, sb.root(), false).is_err(), "outside the sandbox");
+    // (live: its home yours, its git config and state the sandbox's — answered)
+    let live = Sandbox::live("scratch-git");
+    assert_eq!(git_home_refused(&live.env(), live.root(), true), Ok(()));
+    let seed = live.home().join(".local/state/tarae/safe-bare");
+    assert!(fs::read_to_string(&seed).is_ok_and(|s| s.starts_with("no ")), "live runs start answered");
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 /// The shim (`tarae --nofile N <absolute path> <argv0> args…`, nofile.rs): the program gets soft limit N and the
@@ -996,16 +1019,14 @@ fn task_output_fills_the_list_and_q_walks_it() {
 #[test]
 fn git_tab_stages_and_commits() {
     let sb = Sandbox::new("gittab");
-    fs::write(
-        sb.home().join(".gitconfig"),
-        "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n",
-    )
-    .unwrap();
+    // (#610: tarae's git reads the sandbox's GIT_CONFIG_GLOBAL — the identity there, as the fixture's git reads it)
+    fs::write(sb.git_config(), "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n").unwrap();
     let git = |args: &[&str]| {
         let st = Command::new("git")
             .args(args)
             .current_dir(sb.work())
             .env("HOME", sb.home())
+            .env("GIT_CONFIG_GLOBAL", sb.git_config())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1046,16 +1067,14 @@ fn git_tab_stages_and_commits() {
 #[test]
 fn git_tab_section_header_takes_k_and_stages_all() {
     let sb = Sandbox::new("gittab-section");
-    fs::write(
-        sb.home().join(".gitconfig"),
-        "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n",
-    )
-    .unwrap();
+    // (#610: tarae's git reads the sandbox's GIT_CONFIG_GLOBAL — the identity there, as the fixture's git reads it)
+    fs::write(sb.git_config(), "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n").unwrap();
     let git = |args: &[&str]| {
         let st = Command::new("git")
             .args(args)
             .current_dir(sb.work())
             .env("HOME", sb.home())
+            .env("GIT_CONFIG_GLOBAL", sb.git_config())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdout(Stdio::null())
             .stderr(Stdio::null())

@@ -185,6 +185,10 @@ pub enum What {
     /// #610: folders git takes for a repository the checkout held when it was first opened (`lookalike.rs`, S3) — it
     /// holds nothing: `y` notes them (kept: a note, never a trust), `v` shows each, `n` asks again at the next start.
     LookAlike(Box<crate::lookalike::Ask>),
+    /// #610: the offer to make the person's own git use a bare repository only when named (`safebare.rs`, S4): `y`
+    /// writes it to their global git config, `n` never asks again. `typed`: `:git-safe-bare` asked (the person's own),
+    /// else a turn's end brought it.
+    SafeBare { typed: bool },
     /// Review at the end (`edits.rs`): `y` lets Claude's edits go in as it makes them.
     ReviewAtEnd,
     /// Claude's Read, Grep or Glob outside the project (`reads.rs`): `y` once, `a` this chat, `s` this session,
@@ -356,6 +360,7 @@ pub const KINDS: &[&str] = &[
     "no-sandbox",
     "protected-made",
     "look-alike",
+    "safe-bare",
     "review-at-end",
     "read",
     "grant",
@@ -491,6 +496,8 @@ impl What {
             | What::CodeTrust { .. }
             // (the checkout is looked at again as it opens)
             | What::LookAlike(_)
+            // (offered again at a counting turn)
+            | What::SafeBare { .. }
             | What::Recover(_)
             | What::RecoverChats(_)
             | What::Restart(_)
@@ -750,6 +757,7 @@ impl Offer {
                     | What::NotesClose { .. }
                     | What::BillingSwitch { .. }
                     | What::FeaturesReset
+                    | What::SafeBare { typed: true }
                     | What::ChangeSet { whose: crate::refactor::Whose::Yours, .. }
             ),
         }
@@ -1495,6 +1503,7 @@ impl Offer {
                 v
             }
             W::LookAlike(_) => vec![lasts('y', "Noted"), plain('v', "Details"), plain('n', "Not now")],
+            W::SafeBare { .. } => vec![lasts('y', "Write it"), lasts('n', "Never")],
             W::Read { keep, pending, .. } => {
                 let mut v = match keep {
                     // (tarae's log: never longer than this chat — #292)
@@ -1784,6 +1793,7 @@ impl Offer {
             W::NoSandbox { .. } => "no-sandbox",
             W::ProtectedMade { .. } => "protected-made",
             W::LookAlike(_) => "look-alike",
+            W::SafeBare { .. } => "safe-bare",
             W::ReviewAtEnd => "review-at-end",
             W::Read { .. } => "read",
             W::Grant { .. } => "grant",
@@ -2293,6 +2303,7 @@ impl crate::editor::Editor {
                 crate::tools::made_answer(self, id, *then, made, how)
             }
             What::LookAlike(ask) => crate::lookalike::answer(self, id, *ask),
+            What::SafeBare { .. } => crate::safebare::answer(self, id),
             What::ReviewAtEnd => {
                 self.offer_finished(id, Ok(()));
                 crate::edits::at_end_set(self, true);
@@ -3131,6 +3142,7 @@ impl crate::editor::Editor {
                 crate::tools::made_answer(self, o.id, *then, made, crate::tools::MadeAnswer::No)
             }
             What::LookAlike(ask) => crate::lookalike::later(self, &ask),
+            What::SafeBare { .. } => crate::safebare::never(self),
             What::ReviewAtEnd => self.set_status("Claude's edits come one at a time"),
             What::ProjectTrust { hash } => self.project_trust_answer(o.id, hash, false),
             What::ClaudeSettings { hash } => self.claude_settings_answer(o.id, hash, false),

@@ -83,6 +83,29 @@ const LIVE_DROP: &[&str] =
 
 // ── Sandbox ──────────────────────────────────────────────────────────────────
 
+/// #610: a tarae the harness starts is refused unless its environment (`env`, all it sees) gives git a global config in
+/// the sandbox (`root`) — and a home there, but in a live run (your home by design: its tools and claude's login; its
+/// tarae's state the sandbox's, `safe-bare` answered `no`). Your global git config is written by your own `y` alone.
+pub fn git_home_refused(env: &[(OsString, OsString)], root: &Path, live: bool) -> Result<(), String> {
+    // (the last of a name: what the child gets — a live run's own come after what it passes on)
+    let get = |k: &str| env.iter().rfind(|(n, _)| n == k).map(|(_, v)| PathBuf::from(v));
+    let names: &[&str] = if live { &["GIT_CONFIG_GLOBAL"] } else { &["HOME", "GIT_CONFIG_GLOBAL"] };
+    for name in names {
+        match get(name) {
+            None => {
+                return Err(format!(
+                    "{name} isn't set — every tarae the harness starts gets the sandbox's (#610)"
+                ));
+            }
+            Some(v) if !v.starts_with(root) => {
+                return Err(format!("{name}={} is outside the sandbox — never yours (#610)", v.display()));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 /// A fresh directory standing in for HOME, the XDG dirs, and the working directory. Removed on drop.
 pub struct Sandbox {
     root: PathBuf,
@@ -174,6 +197,10 @@ impl Sandbox {
         // git gets a config of its own — your global one (signing, hooks, aliases) stays out of it
         fs::write(sb.git_config(), "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n")
             .unwrap();
+        // (#610: answered `no` — the offer about git's bare repositories never comes by accident in a live run)
+        let state = sb.home().join(".local/state/tarae");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("safe-bare"), "no 2026-11-18\n").unwrap();
         sb
     }
 
@@ -327,6 +354,8 @@ impl Sandbox {
         }
         let base: Vec<(OsString, OsString)> = [
             ("HOME", home.clone().into()),
+            // (#610: git's global config the sandbox's own — never yours, read or written)
+            ("GIT_CONFIG_GLOBAL", self.git_config().into()),
             ("XDG_CONFIG_HOME", home.join(".config").into()),
             ("XDG_STATE_HOME", home.join(".local/state").into()),
             ("XDG_DATA_HOME", home.join(".local/share").into()),
@@ -350,6 +379,10 @@ impl Sandbox {
         // too: `pty::BROKER`, terminals A)
         let broker = std::env::var_os(pty::BROKER).map(|s| (OsString::from(pty::BROKER), s));
         base.into_iter().chain(broker).chain(self.vars.iter().cloned()).collect()
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn spawn(&self, args: &[&str]) -> Term {
@@ -626,14 +659,12 @@ impl Term {
         let master = File::from(master);
         let stdio = || Stdio::from(slave.try_clone().expect("dup slave"));
         // (`TARAE_BIN` or `with_bin`: another build of tarae — a kept copy, to measure it against this one)
+        let env = sb.env();
+        if let Err(why) = git_home_refused(&env, &sb.root, sb.live) {
+            panic!("{why}");
+        }
         let mut cmd = tarae(sb.bin());
-        cmd.args(args)
-            .current_dir(cwd)
-            .env_clear()
-            .envs(sb.env())
-            .stdin(stdio())
-            .stdout(stdio())
-            .stderr(stdio());
+        cmd.args(args).current_dir(cwd).env_clear().envs(env).stdin(stdio()).stdout(stdio()).stderr(stdio());
         let soft = sb.soft_nofile;
         // SAFETY: only async-signal-safe calls between fork and exec.
         unsafe {

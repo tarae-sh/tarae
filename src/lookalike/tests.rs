@@ -103,7 +103,7 @@ fn the_first_trust_card_comes_once() {
     assert_eq!(o.title, TITLE);
     assert!(
         o.question.starts_with(
-            "a/ — here before Claude ran anything\n\ngit run from there or below — your terminal, a prompt's git \
+            "a/ — here before tarae ran anything\n\ngit run from there or below — your terminal, a prompt's git \
              status — uses it instead of this project's repository and runs what its config and hooks name. tarae's \
              own git doesn't.\n\nNoted: asked again only when this changes. Not now: asked again when this project \
              is next opened.\n"
@@ -157,7 +157,7 @@ fn the_first_trust_card_comes_once() {
     assert_eq!(o.title, TITLE_MANY);
     assert!(
         o.question.starts_with(
-            "a/\nb/\nc/\nand 1 more\nAll here before Claude ran anything.\n\ngit run from there or below — your \
+            "a/\nb/\nc/\nand 1 more\nAll here before tarae ran anything.\n\ngit run from there or below — your \
              terminal, a prompt's git status — uses them instead of this project's repository and runs what their \
              config and hooks name. tarae's own git doesn't.\n\nNoted: asked again only when this changes. Not now: \
              asked again when this project is next opened.\n"
@@ -288,7 +288,7 @@ fn a_cut_with_no_card_is_said_once_in_a_toast() {
     // (right under the folder, at full strength, its lead short: the title says what was looked for)
     assert!(
         o.question.starts_with(
-            "a/ — here before Claude ran anything\nNot looked at: the untracked files took over 2.0s.\n\ngit run "
+            "a/ — here before tarae ran anything\nNot looked at: the untracked files took over 2.0s.\n\ngit run "
         ),
         "{}",
         o.question
@@ -313,7 +313,7 @@ fn a_cut_says_its_count_of_folders_right() {
     let o = ask.card();
     assert!(
         o.question.starts_with(
-            "a/\nb/\nAll here before Claude ran anything.\nNot looked at: 1 more folder holding a HEAD.\n\ngit run "
+            "a/\nb/\nAll here before tarae ran anything.\nNot looked at: 1 more folder holding a HEAD.\n\ngit run "
         ),
         "{}",
         o.question

@@ -924,10 +924,13 @@ impl Editor {
         self.task_spawn(task, None, policy, feeds, true, &[], trace, None);
         let out = match self.workspace.task_run.as_mut().filter(|_| self.task_generation != before) {
             Some(r) => {
+                // (#610: a command ran in this turn, in the sandbox or not — `safebare::turn_over`)
+                let claudes = matches!(who, crate::tools::For::Claude(_));
                 match who {
                     crate::tools::For::Claude(call) => r.chat = Some(call),
                     crate::tools::For::User(head) => r.tell = Some(head),
                 }
+                self.workspace.claude.ran_in_turn |= claudes;
                 r.by_claude = true;
                 r.guard = guard;
                 r.ran = ran;

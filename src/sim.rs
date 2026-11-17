@@ -92,6 +92,7 @@ mod reveal;
 mod reviews;
 mod reviewwait;
 mod rundoc;
+mod safebare;
 mod sessions;
 mod shareswap;
 mod shimmer;

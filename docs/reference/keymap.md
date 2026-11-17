@@ -683,6 +683,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:git-branch-rename` |  | Rename a branch (one name: this one) |
 | `:git-branch-delete` |  | Delete a branch (asks if it loses commits) |
 | `:git-amend` |  | Amend the last commit (as A) |
+| `:git-safe-bare` |  | Bare repos only when named |
 | `:diff` |  | Show changes against HEAD, a file, or a revision |
 | `:diff-off` |  | Stop showing the diff |
 | `:weave` |  | This file with every session's changes woven in |

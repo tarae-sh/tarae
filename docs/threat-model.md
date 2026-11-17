@@ -237,15 +237,22 @@ Kept:
 Not kept:
 - **A folder git takes for a repository, past what the look sees** (#610). Your own git before you answer, or outside
   tarae (a prompt's `git status` there runs its config's commands): only git's own `safe.bareRepository=explicit`
-  closes that. Below the top of an ignored folder that was there before the run and isn't tools' output — now on macOS
+  closes that — offered once (a card at the end of the first turn a command ran in, wherever it ran; the look-alike
+  cards' last line while it isn't set; `:git-safe-bare` any time), written by git itself to your global config on your
+  own `y` only, never by a test, a shot or a run (scratch `HOME` and `GIT_CONFIG_GLOBAL`, a child without them
+  refused); read once since tarae started, `system` and `global` only (tarae's own `-c` never counts), not offered to
+  a git before 2.38. Below the top of an ignored folder that was there before the run and isn't tools' output — now on macOS
   too (Seatbelt refuses `.git` by name, never a look-alike's names). Past 256 remembered folders holding a `HEAD`,
-  empty `objects/` and `refs/` added beside one (the count said in Claude's run report). Below tools' output, `r`
+  empty `objects/` and `refs/` added beside one (the count said in the run report). Below tools' output, `r`
   removes a `HEAD` only where the file system keeps when a file was made; else the folder is named with nothing for
   `r`. What's noted and remembered lives until tarae quits (a note given at the first-trust card is kept). A folder
   opened for writing outside the project. At first open, the untracked files past 2 s and the folders past 4,096 aren't
   looked at — said, on the card or in a toast.
   test: `snapshot::tests::past_the_bound_the_heads_not_looked_at_are_counted` ·
-  `sim::trustscan::the_untracked_scan_is_cut_and_said` · `lookalike::tests::a_cut_with_no_card_is_said_once_in_a_toast`
+  `sim::trustscan::the_untracked_scan_is_cut_and_said` · `lookalike::tests::a_cut_with_no_card_is_said_once_in_a_toast` ·
+  `safebare::tests::the_command_scope_never_counts_as_set` · `safebare::tests::yes_writes_exactly_and_names_the_file` ·
+  `safebare::tests::the_offer_rides_on_a_look_alike_card_and_drops_once_written` ·
+  `sim::safebare::the_offer_comes_once_and_its_answer_holds`
 - **A protected name made where none is yet, or moved in inside a folder.** Linux: Landlock only grants. Where a
   run has a mount namespace of its own (tier own), each protected name is bound read-only over itself and every
   folder takes new files, so a new `build.rs` beside a `Cargo.toml` is made; each folder between the project and a

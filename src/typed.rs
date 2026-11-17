@@ -346,6 +346,10 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             editor.features_reset();
             Ok(())
         }
+        "git-safe-bare" => {
+            crate::safebare::command(editor);
+            Ok(())
+        }
         "log-open" => {
             let path = crate::log::path().ok_or("no state directory for the log")?;
             if !path.exists() {

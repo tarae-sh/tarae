@@ -54,6 +54,8 @@ pub struct Session {
     /// Its Claude's tool calls waiting for the editor's answer (`tools::WATCHED`) — one silent past its time
     /// marks the session possibly stuck (`Doing::Stuck`).
     pub tool_waits: Vec<crate::workspace::ToolWait>,
+    /// A command of its Claude's ran through tarae's tools in this turn — in the sandbox or not (`safebare::turn_over`).
+    pub ran_in_turn: bool,
     /// No sandbox here, or a partial one: what you said on its card for Claude's commands — asked at the
     /// session's first run, held until it ends, never kept past a restart (`tools::NoSandbox`, Q6).
     pub no_sandbox: Option<crate::tools::NoSandbox>,
@@ -182,6 +184,7 @@ impl Session {
             board_yes: None,
             turn_end: None,
             tool_waits: Vec::new(),
+            ran_in_turn: false,
             no_sandbox: None,
             env_key: None,
             answered: Vec::new(),

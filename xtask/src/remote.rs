@@ -362,6 +362,8 @@ fn drive(
         .stdin(stdio()?)
         .stdout(stdio()?)
         .stderr(stdio()?);
+    // (#610: a scratch home and git config, as every take's tarae — or refused)
+    crate::shot::scratch_git(&mut cmd, scratch)?;
     for (k, _) in std::env::vars_os() {
         if k.to_string_lossy().starts_with("ZELLIJ") {
             cmd.env_remove(k);

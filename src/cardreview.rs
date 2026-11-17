@@ -478,6 +478,7 @@ pub const AUTO: &[(&str, Auto)] = &[
     ("protected-made", Auto::Never),
     // (tarae's own look at the checkout: no act of Claude's)
     ("look-alike", Auto::Own),
+    ("safe-bare", Auto::Own),
     ("review-at-end", Auto::Own),
     ("read", Auto::ByRequest),
     ("grant", Auto::ByRequest),

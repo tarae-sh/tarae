@@ -185,6 +185,8 @@ pub(crate) fn watch_round(
     moved: bool,
 ) {
     ed.drawn_for("a git watch round");
+    // (#610: git's own setting for bare repositories, read once since tarae started — beside the first round)
+    crate::safebare::read_once(ed);
     if ed.workspace.root != dir {
         return ed.unchanged = true;
     }
@@ -591,11 +593,7 @@ mod tests {
         }
         let o = ed.offers.iter().find(|o| o.kind() == "look-alike").unwrap();
         // (the committed one whatever the untracked half took: past its limit the cached half is looked at alone)
-        assert!(
-            o.question.contains("\nvendor/fx/\nAll here before Claude ran anything.\n"),
-            "{}",
-            o.question
-        );
+        assert!(o.question.contains("\nvendor/fx/\nAll here before tarae ran anything.\n"), "{}", o.question);
         assert!(o.question.contains("\n\ngit run from there or below — "), "{}", o.question);
         assert!(ed.workspace.heads.iter().any(|h| h.0 == dir.join("lone")), "lone/ remembered");
     }

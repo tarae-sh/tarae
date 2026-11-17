@@ -1493,8 +1493,6 @@ mod tests {
             ("limits.rs", 1),
             // (Claude Code's install, login and environment)
             ("llm.rs", 9),
-            // (#610 L2's first-trust card, "here before Claude ran anything": #610 L3 makes it "tarae")
-            ("lookalike.rs", 2),
             ("models.rs", 1),
             ("offer.rs", 2),
             // (billing's two, the cap's and two tools' words to the agent, a prompt's frame, the restart for the

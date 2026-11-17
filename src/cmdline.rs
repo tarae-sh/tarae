@@ -188,6 +188,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["git-branch-rename"], Arg::Branch, "Rename a branch (one name: this one)"),
     c(&["git-branch-delete"], Arg::Branch, "Delete a branch (asks if it loses commits)"),
     c(&["git-amend"], Arg::None, "Amend the last commit (as A)"),
+    c(&["git-safe-bare"], Arg::None, "Bare repos only when named"),
     c(&["diff"], Arg::File, "Show changes against HEAD, a file, or a revision"),
     c(&["diff-off"], Arg::None, "Stop showing the diff"),
     c(&["weave"], Arg::File, "This file with every session's changes woven in"),

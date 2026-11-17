@@ -8216,6 +8216,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "rmcard",
     "lookalike",
     "lookalikenoted",
+    "safebare",
     "big",
     "fork",
     "foot41",
@@ -8416,6 +8417,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // answered y, then a run only edits its config — the card again, with no r)
             "lookalike" => turn.look_alike(false)?,
             "lookalikenoted" => turn.look_alike(true)?,
+            // (#610 L3: a turn a command ran in, making nothing git takes — the offer's card by itself at its end)
+            "safebare" => turn.safe_bare()?,
             // (Short 4's second turn: what tarae sent by itself as your run again of the `.env` read ended)
             "runtime" if turns > 1 => turn.runtime_allowed()?,
             "runtime" => turn.runtime()?,
@@ -9605,6 +9608,16 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.call(3, "run", json!({"command": edit}))?;
             self.call(4, "run", json!({"command": "cargo test -q parser"}))?;
         }
+        self.words("Done.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #610 L3's turn: one command run (its card answered), nothing git takes for a repository made — the offer about
+    /// git's bare repositories comes by itself as the turn ends.
+    fn safe_bare(&mut self) -> io::Result<()> {
+        self.words("I'll make the fixtures folder the parser tests read.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "mkdir -p tests/fixtures"}))?;
         self.words("Done.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }

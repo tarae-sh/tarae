@@ -193,6 +193,7 @@ mod rundoc;
 mod runhomes;
 mod runout;
 mod runtime;
+mod safebare;
 mod sandbox;
 mod sandboxpack;
 mod saver;

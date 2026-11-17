@@ -1432,6 +1432,8 @@ pub struct Editor {
     /// The agents that tripped (guard 3, `agent::Ended::Tripped`), by their row's name: none starts again until you
     /// quit (`llm::held_for`) — one of their sessions running elsewhere goes on, and trips on its own.
     pub agents_tripped: Vec<&'static str>,
+    /// #610: the offer to make the person's own git use a bare repository only when named (`safebare.rs`).
+    pub safe_bare: crate::safebare::SafeBare,
     /// Where an agent's files were held back on their card (guard 4, `agenttrust.rs`), by the answer's place: no agent
     /// starts there until you quit — a no is never kept, as code trust's.
     pub agent_files_held: Vec<crate::trust::Place>,
@@ -1833,6 +1835,7 @@ impl Editor {
             claude_lines: None,
             agent_versions_said: Vec::new(),
             agents_tripped: Vec::new(),
+            safe_bare: crate::safebare::SafeBare::new(),
             agent_files_held: Vec::new(),
             #[cfg(test)]
             ask_lines: None,

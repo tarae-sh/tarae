@@ -71,14 +71,14 @@ impl Ask {
         let line = crate::trust::visible_line;
         let title = if found.len() == 1 { TITLE } else { TITLE_MANY };
         let mut named: Vec<String> = match found.len() {
-            1 => vec![format!("{}/ — here before Claude ran anything", line(&found[0].rel))],
+            1 => vec![format!("{}/ — here before tarae ran anything", line(&found[0].rel))],
             _ => found.iter().take(NAMED).map(|f| format!("{}/", line(&f.rel))).collect(),
         };
         if found.len() > NAMED {
             named.push(format!("and {} more", found.len() - NAMED));
         }
         if found.len() > 1 {
-            named.push("All here before Claude ran anything.".into());
+            named.push("All here before tarae ran anything.".into());
         }
         // (the title says what was looked for: the toast, alone, says it — `look_alikes_cut`)
         if let Some(why) = self.scan.cut_why() {
@@ -184,7 +184,8 @@ impl Editor {
         }
         // (its cut said on it)
         self.workspace.look_cut_told |= ask.scan.cut_why().is_some();
-        let o = ask.card();
+        let mut o = ask.card();
+        crate::safebare::with_line(self, &mut o.question, ask.scan.found.len() > 1);
         self.push_offer(o);
     }
 

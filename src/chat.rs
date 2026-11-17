@@ -3327,6 +3327,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             if stopped {
                 crate::tools::left_running(ed, left);
             }
+            // (#610: a turn a command ran in — the offer about git's bare repositories, once)
+            crate::safebare::turn_over(ed);
             crate::reads::turn_over(ed);
             checkpoint_turn(ed);
             // (its result came just before — `Spent`: the cache's TTL runs from its last request)
@@ -3526,6 +3528,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             // A review (or a command's card) claude was waiting on has no one to answer now
             crate::edits::turn_over(ed);
             crate::tools::turn_over(ed);
+            crate::safebare::turn_over(ed);
             crate::reads::turn_over(ed);
             crate::restart::turn_over(ed);
             // (a billing that waited for the turn's end — the turn ended here)

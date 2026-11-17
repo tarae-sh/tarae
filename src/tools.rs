@@ -765,12 +765,15 @@ fn start_tests(
     ed.test_start_guarded(target, guard, trace, crate::spawn::Acts::Claude);
     match ed.workspace.test_run.as_mut().filter(|_| ed.test_generation != before) {
         Some(r) => {
+            let claudes = matches!(who, For::Claude(_));
             match who {
                 For::Claude(call) => r.chat = Some(call),
                 For::User(head) => r.tell = Some(head),
             }
             r.by_claude = true;
             (r.key, r.joined, r.queued, r.snap) = (ride.key, ride.joined, ride.queued, ride.snap);
+            // (#610: a command ran in this turn — `safebare::turn_over`)
+            ed.workspace.claude.ran_in_turn |= claudes;
             true
         }
         None => {
@@ -4870,6 +4873,10 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
             (title, format!("{label}\n\n{}", looks_card(&looks, &then)))
         }
     };
+    let mut question = question;
+    if !looks.is_empty() {
+        crate::safebare::with_line(ed, &mut question, looks.len() > 1);
+    }
     let at = label.split('\n').count() + 1;
     if let Some(call) = then.call() {
         call.step("protected-made card up");
@@ -4898,6 +4905,7 @@ fn looks_card(looks: &[&crate::snapshot::Made], then: &MadeThen) -> String {
     };
     let it = if looks.len() == 1 { "it" } else { "them" };
     let mut s = looks.iter().map(line).collect::<Vec<_>>().join("\n");
+    // (the offer's line, last, goes on in `ask_made`: `safebare::with_line`)
     s += "\n\n";
     s += &crate::snapshot::git_uses(looks.len() > 1);
     if then.servers() {

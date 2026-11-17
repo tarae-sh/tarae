@@ -698,8 +698,13 @@ impl Drop for DockerConfig {
 /// (#139's review: a fixed folder in `target/`, which Claude's runs write, could hold a planted `config.json` —
 /// `cliPluginsExtraDirs`, `credsStore`, `proxies` — whose code would run with Docker's socket open).
 pub(crate) fn made_new(parent: &Path) -> std::io::Result<PathBuf> {
+    made_new_as(parent, "tarae-xtask-docker")
+}
+
+/// `made_new`, its name `prefix-` and six random characters.
+pub(crate) fn made_new_as(parent: &Path, prefix: &str) -> std::io::Result<PathBuf> {
     use std::os::unix::ffi::OsStrExt as _;
-    let template = parent.join("tarae-xtask-docker-XXXXXX");
+    let template = parent.join(format!("{prefix}-XXXXXX"));
     let mut bytes = std::ffi::CString::new(template.as_os_str().as_bytes())?.into_bytes_with_nul();
     // SAFETY: a NUL-terminated template ending in six `X`s that lives through the call, which fills them in.
     if unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null() {

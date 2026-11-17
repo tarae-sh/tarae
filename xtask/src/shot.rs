@@ -29,8 +29,9 @@
 //!   start folder that does, is refused.
 //! - `TARAE_SHOT_CLAUDE` — the stand-in's script (`scenes.rs`'s `SCRIPTS`: `full`, `card` …; default `idle`; a name
 //!   it doesn't know refused), for a config that names no `llm.command`.
-//! - `TARAE_SHOT_STATE` — state home (files to restore, recent files, undo, chats); default a fresh temp dir, removed
-//!   afterwards — never the user's.
+//! - `TARAE_SHOT_STATE` — state home (files to restore, recent files, undo, chats, tarae's cache); default a fresh
+//!   folder in `/var/tmp` (`state_places`: in the temp folder a command run would be refused), removed afterwards —
+//!   never the user's.
 //! - `TARAE_BACKGROUND=dark|light` — the theme (the virtual terminal doesn't answer the background query).
 //! - `TARAE_SHOT_FILES` (default `src/transaction.rs src/selection.rs`), `TARAE_SHOT_CWD` (default the repo),
 //!   `TARAE_SHOT_COLS`/`TARAE_SHOT_ROWS` (default 112×30).
@@ -91,9 +92,10 @@ pub fn run(args: &[String]) -> Result<()> {
         vt.feed(&bytes);
     } else {
         let given = folder("TARAE_SHOT_STATE", std::env::var_os("TARAE_SHOT_STATE"), false)?;
-        let state = given
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join(format!("tarae-shot-state-{}", std::process::id())));
+        let state = match &given {
+            Some(s) => s.clone(),
+            None => made_in_first(&state_places())?,
+        };
         // (`_home`: the stand-in's config home, kept until the shot is done)
         let res = Setup::from_env()
             .and_then(|(setup, _home)| drive(&mut vt, &setup, keys, &state, &[], cols, rows));
@@ -928,7 +930,85 @@ pub(crate) fn command(setup: &Setup, state: &Path, homes: &[(&str, std::ffi::OsS
         cmd.env(k, v);
     }
     cmd.env("PATH", no_claude_path(state, std::env::var_os("PATH").as_deref())?);
+    scratch_git(&mut cmd, state)?;
     Ok(cmd)
+}
+
+/// Where a shot's default state is made, in order: `/var/tmp`, outside both temp folders — tarae makes its runs' own
+/// folders in its cache (`as_a_terminal`: the state's), and refuses one where every run may write: in the temp folder
+/// each command a shot's Claude ran ended "not run", unless the project lay in that temp folder too (#616's probe).
+/// Then the temp folder: where `/var/tmp` can't be written (inside tarae's sandbox, whose shots' tarae can't sandbox
+/// a run anyway).
+fn state_places() -> [PathBuf; 2] {
+    [PathBuf::from("/var/tmp"), std::env::temp_dir()]
+}
+
+/// A folder made new (`linux::made_new_as`: 0700, a name no one could pick before) in the first of `places` that takes
+/// one.
+fn made_in_first(places: &[PathBuf]) -> Result<PathBuf> {
+    let mut why = Vec::new();
+    for p in places {
+        match crate::linux::made_new_as(p, "tarae-shot-state") {
+            Ok(made) => return Ok(made),
+            Err(e) => why.push(format!("{}: {e}", p.display())),
+        }
+    }
+    Err(format!("no folder for the shot's state — {}", why.join("; ")))
+}
+
+/// A variable as `cmd` sets it (None: inherited, or taken out).
+fn set_on(cmd: &Command, name: &str) -> Option<PathBuf> {
+    cmd.get_envs().find(|(k, _)| *k == name).and_then(|(_, v)| v.map(PathBuf::from))
+}
+
+/// #610: every tarae a take or `xtask remote` starts gets a scratch `HOME` and `GIT_CONFIG_GLOBAL` — the person's global
+/// git config is written by their own `y` in tarae alone. `HOME` as the take's homes set it, else `scratch/home` (made);
+/// `GIT_CONFIG_GLOBAL` that home's `.gitconfig` unless set; tarae's data where it was with your home (grammars, packs),
+/// unless set. Then refused unless both are set and neither is yours (`git_home_refused`).
+pub(crate) fn scratch_git(cmd: &mut Command, scratch: &Path) -> Result<()> {
+    let yours = std::env::var_os("HOME").map(PathBuf::from);
+    let home = match set_on(cmd, "HOME") {
+        Some(h) => h,
+        None => {
+            let h = scratch.join("home");
+            std::fs::create_dir_all(&h).map_err(|e| format!("{}: {e}", h.display()))?;
+            cmd.env("HOME", &h);
+            if set_on(cmd, "XDG_DATA_HOME").is_none() {
+                let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+                if let Some(d) = data.or_else(|| yours.as_ref().map(|y| y.join(".local/share"))) {
+                    cmd.env("XDG_DATA_HOME", d);
+                }
+            }
+            h
+        }
+    };
+    if set_on(cmd, "GIT_CONFIG_GLOBAL").is_none() {
+        cmd.env("GIT_CONFIG_GLOBAL", home.join(".gitconfig"));
+    }
+    git_home_refused(cmd, yours.as_deref())
+}
+
+/// A child refused (#610) unless `cmd` sets `HOME` and `GIT_CONFIG_GLOBAL`, neither your home (`yours`) nor a global
+/// git config of yours (`~/.gitconfig`, `~/.config/git/config`). (A scratch folder may lie in your home: a sandboxed
+/// run's temp folder does.)
+pub(crate) fn git_home_refused(cmd: &Command, yours: Option<&Path>) -> Result<()> {
+    let own = |v: &Path| {
+        yours.is_some_and(|y| v == y || v == y.join(".gitconfig") || v == y.join(".config/git/config"))
+    };
+    for name in ["HOME", "GIT_CONFIG_GLOBAL"] {
+        let Some(v) = set_on(cmd, name) else {
+            return Err(format!(
+                "{name} isn't set — a take's tarae gets a scratch one: your global git config is yours alone (#610)"
+            ));
+        };
+        if own(&v) {
+            return Err(format!(
+                "{name}={} is yours — a take's tarae gets a scratch one (#610)",
+                v.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `drive`, `on_spawn` told the tarae's pid as it starts.
@@ -2275,6 +2355,74 @@ mod tests {
         let out = dir.0.join("homes.png");
         let keys = ["@3?ok".to_string()];
         assert!(take_at(&setup, &keys, (80, 2), 1, &dir.0, &homes, &out).is_ok(), "the homes given");
+    }
+
+    /// #610: every tarae a take (shots, scenes, the recorder: `command`) or `xtask remote` starts gets a scratch `HOME`
+    /// and `GIT_CONFIG_GLOBAL` — the homes' `HOME` when given, its `.gitconfig` — and one without either, or with
+    /// yours, is refused. Breaks if `command` stops calling `scratch_git`, or the refusal goes.
+    #[test]
+    fn no_child_starts_without_a_scratch_git_config() {
+        let dir = crate::scenes::Fresh::new("tarae-shot-git").unwrap();
+        stand_in_config(&dir.0);
+        let setup = Setup {
+            bin: "/bin/sh".into(),
+            files: Vec::new(),
+            cwd: dir.0.clone(),
+            config: dir.0.clone(),
+            background: None,
+            env: Vec::new(),
+        };
+        let state = dir.0.join("state");
+        let cmd = command(&setup, &state, &[]).unwrap();
+        assert_eq!(set_on(&cmd, "HOME"), Some(state.join("home")));
+        assert_eq!(set_on(&cmd, "GIT_CONFIG_GLOBAL"), Some(state.join("home/.gitconfig")));
+        let cmd = command(&setup, &state, &[("HOME", "/t/home".into())]).unwrap();
+        assert_eq!(
+            set_on(&cmd, "GIT_CONFIG_GLOBAL"),
+            Some(PathBuf::from("/t/home/.gitconfig")),
+            "the homes'"
+        );
+        let yours = Path::new("/Users/someone");
+        assert!(git_home_refused(&Command::new("true"), Some(yours)).is_err(), "neither set");
+        let mut c = Command::new("true");
+        c.env("HOME", "/t/home");
+        assert!(git_home_refused(&c, Some(yours)).is_err(), "no GIT_CONFIG_GLOBAL");
+        c.env("GIT_CONFIG_GLOBAL", "/Users/someone/.gitconfig");
+        assert!(git_home_refused(&c, Some(yours)).is_err(), "yours");
+        c.env("HOME", yours).env("GIT_CONFIG_GLOBAL", "/t/home/.gitconfig");
+        assert!(git_home_refused(&c, Some(yours)).is_err(), "your home");
+        c.env("HOME", "/t/home");
+        c.env("GIT_CONFIG_GLOBAL", "/t/home/.gitconfig");
+        assert_eq!(git_home_refused(&c, Some(yours)), Ok(()));
+    }
+
+    /// #616's probe: a shot's default state is made outside both temp folders first — tarae's cache is the state's, and
+    /// in a temp folder tarae refuses its runs' own folders there (every command a shot's Claude ran ended "not run") —
+    /// and in the next place when one can't take it; each made new, 0700. Breaks if the temp folder comes first, or a
+    /// place that can't take one ends the search.
+    #[test]
+    fn a_shots_default_state_is_made_where_no_run_writes() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let first = real(&state_places()[0]);
+        let shared =
+            [real(Path::new("/tmp")), real(&std::env::temp_dir()), PathBuf::from("/private/var/folders")];
+        for t in shared {
+            assert!(
+                !first.starts_with(&t),
+                "{} is in {}, which every run writes",
+                first.display(),
+                t.display()
+            );
+        }
+        let dir = crate::scenes::Fresh::new("tarae-shot-state").unwrap();
+        let (none, ok) = (dir.0.join("none"), dir.0.join("ok"));
+        std::fs::create_dir(&ok).unwrap();
+        let places = [none.clone(), ok.clone()];
+        let (one, two) = (made_in_first(&places).unwrap(), made_in_first(&places).unwrap());
+        assert!(one.starts_with(&ok) && two.starts_with(&ok) && one != two, "{one:?} {two:?}");
+        assert_eq!(std::fs::metadata(&one).unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(made_in_first(&[none]).unwrap_err().contains("none"), "why said");
     }
 
     /// A bold cell's character the mono font lacks, below the wide range, is drawn in the wide font's bold too —
