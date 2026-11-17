@@ -5074,12 +5074,12 @@ fn the_character_glances_up_once_as_each_line_comes_in_and_not_again_while_it_st
 
 use super::brushing;
 
-/// The brush's spans (samples) and its track of `kind` (before its level) over the program `prog`, from `plan`'s sweeps.
-fn brush_of(plan: &Plan, prog: &Program, kind: brushing::Kind) -> (Vec<brushing::Span>, Vec<f32>) {
+/// The brush's spans (samples) and its track (before its level) over the program `prog`, from `plan`'s sweeps.
+fn brush_of(plan: &Plan, prog: &Program) -> (Vec<brushing::Span>, Vec<f32>) {
     let len = track_len(prog);
     let sweeps = plan.painted.as_ref().map_or(&[][..], |p| &p.sweeps[..]);
     let spans = brushing::spans(sweeps, len);
-    let y = brushing::track(kind, &spans, len);
+    let y = brushing::track(&spans, len);
     (spans, y)
 }
 
@@ -5124,22 +5124,13 @@ fn no_two_sweeps_in_a_row_sound_alike_and_a_render_is_the_same_twice() {
     }
     let again = painted_cut(dir.path(), true);
     let (plan2, _, _) = painting(&again, true, None);
-    for kind in brushing::Kind::ALL {
-        // (two in a row, at one length: not the same sound — nor as loud)
-        let (a, b) = (
-            brushing::stroke(kind, RATE as usize, &varied[0]),
-            brushing::stroke(kind, RATE as usize, &varied[1]),
-        );
-        let (la, lb) = (crate::sound::lufs(&a), crate::sound::lufs(&b));
-        assert!(a != b && (la - lb).abs() > 0.01, "{}: {la} and {lb}", kind.name());
-        let (_, y1) = brush_of(&plan, &prog, kind);
-        let (_, y2) = brush_of(&plan2, &Program::new(&again), kind);
-        assert!(
-            y1.iter().zip(&y2).all(|(p, q)| p.to_bits() == q.to_bits()),
-            "{}: the same twice",
-            kind.name()
-        );
-    }
+    // (two in a row, at one length: not the same sound — nor as loud)
+    let (a, b) = (brushing::stroke(RATE as usize, &varied[0]), brushing::stroke(RATE as usize, &varied[1]));
+    let (la, lb) = (crate::sound::lufs(&a), crate::sound::lufs(&b));
+    assert!(a != b && (la - lb).abs() > 0.01, "{la} and {lb}");
+    let (_, y1) = brush_of(&plan, &prog);
+    let (_, y2) = brush_of(&plan2, &Program::new(&again));
+    assert!(y1.iter().zip(&y2).all(|(p, q)| p.to_bits() == q.to_bits()), "the same twice");
 }
 
 /// Silent where the picture isn't painted at reading speed: across the whole cut — its take at 4×, fast-forward holds
@@ -5157,32 +5148,21 @@ fn the_brush_is_silent_through_crossings_turns_and_fast_forward() {
         .filter(|p| matches!(p.what, What::Picture(_)))
         .flat_map(|p| [p.at, p.at + p.len].map(|at| (Program::frame_at(at), Program::frame_at(at + cross))))
         .collect();
-    for kind in brushing::Kind::ALL {
-        let (spans, y) = brush_of(&plan, &prog, kind);
-        assert_eq!(spans.len(), 4, "{}: the picture painted", kind.name());
-        let mut looked = [0usize; 3];
-        for k in 0..prog.frames() {
-            let at = [
-                holds.iter().any(|h| (h.0..=h.1).contains(&k)),
-                crossings.iter().any(|c| (c.0..c.1).contains(&k)),
-                matches!(plan.pic(k), Some(Pic::Swing(_) | Pic::DrawIn)),
-            ];
-            for (n, _) in at.iter().enumerate().filter(|a| *a.1) {
-                looked[n] += 1;
-                assert_eq!(
-                    frame_energy(&y, k),
-                    0.0,
-                    "{}: frame {k} heard ({n}: hold, crossing, turn)",
-                    kind.name()
-                );
-            }
+    let (spans, y) = brush_of(&plan, &prog);
+    assert_eq!(spans.len(), 4, "the picture painted");
+    let mut looked = [0usize; 3];
+    for k in 0..prog.frames() {
+        let at = [
+            holds.iter().any(|h| (h.0..=h.1).contains(&k)),
+            crossings.iter().any(|c| (c.0..c.1).contains(&k)),
+            matches!(plan.pic(k), Some(Pic::Swing(_) | Pic::DrawIn)),
+        ];
+        for (n, _) in at.iter().enumerate().filter(|a| *a.1) {
+            looked[n] += 1;
+            assert_eq!(frame_energy(&y, k), 0.0, "frame {k} heard ({n}: hold, crossing, turn)");
         }
-        assert!(
-            looked.iter().all(|n| *n > 0),
-            "{}: holds, crossings and turns looked at: {looked:?}",
-            kind.name()
-        );
     }
+    assert!(looked.iter().all(|n| *n > 0), "holds, crossings and turns looked at: {looked:?}");
 }
 
 /// Frame `k`'s samples.
@@ -5227,18 +5207,12 @@ fn the_brush_strokes_once_a_sweep_from_its_first_frame() {
         assert!((k..k + n).all(|j| matches!(plan.pic(j), Some(Pic::Sweep(_)))), "{k}: across all through");
         assert!(!matches!(plan.pic(k + n), Some(Pic::Sweep(_))), "{k}: over as the brush leaves or rests");
     }
-    for kind in brushing::Kind::ALL {
-        let (_, y) = brush_of(&plan, &prog, kind);
-        let runs = sounding(&y);
-        assert_eq!(runs.len(), sweeps.len(), "{}: one sound a sweep, {runs:?}", kind.name());
-        for (&(from, to), &(k, n)) in runs.iter().zip(&sweeps) {
-            assert!(frame_samples(k).contains(&from), "{}: the sweep at {k} heard from {from}", kind.name());
-            assert!(
-                to <= frame_samples(k + n - 1).end,
-                "{}: the sweep at {k} heard past its last frame",
-                kind.name()
-            );
-        }
+    let (_, y) = brush_of(&plan, &prog);
+    let runs = sounding(&y);
+    assert_eq!(runs.len(), sweeps.len(), "one sound a sweep, {runs:?}");
+    for (&(from, to), &(k, n)) in runs.iter().zip(&sweeps) {
+        assert!(frame_samples(k).contains(&from), "the sweep at {k} heard from {from}");
+        assert!(to <= frame_samples(k + n - 1).end, "the sweep at {k} heard past its last frame");
     }
 }
 
@@ -5250,7 +5224,7 @@ fn the_brush_is_silent_through_a_lift_and_at_rest() {
     let c = painted_cut(dir.path(), true);
     let prog = Program::new(&c);
     let (plan, a, b) = painting(&c, true, None);
-    let (_, y) = brush_of(&plan, &prog, brushing::Kind::Dry);
+    let (_, y) = brush_of(&plan, &prog);
     let (mut lifted, mut rested) = (0, 0);
     for k in a..b + 6 {
         let e = frame_energy(&y, k);
@@ -5274,18 +5248,18 @@ fn no_brush_where_nothing_is_painted() {
     let c = painted_cut(dir.path(), true);
     let prog = Program::new(&c);
     let (plain, a, b) = painting(&c, false, None);
-    let (spans, y) = brush_of(&plain, &prog, brushing::Kind::Dry);
+    let (spans, y) = brush_of(&plain, &prog);
     assert!(spans.is_empty() && y.iter().all(|v| *v == 0.0));
     let keys: Vec<f32> = (0..track_len(&prog)).map(|i| (i as f32 * 0.01).sin() * 0.1).collect();
     let mut laid = keys.clone();
-    assert_eq!(brushing::lay(&mut laid, Some(brushing::Kind::Dry), &[], -19.2), None);
+    assert_eq!(brushing::lay(&mut laid, &[], -19.2), None);
     assert!(laid.iter().zip(&keys).all(|(x, k)| x.to_bits() == k.to_bits()));
     // (a surprise from a + 20: the first sweep's frames under it silent, the brush heard only where it's shown)
     let (surprised, _, _) = painting(&c, true, Some(a + 20));
     let sweeps = &surprised.painted.as_ref().unwrap().sweeps;
     assert_eq!((sweeps[0].at, sweeps[0].frames), (a + 6, 14), "the first sweep up to the surprise");
     assert!(sweeps.iter().all(|s| s.at < a + 20 || s.at >= a + 35), "{sweeps:?}");
-    let (_, y) = brush_of(&surprised, &prog, brushing::Kind::Damp);
+    let (_, y) = brush_of(&surprised, &prog);
     for k in 0..prog.frames() {
         let across = matches!(surprised.pic(k), Some(Pic::Sweep(_)));
         assert!(across || frame_energy(&y, k) == 0.0, "{k}: {:?} heard", surprised.pic(k));
@@ -5293,44 +5267,49 @@ fn no_brush_where_nothing_is_painted() {
     assert!(y[..frame_samples(a).start].iter().chain(&y[frame_samples(b).start..]).all(|v| *v == 0.0));
 }
 
-/// No brush with the switch off: no `[sound] brush` (or `none`) is none, and none lays nothing — the keys to the bit;
-/// a kind is named by its word, any other refused with its line; the brush reshuffles no blink.
+/// No switch: the brush is heard wherever the character paints, so the edit list names none — `[sound]` takes `under`
+/// and `over` only, a `brush` there refused with its line, whatever its word (round 1's and 2's `"rub"`, `"none"`, a
+/// bool).
 #[test]
-fn no_brush_with_the_switch_off() {
-    let c = cut(CUT).unwrap();
-    assert_eq!(c.brush, None, "no [sound]: none");
+fn the_brush_has_no_switch_in_the_edit_list() {
     let with = |s: &str| cut(&(CUT.to_string() + "\n[sound]\n" + s + "\n"));
-    assert_eq!(with("brush = \"none\"").unwrap().brush, None);
-    for kind in brushing::Kind::ALL {
-        let k = with(&format!("brush = \"{}\"", kind.name())).unwrap();
-        assert_eq!((k.brush, k.seed, k.mix), (Some(kind), c.seed, c.mix), "{}", kind.name());
+    assert_eq!(with("under = 5\nover = 7").unwrap().mix.under, 5.0);
+    for word in ["\"rub\"", "\"dry\"", "\"none\"", "true", "false"] {
+        let e = with(&format!("brush = {word}")).unwrap_err();
+        assert!(
+            e.starts_with("cut.toml:") && e.contains("sound: no key brush (it takes under, over)"),
+            "{e}"
+        );
     }
-    let under = with("under = 5").unwrap();
-    assert_eq!(with("under = 5\nbrush = \"ink\"").unwrap().seed, under.seed);
-    for bad in ["brush = \"wet\"", "brush = 3"] {
-        let e = with(bad).unwrap_err();
-        assert!(e.starts_with("cut.toml:") && e.contains("sound: brush"), "{e}");
-    }
-    let keys: Vec<f32> = (0..96_000).map(|i| (i as f32 * 0.003).sin() * 0.2).collect();
-    let mut laid = keys.clone();
-    assert_eq!(brushing::lay(&mut laid, None, &[sweep(10, 30, 0), sweep(60, 30, 1)], -19.2), None);
-    assert!(laid.iter().zip(&keys).all(|(x, k)| x.to_bits() == k.to_bits()), "the keys to the bit");
 }
 
-/// The brush lies `UNDER_KEYS_LU` under the keys' own loudness over its sweeps, in the centre, whatever the kind.
+/// The brush lies `UNDER_KEYS_LU` (12, as the user heard it) under the keys' own loudness over its sweeps, in the
+/// centre; its press's low swell and its grain stand it at most 21 dB over its loudness.
 #[test]
 fn the_brush_lies_under_the_keys_by_its_constant() {
+    assert_eq!(brushing::UNDER_KEYS_LU, 12.0, "the level the user heard");
     let sweeps = [sweep(30, 30, 0), sweep(68, 30, 1), sweep(106, 14, 2)];
-    for kind in brushing::Kind::ALL {
-        let mut keys = vec![0.0f32; 5 * RATE as usize];
-        let b = brushing::lay(&mut keys, Some(kind), &sweeps, -19.2).unwrap();
-        let heard: Vec<f32> = (brushing::spans(&sweeps, keys.len()).iter())
-            .flat_map(|s| keys[s.at..s.at + s.n].iter().copied())
-            .collect();
-        let own = super::sound::centred(crate::sound::lufs(&heard));
-        assert!((own - (-19.2 - brushing::UNDER_KEYS_LU)).abs() < 0.05, "{}: {own}", kind.name());
-        assert_eq!((b.sweeps, b.lufs), (3, -19.2 - brushing::UNDER_KEYS_LU));
-        assert!(b.peak < -19.2 - brushing::UNDER_KEYS_LU + 18.0, "{}: a peak of {}", kind.name(), b.peak);
+    let mut keys = vec![0.0f32; 5 * RATE as usize];
+    let b = brushing::lay(&mut keys, &sweeps, -19.2).unwrap();
+    let heard: Vec<f32> = (brushing::spans(&sweeps, keys.len()).iter())
+        .flat_map(|s| keys[s.at..s.at + s.n].iter().copied())
+        .collect();
+    let own = super::sound::centred(crate::sound::lufs(&heard));
+    let under = brushing::UNDER_KEYS_LU;
+    assert!((own - (-19.2 - under)).abs() < 0.05, "{own}");
+    assert_eq!((b.sweeps, b.lufs), (3, -19.2 - under));
+    println!("its peak {:.1} dB over its loudness", b.peak - b.lufs);
+    assert!(b.peak < -19.2 - under + 21.0, "a peak of {}", b.peak);
+}
+
+/// Made here, never downloaded and kept in no file: `brushing.rs` reads nothing — no file, no process, no address,
+/// no variable —, its stroke a function of its sweep alone (the same twice: the test of no two sweeps alike).
+#[test]
+fn the_brush_is_made_not_read_from_a_file() {
+    let src = include_str!("brushing.rs");
+    let reads = ["fs::", "File", "include_", "Command", "Path", "http", ".wav", "env::"];
+    for r in reads {
+        assert!(!src.contains(r), "brushing.rs: {r}");
     }
 }
 
@@ -5341,51 +5320,82 @@ fn rms_windows(x: &[f32]) -> Vec<f64> {
         .collect()
 }
 
-/// `x`'s energy over 3 kHz, of its whole.
-fn over_3k(x: &[f32]) -> f64 {
-    let mut hp = crate::rain::high_pass(3_000.0);
-    let all: f64 = x.iter().map(|v| f64::from(*v).powi(2)).sum();
-    let high: f64 = x.iter().map(|v| hp.iter_mut().fold(f64::from(*v), |x, b| b.run(x)).powi(2)).sum();
-    high / all
+/// `x` through `sections`.
+fn filtered(x: &[f32], sections: &mut [crate::rain::Biquad]) -> Vec<f64> {
+    x.iter().map(|v| sections.iter_mut().fold(f64::from(*v), |x, b| b.run(x))).collect()
 }
 
-/// A stroke is a brush on paper, not a tap, wind or breath: eased in with no attack (its first 50 ms 15 dB under its
-/// loudest, 80 ms at least before it comes within 6 dB of it), a grain in its level all through (not a smooth wash);
-/// `dry` a papery hiss, `damp` rounder with little over 3 kHz, `ink` turning from the one to the other — each sweep's
-/// own variation too (the first eight places of a step).
+/// `x`'s energy over `f` Hz, of its whole.
+fn over(x: &[f32], f: f64) -> f64 {
+    let high: f64 = filtered(x, &mut crate::rain::high_pass(f)).iter().map(|v| v * v).sum();
+    high / x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>()
+}
+
+/// Strokes a second long, at the first eight places of a step.
+fn strokes() -> Vec<(usize, brushing::Vary, Vec<f32>)> {
+    (0..8)
+        .map(|nth| {
+            let v = brushing::Vary::of(&sweep(0, 30, nth));
+            (nth, v, brushing::stroke(RATE as usize, &v))
+        })
+        .collect()
+}
+
+/// How many of `at` fall in `from..to` (fractions of `n`), a second.
+fn rate_in(at: &[usize], n: usize, (from, to): (f64, f64)) -> f64 {
+    let (a, b) = ((from * n as f64) as usize, (to * n as f64) as usize);
+    at.iter().filter(|&&i| (a..b).contains(&i)).count() as f64 / ((b - a) as f64 / RATE as f64)
+}
+
+/// A stroke lands and lifts: no click as it lands (its first 5 ms 20 dB under its loudest 10 ms), the press a low
+/// swell (its first 50 ms mostly under 400 Hz), and lifted (its last 30 ms 20 dB under its loudest) — each sweep's own
+/// variation too.
 #[test]
-fn a_stroke_is_a_brush_on_paper() {
+fn a_stroke_lands_and_lifts() {
+    let db = |x: f64| 20.0 * x.log10();
+    let rms = |x: &[f32]| (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+    for (nth, _, s) in strokes() {
+        let loudest = rms_windows(&s).into_iter().fold(0.0, f64::max);
+        let ms = |m: usize| m * RATE as usize / 1000;
+        let (first, last) = (db(rms(&s[..ms(5)]) / loudest), db(rms(&s[s.len() - ms(30)..]) / loudest));
+        let low = 1.0 - over(&s[..ms(50)], 400.0);
+        println!("{nth}: first 5 ms {first:.1} dB, under 400 Hz in 50 ms {low:.2}, last 30 ms {last:.1} dB");
+        assert!(first < -20.0, "{nth}: a click as it lands, {first:.1} dB");
+        assert!(low > 0.5, "{nth}: its press {low:.2} under 400 Hz");
+        assert!(last < -20.0, "{nth}: not lifted, {last:.1} dB");
+    }
+}
+
+/// The stroke is the paper rubbed, a low "shh": most of it between 300 Hz and 1.5 kHz, little over 3 kHz; its grain
+/// deep (its 6 ms levels spread) and at the brush's pace (the fibres it crosses: half as many again a second mid-sweep
+/// as as it lands).
+#[test]
+fn a_stroke_is_a_low_grained_shh() {
     let n = RATE as usize;
-    for (kind, nth) in brushing::Kind::ALL.into_iter().flat_map(|k| (0..8).map(move |j| (k, j))) {
-        let s = brushing::stroke(kind, n, &brushing::Vary::of(&sweep(0, 30, nth)));
-        let w = rms_windows(&s);
-        let db = |x: f64| 20.0 * x.log10();
-        let fifty: Vec<f64> =
-            w.windows(5).map(|v| (v.iter().map(|x| x * x).sum::<f64>() / 5.0).sqrt()).collect();
-        let loudest = fifty.iter().copied().fold(0.0, f64::max);
-        assert!(
-            db(fifty[0]) < db(loudest) - 15.0,
-            "{}: its first 50 ms {:.1} dB",
-            kind.name(),
-            db(fifty[0] / loudest)
-        );
-        let near = fifty.iter().position(|x| db(*x) > db(loudest) - 6.0).unwrap();
-        assert!(near >= 8, "{} {nth}: within 6 dB of its loudest after {near}0 ms", kind.name());
-        let middle = &w[25..75];
-        let mean = middle.iter().sum::<f64>() / middle.len() as f64;
-        let spread =
-            (middle.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / middle.len() as f64).sqrt() / mean;
-        let high = over_3k(&s);
-        let (first, last) = (over_3k(&s[..n / 3]), over_3k(&s[2 * n / 3..]));
+    for (nth, v, s) in strokes() {
+        let mut band = crate::rain::high_pass(300.0).to_vec();
+        band.push(crate::rain::Biquad::new(crate::rain::Shape::LowPass, 1_500.0, 0.541, 0.0));
+        band.push(crate::rain::Biquad::new(crate::rain::Shape::LowPass, 1_500.0, 1.307, 0.0));
+        let inside = filtered(&s, &mut band).iter().map(|v| v * v).sum::<f64>()
+            / s.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        let high = over(&s, 3_000.0);
+        // (where the brush crosses from one fibre to the next)
+        let x = brushing::along(n, &v);
+        let crossed: Vec<usize> = (1..n).filter(|&i| x[i].floor() > x[i - 1].floor()).collect();
+        let (landing, middle) = (rate_in(&crossed, n, (0.03, 0.2)), rate_in(&crossed, n, (0.4, 0.6)));
+        let w: Vec<f64> = (s.chunks(n / 500))
+            .map(|c| (c.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / c.len() as f64).sqrt())
+            .collect();
+        let middle_w = &w[w.len() * 3 / 10..w.len() * 7 / 10];
+        let five: Vec<f64> = middle_w.chunks(3).map(|c| c.iter().sum::<f64>() / c.len() as f64).collect();
+        let mean = five.iter().sum::<f64>() / five.len() as f64;
+        let spread = (five.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / five.len() as f64).sqrt() / mean;
         println!(
-            "{} {nth}: grain {spread:.3}, over 3 kHz {high:.3} ({first:.3} → {last:.3}), 6 dB at {near}0 ms",
-            kind.name()
+            "rub {nth}: {inside:.2} in 300 Hz–1.5 kHz, over 3 kHz {high:.3}, grain {spread:.2}, fibres {landing:.0} → \
+             {middle:.0} a second"
         );
-        assert!(spread > 0.08, "{}: a grain of {spread:.3}: a smooth wash", kind.name());
-        match kind {
-            brushing::Kind::Dry => assert!(high > 0.3, "dry: {high:.3} over 3 kHz"),
-            brushing::Kind::Damp => assert!(high < 0.08, "damp: {high:.3} over 3 kHz"),
-            brushing::Kind::Ink => assert!(last > 3.0 * first, "ink: {first:.3} → {last:.3}"),
-        }
+        assert!(inside > 0.7 && high < 0.05, "rub {nth}: {inside:.2} in its band, {high:.3} over 3 kHz");
+        assert!(spread > 0.25, "rub {nth}: a grain of {spread:.2}");
+        assert!(middle > 1.5 * landing, "rub {nth}: fibres {landing:.0} → {middle:.0} a second");
     }
 }

@@ -27,9 +27,9 @@
 //! - **The whole** at `CUT_LUFS` as encoded and its AAC under `video::AAC_PEAK_DB` (`search`): a gain over the mix as
 //!   laid for the level, the limiter's ceiling (`sound::SHORT_CEILING_DB`, the keys' cap made for it) never moved, but
 //!   dipped over the AAC frames that came out over the aim — the encoder's overshoot is a frame's own, and uneven.
-//! - **The brush on the tablet** (`[sound] brush`, `brushing.rs`): a soft stroke under each sweep of the character's
-//!   painting, in the centre with the keys once they're mastered — the beds under it as under them —,
-//!   `brushing::UNDER_KEYS_LU` under their loudness; none named, none laid and the sound as it was, to the bit.
+//! - **The brush on the tablet** (`brushing.rs`): a soft stroke under each sweep of the character's painting, in the
+//!   centre with the keys once they're mastered — the beds under it as under them —, `brushing::UNDER_KEYS_LU` under
+//!   their loudness; nothing painted, none laid and the sound as it was, to the bit.
 
 use std::path::Path;
 use std::time::Duration;
@@ -762,8 +762,8 @@ pub(crate) fn next_plan(plan: &Plan, got: &Encoded) -> Option<Plan> {
 /// The cut's sound into `wav`: what's heard (`sounds`), the beds read with ffmpeg from `dir` (the edit list's folder),
 /// laid, levelled and limited — tried until its AAC is at `CUT_LUFS` and under `video::AAC_PEAK_DB` (`search`). What it
 /// made, said (cut.txt's lines). The intro's swing starts `swing_skip` µs into its frames as made (the empty ones left
-/// out): its brush the same, its head (a silence) cut by as much. The brush on the tablet (`[sound] brush`) a stroke on
-/// each of `sweeps` (the character's painting: its first frame, how many — `Painted::sweeps`).
+/// out): its brush the same, its head (a silence) cut by as much. The brush on the tablet a stroke on each of
+/// `sweeps` (the character's painting: its first frame, how many — `Painted::sweeps`).
 pub(crate) fn make(
     prog: &Program,
     dir: &Path,
@@ -864,7 +864,7 @@ pub(crate) fn make(
     let (x, depth) = bed_gains(loud, cut.mix);
     let key_peaks = key_peaks(&keys.samples, key_at.iter().copied());
     // (the brush on the tablet with tarae's own sounds, the keys' levels above as they were without it)
-    let brushed = super::brushing::lay(&mut keys.samples, cut.brush, sweeps, loud);
+    let brushed = super::brushing::lay(&mut keys.samples, sweeps, loud);
     let laid = sides(&keys.samples, &beds, &d, x, depth);
     let (keys_gain, keys_limited) = (keys.gain, keys.limited);
     drop(keys);
@@ -960,8 +960,8 @@ pub(crate) fn make(
         lv.keys_gain,
         lv.keys_limited
     ));
-    said.push(match (&brushed, cut.brush) {
-        (Some(b), _) => {
+    said.push(match &brushed {
+        Some(b) => {
             let bed = match made_beds.first() {
                 Some(m) => format!(
                     ", {:.1} LU over bed {}'s ({:.1} LUFS as laid, alone)",
@@ -972,9 +972,8 @@ pub(crate) fn make(
                 None => String::new(),
             };
             format!(
-                "  the brush on the tablet: {} — {} sweeps, {:.1} s in all, a stroke each from its first frame; {} LUFS in the \
+                "  the brush on the tablet: {} sweeps, {:.1} s in all, a stroke each from its first frame; {} LUFS in the \
                  centre over its sweeps alone, {:.1} LU under the keys alone{bed}; its peak {:.1} dBTP",
-                b.kind.name(),
                 b.sweeps,
                 b.secs,
                 db(b.lufs + tried[pick].0.gain),
@@ -982,10 +981,7 @@ pub(crate) fn make(
                 b.peak + tried[pick].0.gain
             )
         }
-        (None, Some(k)) => format!("  the brush on the tablet: {} — no sweep painted, none heard", k.name()),
-        (None, None) => "  the brush on the tablet: none ([sound] brush = \"dry\", \"damp\" or \"ink\" lays a stroke under \
-                          each sweep)"
-            .into(),
+        None => "  the brush on the tablet: none — no sweep painted".into(),
     });
     if levelled {
         said.push(format!(
