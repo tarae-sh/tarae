@@ -221,6 +221,52 @@ fn after_a_trip_a_review_queues_nothing_and_says_why() {
     assert_eq!(rx.try_iter().count(), 0, "nothing reached an agent");
 }
 
+/// After a trip, the findings a parent's Claude sends (`session_act send`: `send_only` with its `SentBy`) wait for
+/// nothing either: nothing queued, the findings kept, and the parent's news says the hold's reason.
+#[test]
+fn after_a_trip_a_parents_send_queues_nothing_and_tells_it_why() {
+    let s = crate::scratch::Scratch::new("held-trip-parent-send");
+    let root = std::fs::canonicalize(s.path()).unwrap();
+    let (mut ed, rx) = editor_in(reads(), &root);
+    // (the parent: a workspace behind, its session the front one's parent — the findings passed in, its id made up)
+    let home = root.join("home");
+    std::fs::create_dir(&home).unwrap();
+    let parent_ws = ed.workspace_add(home);
+    let parent = ed.workspace_by_id(parent_ws).unwrap().claude.id;
+    ed.workspace.claude.parent = Some(parent);
+    crate::chat::trip_for_test(&mut ed);
+    rx.try_iter().for_each(drop);
+    let a = root.join("a.rs");
+    std::fs::write(&a, "fn a() {}\n").unwrap();
+    ed.open(&a).unwrap();
+    let id = crate::notes::add(&mut ed, &a, 0..1, crate::notes::By::Reviewer, "[f] A.");
+    let by = crate::orchestra::SentBy {
+        from: "home".into(),
+        conversation: Some("made-up".into()),
+        wake: false,
+        ids: vec![id],
+    };
+    crate::codereview::send_only(&mut ed, None, Some(&by));
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.sends.is_empty(), "nothing queued: {} waiting — {}", c.sends.len(), status(&ed));
+    assert!(!c.running(), "nothing started");
+    assert_eq!(ed.workspace.claude.notes.list.len(), 1, "the findings kept");
+    let news = &ed.workspace_by_id(parent_ws).unwrap().claude.news;
+    let why: Vec<&str> = (news.iter())
+        .filter_map(|n| match &n.ended {
+            crate::orchestra::Ended::NotDone { act: crate::orchestra::Act::Send, why } => Some(why.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        why,
+        [format!("couldn't reach its stand-in — {TRIPPED}; the findings are kept unsent")],
+        "{news:?}"
+    );
+    assert_eq!(news[0].conversation.as_deref(), Some("made-up"), "told to the conversation that sent them");
+    assert_eq!(rx.try_iter().count(), 0, "nothing reached an agent");
+}
+
 /// After a trip, a stopped rebase's ask waits for nothing (`waiting` stays empty): it's yours, said with the hold's
 /// reason, and `:rebase-continue` as before.
 #[test]
