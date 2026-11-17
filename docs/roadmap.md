@@ -150,7 +150,7 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-11-15):
+Under way (2026-11-17):
 
 1. **Agents beside Claude, the main line** (user, 2026-11-13): other agents run in tarae beside Claude — agy and
    Gemini CLI through one adapter on the Agent Client Protocol (ACP), Claude staying on its own wire. Agents are rows
@@ -169,35 +169,55 @@ Under way (2026-11-15):
      `721635f0`). P2, the ACP wire against a stand-in agent: one start, an agent a row kept with its conversation,
      `agent/acp.rs` (`4941ec75`, `e961f639`, `a46edc99`), and the bridge — tarae's tools reach the agent as an MCP
      server of its own, on a socket only the agent's own processes can use (`4555ccb5`).
-   - Under way: P3, the safety floor. Landing 1 (the agent in a session of its own with no terminal, `39ca1e3c`),
-     landing 2 (the first guard, `tarae agent-hook`, `4e452722`) and the bridge's relay fix on Linux (`9a54bc19`) are
-     in. Landing 3 — the second guard's mode kept and the third guard's tripwire — is being built; after it a small
-     bridge landing, landing 4 (the fourth guard, a project's `.agents/` held until trusted) and landing 5 (the
-     watches).
-   - Then P4, the agy and Gemini rows with live tests and shots; and P5, helpers on any agent, mixed crews, Codex,
-     and tarae's own agent loop on the same seam.
+     P3, the safety floor (2026-11-14 to 11-16): the agent in a session of its own with no terminal (`39ca1e3c`), the
+     first guard (`tarae agent-hook`, `4e452722`), the relay fix on Linux (`9a54bc19`), the second guard's mode and
+     the third's tripwire (`ad0a2e83`), the bridge's landing (`99fe53f9`, `7225024b`), the fourth guard (`4f844463`)
+     and the watches (`2d33a1a9`). P4's part B, measured on the real agy 1.5.9 by two probes (the user's go, 11-16):
+     the ask rule (L-B1, `3625f68c`), `.agents/` loaded as agy loads it (L-B2, `838e5d19`), hooks run as agy runs them
+     and a FIFO among git's files never waited on (L-B3, `a9e7aafb`), a report's arguments by value (L-B4,
+     `21985dac`), agy's usage (L-B5, `1db7337c`) and one agent home a project (L-B6, `a6544aee`).
+   - Under way: P4's part C. C.7 measured — lifting the gate adds 198,528 bytes (nothing committed). L1 landed: every
+     start judges its row, a helper held in words on a row that can't be its role (`a28f2035`). L2 — the start's row
+     is the session's, not the config's — is built after the size pass reports and the user sets the release budget.
+   - Then P5, helpers on any agent, mixed crews, Codex, and tarae's own agent loop on the same seam.
 2. **One list** (user, 2026-11-15): the session list and the flow view become one view, ahead of crews — the flow's
    rows (helpers, many alike folded) and its columns (model, step, cost) go into the session list, one key folding
-   the helpers. Shots first, nothing built: a third round of shots is under way. It supersedes the flow view as a
-   member of the session list's group (`sessions › flow`, 2026-11-04); the rest of 2026-11-04's flow stands
-   ([§4](#4-panes-the-terminal-line-and-orchestra)).
+   the helpers. It supersedes the flow view as a member of the session list's group (`sessions › flow`, 2026-11-04);
+   the rest of 2026-11-04's flow stands ([§4](#4-panes-the-terminal-line-and-orchestra)). After three rounds of shots
+   the build plan was accepted (L1–L6; L7 waits for crews' build). L1–L4 and the width rework are built on
+   orchestra's branch and accepted from their shots; the frame stays 3/5 by default, sized by keys and the mouse (user,
+   11-16). Not on main yet: the bring waits on a base `cargo perf` on a quiet machine, which says whether
+   `hover_sweep_ns`'s 239 against 200 is the branch's or main's.
 3. **The next long video, a ztunnel deep dive** (user, 2026-11-15): Istio's ambient-mode node proxy, in-pod traffic
    redirection and HBONE in one video, the details shown beside the code, the work done in tarae on camera. The
    script's first draft is accepted as its content; whether its two small tools (T1, T2) would be tools people really
-   use is still in question.
+   use is still in question. The edit's Z3 is on main: the character's lines, picture cards drawn stroke by stroke and
+   the route on the band's rule (`a3e6fb38`, `5458d17f`, `4afda03b`, `1bac7e14`), painting on a tablet at a calm pace
+   (`89c9dfc6`), the head-cut fix (`24c331fe`) and the in-between pictures (`fbfef4be`). The brush sound waits on the
+   user's pick from a new round of candidates (the first three didn't sound like a brush to them).
 4. **A size pass before the next push** (user, 2026-11-13, #559): main went over the release budget on 2026-11-13
-   (20.189 MB, the crash report let in) and says so. Before any push, a map of where the 0.96 MB since 19.229 went —
-   a few measured points across the landings, the largest contributors, what each cut would cost — then the budget
-   set again with the map in hand. Not done yet ([the size pass](#queued-not-scheduled)).
-5. **What 2026-11-09's list left**: Short 4 and #470's crash-loop breaker are [done](#done). Of the web bundle, B5
+   and says so. The map is done (two rounds, 11-16): 20,321,328 bytes at `a28f2035`, the growth since 19,228,928 all
+   tarae's own code, the top ten modules 70 % of it. The options: A, budgets 21/26 MB; B, `opt-level = "s"` (−3.79 MB
+   measured), then 18/23; C, holding 20/25 by cuts, isn't possible. Next, B measured as it would land (base, `s`, base
+   `cargo perf` on a quiet machine); then the user sets the budget. Nothing is pushed before
+   ([the size pass](#queued-not-scheduled)).
+5. **#609, git folders by other names kept from runs** (user, 2026-11-16: "추천대로 고쳐줘", #609 and #610):
+   L1 landed — the folder a `.git` file names, its common folder and where a `.git` folder's links lead are kept as
+   `.git` is, every path on the way locked (`ca0c491a`). L2, nested checkouts at a `repo` top's real size, comes with
+   `.repo` a protected name, kept as `.git` is (user, 11-16).
+6. **The code tool stays on JS** (user, 2026-11-17): without the Rust compiler's help JS is better, and no design may
+   need that compiler on a user's machine (11-16). The Rust-subset measure stopped in its step 0, nothing spent.
+   Under way: an experiment with Bellard's original QuickJS (2026-06-04) beside QuickJS-ng v0.18.0, on the code tool's
+   rows, the module's size and its tests.
+7. **What 2026-11-09's list left**: Short 4 and #470's crash-loop breaker are [done](#done). Of the web bundle, B5
    (`:usage`'s web counts) is in; B1–B4 (an address bar, recent pages, PDFs and pictures at an address, GitHub's and
-   the registries' pages read through their readable addresses) aren't on main, and whether they're under way is not
-   confirmed. Still waiting on the user's go, for their spends: H2's token measure, and web search's second A/B — on
+   the registries' pages read through their readable addresses) aren't on main: no commit, and none of their words in
+   the code. Still waiting on the user's go, for their spends: H2's token measure, and web search's second A/B — on
    the questions the first lacked (an error from an unknown host, a tool newer than the model, a decision with no
    address to guess), once `:usage`'s web counts have a week of use.
 
 The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#done); what's left is the frictions
-(main's `.sb/frictions29.md`, to #599). Open — filed, and no commit on main closing it:
+(main's `.sb/frictions29.md`, to #612). Open — filed, and no commit on main closing it:
 
 - **Of #286–#405**: #293 (build folders regrow; `cargo xtask build-prune` by hand, a way that needs no hand the
   user's call), #317 (an overlap said right on a move's own news), #324 (a base move's card ~19 s late once —
@@ -217,9 +237,13 @@ The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#do
   #553 (toolchain and registry sources open writable), #555 (a server's root walk outside home climbs to `/`), #556
   (gopls isn't gated), #576 (a host's yes given mid-run opens cargo's caches only to the next run), #588 (Claude's edit
   isn't kept from tarae's own state folder when the project holds it), #593 (a read grant's key exception misses a VM
-  tool's SSH key) and #596 (a run's proxy variables, with their credential, copied into what the run makes that
-  outlives it).
-- **Cards, reviews and brings**: #516 (a move in an edit review reads as a loss, then a gain), #529 (a card's cut
+  tool's SSH key), #596 (a run's proxy variables, with their credential, copied into what the run makes that
+  outlives it), #609 (a git folder named by a checkout's `.git` file written by runs: L1 landed, `ca0c491a`; L2,
+  nested checkouts, open), #610 (a run can make a folder a bare-repository look-alike the person's git takes for the
+  repository there — to be fixed as recommended, the user's 11-16, not built) and #611 (Linux's keeper walks the
+  whole project before every run, uncapped).
+- **Cards, reviews and brings**: #600 (a read already on a worker when its session or turn ends raises its card
+  after, its answer going nowhere), #516 (a move in an edit review reads as a loss, then a gain), #529 (a card's cut
   search pattern has no whole under the pointer), #558 ("same as card#N" says scripts changed that didn't), #565 (a
   library reached from a list's row or a chat link still gets its own code-trust card), #577 (a held card that can't
   be drawn keeps every key), #579 (the repository card offers to commit build output) and #584 (the session list stays
@@ -234,17 +258,22 @@ The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#do
   and #586 (a card drawn and undrawn every frame while another chat streams), #587 (an edit shown in follow scrolls
   the code back a line), #590 (a card drawn over a floating pane that has the keys), #591 (two rules for a session's
   short name), #592 (a child gets its parent's colour past six sessions — a question for the user), #594 (the session
-  list scrolls and nothing says so) and #595 (`:procs` calls tarae's own helper claudes left by a program).
-- **The main loop**: #499 and #501 (a switch to a branch without 5,000 files holds the loop, and the state's round trip
-  after it), #571 (five places start claude on the main loop and wait for its exec) and #572 (an API-billed start looks
-  up the account on the main loop).
+  list scrolls and nothing says so), #595 (`:procs` calls tarae's own helper claudes left by a program), #601 (a docked
+  session list can't be sized by keys) and #602 (a list's row in hand, scrolled out of sight, has no mark of where it
+  went).
+- **The main loop and long waits**: #499 and #501 (a switch to a branch without 5,000 files holds the loop, and the
+  state's round trip after it), #571 (five places start claude on the main loop and wait for its exec), #572 (an
+  API-billed start looks up the account on the main loop), #608 (`keepclose::read_tip` reads all of `packed-refs` for
+  one line) and #612 (a 200k-line file's first coloured frame ~2.1 s, the row `d98852ea` reports).
 - **Tests and measures**: #503 (an e2e tarae drew no first frame in 120 s under load), #504 (37 % of Claude's runs
   counted as not run), #532 (the `≈ tokens` estimates assume 4 bytes a token; code measured 2.8), #570 (`tarae state`
-  doesn't say what each language server is doing), #589 (three plugin CLI tests fail in a loaded full run) and #597
-  (two live tests wait for words the screen no longer shows — B's live check waits on its rerun).
+  doesn't say what each language server is doing), #589 (three plugin CLI tests fail in a loaded full run), #597
+  (two live tests wait for words the screen no longer shows — B's live check waits on its rerun), and #604 and #606 (a
+  plugin test and an e2e card test that failed under load: determinism bugs).
 - **Plugins**: #598 and #599 (the Kubernetes plugin's "not in <context>" for another namespace, and its permissions
   asked all at once).
-- **The videos' tooling** (xtask): #540, #548, #560, #580 and #585.
+- **The videos' tooling and scenes** (xtask): #540, #548, #560, #580, #585 and #603 (the `orchestra-list` scene waits
+  for words main never shows; its fix asked of the one list's L2).
 
 Closed since 2026-11-06: #383 (`daad97e3`); #398 (`7de7549c`); #401, #402 and #405 (`d35f5260`: what came on its
 own dries once as it lands in sight); #406 (`c523a4ea`); #409 (`e8b35568`); #410 and #411 (`e3f670af`); #412
@@ -261,7 +290,9 @@ own dries once as it lands in sight); #406 (`c523a4ea`); #409 (`e8b35568`); #410
 (`353f0ab5`); #531 (`43420d68`); #534 and #538 (`e5f621a1`); #535, #536 and #537 (`1cacc632`); #539 (`8d55eb57`);
 #541 and #542 (`c4352147`); #543 and #552 (`69f61f31`); #544 (`745d9906`, `52733aef`); #545, #546, #547 and #550
 (`1a0da371`); #549 (`d4f34ed0`); #551 (`eafec9eb`); #561 and #566 (`a76607e4`); #562, #563 and #564 (`d95e77a9`);
-#567 and #568 (`dc9f012a`); #569 (`1199cbea`); #575 (`b5fee213`).
+#567 and #568 (`dc9f012a`); #569 (`1199cbea`); #575 (`b5fee213`); #605 (`eb2a00c5`, `15026c73`: a tunnel let go
+with no end said is a truncation to the run); #607 (`a9e7aafb`, `36d625a3`, `f4780ad8`: no read of git's files a
+project controls ever waits).
 
 ## Next
 
