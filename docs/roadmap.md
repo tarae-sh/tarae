@@ -178,39 +178,36 @@ Under way (2026-11-17):
      `21985dac`), agy's usage (L-B5, `1db7337c`) and one agent home a project (L-B6, `a6544aee`).
    - Under way: P4's part C. C.7 measured — lifting the gate adds 198,528 bytes (nothing committed). L1 landed: every
      start judges its row, a helper held in words on a row that can't be its role (`a28f2035`). L2 — the start's row
-     is the session's, not the config's — is built after the size pass reports and the user sets the release budget.
+     is the session's, not the config's — can be built: the release budget is set.
    - Then P5, helpers on any agent, mixed crews, Codex, and tarae's own agent loop on the same seam.
 2. **One list** (user, 2026-11-15): the session list and the flow view become one view, ahead of crews — the flow's
    rows (helpers, many alike folded) and its columns (model, step, cost) go into the session list, one key folding
    the helpers. It supersedes the flow view as a member of the session list's group (`sessions › flow`, 2026-11-04);
    the rest of 2026-11-04's flow stands ([§4](#4-panes-the-terminal-line-and-orchestra)). After three rounds of shots
-   the build plan was accepted (L1–L6; L7 waits for crews' build). L1–L4 and the width rework are built on
-   orchestra's branch and accepted from their shots; the frame stays 3/5 by default, sized by keys and the mouse (user,
-   11-16). Not on main yet: the bring waits on a base `cargo perf` on a quiet machine, which says whether
-   `hover_sweep_ns`'s 239 against 200 is the branch's or main's.
+   the build plan was accepted (L1–L6; L7 waits for crews' build). L1–L4 and the width rework landed (`8059a5a4` …
+   `d8a31d95`), the frame 3/5 by default, sized by keys and the mouse (user, 11-16). The base perf run's question is
+   answered: the base tree lacked the corpus commit, not main.
 3. **The next long video, a ztunnel deep dive** (user, 2026-11-15): Istio's ambient-mode node proxy, in-pod traffic
    redirection and HBONE in one video, the details shown beside the code, the work done in tarae on camera. The
    script's first draft is accepted as its content; whether its two small tools (T1, T2) would be tools people really
    use is still in question. The edit's Z3 is on main: the character's lines, picture cards drawn stroke by stroke and
    the route on the band's rule (`a3e6fb38`, `5458d17f`, `4afda03b`, `1bac7e14`), painting on a tablet at a calm pace
-   (`89c9dfc6`), the head-cut fix (`24c331fe`) and the in-between pictures (`fbfef4be`). The brush sound waits on the
-   user's pick from a new round of candidates (the first three didn't sound like a brush to them).
-4. **A size pass before the next push** (user, 2026-11-13, #559): main went over the release budget on 2026-11-13
-   and says so. The map is done (two rounds, 11-16): 20,321,328 bytes at `a28f2035`, the growth since 19,228,928 all
-   tarae's own code, the top ten modules 70 % of it. The options: A, budgets 21/26 MB; B, `opt-level = "s"` (−3.79 MB
-   measured), then 18/23; C, holding 20/25 by cuts, isn't possible. Next, B measured as it would land (base, `s`, base
-   `cargo perf` on a quiet machine); then the user sets the budget. Nothing is pushed before
-   ([the size pass](#queued-not-scheduled)).
-5. **#609, git folders by other names kept from runs** (user, 2026-11-16: "추천대로 고쳐줘", #609 and #610), done:
-   L1 keeps the folder a `.git` file names, its common folder and where a `.git` folder's links lead as `.git` is,
-   every path on the way locked (`ca0c491a`); L2 the nested checkouts' git folders by the same rule — every one on
-   Linux, within the cap the locks share on macOS, said in counts past it — and `.repo` a protected name (user,
-   11-16), so a `repo` top costs a run nothing (`7c04a1cb`). Next, #610's plan.
+   (`89c9dfc6`), the head-cut fix (`24c331fe`) and the in-between pictures (`fbfef4be`). The brush sound is picked,
+   round 2's `rub` (`61957458`, `8f8748ee`); its landing is being tuned.
+4. **A size pass before the next push** (user, 2026-11-13, #559), done: the map (11-16: 20,321,328 bytes at
+   `a28f2035`, the growth all tarae's own code, the top ten modules 70 %); B measured (11-17: `opt-level = "s"`
+   −18.6 %, frames +10–15 %, stream events +25 %) and unused; the budget set at 22 / 27 MB (user, 11-17). The size
+   pass at stabilization stands ([the size pass](#queued-not-scheduled)).
+5. **#609, git folders by other names kept from runs** (user, 2026-11-16: "추천대로 고쳐줘", #609 and #610): #609
+   done — L1 keeps the folder a `.git` file names, its common folder and where a `.git` folder's links lead as
+   `.git` is (`ca0c491a`); L2 the nested checkouts' git folders, and `.repo` a protected name (`7c04a1cb`). #610,
+   a folder a run makes that git takes for a repository: L1 landed (`0d3538ca`), L2 being built.
 6. **The code tool stays on JS** (user, 2026-11-17): without the Rust compiler's help JS is better, and no design may
    need that compiler on a user's machine (11-16). The Rust-subset measure stopped in its step 0, nothing spent.
    Done: the engine moved to Bellard's original QuickJS (2026-06-04) on the user's choice (11-17), with an
    out-of-memory guard of the glue's own, tested refusal by refusal; its fuzz hour came back clean (237,432 cases,
-   0 differences), so aarch64's JIT stays on.
+   0 differences), so aarch64's JIT stays on. `:preflight-full`'s engine step fails where the engine's tests would
+   skip, and refuses a module not the pin's (`efeec41c`).
 7. **What 2026-11-09's list left**: Short 4 and #470's crash-loop breaker are [done](#done). Of the web bundle, B5
    (`:usage`'s web counts) is in; B1–B4 (an address bar, recent pages, PDFs and pictures at an address, GitHub's and
    the registries' pages read through their readable addresses) aren't on main: no commit, and none of their words in
@@ -842,8 +839,9 @@ bugs its reviewer found, two of tarae's own gates misbehaved in daily use, four 
    with real output.
 3. **Less code**: what the card model's P3 replaced goes (its piece 5: the parser's gates, ~2,200 lines), and
    whatever else the hunt finds unused. The binary with it: back under older budgets or a reason why not — they
-   were 12 / 17 MB bundled until 2026-10-15, 19 / 24 from 2026-11-05 (#365: 18.17 and 23.27 then), are 20 / 25
-   since 2026-11-09 (19.229 then), the growth tarae's own code.
+   were 12 / 17 MB bundled until 2026-10-15, 19 / 24 from 2026-11-05 (#365: 18.17 and 23.27 then), 20 / 25 from
+   2026-11-09 (19.229 then), are 22 / 27 since 2026-11-17 (#559: `opt-level = "s"` measured and unused), the growth
+   tarae's own code.
    `cargo bloat` first, for where the size is, then what P3 piece 5 removes and what the hunt finds unused.
 4. **Independent reviews of the sandbox** by Claude sessions that didn't build it: each given the threat model's
    claims and the code, not the design's reasoning, trying to show a claim false; their findings fixed like any
@@ -1059,10 +1057,11 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   2026-10-15), then to 17 MB (22 bundled, 2026-10-24: 16.55 and 21.62 then — the web reader's TLS and parsers, the
   image decoder, panes P3 and collab C1–C3, hidden while `cargo perf` passed "not measured"), then to 19 MB (24
   bundled, 2026-11-05, #365: 18.17 and 23.27 then, every MB since tarae's own code), then to 20 MB (25 bundled,
-  2026-11-09: 19.229 then, tarae's own code, no new dependency) until stabilization
-  (§9) brings it back; `cargo perf` fails a jump of more than 0.3 MB meanwhile. Main went over it on 2026-11-13
-  (20.189, the crash report let in, #559): a size pass with a map of where the growth went comes before the next push,
-  the budget then set again with the map in hand ([now](#now)). Four helpers LTO had copied into many callers are kept out of line
+  2026-11-09: 19.229 then, tarae's own code, no new dependency), then to 22 MB (27 bundled, 2026-11-17, #559: the
+  map's growth all tarae's own code; `opt-level = "s"` measured, −18.6 % at frames +10–15 %, and unused) until
+  stabilization (§9) brings it back; `cargo perf` fails a jump of more than 0.3 MB meanwhile. Main went over 20 MB on
+  2026-11-13 (20.189, the crash report let in, #559): a size pass with a map of where the growth went came before the
+  next push, the budget set again with the map in hand ([now](#now)). Four helpers LTO had copied into many callers are kept out of line
   (−66 KB measured). From the size audit (2026-10-09):
   - Per-package `opt-level = "s"` for crates off the hot path, the frame path kept at 3 (tarae, ropey,
     tree-sitter, the grep crates, vt100), decided by a full `cargo perf` A/B. The whole binary at `s` measured

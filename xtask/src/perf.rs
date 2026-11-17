@@ -447,9 +447,13 @@ fn report(
 /// 20 and bundled 25 (2026-11-09, 19.229 at ccc704f4 then; 19.047 at 46846a56 the evening before): the user's
 /// call — grown with tarae's own code (the night's landings: masking P2a/P2b, the plugin approvals, SM2), no new
 /// dependency; the size pass stays at stabilization (§9), `SIZE_JUMP` catches a dependency's jump meanwhile.
+/// 22 and bundled 27 (2026-11-17, 20.454 at 0d3538ca then): the user's call (#559) — grown with tarae's own code
+/// (the size map: the growth since 19.229 all of it, the top ten modules 70 %); the opt-level stays as it is (`s`
+/// measured: −18.6 %, frames +10–15 %, stream events +25 %); the size pass stays at stabilization (§9),
+/// `SIZE_JUMP` catches a dependency's jump meanwhile.
 const SIZES: [(&str, &[&str], &str, f64); 2] = [
-    ("release_size_mb", &[], "target", 20.0),
-    ("release_size_bundled_mb", &["--features", "bundled-grammars"], "target/bundled-size", 25.0),
+    ("release_size_mb", &[], "target", 22.0),
+    ("release_size_bundled_mb", &["--features", "bundled-grammars"], "target/bundled-size", 27.0),
 ];
 const SIZE_NOISE: f64 = 0.05;
 
