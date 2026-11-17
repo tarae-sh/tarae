@@ -1,9 +1,10 @@
 //! The brush on the tablet (the ztunnel video's edit, Z3, after §6.2's painting): one soft stroke a sweep of the
-//! character's — across the tablet in about a second (`motions::Painted::sweeps`) —, made from noise as the rain is
-//! (`rain::Rng`, `rain::Biquad`), never downloaded and kept in no file. It starts on the sweep's first frame and lasts
-//! as long as the brush crosses; silent while the brush is lifted and at rest. It follows the character's sweep, never
-//! the board's strokes: a dab or a short stroke makes no sound of its own. Wherever the character paints, it's heard;
-//! nowhere else, and a cut with no sweep sounds as it did without it, to the bit.
+//! character's — across the tablet in 0.7–1.4 s, as long as its burst of strokes (`motions::Painted::sweeps`) —,
+//! made from noise as the rain is (`rain::Rng`, `rain::Biquad`), never downloaded and kept in no file. It starts on
+//! the sweep's first frame and lasts as long as the brush crosses; silent while the brush is lifted and at rest. It
+//! follows the character's sweep, never the board's strokes: a dab or a short stroke makes no sound of its own.
+//! Wherever the character paints, it's heard; nowhere else, and a cut with no sweep sounds as it did without it, to
+//! the bit.
 //!
 //! The sound (the user's pick of the second round's four, "rub로 가봐 일단은"): the paper rubbed, a low "shh" — noise
 //! in 280 Hz–1.5 kHz through a band at 700 Hz and a softer one at 1.25 kHz, apart from the rain's highs — whose
@@ -13,7 +14,7 @@
 //! (still at its ends, fastest mid-sweep): it eases in as the press lands, no swell under it, no low column of its own
 //! as it lands, never a click.
 //!
-//! Not one loop: a sweep is 38 frames, and the same stroke every sweep would be a metronome over a long picture. Each
+//! Not one loop: a sweep is 0.7–1.4 s, and the same stroke every sweep would be a metronome over a long picture. Each
 //! sweep's stroke is a little its own (`Vary`): its pitch (its band 2–5 % up or down, one sweep up, the next down),
 //! its grain's pace and depth, its loudness (within 1.5 dB), its landing and its lift — drawn from its picture, its
 //! step and its place in the step, so a render is the same twice. Only so that no two sweeps in a row sound alike: the

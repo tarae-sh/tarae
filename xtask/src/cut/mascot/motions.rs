@@ -43,10 +43,13 @@
 //!   once, and no seeded glance while that line stands. A face already up (watching, fast-forward) meets it as it is
 //!   (the nod is the motions' to come); a whole-body motion goes on.
 //! - **Painting on the tablet** (`Plan::paint`, Z3: the mascot brief's §6.2, the user's "붓으로 슥슥 … 너무 빠르게
-//!   휙휙 할 필요는 없을 듯"), where its pictures are found: one calm rhythm of its own, never the board's strokes — while
+//!   휙휙 할 필요는 없을 듯"), where its pictures are found — the brush follows the drawing ("빌드하자", 2026-11-17): while
 //!   a step is drawn, from the frame its first stroke starts to the frame its last ends, the brush across the tablet
-//!   (`sweep-1` … `-7`, `SWEEP`'s holds: a second), back over it in the air (`return-1` … `-3`, `RETURN`'s) and lifted
-//!   (`draw-lift`, `PAINT_LIFT`), again; no picture of it held fewer frames than its own hold (`rhythm`). Then at rest (`draw-in`: the brush up, the eyes off the tablet) on the frame the
+//!   (`sweep-1` … `-7`) on each burst of strokes, landing on its first ink and lifting at its last, back over it in the
+//!   air (`return-1` … `-3`, `RETURN`'s) and lifted (`draw-lift`, `PAINT_LIFT`) in the pause (`by_drawing`): a sweep
+//!   `SWEEP_FRAMES` long, a long burst forth and back, a short one joined to its neighbour. A step too short or too
+//!   quick for a sweep keeps the steady rhythm: `SWEEP`'s holds (a second), the way back, again (`rhythm`). No picture
+//!   of it held fewer frames than its least hold. Then at rest (`draw-in`: the brush up, the eyes off the tablet) on the frame the
 //!   last stroke ends, the one its station is inked on, through the stand. The keyboard becomes the tablet inside the
 //!   board's crossing into the picture (`swing-1`, then `draw-in`), and back inside the crossing out. A surprise,
 //!   stretch or swing over it stays. Not found: it watches, said.
@@ -54,6 +57,7 @@
 
 use super::{Arms, Face, Hands, Pic, Pose, QUIET_MS, Switches};
 use crate::camera::CROSS_MS;
+use crate::cut::picture::Step;
 use crate::cut::sound::KEYS_MAX_SPEED;
 use crate::cut::{HOLD_STEP, Hold, Marks, Pace, Program, What, clock, ms_of};
 use crate::rain::Rng;
@@ -113,8 +117,32 @@ pub(crate) const SWEEP: [(u8, u64); Pic::SWEEPS as usize] =
     [(0, 5), (1, 4), (2, 4), (3, 4), (4, 4), (5, 4), (6, 5)];
 /// …back over it in the air (`Pic::Return`)…
 pub(crate) const RETURN: [(u8, u64); Pic::RETURNS as usize] = [(0, 2), (1, 2), (2, 2)];
-/// …lifted (`draw-lift`), and again: a sweep 38 frames (1.27 s).
+/// …lifted (`draw-lift`), and again: a sweep 38 frames (1.27 s) — the steady rhythm (`rhythm`), for a step too short
+/// or too quick to follow.
 pub(crate) const PAINT_LIFT: u64 = 2;
+
+/// Painting by the drawing (the user's "빌드하자", 2026-11-17; sound's `brush-match-plan.md`): a pause of this much or
+/// more on the drawing's own clock (ms) parts two bursts — the generator's two kinds of pause, none between 80 and
+/// 120 ms; on its clock, so a burst is the same burst at any step speed.
+pub(crate) const BURST_PAUSE_MS: u64 = 100;
+/// A sweep by the drawing, its frames on the tablet: the floor (0.7 s — the sound's too: the rub lands with no attack
+/// from there) and the ceiling (1.4 s). The form is the user's pick after the clips (2026-11-18, "42 끝에서 머묾"):
+/// 42 frames with the dwell at the ends — this, `SWEEP_HOLDS` and `SWEEP_MIDDLE_MOST`.
+pub(crate) const SWEEP_FRAMES: (u64, u64) = (21, 42);
+/// Each of its seven pictures held at least, at most (frames) — the most only `sweep-1`'s and `-7`'s, the brush
+/// slowing as it lands and lifts…
+pub(crate) const SWEEP_HOLDS: (u64, u64) = (3, 9);
+/// …the five in the middle (`sweep-2` … `-6`) at most this, as 11-16's moving pictures were held (`sweep_holds`): a
+/// 42-frame sweep 9·5·5·5·5·5·8, a 30-frame one 5·4·4·4·4·4·5 as the steady rhythm's.
+pub(crate) const SWEEP_MIDDLE_MOST: u64 = 5;
+const _: () = assert!(
+    SWEEP_FRAMES.0 >= 7 * SWEEP_HOLDS.0 && SWEEP_FRAMES.1 <= 2 * SWEEP_HOLDS.1 + 5 * SWEEP_MIDDLE_MOST,
+    "a sweep's frames are what its seven holds can hold"
+);
+/// The brush's way back through the air (frames): `RETURN`'s and `draw-lift`'s.
+pub(crate) const WAY_BACK: u64 = RETURN[0].1 + RETURN[1].1 + RETURN[2].1 + PAINT_LIFT;
+/// A pause this long or more (frames, a second) rests on `draw-in` after the way back.
+pub(crate) const PAUSE_REST: u64 = 30;
 
 /// A sweep's pictures in order, each with its hold (frames): `SWEEP`, `RETURN`, `draw-lift`.
 pub(crate) fn sweep() -> Vec<(Pic, u64)> {
@@ -150,20 +178,178 @@ pub(crate) fn rhythm(n: u64) -> Vec<Pic> {
     pieces.iter().flat_map(|&(p, len, _)| std::iter::repeat_n(p, len as usize)).collect()
 }
 
-/// A painting picture's hold in a sweep (frames); none for the rest's and the rest.
+/// A painting picture's least hold (frames): a sweep picture's `SWEEP_HOLDS.0`, the way back's its own; none for the
+/// rest's and the rest.
 pub(crate) fn hold(p: Pic) -> Option<u64> {
-    sweep().into_iter().find(|s| s.0 == p).map(|s| s.1)
+    match p {
+        Pic::Sweep(_) => Some(SWEEP_HOLDS.0),
+        _ => sweep().into_iter().find(|s| s.0 == p).map(|s| s.1),
+    }
+}
+
+/// A sweep's seven holds for `frames` on the tablet (`SWEEP_FRAMES`' range): each `SWEEP_HOLDS.0` at least, the frames
+/// over that given one at a time to `sweep-1` and `-7` first, then inward (`-2`, `-6`, `-3`, `-5`, `-4`), round again —
+/// the ends up to `SWEEP_HOLDS.1`, the middle five up to `SWEEP_MIDDLE_MOST`: 21 → 3s, 30 → 5·4·4·4·4·4·5 (the steady
+/// rhythm's), 35 → 5s, 42 → 9·5·5·5·5·5·8.
+pub(crate) fn sweep_holds(frames: u64) -> [u64; Pic::SWEEPS as usize] {
+    let (most, middle) = (SWEEP_HOLDS.1, SWEEP_MIDDLE_MOST);
+    const ORDER: [usize; 7] = [0, 6, 1, 5, 2, 4, 3];
+    let mut h = [SWEEP_HOLDS.0; Pic::SWEEPS as usize];
+    let mut left = frames.saturating_sub(h.iter().sum());
+    while left > 0 {
+        let before = left;
+        for i in ORDER {
+            let cap = if i == 0 || i == 6 { most } else { middle };
+            if left > 0 && h[i] < cap {
+                h[i] += 1;
+                left -= 1;
+            }
+        }
+        if left == before {
+            break;
+        }
+    }
+    h
+}
+
+/// Step `s`'s bursts on the video's frames, from its start `start` (µs, on a frame): its strokes parted where the
+/// drawing's clock pauses `BURST_PAUSE_MS` or more, each from the frame the clock reaches its first stroke's start to
+/// the frame it reaches its last's end (`Step::reaches`, as the station's inking).
+pub(crate) fn bursts(s: &Step, start: u64) -> Vec<(u64, u64)> {
+    let mut strokes: Vec<(u64, u64)> = s.strokes.iter().map(|x| (x.at, x.at + x.ms)).collect();
+    strokes.sort_unstable();
+    let mut ms: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in strokes {
+        match ms.last_mut() {
+            Some(l) if a < l.1 + BURST_PAUSE_MS => l.1 = l.1.max(b),
+            _ => ms.push((a, b)),
+        }
+    }
+    ms.iter().map(|&(a, b)| (s.reaches(start, a * 1000), s.reaches(start, b * 1000))).collect()
+}
+
+/// A burst's sweeps (their frames on the tablet) over `span` frames, its first ink to where it lifts: as many as it
+/// takes at the ceiling `c` with a way back each (`span` ≤ n·(`c` + `WAY_BACK`)), but none under the floor; all one
+/// length (the first ones a frame more), the way back between, none over `c` — what's left (a burst too long for n
+/// at the ceiling, too short for n + 1 at the floor) is drawn with the brush lifted.
+pub(crate) fn sweeps_in(span: u64, c: u64) -> Vec<u64> {
+    let mut n = span.div_ceil(c + WAY_BACK).max(1);
+    while n > 1 && span < n * SWEEP_FRAMES.0 + (n - 1) * WAY_BACK {
+        n -= 1;
+    }
+    let on = (span - (n - 1) * WAY_BACK).min(n * c);
+    (0..n).map(|k| on / n + u64::from(k < on % n)).collect()
+}
+
+/// The brush's way back after a sweep over `g` frames, to the next burst's first ink or the step's last: `return-1`
+/// … `-3` and `draw-lift`, then through a longer pause `draw-lift` held (the brush raised over the tablet), and from
+/// `PAUSE_REST` on, after its own hold, at rest on `draw-in`. Shorter than the way back (the step's last burst, its
+/// frames past its last sweep): cut short as the rhythm is, a short last piece taken by the one before.
+fn way_back(g: u64) -> Vec<Pic> {
+    let back = &sweep()[Pic::SWEEPS as usize..];
+    let mut v: Vec<Pic> = Vec::new();
+    if g >= WAY_BACK {
+        back.iter().for_each(|&(p, n)| v.extend(std::iter::repeat_n(p, n as usize)));
+        let held = if g >= PAUSE_REST { Pic::DrawIn } else { Pic::DrawLift };
+        v.extend(std::iter::repeat_n(held, (g - WAY_BACK) as usize));
+        return v;
+    }
+    let mut left = g;
+    for (j, &(p, n)) in back.iter().enumerate() {
+        // (what would be left after this one under the next's hold: this one takes it)
+        let next = back.get(j + 1).map_or(0, |x| x.1);
+        let take = if left < n + next { left } else { n };
+        v.extend(std::iter::repeat_n(p, take as usize));
+        left -= take;
+    }
+    v
+}
+
+/// A step painted by the drawing (`by_drawing`): its pictures from its first ink to its last; and the bursts it
+/// joined, the bursts whose last sweep lifted early, and the pauses the brush stayed lifted over the tablet through
+/// and rested through.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Drawn {
+    pub(crate) pics: Vec<Pic>,
+    pub(crate) joined: usize,
+    pub(crate) early: usize,
+    pub(crate) lifted: usize,
+    pub(crate) rested: usize,
+}
+
+/// Painting by the drawing over a step's `bursts` (frames, in order — `bursts`), from the first's start to the last's
+/// end: the brush lands on each burst's first ink and lifts at its last, then goes back through the air in the pause
+/// (`way_back`). Where a pause is shorter than the way back, the burst before it lifts early by the shortfall, so the
+/// brush is back over `sweep-1` for the next burst's first ink — the landing, the strong cue, kept exact; the step's
+/// last burst lifts on its last ink. A burst too short for a sweep with that (under the floor) joins its neighbour
+/// across the smaller pause — with equal pauses, the one before — and the brush rubs through that pause. A burst is
+/// one sweep or more (`sweeps_in`), each held by `sweep_holds`. None when the ink is under the floor: that step keeps
+/// the steady rhythm (`rhythm`).
+pub(crate) fn by_drawing(bursts: &[(u64, u64)]) -> Option<Drawn> {
+    let (&(s0, _), &(_, e)) = (bursts.first()?, bursts.last()?);
+    if e - s0 < SWEEP_FRAMES.0 {
+        return None;
+    }
+    let mut b = bursts.to_vec();
+    // (how early burst `i`'s last sweep lifts: the pause after it short of the way back)
+    let early =
+        |b: &[(u64, u64)], i: usize| b.get(i + 1).map_or(0, |n| WAY_BACK.saturating_sub(n.0 - b[i].1));
+    let mut d = Drawn::default();
+    while let Some(i) = (0..b.len()).find(|&i| b.len() > 1 && b[i].1 - b[i].0 < SWEEP_FRAMES.0 + early(&b, i))
+    {
+        let before = i > 0 && (i + 1 == b.len() || b[i].0 - b[i - 1].1 <= b[i + 1].0 - b[i].1);
+        let j = if before { i - 1 } else { i };
+        b[j].1 = b[j + 1].1;
+        b.remove(j + 1);
+        d.joined += 1;
+    }
+    for (i, &(f0, f1)) in b.iter().enumerate() {
+        let up = early(&b, i);
+        d.early += usize::from(up > 0);
+        let mut on = sweeps_in(f1 - f0 - up, SWEEP_FRAMES.1);
+        let next = b.get(i + 1).map_or(e, |n| n.0);
+        let swept = on.iter().sum::<u64>() + WAY_BACK * (on.len() as u64 - 1);
+        let mut g = next - f0 - swept;
+        // (the step's last burst, a frame past its last sweep: the sweep gives the way back its first hold)
+        if g > 0 && g < RETURN[0].1 {
+            *on.last_mut().unwrap() -= RETURN[0].1 - g;
+            g = RETURN[0].1;
+        }
+        for (k, &n) in on.iter().enumerate() {
+            if k > 0 {
+                d.pics.extend(way_back(WAY_BACK));
+            }
+            let h = sweep_holds(n);
+            (0..Pic::SWEEPS)
+                .for_each(|m| d.pics.extend(std::iter::repeat_n(Pic::Sweep(m), h[m as usize] as usize)));
+        }
+        if i + 1 < b.len() {
+            d.lifted += usize::from(g > WAY_BACK && g < PAUSE_REST);
+            d.rested += usize::from(g >= PAUSE_REST);
+        }
+        d.pics.extend(way_back(g));
+    }
+    debug_assert_eq!(d.pics.len() as u64, e - s0);
+    Some(d)
 }
 
 /// What painting laid (`Plan::paint`): the steps painted of the pictures' all, and each one's run (frames, from its first
-/// stroke to its rest); the frames of each of the sweep's seven, of the three back, of the lift, of the rest (`draw-in`,
-/// the turn's too) and of `swing-1` turning; how many times a picture of the rhythm stood fewer frames than its hold (a
-/// surprise, stretch or swing over it can cut one); and each sweep across the tablet as shown (`Sweep`): the brush's
-/// sound, a stroke a sweep (`cut::brushing`).
+/// stroke to its rest); the steps by the drawing, and those kept to the steady rhythm (by name); by the drawing, the
+/// bursts joined, those lifted early, the pauses the brush stayed lifted through and rested through (`Drawn`); the
+/// frames of each of the sweep's seven, of the three back, of the lift, of the rest (`draw-in`,
+/// the turn's too) and of `swing-1` turning; how many times a picture of painting stood fewer frames than its least
+/// hold (a surprise, stretch or swing over it can cut one); and each sweep across the tablet as shown (`Sweep`): the
+/// brush's sound, a stroke a sweep (`cut::brushing`).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Painted {
     pub(crate) steps: (usize, usize),
     pub(crate) runs: Vec<(u64, u64)>,
+    pub(crate) drawn: usize,
+    pub(crate) steady: Vec<String>,
+    pub(crate) joined: usize,
+    pub(crate) early: usize,
+    pub(crate) lifted: usize,
+    pub(crate) rested: usize,
     pub(crate) sweeps: Vec<Sweep>,
     pub(crate) sweep: [usize; Pic::SWEEPS as usize],
     pub(crate) back: [usize; Pic::RETURNS as usize],
@@ -967,7 +1153,8 @@ impl Plan {
     /// Each picture's steps painted on the tablet as they're drawn (its pictures found, `Art::paints`; module doc,
     /// "Painting on the tablet"). Over the picture's part and the crossing out after it: the crossing in's first half
     /// `swing-1`, then `draw-in` — the rest — but where a step is drawn, from the frame its clock reaches its first
-    /// stroke's start to the frame it reaches its last's end (`Step::reaches`, as the station's inking), `rhythm`; the
+    /// stroke's start to the frame it reaches its last's end (`Step::reaches`, as the station's inking), `by_drawing`
+    /// over its `bursts` (`rhythm` where it says none); the
     /// crossing out's first half `draw-in` still, its second `swing-1`, then the plan's own. Only the plain pictures
     /// (arms and a face) are painted over: a surprise, stretch or swing stays.
     pub(crate) fn paint(&mut self, prog: &Program) {
@@ -988,13 +1175,25 @@ impl Plan {
             let mut stepped: Vec<(usize, u64, u64)> = Vec::new();
             for (si, (s, &start)) in pic.steps.iter().zip(&pic.starts()).enumerate() {
                 painted.steps.1 += 1;
-                let from = s.strokes.iter().map(|x| x.at).min();
-                let to = s.strokes.iter().map(|x| x.at + x.ms).max();
-                let (Some(from), Some(to)) = (from, to) else { continue };
-                let (s0, e) = (s.reaches(first + start, from * 1000), s.reaches(first + start, to * 1000));
-                let run = rhythm(e - s0);
+                let bursts = bursts(s, first + start);
+                let (Some(&(s0, _)), Some(&(_, e))) = (bursts.first(), bursts.last()) else { continue };
+                let run = match by_drawing(&bursts) {
+                    Some(d) => {
+                        painted.drawn += 1;
+                        painted.joined += d.joined;
+                        painted.early += d.early;
+                        painted.lifted += d.lifted;
+                        painted.rested += d.rested;
+                        (d.pics, false)
+                    }
+                    None => (rhythm(e - s0), true),
+                };
+                let (run, steady) = run;
                 if run.is_empty() {
                     continue;
+                }
+                if steady {
+                    painted.steady.push(s.name.clone());
                 }
                 lay[at(s0)..at(e)].copy_from_slice(&run);
                 painted.steps.0 += 1;
@@ -1168,19 +1367,41 @@ impl Plan {
         if let Some(p) = &self.painted {
             let dots = |v: &mut dyn Iterator<Item = String>| v.collect::<Vec<_>>().join("·");
             let held = |h: &[(u8, u64)]| dots(&mut h.iter().map(|x| x.1.to_string()));
+            let steady = match p.steady.is_empty() {
+                true => String::new(),
+                false => format!(" (shorter than a sweep: {})", p.steady.join(", ")),
+            };
+            let lens = || p.sweeps.iter().map(|s| s.frames);
+            let (f, c) = SWEEP_FRAMES;
             out.push(format!(
-                "  painting on the tablet: {} steps of {}; a sweep of sweep-1 … -7 held {} frames, return-1 … -3 {} in \
-                 the air, draw-lift {PAINT_LIFT} ({}), again — {}; from each step's first \
+                "  painting on the tablet: {} steps of {}, {} by the drawing, {} the steady rhythm{steady}; by the \
+                 drawing, bursts parted by {BURST_PAUSE_MS} ms of its clock, a sweep each ({f}–{c} frames, or more \
+                 with the way back between; each picture held {}–{}, sweep-2 … -6 at most {SWEEP_MIDDLE_MOST}): {} \
+                 joined, {} lifted early, {} pauses lifted, {} rested; the steady rhythm, sweep-1 … -7 held {} frames, \
+                 return-1 … -3 {} in the air, draw-lift {PAINT_LIFT} ({}), again; {} sweeps, {}–{} frames, {} under \
+                 {f} — {}; from each step's first \
                  stroke to its last's end, then at rest on draw-in; the keyboard a tablet inside the board's crossings \
                  (swing-1, draw-in); frames: sweep-1 … -7 {}, return-1 … -3 {}, lifted {}, draw-in {}, swing-1 {}",
                 p.steps.0,
                 p.steps.1,
+                p.drawn,
+                p.steady.len(),
+                SWEEP_HOLDS.0,
+                SWEEP_HOLDS.1,
+                p.joined,
+                p.early,
+                p.lifted,
+                p.rested,
                 held(&SWEEP),
                 held(&RETURN),
                 sweep().iter().map(|s| s.1).sum::<u64>(),
+                p.sweeps.len(),
+                lens().min().unwrap_or(0),
+                lens().max().unwrap_or(0),
+                lens().filter(|&n| n < f).count(),
                 match p.under {
-                    0 => "no picture held under its own hold".to_string(),
-                    n => format!("{n} stands under their own holds"),
+                    0 => "no picture held under its least hold".to_string(),
+                    n => format!("{n} stands under their least holds"),
                 },
                 dots(&mut p.sweep.iter().map(|n| n.to_string())),
                 dots(&mut p.back.iter().map(|n| n.to_string())),

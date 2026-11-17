@@ -4352,10 +4352,10 @@ fn holds_a_sweep(stands: &[(String, u64)], what: &str) {
     }
 }
 
-/// While a step is drawn the character paints in one calm rhythm of its own: `A_SWEEP` (`motions::sweep`), again — a
-/// last piece cut shorter than its own picture's hold taken by the one before, a run shorter than `sweep-1`'s hold
-/// none. Every sweep starts on `sweep-1` 38 frames after the last; no picture stands fewer frames than its own hold;
-/// the board's dabs, short strokes and gaps pick nothing — one stroke over the same span paints the same frames.
+/// A step too short or too quick for a sweep paints in the steady rhythm of its own: `A_SWEEP` (`motions::sweep`),
+/// again — a last piece cut shorter than its own picture's hold taken by the one before, a run shorter than `sweep-1`'s
+/// hold none. Every sweep starts on `sweep-1` 38 frames after the last; no picture stands fewer frames than its own
+/// hold. The fixture's `q` at 2× (18 frames) is such a step.
 #[test]
 fn the_character_paints_in_one_calm_rhythm_of_its_own() {
     let rhythm = |n: u64| named(motions::rhythm(n).into_iter().map(Some));
@@ -4381,56 +4381,242 @@ fn the_character_paints_in_one_calm_rhythm_of_its_own() {
     let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-rhythm");
     let c = painted_cut(dir.path(), true);
     let (plan, a, b) = painting(&c, true, None);
-    // (p: 90 frames from its first stroke, two sweeps and 14 — sweep-3 taking sweep-4's 1; q at 2×: 0.6 s of video,
-    // 18 frames — sweep-4 taking sweep-5's 1)
-    let p = "111112222333344445555666677777aabbccll".repeat(2) + "11111222233333";
-    let shown = brushed(&plan, a + 6, 174);
-    assert_eq!(shown, [p.as_str(), &"i".repeat(66), "111112222333344444"].concat());
-    let painted = plan.painted.as_ref().unwrap();
-    assert_eq!(
-        (painted.steps, painted.sweep, painted.back, painted.lift, painted.under),
-        ((2, 2), [20, 16, 17, 13, 8, 8, 10], [4, 4, 4], 4, 0)
-    );
-    // (from the first stroke on, every stand of painting holds the sweep, each of the two runs; the rest between)
-    let all = named((a + 6..b).map(|k| plan.pic(k)));
-    let rest = all.iter().position(|s| s.0 == "draw-in").unwrap();
-    holds_a_sweep(&all[..rest], "p");
-    assert_eq!(all[rest], ("draw-in".into(), 66));
-    holds_a_sweep(&all[rest + 1..all.len() - 1], "q");
+    // (q at 2×: 0.6 s of video, 18 frames — sweep-4 taking sweep-5's 1)
+    let q = a + 6 + 150;
+    assert_eq!(brushed(&plan, q + 6, 18), "111112222333344444");
+    let all = named((q + 6..b).map(|k| plan.pic(k)));
+    holds_a_sweep(&all[..all.len() - 1], "q");
     assert_eq!(all.last().map(|s| s.0.as_str()), Some("draw-in"), "q's stand, at rest");
-    // (the dabs, the short stroke and the gaps: the same frames as one stroke over the span)
-    let one = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-one");
-    let (whole, _, _) = painting(&painted_cut(one.path(), false), true, None);
-    let n = Program::new(&c).frames();
-    assert!((0..n).all(|k| plan.pic(k) == whole.pic(k)), "the board's strokes pick nothing");
     let said = plan.said(&STILL).join("\n");
     assert!(
         said.contains(
-            "painting on the tablet: 2 steps of 2; a sweep of sweep-1 … -7 held 5·4·4·4·4·4·5 frames, return-1 … -3 \
-             2·2·2 in the air, draw-lift 2 (38), again — no picture held under its own hold;"
+            "the steady rhythm, sweep-1 … -7 held 5·4·4·4·4·4·5 frames, return-1 … -3 2·2·2 in the air, draw-lift 2 \
+             (38), again;"
         ),
         "{said}"
     );
 }
 
-/// Painting's holds are the pictures' own at any step speed (`picture::SPEEDS`' ends, the take's lists' 1×, and
-/// between): a step drawn quicker or slower paints a shorter or longer run, never a quicker brush — each picture held
-/// `A_SWEEP`'s frames, the last its own or more, none under (`Painted::under`).
+/// `by_drawing`'s pictures as `brushed` writes them.
+fn by_drawing_shown(bursts: &[(u64, u64)]) -> (String, motions::Drawn) {
+    let d = motions::by_drawing(bursts).unwrap();
+    let s = (d.pics.iter())
+        .map(|p| match p {
+            Pic::Sweep(m) => char::from(b'1' + m),
+            Pic::Return(m) => char::from(b'a' + m),
+            Pic::DrawLift => 'l',
+            Pic::DrawIn => 'i',
+            _ => '?',
+        })
+        .collect();
+    (s, d)
+}
+
+/// Where each sweep lands (from 0, the first burst's first ink) and how many frames it stays on the tablet.
+fn landings(shown: &str) -> Vec<(u64, u64)> {
+    let on = |c: char| c.is_ascii_digit();
+    let cs: Vec<char> = shown.chars().collect();
+    let mut out = Vec::new();
+    for k in 0..cs.len() {
+        if on(cs[k]) && (k == 0 || !on(cs[k - 1])) {
+            out.push((k as u64, cs[k..].iter().take_while(|c| on(**c)).count() as u64));
+        }
+    }
+    out
+}
+
+/// A sweep as `brushed` writes it, `n` frames on the tablet (`sweep_holds`).
+fn swept(n: u64) -> String {
+    let h = motions::sweep_holds(n);
+    (0..7).map(|m| char::from(b'1' + m as u8).to_string().repeat(h[m] as usize)).collect()
+}
+
+/// The brush lands on each burst's first ink: every sweep after a pause starts, on `sweep-1`, on the frame the step's
+/// clock reaches its burst's first stroke (`motions::bursts`, `Step::reaches`) — the fixture's `p` lands on its first
+/// stroke and again on its long stroke at 1.5 s, past the pause the dab and the short stroke leave.
 #[test]
-fn painting_holds_each_picture_s_own_frames_at_any_step_speed() {
+fn the_brush_lands_on_each_bursts_first_ink() {
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-lands");
+    let c = painted_cut(dir.path(), true);
+    let prog = Program::new(&c);
+    let (plan, a, _) = painting(&c, true, None);
+    let pic = &c.pictures[0];
+    let first = Program::time_of(Program::frame_at(
+        prog.parts.iter().find(|x| x.what == What::Picture(0)).unwrap().at,
+    ));
+    let bursts = motions::bursts(&pic.steps[0], first + pic.starts()[0]);
+    assert_eq!(bursts, [(a + 6, a + 24), (a + 27, a + 28), (a + 33, a + 35), (a + 51, a + 96)], "p's four");
+    let sweeps = &plan.painted.as_ref().unwrap().sweeps;
+    let at: Vec<u64> = sweeps.iter().filter(|s| s.step == 0).map(|s| s.at).collect();
+    assert_eq!(at, [a + 6, a + 51], "on the first stroke, and on the long one at 1.5 s");
+    for &k in &at {
+        assert!(bursts.iter().any(|b| b.0 == k), "{k}: on a burst's first ink");
+        assert!(plan.pic(k) == Some(Pic::Sweep(0)) && plan.pic(k - 1) != Some(Pic::Sweep(0)), "{k}");
+    }
+    // (three bursts with the way back's room between: three landings, each on its burst's first ink)
+    let (shown, _) = by_drawing_shown(&[(100, 130), (140, 170), (180, 215)]);
+    let starts: Vec<u64> = landings(&shown).iter().map(|l| l.0 + 100).collect();
+    assert_eq!(starts, [100, 140, 180]);
+}
+
+/// The brush lifts where the picture pauses: in each pause the way back (`return-1` … `-3`, `draw-lift`), then
+/// `draw-lift` held to the next ink; from 30 frames on, after the lift's own 2, at rest on `draw-in`. A pause shorter
+/// than the way back (8 frames) lifts the sweep before it early by the shortfall, so the next lands on its ink.
+#[test]
+fn the_brush_lifts_where_the_picture_pauses() {
+    let back = "aabbccll";
+    // (a pause of 16 frames: the way back, then lifted 8 more)
+    let (shown, d) = by_drawing_shown(&[(0, 30), (46, 76)]);
+    assert_eq!(shown, [swept(30), back.into(), "l".repeat(8), swept(30)].concat());
+    assert_eq!((d.lifted, d.rested, d.early, d.joined), (1, 0, 0, 0));
+    // (a pause of 40: the way back, then at rest)
+    let (shown, d) = by_drawing_shown(&[(0, 30), (70, 100)]);
+    assert_eq!(shown, [swept(30), back.into(), "i".repeat(32), swept(30)].concat());
+    assert_eq!((d.lifted, d.rested), (0, 1));
+    // (a pause of exactly the way back: no early lift; of 5: the sweep lifts 3 early, the next on its ink)
+    let (shown, d) = by_drawing_shown(&[(0, 30), (38, 68)]);
+    assert_eq!((shown, d.early), ([swept(30), back.into(), swept(30)].concat(), 0));
+    let (shown, d) = by_drawing_shown(&[(0, 30), (35, 65)]);
+    assert_eq!(shown, [swept(27), back.into(), swept(30)].concat());
+    assert_eq!(landings(&shown), [(0, 27), (35, 30)]);
+    assert_eq!(d.early, 1);
+    // (the fixture's p: 16 frames between its first sweep and its long stroke — the way back, then lifted 8)
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-lifts");
+    let (plan, a, _) = painting(&painted_cut(dir.path(), true), true, None);
+    assert_eq!(brushed(&plan, a + 6 + 29, 16), "aabbccllllllllll");
+    let painted = plan.painted.as_ref().unwrap();
+    assert_eq!((painted.lifted, painted.rested, painted.early, painted.joined), (1, 0, 0, 2));
+}
+
+/// A long burst goes forth and back through the air: as many sweeps as it takes at the ceiling with a way back each,
+/// none under the floor, the way back between — 99 frames is 42 + 8 + 42 and 7 lifted (`return-1` … `-3`, the last
+/// taking the short one's frame); every burst from 21 to 300 frames sweeps 21–42 frames at a time, all one length
+/// within a frame, the frames past them no more than the way back. At a ceiling of 35 a burst too long for one
+/// and too short for two at the floor keeps one.
+#[test]
+fn a_long_burst_goes_forth_and_back_through_the_air() {
+    let (shown, _) = by_drawing_shown(&[(0, 99)]);
+    assert_eq!(shown, [swept(42), "aabbccll".into(), swept(42), "aabbccc".into()].concat());
+    assert_eq!(landings(&shown), [(0, 42), (50, 42)]);
+    let (f, c) = motions::SWEEP_FRAMES;
+    for span in f..=300 {
+        let on = motions::sweeps_in(span, c);
+        let n = on.len() as u64;
+        let left = span - on.iter().sum::<u64>() - (n - 1) * motions::WAY_BACK;
+        assert!(on.iter().all(|&p| (f..=c).contains(&p)), "{span}: {on:?}");
+        assert!(on.iter().max().unwrap() - on.iter().min().unwrap() <= 1, "{span}: {on:?}");
+        assert!(left <= motions::WAY_BACK, "{span}: {on:?}, {left} left");
+    }
+    assert_eq!(motions::sweeps_in(99, 42), [42, 42]);
+    assert_eq!(motions::sweeps_in(141, 42), [42, 42, 41]);
+    assert_eq!((motions::sweeps_in(44, 35), motions::sweeps_in(52, 35)), (vec![35], vec![22, 22]));
+}
+
+/// A burst under a sweep joins its neighbour across the smaller pause — with equal pauses, the one before — and the
+/// brush rubs through that pause; no sweep is under the floor (21 frames), its early lift counted. The fixture's dab and
+/// short stroke join `p`'s first stroke.
+#[test]
+fn a_burst_under_a_sweep_joins_its_neighbour() {
+    // (9 frames between pauses of 6 and 15: the one before; of 15 and 6: the one after; of 10 and 10: the one before)
+    let (shown, d) = by_drawing_shown(&[(0, 25), (31, 40), (55, 85)]);
+    assert_eq!((landings(&shown), d.joined), (vec![(0, 40), (55, 30)], 1));
+    // (joined to the one after, it lands on its own first ink: 45 frames, a sweep at the ceiling and 3 lifted)
+    let (shown, d) = by_drawing_shown(&[(0, 25), (40, 49), (55, 85)]);
+    assert_eq!((landings(&shown), d.joined), (vec![(0, 25), (40, 42)], 1));
+    let (shown, d) = by_drawing_shown(&[(0, 25), (35, 44), (54, 84)]);
+    assert_eq!((landings(&shown), d.joined), (vec![(0, 42), (54, 30)], 1), "equal pauses: the one before");
+    // (a burst whose pause after is short of the way back: under 21 with the shortfall, it joins — one burst of 58,
+    // forth and back)
+    let (shown, d) = by_drawing_shown(&[(0, 24), (28, 58)]);
+    assert_eq!((landings(&shown), d.joined), (vec![(0, 25), (33, 25)], 1));
+    // (no sweep under the floor, over many patterns: bursts of 3–45 frames, pauses of 1–40)
+    let mut seen = 0;
+    for seed in 0..2000u64 {
+        let mut r = crate::rain::Rng::new(seed, 9);
+        let (mut at, mut bursts) = (0u64, Vec::new());
+        for _ in 0..(2 + seed % 6) {
+            let len = r.range(3.0, 46.0) as u64;
+            bursts.push((at, at + len));
+            at += len + r.range(1.0, 41.0) as u64;
+        }
+        let Some(d) = motions::by_drawing(&bursts) else { continue };
+        let shown: String =
+            d.pics.iter().map(|p| if matches!(p, Pic::Sweep(_)) { '1' } else { '-' }).collect();
+        for (k, n) in landings(&shown) {
+            assert!((21..=42).contains(&n), "{bursts:?}: a sweep of {n} at {k}");
+            seen += 1;
+        }
+    }
+    assert!(seen > 3000, "{seen}");
+    let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-joins");
+    let (plan, a, _) = painting(&painted_cut(dir.path(), true), true, None);
+    assert_eq!(brushed(&plan, a + 6, 29), swept(29), "the dab and the short stroke inside p's first sweep");
+}
+
+/// A sweep dwells at its ends (the user's pick, 2026-11-18): `sweep-1` and `-7` held 3 to 9 frames, the five in the
+/// middle 3 to 5 (`sweep_holds`) — 21 frames 3s, 30 the steady rhythm's 5·4·4·4·4·4·5, 35 5s, 42 9·5·5·5·5·5·8, the
+/// frames over 21 to `sweep-1` and `-7` first, then inward, the holds summing to the sweep's frames. At any step speed
+/// (`picture::SPEEDS`' ends, the take's lists' 1×, and between) no picture stands under its least hold and a step by the
+/// drawing holds none over its most.
+#[test]
+fn a_sweep_dwells_at_its_ends() {
+    let steady: Vec<u64> = motions::SWEEP.iter().map(|s| s.1).collect();
+    assert_eq!(
+        (motions::sweep_holds(30).to_vec(), steady),
+        (vec![5, 4, 4, 4, 4, 4, 5], vec![5, 4, 4, 4, 4, 4, 5])
+    );
+    assert_eq!((motions::sweep_holds(21), motions::sweep_holds(35)), ([3; 7], [5; 7]));
+    assert_eq!(motions::sweep_holds(42), [9, 5, 5, 5, 5, 5, 8]);
+    assert_eq!(motions::sweep_holds(23), [4, 3, 3, 3, 3, 3, 4]);
+    assert_eq!(motions::sweep_holds(33), [5, 5, 5, 4, 4, 5, 5]);
+    let (f, c) = motions::SWEEP_FRAMES;
+    for n in f..=c {
+        let h = motions::sweep_holds(n);
+        assert_eq!(h.iter().sum::<u64>(), n, "{n}: {h:?}");
+        assert!([h[0], h[6]].iter().all(|x| (3..=9).contains(x)), "{n}: the ends, {h:?}");
+        assert!(h[1..6].iter().all(|x| (3..=5).contains(x)), "{n}: the middle five, {h:?}");
+        assert!(h[0] >= h[6] && h[6] >= h[1] && h[1] >= h[5] && h[3] <= h[2], "{n}: the ends first, {h:?}");
+    }
     let mut runs = Vec::new();
     for speed in ["0.5", "1", "1.5", "2", "3"] {
         let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-speeds");
         let (plan, _, _) = painting(&painted_cut_at(dir.path(), true, speed), true, None);
         let painted = plan.painted.as_ref().unwrap();
         assert_eq!((painted.steps, painted.under), ((2, 2), 0), "q at {speed}×");
-        for &(s0, e) in &painted.runs {
-            holds_a_sweep(&named((s0..e).map(|k| plan.pic(k))), &format!("q at {speed}×, {s0}–{e}"));
+        for &(s0, e) in painted.runs.iter().filter(|r| r.1 - r.0 >= f) {
+            for (name, n) in named((s0..e).map(|k| plan.pic(k))).iter().filter(|s| s.0.starts_with("sweep-"))
+            {
+                let most = if name == "sweep-1" || name == "sweep-7" { 9 } else { 5 };
+                assert!((3..=most).contains(n), "q at {speed}×, {s0}–{e}: {name} {n} frames");
+            }
         }
         runs.push(painted.runs[1].1 - painted.runs[1].0);
     }
     // (q's stroke, 1.2 s as the brush made it, in frames of video at each speed)
     assert_eq!(runs, [72, 36, 24, 18, 12]);
+}
+
+/// A step too short or too quick for a sweep — its ink under the floor, 21 frames — keeps the steady rhythm
+/// (`rhythm`), and `cut.txt` names it: the fixture's `q` at 2× (18 frames) and 3× (12); at 1.5× (24) it's by the
+/// drawing.
+#[test]
+fn a_step_too_short_or_quick_keeps_the_steady_rhythm() {
+    assert!(motions::by_drawing(&[(0, 20)]).is_none() && motions::by_drawing(&[(0, 8), (12, 20)]).is_none());
+    let floor: Vec<Pic> = (0..7).flat_map(|m| std::iter::repeat_n(Pic::Sweep(m), 3)).collect();
+    assert_eq!(motions::by_drawing(&[(0, 21)]).unwrap().pics, floor, "at the floor: a sweep");
+    for (speed, steady) in [("1.5", false), ("2", true), ("3", true)] {
+        let dir = tarae_testkit::scratch::Scratch::new("xtask-cut-painting-steady");
+        let (plan, _, _) = painting(&painted_cut_at(dir.path(), true, speed), true, None);
+        let painted = plan.painted.as_ref().unwrap();
+        let (s0, e) = painted.runs[1];
+        let laid: Vec<Pic> = (s0..e).map(|k| plan.pic(k).unwrap()).collect();
+        assert_eq!(laid == motions::rhythm(e - s0), steady, "q at {speed}×");
+        assert_eq!(painted.steady, if steady { vec!["q".to_string()] } else { vec![] }, "q at {speed}×");
+        assert_eq!((painted.drawn, painted.steady.len()), (2 - usize::from(steady), usize::from(steady)));
+        let said = plan.said(&STILL).join("\n");
+        let named = "2 steps of 2, 1 by the drawing, 1 the steady rhythm (shorter than a sweep: q);";
+        assert_eq!(said.contains(named), steady, "{said}");
+    }
 }
 
 /// Painting starts on the frame the step's clock reaches its first stroke and comes to rest (`draw-in`) on the frame it
@@ -4486,7 +4672,9 @@ fn the_keyboard_turns_into_the_tablet_inside_the_boards_crossing() {
     );
     assert_eq!(surprised.pic(a + 40), plan.pic(a + 40), "the rhythm's own frame after it");
     let under = |p: &Plan| p.painted.as_ref().unwrap().under;
-    assert_eq!((under(&plan), under(&surprised)), (0, 2), "the stands it cuts on either side, said");
+    // (the surprise from a + 20 leaves sweep-4 2 frames before it, under its least hold; after it, at a + 35, sweep-1
+    // of the next stands on)
+    assert_eq!((under(&plan), under(&surprised)), (0, 1), "the stands it cuts, said");
     let n = prog.frames();
     assert!(
         (0..n).filter(|k| !(a..out.end).contains(k)).all(|k| plan.pic(k) == plain.pic(k)),
@@ -5099,7 +5287,7 @@ fn no_two_sweeps_in_a_row_sound_alike_and_a_render_is_the_same_twice() {
     let (plan, _, _) = painting(&c, true, None);
     let sweeps = &plan.painted.as_ref().unwrap().sweeps;
     let which: Vec<(usize, usize, usize)> = sweeps.iter().map(|s| (s.picture, s.step, s.nth)).collect();
-    assert_eq!(which, [(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 1, 0)]);
+    assert_eq!(which, [(0, 0, 0), (0, 0, 1), (0, 1, 0)]);
     let varied: Vec<brushing::Vary> = sweeps.iter().map(brushing::Vary::of).collect();
     for v in &varied {
         let near = |x: f64, a: f64, b: f64| (a..=b).contains(&x);
@@ -5149,7 +5337,7 @@ fn the_brush_is_silent_through_crossings_turns_and_fast_forward() {
         .flat_map(|p| [p.at, p.at + p.len].map(|at| (Program::frame_at(at), Program::frame_at(at + cross))))
         .collect();
     let (spans, y) = brush_of(&plan, &prog);
-    assert_eq!(spans.len(), 4, "the picture painted");
+    assert_eq!(spans.len(), 3, "the picture painted");
     let mut looked = [0usize; 3];
     for k in 0..prog.frames() {
         let at = [
@@ -5198,10 +5386,11 @@ fn the_brush_strokes_once_a_sweep_from_its_first_frame() {
     let prog = Program::new(&c);
     let (plan, a, _) = painting(&c, true, None);
     let q = a + 6 + 150;
-    // (p's 90 frames: two sweeps of 30 on the tablet and 8 off it, then the last 14 on it; q's 18 at 2×, all on it)
+    // (p's 90 frames by the drawing: a sweep of 29 over its first stroke, the dab and the short one, the way back and
+    // lifted, a sweep of 42 from its long stroke, 3 lifted; q's 18 at 2×, the steady rhythm, all on it)
     let sweeps: Vec<(u64, u64)> =
         (plan.painted.as_ref().unwrap().sweeps.iter()).map(|s| (s.at, s.frames)).collect();
-    assert_eq!(sweeps, [(a + 6, 30), (a + 44, 30), (a + 82, 14), (q + 6, 18)]);
+    assert_eq!(sweeps, [(a + 6, 29), (a + 51, 42), (q + 6, 18)]);
     for &(k, n) in &sweeps {
         assert!(plan.pic(k) == Some(Pic::Sweep(0)) && !matches!(plan.pic(k - 1), Some(Pic::Sweep(_))), "{k}");
         assert!((k..k + n).all(|j| matches!(plan.pic(j), Some(Pic::Sweep(_)))), "{k}: across all through");
@@ -5237,7 +5426,8 @@ fn the_brush_is_silent_through_a_lift_and_at_rest() {
             }
         }
     }
-    assert_eq!((lifted, rested > 60), (16, true), "the ways back, the lifts and the rest looked at");
+    // (p's way back and lift between its sweeps, 16, and its last 3)
+    assert_eq!((lifted, rested > 60), (19, true), "the ways back, the lifts and the rest looked at");
 }
 
 /// No brush where nothing is painted: a plan not painted has no sweep and lays nothing; a surprise over a sweep's
@@ -5333,10 +5523,15 @@ fn over(x: &[f32], f: f64) -> f64 {
 
 /// Strokes a second long, at the first eight places of a step.
 fn strokes() -> Vec<(usize, brushing::Vary, Vec<f32>)> {
+    strokes_of(30)
+}
+
+/// Strokes `frames` long (at `FPS`), at the first eight places of a step.
+fn strokes_of(frames: u64) -> Vec<(usize, brushing::Vary, Vec<f32>)> {
     (0..8)
         .map(|nth| {
-            let v = brushing::Vary::of(&sweep(0, 30, nth));
-            (nth, v, brushing::stroke(RATE as usize, &v))
+            let v = brushing::Vary::of(&sweep(0, frames, nth));
+            (nth, v, brushing::stroke(frames as usize * RATE as usize / crate::video::FPS as usize, &v))
         })
         .collect()
 }
@@ -5364,11 +5559,16 @@ fn banded(x: &[f32], lo: f64, hi: f64) -> Vec<f64> {
 /// stroke's own loudest grain is the measure.
 #[test]
 fn a_stroke_lands_and_lifts() {
+    lands_and_lifts(strokes());
+}
+
+/// `a_stroke_lands_and_lifts`' checks on `strokes`.
+fn lands_and_lifts(strokes: Vec<(usize, brushing::Vary, Vec<f32>)>) {
     let db = |x: f64| 20.0 * x.log10();
     let rms = |x: &[f32]| (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
     let rms64 = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
     let ms = |m: usize| m * RATE as usize / 1000;
-    for (nth, _, s) in strokes() {
+    for (nth, _, s) in strokes {
         let (w, n) = (ms(150), s.len());
         let body = banded(&s, 300.0, 1_500.0);
         let (first, middle) = (&body[..ms(50)], &body[(n - w) / 2..(n + w) / 2]);
@@ -5423,8 +5623,25 @@ fn a_strokes_landing_adds_nothing_under_200_hz() {
 /// as as it lands).
 #[test]
 fn a_stroke_is_a_low_grained_shh() {
-    let n = RATE as usize;
-    for (nth, v, s) in strokes() {
+    low_grained_shh(strokes());
+}
+
+/// The rub kept at a sweep's floor and ceiling (`SWEEP_FRAMES`: 0.7 s and 1.4 s): `a_stroke_lands_and_lifts`' and
+/// `a_stroke_is_a_low_grained_shh`'s checks hold at both — its band, its grain at the brush's pace, a landing with no
+/// attack. Its break: at 15 frames the "no attack" check fails (measured: −1.3 dB at its worst).
+#[test]
+fn a_stroke_keeps_its_rub_at_a_sweeps_floor_and_ceiling() {
+    let (f, c) = motions::SWEEP_FRAMES;
+    for frames in [f, c] {
+        lands_and_lifts(strokes_of(frames));
+        low_grained_shh(strokes_of(frames));
+    }
+}
+
+/// `a_stroke_is_a_low_grained_shh`'s checks on `strokes`.
+fn low_grained_shh(strokes: Vec<(usize, brushing::Vary, Vec<f32>)>) {
+    for (nth, v, s) in strokes {
+        let n = s.len();
         let mut band = crate::rain::high_pass(300.0).to_vec();
         band.push(crate::rain::Biquad::new(crate::rain::Shape::LowPass, 1_500.0, 0.541, 0.0));
         band.push(crate::rain::Biquad::new(crate::rain::Shape::LowPass, 1_500.0, 1.307, 0.0));
