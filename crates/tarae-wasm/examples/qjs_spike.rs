@@ -1,4 +1,4 @@
-//! The code tool's S0 spike (`.sb/codemode-compute-plan.md` §5): QuickJS-ng, built by `xtask/quickjs/build.sh`,
+//! The code tool's S0 spike (`.sb/codemode-compute-plan.md` §5): QuickJS, built by `xtask/quickjs/build.sh`,
 //! loaded and run on tarae-wasm through `start`/`resume`, with one stub binding (`tool(name, arg)`), measured
 //! under the JIT and under the interpreter.
 //!

@@ -102,6 +102,12 @@ its runs (tier unserved, no namespaces: no bridge; `TARAE_EXPECT_TIER=unserved` 
 Killed or interrupted (SIGTERM, SIGINT, SIGHUP), `cargo xtask linux` kills its container before it exits — a
 `timeout` around it ends the run, not just the client.
 
+The code tool's engine (the original QuickJS as a WebAssembly module, `xtask/quickjs/`) isn't part of the build:
+`cargo xtask quickjs fetch` takes its pinned archive from bellard.org (one host, no mirror; any copy with the pin's
+sha256 serves, put in `target/quickjs/`), and `cargo xtask quickjs` compiles it in Docker into `target/quickjs/`,
+where a dev build and the code tool's tests find it — without it those tests skip themselves. The archive is a
+`.tar.xz`: macOS's `tar` reads it itself, GNU `tar` needs `xz` installed.
+
 The sandbox's tiers ([design](docs/design/sandbox-keeper.md#tiers)) are reached by how the container runs:
 
 | Options | The container | Tier |

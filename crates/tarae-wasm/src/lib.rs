@@ -24,9 +24,10 @@
 //!     fuel left), and on wasmi, wasmtime deciding when wasmi disagrees; each module's byte mutations go through
 //!     the decoder too. Its `spec` binary runs the official spec tests. In `fuzz/`: `cargo run --release --bin
 //!     fuzz -- 300` (seconds; `found/` keeps a finding), `cargo run --release --bin spec -- testsuite/*.wast`.
-//!   - `examples/qjs_fuzz.rs`, the code tool's hour: its engine (QuickJS-ng, `cargo xtask quickjs`) on generated
+//!   - `examples/qjs_fuzz.rs`, the code tool's hour: its engine (QuickJS, `cargo xtask quickjs`) on generated
 //!     JavaScript, a seed a program, on a fresh instance under the JIT and one under the interpreter, comparing
-//!     every reply whole, every trap, and after every step the fuel left, the memory's hash and length. An
+//!     every reply whole, every trap, and after every step the fuel left, the memory's hash and length and
+//!     whether a grow was refused. An
 //!     architecture's JIT runs the code tool only after an hour of it came back clean (G36 in
 //!     `docs/threat-model.md`, with the seeds and the engine's sha256 of the last one); a re-pin of the engine
 //!     (`xtask/quickjs/pin`) or a change to `jit/` means the hour again, on that architecture, on a quiet machine:

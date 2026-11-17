@@ -1,9 +1,10 @@
-//! `cargo xtask quickjs [fetch|build]`: the code tool's engine (QuickJS-ng as a WebAssembly module with no imports,
-//! `.sb/codemode-compute-plan.md` §3) built into `target/quickjs/quickjs.wasm`, where tarae's dev build and its
-//! tests look (`codetool::ENGINE_DEV`). The recipe is `xtask/quickjs/build.sh`, what it builds from
+//! `cargo xtask quickjs [fetch|build]`: the code tool's engine (the original QuickJS as a WebAssembly module with no
+//! imports, `.sb/codemode-compute-plan.md` §3) built into `target/quickjs/quickjs.wasm`, where tarae's dev build and
+//! its tests look (`codetool::ENGINE_DEV`). The recipe is `xtask/quickjs/build.sh`, what it builds from
 //! `xtask/quickjs/pin` alone; this runs it there, `build` in its turn on the machine's Docker (`dockerlock`).
 //!
-//! - `fetch`: the pinned tarball into `target/quickjs/` (the network: codeload.github.com), its sha256 checked.
+//! - `fetch`: the pinned archive into `target/quickjs/` (the network: bellard.org, one host, no mirror), its sha256
+//!   checked; any copy with that sha256 serves as well, put there by hand.
 //! - `build` (the default): the compile in wasi-sdk's image by digest, `--network none`, no mounts.
 
 use std::path::Path;
