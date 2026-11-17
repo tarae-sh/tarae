@@ -1,4 +1,4 @@
-//! The code tool's fuzz hour (`.sb/codemode-s1-brief.md` §5): QuickJS-ng under the JIT against the interpreter,
+//! The code tool's fuzz hour (`.sb/codemode-s1-brief.md` §5): QuickJS under the JIT against the interpreter,
 //! on generated JavaScript. Each seed makes one program and its limits; the program runs on a fresh instance under
 //! each, its calls answered alike, and everything is compared: every reply whole (the value, what it printed, the
 //! ending's kind, the steps), every trap, and after every step the fuel left (after an out-of-fuel trap too: both
@@ -26,9 +26,9 @@ use tarae_wasm::{Instance, Interrupt, Limits, Module, Trap, Val};
 /// The tool's memory cap (`codetool::limits`).
 const MEMORY: usize = 64 << 20;
 /// `codetool::FUEL_A_STEP`, and the tool's step limit (`codetool::LIMITS`).
-const FUEL_A_STEP: u64 = 34_000_000_000;
-const TOOL_STEPS: u32 = 180;
-/// The fuel a case gets at most, for throughput (about 35 s of the interpreter): a case past it ends at the work
+const FUEL_A_STEP: u64 = 14_000_000_000;
+const TOOL_STEPS: u32 = 160;
+/// The fuel a case gets at most, for throughput (about 16 s of the interpreter): a case past it ends at the work
 /// limit, compared like any other ending.
 const FUEL_CAP: u64 = 30_000_000_000;
 /// A run past this is stopped and its case not compared (counted as such).

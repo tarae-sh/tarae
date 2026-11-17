@@ -1,6 +1,6 @@
 //! The code tool's engine host (`.sb/codemode-compute-plan.md`, S1's piece a): a program of Claude's run on the
-//! engine — QuickJS-ng as a WebAssembly module with no imports, `xtask/quickjs/` — on tarae-wasm, by the engine's
-//! two exports.
+//! engine — the original QuickJS as a WebAssembly module with no imports, `xtask/quickjs/` — on tarae-wasm, by the
+//! engine's two exports.
 //!
 //! - **The engine is data**: a module that answers `start(src, len, steps)` and `resume(id, answer, len, err)` with
 //!   a reply (`xtask/quickjs/glue.c` says its form). Nothing here knows JavaScript but the type-annotation hint
@@ -46,9 +46,14 @@ pub struct Limits {
     /// Interrupt-handler calls, each 10,000 of a program's loop turns and branches (or a stretch of a regex's
     /// matching).
     pub steps: u32,
-    /// The engine's linear memory (the engine's own heap limit, `ENGINE_HEAP`, comes first: an `out of memory` that
-    /// passes the program's `catch`). A grow past it is refused; either way the program ends at its memory limit,
-    /// said with the bound that was met (`memory_limit`).
+    /// The engine's linear memory. The engine's own heap limit, `ENGINE_HEAP`, comes first: its allocator refusing
+    /// past it is the cap, guard or no guard. The guard (glue.c's `oom`) makes the ending final and exact: from the
+    /// first refusal the program stops at its next poll and every reply is `ENGINE_OUT_OF_MEMORY`, whatever its
+    /// `catch` did. The walk of every refusal (`tests::the_engine_never_retries_a_refused_allocation`) shows the
+    /// ending is never early (the engine never retries one), and that with the guard no refusal is swallowed —
+    /// though the engine alone swallows some (a Map's hash table it leaves ungrown, a job it couldn't queue). A grow
+    /// past this is refused; either way the program ends at its memory limit, said with the bound that was met
+    /// (`memory_limit`).
     pub memory: usize,
     /// The runtime's fuel for the whole program, every `resume` included.
     pub fuel: u64,
@@ -83,10 +88,10 @@ const PRINTED_MAX: usize = 1 << 20;
 /// re-pin (`xtask/quickjs/pin`'s list); `tests::the_engines_heap_limit_is_glues` holds it to `glue.c`.
 pub const ENGINE_HEAP: usize = 48 << 20;
 
-/// The fuel a step of bytecode costs, for a loop of up to 20 statements a turn (`tests::measure`, QuickJS-ng
-/// v0.18.0: 1.6×10⁸ an empty loop's, 2.5×10⁹ arithmetic's, 3.4×10¹⁰ twenty statements', 1.7×10¹¹ a hundred's —
-/// it grows with the straight-line code between two jumps, which a program chooses).
-pub const FUEL_A_STEP: u64 = 34_000_000_000;
+/// The fuel a step of bytecode costs, for a loop of up to 20 statements a turn (`tests::measure`, the original
+/// QuickJS 2026-06-04: 9.5×10⁷ an empty loop's, 1.2×10⁹ arithmetic's, 1.4×10¹⁰ twenty statements', 6.8×10¹⁰ a
+/// hundred's — it grows with the straight-line code between two jumps, which a program chooses).
+pub const FUEL_A_STEP: u64 = 14_000_000_000;
 
 /// Limits of `steps`, the fuel above them: twice what that many steps of bytecode cost (`FUEL_A_STEP`), so a
 /// JavaScript loop meets the step limit first.
@@ -101,13 +106,16 @@ pub const fn limits(steps: u32) -> Limits {
 }
 
 /// The limits every program runs under, for the design session (`.sb/codemode-s1a-report.md` §2).
-/// - `steps`: ten times the 20,000-line triage's 18 (QuickJS-ng v0.18.0) — 1.8 million loop turns or branches.
-/// - `fuel`: above the steps (`limits`), 1.2×10¹³. Where the steps see nothing (`JSON.parse`, string building,
-///   `indexOf` over megabytes) that is about 710 s at worst under the JIT and 3.8 h under the interpreter: over the
+/// - `steps`: ten times the 20,000-line triage's 16 (the original QuickJS 2026-06-04) — 1.6 million loop turns or
+///   branches.
+/// - `fuel`: above the steps (`limits`), 4.5×10¹². Where the steps see nothing (`JSON.parse`, string building,
+///   `indexOf` over megabytes) that is about 170 s at worst under the JIT and 40 min under the interpreter: over the
 ///   line, so the clock (`Limits::clock`, `Watch`) is the last net.
+/// - `memory`: the cap is the engine's heap limit inside it (`ENGINE_HEAP`); the guard makes its ending exact
+///   (`Limits::memory`).
 /// - `jit`: machine code only on an arch whose JIT has been fuzzed on QuickJS against the interpreter (S1's call 5:
 ///   until then the interpreter — x86-64 today).
-pub const LIMITS: Limits = limits(180);
+pub const LIMITS: Limits = limits(160);
 
 /// The engine: its module compiled once, the exports the host calls.
 pub struct Engine {
@@ -121,14 +129,17 @@ struct Fns {
     alloc: u32,
     start: u32,
     resume: u32,
+    /// glue.c's `oom`: whether the program had an allocation refused — read after a trap only, for its words.
+    oom: u32,
 }
 
 impl Engine {
-    /// Decodes, validates and compiles `bytes` (~21 ms for QuickJS) — a worker's work.
+    /// Decodes, validates and compiles `bytes` (~19 ms for QuickJS: a tenth under QuickJS-ng's ~21 ms, the two timed
+    /// side by side) — a worker's work.
     pub fn new(bytes: &[u8]) -> Result<Engine, String> {
         let module = Module::new(bytes).map_err(|e| format!("the engine doesn't load: {e}"))?;
         let f = |n: &str| module.func(n).ok_or_else(|| format!("the engine has no export `{n}`"));
-        let fns = Fns { alloc: f("alloc")?, start: f("start")?, resume: f("resume")? };
+        let fns = Fns { alloc: f("alloc")?, start: f("start")?, resume: f("resume")?, oom: f("oom")? };
         let init = module.func("_initialize");
         Ok(Engine { module: Arc::new(module), fns, init })
     }
@@ -613,6 +624,12 @@ impl Program {
             {
                 return Next::Ended(Ended { fuel, ..Ended::stop(memory_limit(self.memory)) });
             }
+            // (a trap after the engine's heap refused, the glue's flag says: the compiler reads on past a buffer it
+            // couldn't grow — said as that limit, the trap's own name kept in the log)
+            Err(Stop::Trap(t)) if !matches!(t, Trap::OutOfFuel | Trap::Interrupted) && self.oom_noted() => {
+                crate::log::line("codetool", "warn", &format!("the engine trapped after a refusal: {t}"));
+                return Next::Ended(Ended { fuel, ..Ended::stop(memory_limit(ENGINE_HEAP)) });
+            }
             Err(s) => return Next::Ended(Ended { fuel, ..stopped(s, &self.watch) }),
         };
         let word = head.split(' ').next().unwrap_or_default();
@@ -666,6 +683,12 @@ impl Program {
         }
     }
 
+    /// Whether the glue noted a refused allocation (its `oom`) — after a trap only: the flag chooses the words,
+    /// nothing else. A call that can't say (out of fuel, the flag set) is no.
+    fn oom_noted(&mut self) -> bool {
+        matches!(self.inst.call(self.fns.oom, &[]).as_deref(), Ok([Val::I32(n)]) if *n != 0)
+    }
+
     /// The new calls of a `pending` reply, held to the protocol: each id new, below the limit.
     fn handed_out(&mut self, body: &mut Value) -> Result<Vec<Call>, String> {
         let Value::Array(list) = body["pending"].take() else {
@@ -699,8 +722,9 @@ fn step_limit(limit: u32) -> String {
     format!("stopped at its step limit ({limit} steps; a step is 10,000 loop turns and branches): {REMEDY}")
 }
 
-/// How QuickJS-ng (v0.18.0) says its own heap limit (`ENGINE_HEAP`) was met: an `InternalError` thrown past every
-/// `catch`. Said as the memory limit with the heap's figure, as a grow the cap refused is with the cap's.
+/// How the engine says its own heap limit (`ENGINE_HEAP`) was met: the original QuickJS's `InternalError`, made
+/// uncatchable by the glue (glue.c's OUT_OF_MEMORY, `tests::the_engines_heap_limit_is_glues`). Said as the memory
+/// limit with the heap's figure, as a grow the cap refused is with the cap's.
 const ENGINE_OUT_OF_MEMORY: &str = "InternalError: out of memory";
 
 /// The words for a program that ran out of memory — the cap (`Limits::memory`) refused it more, or the engine's own

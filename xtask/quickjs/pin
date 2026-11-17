@@ -1,14 +1,24 @@
 # The code tool's engine, pinned: the one place its build reads what it builds from (build.sh sources this; a
 # change here is a change of engine, its own commit with the measures re-run).
 #
-# TAG          QuickJS-ng's release tag (github.com/quickjs-ng/quickjs)
-# SOURCE       the sha256 of codeload.github.com's tarball of TAG — fetch checks it, and build again before use
+# TAG          the original QuickJS's release (Fabrice Bellard's, bellard.org/quickjs): the date naming its archive
+# SOURCE       the sha256 of quickjs-TAG.tar.xz — fetch checks it, and build again before use
 # IMAGE        wasi-sdk's image by digest (wasi-sdk 25, clang 19.1.5): never a moving tag
+#
+# The archive comes from one host, bellard.org/quickjs/quickjs-TAG.tar.xz, with no mirror. Any copy with SOURCE's
+# sha256 serves as well (main's .sb/quickjs-bellard-2026-06-04/ keeps one): put at target/quickjs/, build checks it.
 #
 # At a re-pin, re-read what tarae says of the engine (src/codetool.rs), each against the new build:
 # - the figures glue.c builds in: CALLS (MAX_CALLS), PRINTED_MAX, ENGINE_HEAP (MEMORY_LIMIT, the memory
 #   ending's figure; `the_engines_heap_limit_is_glues` holds it to glue.c);
-# - ENGINE_OUT_OF_MEMORY, the engine's words for its heap limit met;
+# - ENGINE_OUT_OF_MEMORY, the words for the heap limit met (glue.c's OUT_OF_MEMORY, the engine's own throw's);
+# - the out-of-memory guard (glue.c's `oom`). The cap is the allocator's refusal at ENGINE_HEAP, and it holds with
+#   or without the guard; the guard makes the ending final and exact. What it stands on, a refused allocation
+#   never retried: `codetool::tests::the_engine_never_retries_a_refused_allocation` on out/quickjs-probe.wasm,
+#   every refusal of its bodies walked — it shows the ending is never early, and no refusal is swallowed; and the
+#   allocator read again (`__js_malloc`/`__js_realloc`, a new caller that swallows a NULL, an out-of-memory throw
+#   that isn't a refusal);
+# - the stack (glue.c's STACK_LIMIT, set past `JS_NewRuntime2`'s): `deep_recursion_is_an_error_the_program_sees`;
 # - FUEL_A_STEP and LIMITS.steps, measured again (`codetool::tests::measure`), and the work the steps don't see
 #   (`codetool::tests::HEAVY`);
 # - the fuzz hour again, the JIT against the interpreter on the new build, on each architecture whose
@@ -16,6 +26,6 @@
 #   (`examples/qjs_fuzz.rs`). Clean, G36's row in docs/threat-model.md takes the new seeds, count and the
 #   engine's sha256; not clean, that architecture's `LIMITS.jit` goes false until it is. (A change to
 #   tarae-wasm's `jit/` means the hour too.)
-TAG=v0.18.0
-SOURCE=28bcd89aa3683fd2a946537e5ce3f11cc46b5cbf3383c7561aaef3df5ff9f1dd
+TAG=2026-06-04
+SOURCE=b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a
 IMAGE=ghcr.io/webassembly/wasi-sdk@sha256:fdebde86990902087ecc470bf993ffec4d646e8fbd2e68c290a44120437622d0

@@ -61,7 +61,8 @@ const STAND_IN: &str = r#"(module
     (global.set $end (i32.add (local.get $p) (local.get $n)))
     (call $reply (i32.const 0) (i32.const 0)))
   (func (export "resume") (param $id i32) (param $p i32) (param $n i32) (param $err i32) (result i32)
-    (call $reply (local.get $p) (local.get $n))))"#;
+    (call $reply (local.get $p) (local.get $n)))
+  (func (export "oom") (result i32) (i32.const 0)))"#;
 
 pub(crate) fn stand_in() -> Arc<Engine> {
     Arc::new(Engine::new(&wat::parse_str(STAND_IN).unwrap()).unwrap())
@@ -161,6 +162,10 @@ fn the_engines_heap_limit_is_glues() {
     assert_eq!(line, format!("#define MEMORY_LIMIT ({} << 20)", ENGINE_HEAP >> 20));
     // (whole MB, as the words say it; inside the cap: the bound a program meets first)
     const { assert!(ENGINE_HEAP.is_multiple_of(1 << 20) && ENGINE_HEAP < LIMITS.memory) };
+    // and the words the guard says its ending in are the ones the host reads as it
+    let words =
+        glue.lines().find(|l| l.starts_with("#define OUT_OF_MEMORY ")).expect("glue.c's OUT_OF_MEMORY");
+    assert_eq!(words, format!("#define OUT_OF_MEMORY {ENGINE_OUT_OF_MEMORY:?}"));
 }
 
 #[test]
@@ -500,11 +505,18 @@ fn the_real_engine_runs_a_program_and_its_calls() {
          return out;",
     );
     let refused = [
-        "ReferenceError: eval is not defined",
+        "ReferenceError: 'eval' is not defined",
         "TypeError: eval is not supported",
         "TypeError: eval is not supported",
     ];
     assert_eq!(evals.result, Ok(Some(json!(refused))), "nothing a program makes becomes code");
+    // `Atomics` works on the program's own typed arrays alone: no other thread, and a wait throws
+    let wait = ok(
+        &e,
+        "try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); return 'waited' } \
+         catch (x) { return String(x) }",
+    );
+    assert_eq!(wait.result, Ok(Some(json!("TypeError: cannot block in this thread"))));
     // nor is anything loaded: no module loader is set, so a dynamic import (async since v0.18.0) rejects
     let import = ok(&e, "try { await import('x'); return 'loaded' } catch (x) { return String(x) }");
     let said = import
@@ -543,7 +555,7 @@ fn the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean() {
     assert_eq!(cycle, "the result can't be turned into JSON");
     // memory
     let big = limit("const s = 'x'.repeat(1 << 30); return s.length;").0;
-    assert!(big.starts_with("RangeError: string too long"), "{big}");
+    assert!(big.starts_with("RangeError: invalid string length"), "{big}");
     // (the engine's heap limit is met first here, inside the cap: the words say its figure, never the cap's)
     let memory = "stopped at its memory limit (48 MB): do less in one program, or split it";
     let grow = ok(&e, "const a = []; for (;;) a.push('x'.repeat(1 << 20) + a.length);");
@@ -556,17 +568,381 @@ fn the_real_engine_stops_at_its_limits_and_the_next_program_starts_clean() {
         "const a = []; for (let i = 0; i < 100; i++) a.push('x'.repeat(1 << 20) + i); return a.length;",
     );
     assert_eq!(kept.result, Err(memory.into()));
-    // the engine's own `out of memory` passes a `catch` (QuickJS-ng throws it so): still the limit
-    let caught = ok(
-        &e,
-        "let a = []; try { for (;;) a.push('x'.repeat(1 << 20) + a.length); } catch (x) { a = null; return 'ok'; }",
-    );
-    assert_eq!(caught.result, Err(memory.into()));
+    // (an `out of memory` caught: the guard's own tests, below)
     assert_eq!(
         ok(&e, "return typeof a + typeof print").result,
         Ok(Some(json!("undefinedfunction"))),
         "nothing left"
     );
+}
+
+/// Recursion past the stack glue.c sets (`STACK_LIMIT`, inside the module's own) is the engine's error, which the
+/// program can catch: never a trap.
+#[test]
+fn deep_recursion_is_an_error_the_program_sees() {
+    let Some(e) = real() else { return };
+    let caught = ok(&e, "function f(n) { return f(n + 1) + 1 } try { f(0) } catch (x) { return String(x) }");
+    assert_eq!(caught.result, Ok(Some(json!("InternalError: stack overflow"))));
+    let left = ok(&e, "function f(n) { return f(n + 1) + 1 } return f(0);").result.unwrap_err();
+    assert!(left.starts_with("InternalError: stack overflow"), "{}", cut(&left, 200));
+}
+
+// —— the out-of-memory guard (glue.c's `oom`) ——
+//
+// The cap is the engine's allocator refusing past `ENGINE_HEAP`, guard or no guard. The original throws a catchable
+// `out of memory`; the guard ends the program at the next poll after the first refusal, and every reply from then is
+// that ending, in words the glue makes without the engine's heap.
+
+const HEAP_WORDS: &str = "stopped at its memory limit (48 MB): do less in one program, or split it";
+
+/// The heap filled in a `try` until the engine refuses, the refusal caught.
+const FILL: &str =
+    "let a = []; try { for (;;) a.push('x'.repeat(1 << 20) + a.length); } catch (x) { a = null; ";
+
+#[test]
+fn out_of_memory_caught_and_carried_on_still_ends_it() {
+    let Some(e) = real() else { return };
+    let end = ok(&e, &format!("{FILL} for (;;) {{}} }}"));
+    assert_eq!(
+        (end.result, end.stopped),
+        (Err(HEAP_WORDS.into()), true),
+        "the memory's words, not the steps'"
+    );
+}
+
+#[test]
+fn out_of_memory_caught_again_and_again_ends_it() {
+    let Some(e) = real() else { return };
+    let end = ok(&e, "let a = []; for (;;) try { a.push('x'.repeat(1 << 20)) } catch { a = [] }");
+    assert_eq!(end.result, Err(HEAP_WORDS.into()));
+    assert!(end.steps <= 1, "ended at the first refusal: {} steps", end.steps);
+}
+
+/// A refusal inside a builtin (which throws at once) ends the program at its next poll, not 10,000 branches later:
+/// the fuel it spends after the refusal is at most two `indexOf`s over 8 MB, each a reference run's. The fuel past
+/// that ends a broken guard's run (else 10,000 of them).
+#[test]
+fn a_refusal_in_a_builtin_ends_at_the_next_poll() {
+    let Some(e) = real() else { return };
+    let s = "const s = 'ab'.repeat(1 << 22); let a = [];";
+    let one = ok(&e, &format!("{s} return s.indexOf('c')")).fuel - ok(&e, &format!("{s} return -1")).fuel;
+    assert!(one > 1_000_000, "an indexOf over 8 MB is work: {one}");
+    let after = "let n = 0; for (;;) n += s.indexOf('c');";
+    let cases = [
+        ("repeat", format!("{s} try {{ for (;;) a.push('ab'.repeat(1 << 19)) }} catch (x) {{}}")),
+        (
+            "join",
+            format!(
+                "{s} const p = Array.from({{length: 1 << 10}}, (_, i) => 'x'.repeat(511) + i); \
+                 try {{ for (;;) a.push(p.join('')) }} catch (x) {{}}"
+            ),
+        ),
+        (
+            "JSON.stringify",
+            format!(
+                "{s} const o = Array.from({{length: 1 << 12}}, (_, i) => 'y'.repeat(120) + i); \
+                 try {{ for (;;) a.push(JSON.stringify(o)) }} catch (x) {{}}"
+            ),
+        ),
+        (
+            "a sort's comparator",
+            format!(
+                "{s} [5, 3, 8, 1, 9, 2, 7].sort((x, y) => {{ try {{ for (;;) a.push('z'.repeat(1 << 20) + a.length) }} \
+                 catch (e) {{}} return 0 }});"
+            ),
+        ),
+    ];
+    for (what, before) in cases {
+        let alone = ok(&e, &format!("{before} return 'carried on'"));
+        assert_eq!(alone.result, Err(HEAP_WORDS.into()), "{what}");
+        let limits = Limits { fuel: alone.fuel + 100 * one, ..REAL };
+        let on = drive(&e, &format!("{before} {after}"), limits, |_| json!(null)).0;
+        assert_eq!(on.result, Err(HEAP_WORDS.into()), "{what}");
+        let spent = on.fuel.saturating_sub(alone.fuel);
+        assert!(spent <= 2 * one, "{what}: {spent} fuel after the refusal, one indexOf {one}");
+    }
+}
+
+/// Past a refusal, whatever the program goes on to reply — a value, a wait, its own error — is the memory's
+/// ending: with the heap let go, with it still full (the words need none of it), and with the refusal coming while a
+/// call's answer is read on `resume`.
+#[test]
+fn every_reply_after_a_refusal_is_out_of_memory() {
+    let Some(e) = real() else { return };
+    let kept = "let a = []; try { for (;;) a.push('x'.repeat(1 << 20) + a.length); } catch (x) { ";
+    for tail in ["return 'ok' }", "await tool('x'); return 'ok' }", "throw new Error('mine') }"] {
+        for (heap, before) in [("let go", FILL), ("still full", kept)] {
+            let (end, steps) = drive(&e, &format!("{before}{tail}"), REAL, |_| json!(null));
+            assert_eq!(end.result, Err(HEAP_WORDS.into()), "{tail}, the heap {heap}");
+            assert!(steps.is_empty(), "{tail}, the heap {heap}: no call handed out, {steps:?}");
+        }
+    }
+    // 40 MB kept, then an answer of 12 MB: the refusal is the answer's, read on `resume`
+    let (end, steps) = drive(
+        &e,
+        "const a = []; for (let i = 0; i < 40; i++) a.push('x'.repeat(1 << 20) + i); \
+         try { const v = await tool('x'); return v.length } catch (x) { return 'caught' }",
+        REAL,
+        |_| json!("y".repeat(12 << 20)),
+    );
+    assert_eq!(steps, [vec!["0:x".to_string()]], "the program got as far as its call");
+    assert_eq!(end.result, Err(HEAP_WORDS.into()), "refused on resume");
+    // and refused after the last poll, where only the reply can say it: inside `tool()` itself (a long name is a
+    // block of its own), which leaves the call it records broken (the reply's JSON then fails, `answer` says the
+    // refusal) — every refusal of the program walked, on the probe
+    let Some(probe) = probe() else { return };
+    let src = "await tool('n'.repeat(1000)); return 'ok'";
+    let mut p = by_hand(&probe, REAL);
+    assert_eq!(p.start_by_hand(src).0, "pending 0:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn");
+    let grown = p.probe_call("grows", &[], &probe);
+    for n in 1..=grown {
+        let mut p = by_hand(&probe, REAL);
+        p.probe_call("refuse_at", &[Val::I32(n as i32), Val::I32(1)], &probe);
+        let (head, body) = p.start_by_hand(src);
+        assert_eq!(
+            (head.as_str(), &body["error"]),
+            ("error", &json!(ENGINE_OUT_OF_MEMORY)),
+            "refusal {n} of {grown}"
+        );
+    }
+}
+
+/// The glue's own clearing: a second program on the same instance (which the host never does — each program has a
+/// fresh one) doesn't inherit the first one's refusal.
+#[test]
+fn a_refusal_doesnt_end_the_next_program() {
+    let Some(e) = real() else { return };
+    let mut p = by_hand(&e, REAL);
+    let (head, body) = p.start_by_hand(&format!("{FILL} return 'ok' }}"));
+    assert_eq!((head.as_str(), &body["error"]), ("error", &json!(ENGINE_OUT_OF_MEMORY)), "{body}");
+    let (head, body) = p.start_by_hand("return 1 + 1");
+    assert_eq!((head.as_str(), &body["done"]), ("done", &json!(2)), "{body}");
+}
+
+/// The probe module (`inside.sh`, glue.c's GLUE_PROBE): the tests' alone, never shipped.
+const PROBE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/target/quickjs/out/quickjs-probe.wasm");
+const PROBE_EXPORTS: [&str; 3] = ["refuse_at", "grows", "compile_grows"];
+
+fn probe() -> Option<Engine> {
+    let bytes = std::fs::read(PROBE).ok()?;
+    Some(Engine::new(&bytes).expect("the probe loads"))
+}
+
+/// An instance of `e` driven by hand: `start` twice on one instance, or a probe's export called before it — what the
+/// host never does.
+fn by_hand(e: &Engine, limits: Limits) -> Program {
+    let wasm = tarae_wasm::Limits { memory_bytes: limits.memory, jit: limits.jit, ..Default::default() };
+    let mut inst = Instance::new(e.module.clone(), wasm, limits.fuel).expect("an instance");
+    if let Some(init) = e.init {
+        inst.call(init, &[]).expect("_initialize");
+    }
+    Program {
+        inst,
+        watch: Watch::new(&limits),
+        fns: e.fns,
+        out: BTreeSet::new(),
+        asked: 0,
+        fuel: limits.fuel,
+        steps: limits.steps,
+        memory: limits.memory,
+    }
+}
+
+impl Program {
+    /// `start`'s reply, its header and its JSON (a trap or a broken reply: `trap` and what it was).
+    fn start_by_hand(&mut self, src: &str) -> (String, Value) {
+        let reply = self.put(src.as_bytes()).and_then(|(at, len)| {
+            self.call(self.fns.start, &[at, len, Val::I32(self.steps as i32)]).and_then(|r| self.reply(r))
+        });
+        reply.unwrap_or_else(|s| {
+            let why = match s {
+                Stop::Trap(t) => t.to_string(),
+                Stop::Engine(e) => e,
+            };
+            ("trap".into(), json!(why))
+        })
+    }
+
+    /// One of the probe's exports, called.
+    fn probe_call(&mut self, name: &str, args: &[Val], e: &Engine) -> u32 {
+        let f = e.module.func(name).expect("the probe's export");
+        match self.inst.call(f, args).ok().as_deref() {
+            Some([Val::I32(n)]) => *n as u32,
+            _ => 0,
+        }
+    }
+}
+
+/// The shipped module holds nothing of the probe, though both come from one glue.c — and holds the glue's flag, read
+/// after a trap (`Program::oom_noted`).
+#[test]
+fn the_shipped_engine_holds_nothing_of_the_probe() {
+    let Ok(shipped) = std::fs::read(ENGINE_DEV) else { return };
+    let e = Engine::new(&shipped).expect("the engine loads");
+    assert!(e.module.func("oom").is_some(), "quickjs.wasm exports the glue's flag");
+    for name in PROBE_EXPORTS {
+        assert!(e.module.func(name).is_none(), "quickjs.wasm exports `{name}`");
+        assert!(!shipped.windows(name.len()).any(|w| w == name.as_bytes()), "quickjs.wasm names `{name}`");
+    }
+    // (the names looked for are the probe's: a rename there can't leave this test looking at nothing)
+    if let Some(p) = probe() {
+        assert!(PROBE_EXPORTS.iter().all(|n| p.module.func(n).is_some()), "the probe's exports are these");
+    }
+}
+
+/// The bodies the property walks: every growing allocation of each refused in turn.
+const BODIES: [(&str, &str); 13] = [
+    ("array growth", "const a = []; for (let i = 0; i < 3000; i++) a.push(i);"),
+    ("object growth", "const o = {}; for (let i = 0; i < 300; i++) o['k' + i] = i;"),
+    ("ropes, flattened", "let s = ''; for (let i = 0; i < 300; i++) s += 'ab' + i; s.indexOf('z');"),
+    ("repeat", "'abc'.repeat(5000).length;"),
+    ("join", "Array.from({length: 300}, (_, i) => 'x' + i).join(',');"),
+    ("replaceAll", "'a-b-c-'.repeat(300).replaceAll('-', '+');"),
+    (
+        "JSON both ways",
+        "JSON.parse(JSON.stringify({a: [1, 2, {b: 'c'.repeat(600)}], n: Array.from({length: 200}, (_, i) => i)}));",
+    ),
+    ("a regex with captures", "[...'ab-12 cd-34 '.repeat(60).matchAll(/(\\w+)-(\\d+)/g)].map(m => m[2]);"),
+    (
+        "Map and Set",
+        "const m = new Map(), t = new Set(); for (let i = 0; i < 300; i++) { m.set('k' + i, i); t.add(i) }",
+    ),
+    (
+        "closures",
+        "const fs = []; for (let i = 0; i < 300; i++) fs.push(() => i); fs.reduce((a, f) => a + f(), 0);",
+    ),
+    ("BigInt", "let b = 1n; for (let i = 0; i < 100; i++) b *= 12345678901234567890n; b.toString().length;"),
+    (
+        "typed arrays",
+        "const t = new Float64Array(2048); t.fill(1.5); new Uint8Array(t.buffer).slice(0, 4000).length;",
+    ),
+    (
+        "promise jobs",
+        "await Promise.all(Array.from({length: 60}, (_, i) => Promise.resolve(i).then(x => [x, String(x)])));",
+    ),
+];
+
+/// The one body whose refusals the engine carries on past, the guard off: a Map's hash table it leaves ungrown.
+const GIVES_UP: &str = "Map and Set";
+
+/// What the guard stands on, walked on the probe: every growing allocation of each body refused in turn, the body
+/// inside `try { BODY; return 'absorbed' } catch (e) { return String(e) }`.
+/// - **The guard off**, the engine's own answer: it never carries on past a refusal (`absorbed`) — no retry, so
+///   ending at the first refusal is never early — but at a Map's hash table, which it leaves ungrown
+///   (`map_hash_resize`: "no reporting of memory allocation failure"): a growth given up, not retried. (A job it
+///   couldn't queue is swallowed too: the program then waits on a promise nothing settles, an error ending.)
+/// - **The guard on**, every refusal ends the program at the memory limit: none is swallowed.
+/// - A refusal in the compile ends it as well, at the memory limit or in a trap (the compiler reads on past a
+///   bytecode buffer it couldn't grow), never with a value.
+#[test]
+fn the_engine_never_retries_a_refused_allocation() {
+    let Some(probe) = probe() else { return };
+    let t0 = std::time::Instant::now();
+    let (mut runs, mut gave_up, mut compile_traps) = (0, 0, 0);
+    for (what, body) in BODIES {
+        let src = format!("try {{ {body} return 'absorbed' }} catch (e) {{ return String(e) }}");
+        let mut p = by_hand(&probe, REAL);
+        let whole = p.start_by_hand(&src);
+        assert_eq!((whole.0.as_str(), &whole.1["done"]), ("done", &json!("absorbed")), "{what}: {}", whole.1);
+        let grown = p.probe_call("grows", &[], &probe);
+        let compiled = p.probe_call("compile_grows", &[], &probe);
+        assert!(grown > compiled, "{what}: no growing allocation past the compile");
+        for n in 1..=grown {
+            for guard in [false, true] {
+                let mut p = by_hand(&probe, REAL);
+                p.probe_call("refuse_at", &[Val::I32(n as i32), Val::I32(guard as i32)], &probe);
+                let (head, body) = p.start_by_hand(&src);
+                runs += 1;
+                let at = format!(
+                    "{what}: allocation {n} of {grown} refused ({} the compile), the guard {}",
+                    if n <= compiled { "in" } else { "past" },
+                    if guard { "on" } else { "off" }
+                );
+                match (n <= compiled, guard, head.as_str()) {
+                    (true, _, "trap") => compile_traps += 1,
+                    (_, true, _) => assert_eq!(
+                        (head.as_str(), &body["error"]),
+                        ("error", &json!(ENGINE_OUT_OF_MEMORY)),
+                        "{at}: {body}"
+                    ),
+                    (_, false, "error") => {}
+                    (_, false, "done") if body["done"] == "absorbed" && what == GIVES_UP => gave_up += 1,
+                    (_, false, "done") => {
+                        assert_ne!(body["done"], json!("absorbed"), "{at}: the program went on")
+                    }
+                    _ => panic!("{at}: {head} {body}"),
+                }
+            }
+        }
+    }
+    assert!(
+        gave_up > 0,
+        "a Map's ungrown hash table is no longer the refusal the engine carries on past: re-read it"
+    );
+    let line = format!(
+        "{runs} refusals walked ({gave_up} given up at a Map's table, the guard off; {compile_traps} trapped in the \
+         compile), in {:.2?}\n",
+        t0.elapsed()
+    );
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+}
+
+/// Every refusal in the compile of each of `BODIES` that traps inside the engine, the guard on or off, run through
+/// the host: where, the trap, and how the host ended it.
+fn compile_traps(probe: &Engine, guard: bool) -> Vec<(String, String, Ended)> {
+    let mut traps = Vec::new();
+    for (what, body) in BODIES {
+        let src = format!("try {{ {body} return 'absorbed' }} catch (e) {{ return String(e) }}");
+        let mut p = by_hand(probe, REAL);
+        p.start_by_hand(&src);
+        let compiled = p.probe_call("compile_grows", &[], probe);
+        for n in 1..=compiled {
+            let mut p = by_hand(probe, REAL);
+            p.probe_call("refuse_at", &[Val::I32(n as i32), Val::I32(guard as i32)], probe);
+            let steps = Val::I32(p.steps as i32);
+            let reply = p.put(src.as_bytes()).and_then(|(at, len)| p.call(p.fns.start, &[at, len, steps]));
+            let trap = match &reply {
+                Err(Stop::Trap(t)) => t.to_string(),
+                _ => continue,
+            };
+            let at = format!("{what}: refusal {n} of {compiled}");
+            traps.push((at, trap, ended(p.next(reply, Some(&src)))));
+        }
+    }
+    traps
+}
+
+/// A refusal while compiling can trap inside the engine (the compiler reads on past a buffer it couldn't grow): the
+/// glue's flag noted, the host says the memory limit's words, a limit's ending — one sentence for one cause, never
+/// "try again" — and the trap's own name goes to the log.
+#[test]
+fn a_trap_after_a_refusal_in_the_compile_ends_at_the_memory_limit() {
+    let Some(probe) = probe() else { return };
+    let log = crate::log::capture();
+    let traps = compile_traps(&probe, true);
+    assert!(!traps.is_empty(), "no refusal in the compile traps now: re-read the property walk's count");
+    for (at, trap, end) in &traps {
+        assert_eq!((&end.result, end.stopped), (&Err(HEAP_WORDS.into()), true), "{at}: trapped {trap}");
+    }
+    let lines = log.lines();
+    for (at, trap, _) in &traps {
+        let line = format!("the engine trapped after a refusal: {trap}");
+        assert!(lines.iter().any(|l| l.contains(&line)), "{at}: `{line}` not in the log {lines:?}");
+    }
+}
+
+/// Beside it, a trap with no refusal noted is the engine's own fault, whatever came before: the compile's refusals
+/// with the guard off (the glue notes none) still say "the engine stopped: …" — the flag can't make every fault a
+/// limit.
+#[test]
+fn a_trap_with_no_refusal_noted_says_the_engine_stopped() {
+    let Some(probe) = probe() else { return };
+    let traps = compile_traps(&probe, false);
+    assert!(!traps.is_empty(), "no refusal in the compile traps now: re-read the property walk's count");
+    for (at, trap, end) in &traps {
+        let said = format!("the engine stopped: {trap}");
+        assert_eq!((&end.result, end.stopped), (&Err(said), false), "{at}");
+    }
 }
 
 /// The limits are ordered: a JavaScript loop of up to 20 statements a turn meets the step limit, never the fuel;
@@ -794,8 +1170,8 @@ fn measure() {
             assert_eq!(end.steps, 6, "{what}: the step limit ended it");
             a_step = a_step.max(per_step);
         }
-        // (a case the steps see — QuickJS-ng ≥ 0.16.2 polls in some Array methods — is said, and left out of
-        // the slowest rate: its steps bound it)
+        // (a case the steps see — an engine that polls inside a builtin's loop; none of these on the original
+        // QuickJS, 2026-06-04 — is said, and left out of the slowest rate: its steps bound it)
         println!(
             " fuel a second in C-heavy work (on 1e10 fuel; the slowest taken where the steps see nothing):"
         );
