@@ -5284,7 +5284,7 @@ fn the_brush_has_no_switch_in_the_edit_list() {
 }
 
 /// The brush lies `UNDER_KEYS_LU` (12, as the user heard it) under the keys' own loudness over its sweeps, in the
-/// centre; its press's low swell and its grain stand it at most 21 dB over its loudness.
+/// centre; its landing and its grain stand it at most 21 dB over its loudness.
 #[test]
 fn the_brush_lies_under_the_keys_by_its_constant() {
     assert_eq!(brushing::UNDER_KEYS_LU, 12.0, "the level the user heard");
@@ -5347,22 +5347,74 @@ fn rate_in(at: &[usize], n: usize, (from, to): (f64, f64)) -> f64 {
     at.iter().filter(|&&i| (a..b).contains(&i)).count() as f64 / ((b - a) as f64 / RATE as f64)
 }
 
-/// A stroke lands and lifts: no click as it lands (its first 5 ms 20 dB under its loudest 10 ms), the press a low
-/// swell (its first 50 ms mostly under 400 Hz), and lifted (its last 30 ms 20 dB under its loudest) — each sweep's own
-/// variation too.
+/// `x` through a band: a fourth-order high-pass at `lo`, a fourth-order low-pass at `hi` (Hz).
+fn banded(x: &[f32], lo: f64, hi: f64) -> Vec<f64> {
+    let mut b = crate::rain::high_pass(lo).to_vec();
+    b.push(crate::rain::Biquad::new(crate::rain::Shape::LowPass, hi, 0.541, 0.0));
+    b.push(crate::rain::Biquad::new(crate::rain::Shape::LowPass, hi, 1.307, 0.0));
+    filtered(x, &mut b)
+}
+
+/// A stroke lands and lifts: no click as it lands (its first 5 ms 20 dB under its loudest 10 ms), no attack, and lifted
+/// (its last 30 ms 20 dB under its loudest) — each sweep's own variation too. No attack is two things, in the rub's band
+/// (300 Hz–1.5 kHz): its first 50 ms as a whole 6 dB under its middle 0.15 s (break: the press landing in 30 ms), and
+/// none of those 50 ms's 10 ms windows louder than the loudest 10 ms of that middle (break: a bump at the landing over
+/// it); and it rises (its last 10 ms of them louder than its first). The windows aren't held to the middle's mean: the
+/// rub's grain swings its own 10 ms levels by about 10 dB, so one of them near the mean is grain, not an attack — the
+/// stroke's own loudest grain is the measure.
 #[test]
 fn a_stroke_lands_and_lifts() {
     let db = |x: f64| 20.0 * x.log10();
     let rms = |x: &[f32]| (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+    let rms64 = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+    let ms = |m: usize| m * RATE as usize / 1000;
     for (nth, _, s) in strokes() {
+        let (w, n) = (ms(150), s.len());
+        let body = banded(&s, 300.0, 1_500.0);
+        let (first, middle) = (&body[..ms(50)], &body[(n - w) / 2..(n + w) / 2]);
+        let whole = db(rms64(first) / rms64(middle));
+        let grain = middle.chunks(ms(10)).map(rms64).fold(0.0, f64::max);
+        let tens: Vec<f64> = first.chunks(ms(10)).map(|c| db(rms64(c) / grain)).collect();
+        let over = tens.iter().copied().fold(f64::MIN, f64::max);
+        let text: Vec<String> = tens.iter().map(|d| format!("{d:.1}")).collect();
+        println!(
+            "{nth}: its first 50 ms {whole:.1} dB of its middle; by 10 ms, of the middle's loudest 10 ms: {} dB",
+            text.join(" ")
+        );
+        assert!(over <= 0.0, "{nth}: a bump as it lands, {over:+.1} dB over its middle's loudest 10 ms");
+        assert!(whole <= -6.0, "{nth}: an attack, its first 50 ms {whole:.1} dB of its middle");
+        assert!(tens[4] > tens[0], "{nth}: not rising, {:.1} → {:.1} dB", tens[0], tens[4]);
         let loudest = rms_windows(&s).into_iter().fold(0.0, f64::max);
-        let ms = |m: usize| m * RATE as usize / 1000;
         let (first, last) = (db(rms(&s[..ms(5)]) / loudest), db(rms(&s[s.len() - ms(30)..]) / loudest));
-        let low = 1.0 - over(&s[..ms(50)], 400.0);
-        println!("{nth}: first 5 ms {first:.1} dB, under 400 Hz in 50 ms {low:.2}, last 30 ms {last:.1} dB");
+        println!("{nth}: first 5 ms {first:.1} dB, last 30 ms {last:.1} dB");
         assert!(first < -20.0, "{nth}: a click as it lands, {first:.1} dB");
-        assert!(low > 0.5, "{nth}: its press {low:.2} under 400 Hz");
         assert!(last < -20.0, "{nth}: not lifted, {last:.1} dB");
+    }
+}
+
+/// The landing adds no low column of its own (the design session's brief on the user's "네 제안대로 가자",
+/// 2026-11-17): in each stroke's first 0.15 s the level under 200 Hz (a fourth-order low-pass) — its RMS, and its
+/// loudest 10 ms — is no higher than in the stroke's middle 0.15 s. Its break: the old landing, a swell of noise in
+/// 45–200 Hz up over 25 ms, fails it.
+#[test]
+fn a_strokes_landing_adds_nothing_under_200_hz() {
+    let db = |x: f64| 20.0 * x.log10();
+    let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+    let loudest = |x: &[f64]| x.chunks(RATE as usize / 100).map(rms).fold(0.0, f64::max);
+    for (nth, _, s) in strokes() {
+        let mut lp = [
+            crate::rain::Biquad::new(crate::rain::Shape::LowPass, 200.0, 0.541, 0.0),
+            crate::rain::Biquad::new(crate::rain::Shape::LowPass, 200.0, 1.307, 0.0),
+        ];
+        let low = filtered(&s, &mut lp);
+        let (w, n) = (15 * RATE as usize / 100, s.len());
+        let (first, middle) = (&low[..w], &low[(n - w) / 2..(n + w) / 2]);
+        let (r, p) = (db(rms(first) / rms(middle)), db(loudest(first) / loudest(middle)));
+        println!(
+            "{nth}: under 200 Hz, its first 0.15 s against its middle: RMS {r:+.1} dB, loudest 10 ms {p:+.1} dB"
+        );
+        assert!(r <= 0.0, "{nth}: the landing {r:+.1} dB under 200 Hz over the middle's RMS");
+        assert!(p <= 0.0, "{nth}: the landing's loudest 10 ms {p:+.1} dB under 200 Hz over the middle's");
     }
 }
 

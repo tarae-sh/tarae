@@ -10,8 +10,8 @@
 //! texture is the paper's grain read at the brush's pace: its fibres laid along the stroke, a bump each (and finer ones
 //! between), slow as it lands, fastest mid-sweep, slow as it lifts. No crackle, no flutter of its own. It follows the
 //! brush across: its press (landing over its first 12 %, easing off by a third, lifted over its last 20 %) and its speed
-//! (still at its ends, fastest mid-sweep), with a low swell under 200 Hz as it lands — felt more than heard, never a
-//! click.
+//! (still at its ends, fastest mid-sweep): it eases in as the press lands, no swell under it, no low column of its own
+//! as it lands, never a click.
 //!
 //! Not one loop: a sweep is 38 frames, and the same stroke every sweep would be a metronome over a long picture. Each
 //! sweep's stroke is a little its own (`Vary`): its pitch (its band 2–5 % up or down, one sweep up, the next down),
@@ -101,8 +101,13 @@ fn speed(t: f64, len: f64) -> f64 {
 /// crosses, lifted over its last 20 % (0.24 s at most) — the landing and the lift each by `v`'s factor. 0 on its first
 /// sample and its last.
 fn press(t: f64, len: f64, v: &Vary) -> f64 {
-    let (land, lift) = ((0.12 * len).min(0.14) * v.into, (0.2 * len).min(0.24) * v.away);
-    rc(t / land) * rc((len - t) / lift) * (1.0 - 0.35 * t / len)
+    let lift = (0.2 * len).min(0.24) * v.away;
+    rc(t / land(len, v)) * rc((len - t) / lift) * (1.0 - 0.35 * t / len)
+}
+
+/// How long the press takes to land on a stroke `len` s long (s): its first 12 %, 0.14 s at most, `v.into` times.
+fn land(len: f64, v: &Vary) -> f64 {
+    (0.12 * len).min(0.14) * v.into
 }
 
 /// A fourth-order Butterworth low-pass: two sections.
@@ -128,25 +133,6 @@ fn normal(mut y: Vec<f64>) -> Vec<f64> {
     y
 }
 
-/// The landing's rise (s): the press's swell comes up over this, `v.into` times — a soft onset, never a click.
-const LAND_RISE: f64 = 0.025;
-
-/// The press as the brush lands: a low swell (noise under 200 Hz) up over `LAND_RISE` and dying over 70 ms — the
-/// tip settling into the paper on its felt, felt more than heard; its peak at 1 against the rub's RMS.
-fn landing(n: usize, v: &Vary) -> Vec<f64> {
-    let m = n.min((0.3 * R) as usize);
-    let mut noise = Rng::new(v.seed, 14);
-    let (mut hp, mut lp) = (high_pass(45.0), low_pass(200.0 * v.pitch));
-    let x: Vec<f64> = normal((0..m).map(|_| through(&mut lp, through(&mut hp, noise.gauss()))).collect());
-    let rise = LAND_RISE * v.into;
-    let mut y = vec![0.0; n];
-    for (i, (o, x)) in y.iter_mut().zip(&x).enumerate() {
-        let t = i as f64 / R;
-        *o = x * if t < rise { rc(t / rise) } else { (-(t - rise) / 0.07).exp() };
-    }
-    y
-}
-
 /// The paper's fibres a second the brush crosses at full speed (× `v.grain`): the rub's grain, at the brush's pace.
 const FIBRES: f64 = 160.0;
 
@@ -168,7 +154,9 @@ const RUB_BAND: (f64, f64) = (280.0, 1_500.0);
 /// The paper rubbed: noise in `RUB_BAND` through a band at 700 Hz and a softer one at 1.25 kHz, its level the paper's
 /// grain under the brush — the fibres laid along its path, a bump each, most low and a few high, and finer ones between
 /// (3.3 a fibre), read at the brush's pace: slow as it lands, fastest mid-sweep, slow as it lifts. A rough texture that
-/// follows the hand, not a flutter of its own. The landing under it; an RMS of 1.
+/// follows the hand, not a flutter of its own. Nothing swells under it as it lands: it eases in with the press alone
+/// (the design session's brief on the user's "네 제안대로 가자", 2026-11-17 — the old swell, 45–200 Hz up over 25 ms,
+/// stood a low column of its own in each sweep's first 0.15 s). An RMS of 1.
 fn rubbed(n: usize, v: &Vary) -> Vec<f64> {
     let len = n as f64 / R;
     let (mut noise, mut tex) = (Rng::new(v.seed, 11), Rng::new(v.seed, 15));
@@ -185,7 +173,6 @@ fn rubbed(n: usize, v: &Vary) -> Vec<f64> {
     let (mut hp, mut lp) = (high_pass(RUB_BAND.0 * v.pitch), low_pass(RUB_BAND.1 * v.pitch));
     let mut low = Biquad::new(Shape::BandPass, 700.0 * v.pitch, 0.7, 0.0);
     let mut high = Biquad::new(Shape::BandPass, 1_250.0 * v.pitch, 1.1, 0.0);
-    let l = landing(n, v);
     let y: Vec<f64> = (0..n)
         .map(|i| {
             let t = i as f64 / R;
@@ -195,8 +182,7 @@ fn rubbed(n: usize, v: &Vary) -> Vec<f64> {
             (low.run(y) + 0.5 * high.run(y)) * grain * press(t, len, v) * (0.35 + 0.65 * s)
         })
         .collect();
-    let y = normal(y);
-    normal((0..n).map(|i| y[i] + 0.4 * l[i]).collect())
+    normal(y)
 }
 
 /// One stroke, `n` samples long, its own as `v` says, at a level of its own (up to 1.5 dB under the others'), before
