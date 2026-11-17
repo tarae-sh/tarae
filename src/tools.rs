@@ -4896,12 +4896,10 @@ fn looks_card(looks: &[&crate::snapshot::Made], then: &MadeThen) -> String {
         Some(changed) if !changed.is_empty() => format!("{}/ — its {} changed", m.path, changed.join(", ")),
         _ => format!("{}/ — a folder git takes for a repository", m.path),
     };
-    let (it, its) = if looks.len() == 1 { ("it", "its") } else { ("them", "their") };
+    let it = if looks.len() == 1 { "it" } else { "them" };
     let mut s = looks.iter().map(line).collect::<Vec<_>>().join("\n");
-    s += &format!(
-        "\n\ngit run from there or below — your terminal, a prompt's git status — uses {it} instead of this project's \
-         repository and runs what {its} config and hooks name. tarae's own git doesn't."
-    );
+    s += "\n\n";
+    s += &crate::snapshot::git_uses(looks.len() > 1);
     if then.servers() {
         s += " This checkout's language servers are paused until you answer.";
     }

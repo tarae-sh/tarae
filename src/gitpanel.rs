@@ -1479,7 +1479,11 @@ impl Editor {
                 match result {
                     Ok(_) if push => ed.set_success(format!("Pushed {}", st.branch)),
                     Ok(true) => ed.set_status("Already up to date"),
-                    Ok(false) => ed.set_success(format!("Pulled into {}", st.branch)),
+                    Ok(false) => {
+                        ed.set_success(format!("Pulled into {}", st.branch));
+                        // (#610: what it brought may hold a folder git takes for a repository)
+                        ed.look_alikes_again();
+                    }
                     Err(r) if push && r.diverged() && st.upstream.is_some() => ed.git_force_ask(Some(r.why)),
                     Err(r) => ed.set_error(format!("{}: {}", if push { "push" } else { "pull" }, r.why)),
                 }
@@ -1710,7 +1714,11 @@ impl Editor {
                 crate::gitrepo::hooked(top, &hooks::with(pre, &["switch", &b]))
             },
             move |ed, r| match r {
-                Ok(_) => ed.set_success(format!("On {branch}")),
+                Ok(_) => {
+                    ed.set_success(format!("On {branch}"));
+                    // (#610: the branch's files may hold a folder git takes for a repository)
+                    ed.look_alikes_again();
+                }
                 Err(e) => ed.set_error(format!("switch: {e}")),
             },
         );

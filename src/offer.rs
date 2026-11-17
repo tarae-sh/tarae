@@ -182,6 +182,9 @@ pub enum What {
     /// checkout's language servers paused meanwhile, as soon as they are (`Servers`): `y` keeps them and runs it,
     /// `r` removes them first, `v` shows them, `n` doesn't run it.
     ProtectedMade { then: Box<crate::tools::MadeThen>, made: Vec<crate::snapshot::Made> },
+    /// #610: folders git takes for a repository the checkout held when it was first opened (`lookalike.rs`, S3) — it
+    /// holds nothing: `y` notes them (kept: a note, never a trust), `v` shows each, `n` asks again at the next start.
+    LookAlike(Box<crate::lookalike::Ask>),
     /// Review at the end (`edits.rs`): `y` lets Claude's edits go in as it makes them.
     ReviewAtEnd,
     /// Claude's Read, Grep or Glob outside the project (`reads.rs`): `y` once, `a` this chat, `s` this session,
@@ -352,6 +355,7 @@ pub const KINDS: &[&str] = &[
     "run",
     "no-sandbox",
     "protected-made",
+    "look-alike",
     "review-at-end",
     "read",
     "grant",
@@ -485,6 +489,8 @@ impl What {
             | What::GitTrust(_)
             | What::RepoTrust { .. }
             | What::CodeTrust { .. }
+            // (the checkout is looked at again as it opens)
+            | What::LookAlike(_)
             | What::Recover(_)
             | What::RecoverChats(_)
             | What::Restart(_)
@@ -1300,6 +1306,8 @@ impl Offer {
                     | What::Limit(_)
                     // (its answer keeps, removes or shows its session's names, and runs there)
                     | What::ProtectedMade { .. }
+                    // (its `y` notes its session's folders)
+                    | What::LookAlike(_)
                     // (the user's own change set is its session's `applying`)
                     | What::ChangeSet { .. }
                     // (a board on its session's review — frictions29 32: keys meant for one session started one in another)
@@ -1486,6 +1494,7 @@ impl Offer {
                 v.retain(|a| a.0 != 'r' || made.iter().any(crate::snapshot::Made::removable));
                 v
             }
+            W::LookAlike(_) => vec![lasts('y', "Noted"), plain('v', "Details"), plain('n', "Not now")],
             W::Read { keep, pending, .. } => {
                 let mut v = match keep {
                     // (tarae's log: never longer than this chat — #292)
@@ -1774,6 +1783,7 @@ impl Offer {
             W::Run(_) => "run",
             W::NoSandbox { .. } => "no-sandbox",
             W::ProtectedMade { .. } => "protected-made",
+            W::LookAlike(_) => "look-alike",
             W::ReviewAtEnd => "review-at-end",
             W::Read { .. } => "read",
             W::Grant { .. } => "grant",
@@ -2282,6 +2292,7 @@ impl crate::editor::Editor {
                 };
                 crate::tools::made_answer(self, id, *then, made, how)
             }
+            What::LookAlike(ask) => crate::lookalike::answer(self, id, *ask),
             What::ReviewAtEnd => {
                 self.offer_finished(id, Ok(()));
                 crate::edits::at_end_set(self, true);
@@ -3119,6 +3130,7 @@ impl crate::editor::Editor {
             What::ProtectedMade { then, made } => {
                 crate::tools::made_answer(self, o.id, *then, made, crate::tools::MadeAnswer::No)
             }
+            What::LookAlike(ask) => crate::lookalike::later(self, &ask),
             What::ReviewAtEnd => self.set_status("Claude's edits come one at a time"),
             What::ProjectTrust { hash } => self.project_trust_answer(o.id, hash, false),
             What::ClaudeSettings { hash } => self.claude_settings_answer(o.id, hash, false),

@@ -81,6 +81,7 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
         let (mut last, mut first) = (None, true);
         // (beside HEAD: a worktree's own index; `held` — HEAD moved while git held it, its new one not in yet)
         let (lock, mut held) = (head.with_file_name("index.lock"), false);
+        let mut looked = false;
         loop {
             let mut watcher = crate::fswatch::Watcher::new(); // (armed before the stat — see `fswatch`)
             watcher.file(&head);
@@ -133,9 +134,35 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
                     break;
                 }
             }
+            // (#610: once, after the first round went — the start doesn't wait for it: what the checkout holds that git
+            // takes for a repository, before trust is answered; nothing found and nothing cut, nothing sent)
+            if !std::mem::replace(&mut looked, true) && !look_alikes_sent(&tx, &dir) {
+                break;
+            }
             watcher.wait();
         }
     });
+}
+
+/// The trust scan of `dir`'s checkout (`snapshot::scan`, #610), its result sent when it says anything (`lookalike.rs`) —
+/// false: the loop is gone.
+fn look_alikes_sent(tx: &crate::event::Tx, dir: &Path) -> bool {
+    let scan = match crate::snapshot::scan(dir, None) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::log::line(
+                "git",
+                "warn",
+                &format!("{}: the look for folders git takes: {e}", dir.display()),
+            );
+            return true;
+        }
+    };
+    if scan.found.is_empty() && scan.heads.is_empty() && scan.cut_why().is_none() && scan.folders.is_empty() {
+        return true;
+    }
+    let dir = dir.to_path_buf();
+    tx.send(Event::Job(Box::new(move |ed: &mut Editor| ed.look_alikes_found(&dir, scan)))).is_ok()
 }
 
 /// A watch round sent (`send`; None: it couldn't be) — and, for a move (`moved`), whether git held the index then, so
@@ -487,6 +514,91 @@ pub fn watched(l: &mut crate::workspace::Workspace, branch: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// git in a test's own repository — no user or system config, no hooks, no signing, a name of its own.
+    fn git_here(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
+            .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// `dir` laid out as `spec` says: `a/b=text` a file, `a/b/` a folder.
+    fn lay(dir: &Path, spec: &[&str]) {
+        for s in spec {
+            match s.split_once('=') {
+                Some((rel, text)) => {
+                    std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+                    std::fs::write(dir.join(rel), text).unwrap();
+                }
+                None => std::fs::create_dir_all(dir.join(s)).unwrap(),
+            }
+        }
+    }
+
+    /// A folder git takes for a repository, laid out with files in its two folders (git keeps no empty folder).
+    const LOOK_ALIKE: &[&str] =
+        &["HEAD=ref: refs/heads/main\n", "objects/info/keep=\n", "refs/heads/keep=\n", "config=[core]\n"];
+
+    /// #610, landing 2: the trust scan names what git takes for a repository in a checkout as it's first opened — a
+    /// committed one and an untracked one; not `.git`'s own, not `.repo/projects/x.git` (`repo`'s store), not a nested
+    /// checkout's `.git`, not a folder beside a junk `.git` file (git stops there). Through `git::watch` its card comes
+    /// whether a trust card shows or not. Breaks if the scan is off.
+    #[test]
+    fn the_trust_scan_names_a_committed_look_alike() {
+        let s = crate::scratch::Scratch::new("git-trust-scan");
+        let dir = std::fs::canonicalize(s.path()).unwrap();
+        git_here(&dir, &["init", "-q"]);
+        let at = |rel: &str, spec: &[&str]| {
+            let spec: Vec<String> = spec.iter().map(|x| format!("{rel}/{x}")).collect();
+            lay(&dir, &spec.iter().map(String::as_str).collect::<Vec<_>>());
+        };
+        at("vendor/fx", LOOK_ALIKE);
+        git_here(&dir, &["add", "-A"]);
+        git_here(&dir, &["commit", "-q", "-m", "a look-alike"]);
+        at("ux", &["HEAD=ref: refs/heads/main\n", "objects/", "refs/"]);
+        at(".repo/projects/x.git", &["HEAD=ref: refs/heads/main\n", "objects/", "refs/"]);
+        at("jx", &[".git=junk\n", "HEAD=ref: refs/heads/main\n", "objects/", "refs/"]);
+        at("lone", &["HEAD=ref: refs/heads/main\n"]);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        git_here(&dir.join("sub"), &["init", "-q"]);
+        // (the clock held: the line's limit never decides here)
+        crate::clock::hold();
+        let scan = crate::snapshot::scan(&dir, None).unwrap();
+        crate::clock::release();
+        let rels: Vec<&str> = scan.found.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(rels, ["ux", "vendor/fx"]);
+        assert_eq!(scan.found[1].head.lines, ["ref: refs/heads/main"]);
+        assert!(scan.heads.contains(&(dir.join("lone"), crate::snapshot::Parts::head_only())), "remembered");
+        assert!(!scan.folders.iter().any(|f| f.starts_with(".repo")), "{:?}", scan.folders);
+        assert_eq!(scan.cut_why(), None);
+        // (as tarae opens it: the watch's first look — the card, the committed one on it)
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        watch(&ed.events, dir.clone());
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while !ed.offers.iter().any(|o| o.kind() == "look-alike") {
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            let ev = ed.events.recv_timeout(left).expect("the look-alike card");
+            ed.handle_event(ev);
+        }
+        let o = ed.offers.iter().find(|o| o.kind() == "look-alike").unwrap();
+        // (the committed one whatever the untracked half took: past its limit the cached half is looked at alone)
+        assert!(
+            o.question.contains("\nvendor/fx/\nAll here before Claude ran anything.\n"),
+            "{}",
+            o.question
+        );
+        assert!(o.question.contains("\n\ngit run from there or below — "), "{}", o.question);
+        assert!(ed.workspace.heads.iter().any(|h| h.0 == dir.join("lone")), "lone/ remembered");
+    }
 
     /// #358: the round's read lands and git renames `index.lock` in while the round is being sent (the main loop and
     /// git run meanwhile) — the move still holds the lock, so the watch waits on it and reads the index once it's

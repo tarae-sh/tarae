@@ -658,6 +658,33 @@ fn a_change_in_a_noted_look_alike_is_named_again() {
     assert_eq!(looks(&elsewhere), [], "not noted: a config alone doesn't make it one");
 }
 
+/// #610, landing 2: a folder git takes for a repository noted on the first-trust card (`y`) joins the noted list — a
+/// run's change to its `hooks/` names it again on the protected-made card, as one noted after a run is. Breaks if the
+/// trust card's folders aren't seeded into the noted list. (Harmless commands in the test's own repository.)
+#[test]
+fn a_change_in_a_look_alike_noted_at_trust_is_named_again() {
+    let (_s, dir) = repo("look-trust-noted");
+    let fx = dir.join("fx");
+    lay(&fx, &["HEAD=ref: refs/heads/main\n", "objects/", "refs/", "config=[core]\n"]);
+    let (mut ed, generation) = turn_in(&dir);
+    let me = (generation, dir.as_path());
+    // (the trust scan as the git watch makes it, its clock held: the line's limit never decides here)
+    crate::clock::hold();
+    let scan = crate::snapshot::scan(&dir, None).unwrap();
+    crate::clock::release();
+    ed.look_alikes_found(&dir, scan);
+    pump_until(&mut ed, &|ed| ed.offers.iter().any(|o| o.kind() == "look-alike"), "the first-trust card");
+    press(&mut ed, 'y');
+    assert_eq!(ed.workspace.noted, std::slice::from_ref(&fx));
+    claude_runs(&mut ed, me, 1, "mkdir fx/hooks && printf '#!/bin/sh\\n' > fx/hooks/post-checkout");
+    pump_until(&mut ed, &|_| answered(1).is_some(), "the run that adds a hook");
+    claude_runs(&mut ed, me, 2, "touch two");
+    pump_until(&mut ed, &|ed| card_names(ed) == ["fx"], "named again");
+    let q = &ed.offers[0].question;
+    assert!(q.contains("fx/ — its hooks/post-checkout changed"), "{q}");
+    assert!(!dir.join("two").exists(), "the run waits");
+}
+
 /// #610's work budget, counts not time: a run that touches no `HEAD`, `commondir`, `objects/` or `refs/` makes no `lstat`
 /// beyond the ignored folders' tops (4 each before the run, 4 after) and three per remembered folder, and no git test;
 /// the noted folders' check makes none (sorted lookups over the lists). Breaks if the remembered ones are judged anew.

@@ -102,6 +102,7 @@ mod steer;
 mod stuckstop;
 mod termview;
 mod toasts;
+mod trustscan;
 mod turnsheld;
 mod warm;
 mod watchers;

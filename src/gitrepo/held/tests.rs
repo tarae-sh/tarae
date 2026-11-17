@@ -785,6 +785,19 @@ fn fsmonitor_is_held_on_status_and_snapshots() {
     });
 }
 
+/// #610: the trust scan's own line (`snapshot::scan`'s first look: `ls-files --cached --others`, which runs a
+/// `core.fsmonitor` — the plan's probe §22) runs through `Repo::command`: held before the answer, running after `y`.
+/// Breaks if the line skips the held builder.
+#[test]
+fn fsmonitor_is_held_on_the_look_alike_scan() {
+    let f = Fixture::new("fsmonitor-scan");
+    f.set("core.fsmonitor", &f.marker("fsmonitor", "fail"));
+    f.held_then_trusted("fsmonitor", |f| {
+        f.touch("e.n");
+        let _ = crate::snapshot::scan(&f.repo, None);
+    });
+}
+
 #[test]
 fn a_clean_filter_is_held_when_a_snapshot_stores_files() {
     let f = Fixture::new("clean");

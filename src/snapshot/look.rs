@@ -281,6 +281,298 @@ impl Seen {
     }
 }
 
+// ── At first trust (#610, landing 2): what a checkout already holds ─────────────────────────────────────────────────
+
+/// The trust scan's line: every path named `HEAD` or `commondir`, in any case (APFS finds `HEAD` as `head`) — git's own
+/// pathspec magic, after the line's options.
+const SCAN_SPECS: [&str; 3] = ["--", ":(glob,icase)**/HEAD", ":(glob,icase)**/commondir"];
+
+/// How long the line with the untracked half may take (`scan`): past it git is stopped and the cut said (S10) — ~14× the
+/// 0.14 s measured at 200,000 files.
+pub const SCAN_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Folders the trust scan judges at most (~100 ms at the measured rate): past it the rest aren't, the cut said.
+pub const SCAN_MAX: usize = 4096;
+
+/// How often the bounded line is looked at while it runs.
+const SCAN_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// What `v` shows of a found folder's `HEAD` and `config`, at most (bytes, lines).
+const PEEK_MAX: (u64, usize) = (512, 6);
+
+/// Hook names `v` shows of a found folder at most — of the `HOOKS_MAX` + 1 entries of its `hooks/` read at most.
+const HOOKS_SHOWN: usize = 12;
+
+/// What git does with a folder it takes for a repository, as both cards say it — the protected-made card's (S2) and the
+/// first-trust card's (S3): one sentence from one place, `many` for them.
+pub fn git_uses(many: bool) -> String {
+    let (it, its) = if many { ("them", "their") } else { ("it", "its") };
+    format!(
+        "git run from there or below — your terminal, a prompt's git status — uses {it} instead of this project's \
+         repository and runs what {its} config and hooks name. tarae's own git doesn't."
+    )
+}
+
+/// What `v` shows of one of a found folder's parts: its lines (a file's, or its hooks' names), and whether there was
+/// more than those — said on the card as cut.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Peeked {
+    pub lines: Vec<String>,
+    pub cut: bool,
+}
+
+/// A folder git takes for a repository the trust scan found: from the root, what makes it one, its `look_hash`, and its
+/// `HEAD`, `config` (within `PEEK_MAX`) and hooks' names (`hooks`) as they read — a link as `→ its target` — what the
+/// card's `v` shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Taken {
+    pub rel: String,
+    pub takes: crate::gitrepo::Takes,
+    pub hash: String,
+    pub head: Peeked,
+    pub config: Peeked,
+    pub hooks: Peeked,
+}
+
+impl Taken {
+    /// Its look-hash covers all that decides it (none past what `look_hash` reads): a note of it can be kept.
+    pub fn keepable(&self) -> bool {
+        !self.hash.starts_with(super::BIG)
+    }
+}
+
+/// What the trust scan found in a checkout (`scan`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Scan {
+    /// Folders git takes for a repository, sorted.
+    pub found: Vec<Taken>,
+    /// Folders holding a `HEAD` git doesn't take yet, whole, with what each holds — remembered (`Workspace.heads`).
+    pub heads: Vec<(std::path::PathBuf, Parts)>,
+    /// Every folder the line named (from the root, sorted, at most `SCAN_MAX`) — judged again with the cached half alone
+    /// when the git tab's pull or switch reruns it, so the untracked ones found at first aren't lost.
+    pub folders: Vec<String>,
+    /// The untracked half took over `SCAN_LIMIT`: stopped, the cached half alone looked at.
+    pub slow: bool,
+    /// Folders past `SCAN_MAX`, not judged.
+    pub past: usize,
+}
+
+impl Scan {
+    /// What it didn't look through, its reasons alone, as S10 says them — None: all of it. Each says its own lead at
+    /// its call: the card (`lookalike::Ask::card`) a short one under its title, the toast (`look_alikes_cut`) the whole.
+    pub fn cut_why(&self) -> Option<String> {
+        let mut why = Vec::new();
+        if self.slow {
+            why.push(format!("the untracked files took over {}", crate::term::run_duration(SCAN_LIMIT)));
+        }
+        if self.past > 0 {
+            let s = if self.past == 1 { "" } else { "s" };
+            why.push(format!("{} more folder{s} holding a HEAD", self.past));
+        }
+        (!why.is_empty()).then(|| why.join(" and "))
+    }
+}
+
+/// The trust scan (#610, landing 2): the folders in the checkout at `root` git takes for a repository, found by one
+/// `git ls-files` through the snapshot's builder — its repository's held settings until trust is answered
+/// (`Repo::command`: a `core.fsmonitor` doesn't run), no hooks — then git's own test on each folder holding a `HEAD` or
+/// `commondir` (`gitrepo::git_would_take`). `again`: None at the first look — the cached and the untracked halves in
+/// one line, stopped past `SCAN_LIMIT` (then the cached half alone, unbounded: the index bounds it); the folders of the
+/// look before when the git tab's pull or switch reruns it — the cached half alone, those judged with it. A folder
+/// below `.git` or `.repo` (git's and `repo`'s own stores, refused to runs by name — #609) isn't judged; nor is the
+/// root's own. On a worker.
+pub fn scan(root: &Path, again: Option<&[String]>) -> Result<Scan, String> {
+    use std::os::unix::ffi::OsStrExt as _;
+    fn line(rest: &[&'static str]) -> Vec<&'static str> {
+        ["ls-files", "-z"].iter().chain(rest).chain(&SCAN_SPECS).copied().collect()
+    }
+    let cached = || super::git_bytes(root, &line(&["--cached"]), None);
+    let mut scan = Scan::default();
+    let bytes = match again {
+        Some(_) => cached()?,
+        None => match within(root, &line(&["--cached", "--others", "--exclude-standard"]))? {
+            Some(b) => b,
+            None => {
+                scan.slow = true;
+                cached()?
+            }
+        },
+    };
+    let mut folders: Vec<Vec<u8>> = bytes
+        .split(|&b| b == 0)
+        .filter_map(|p| Some(p[..p.iter().rposition(|&b| b == b'/')?].to_vec()))
+        .filter(|f| {
+            !f.split(|&b| b == b'/')
+                .any(|c| c.eq_ignore_ascii_case(b".git") || c.eq_ignore_ascii_case(b".repo"))
+        })
+        .collect();
+    folders.extend(again.unwrap_or_default().iter().map(|f| f.as_bytes().to_vec()));
+    crate::sorting::sort(&mut folders);
+    folders.dedup();
+    scan.past = folders.len().saturating_sub(SCAN_MAX);
+    folders.truncate(SCAN_MAX);
+    for f in folders {
+        let dir = root.join(std::ffi::OsStr::from_bytes(&f));
+        let rel = String::from_utf8_lossy(&f).into_owned();
+        match crate::gitrepo::git_would_take(&dir) {
+            Some(takes) => scan.found.push(Taken {
+                hash: look_hash(root, &rel),
+                head: peek(&dir.join("HEAD")),
+                config: peek(&dir.join("config")),
+                hooks: hooks(&dir.join("hooks")),
+                rel: rel.clone(),
+                takes,
+            }),
+            None => {
+                let parts = Parts::of(&dir);
+                if parts.head {
+                    scan.heads.push((dir, parts));
+                }
+            }
+        }
+        scan.folders.push(rel);
+    }
+    Ok(scan)
+}
+
+/// The line `args` on `root`'s repository through the snapshot's builder, given `SCAN_LIMIT`: its stdout — None, stopped
+/// past it. Its pipes read as they fill, without waiting (a full one can't hold git up), between waits of `SCAN_POLL` by
+/// `event::sleep` on `clock`'s time (a simulation moves it) — no thread of its own.
+fn within(root: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
+    let said = |e: std::io::Error| format!("git: {e}");
+    let cmd = super::command_env(root, args, None, &[])?;
+    #[cfg(test)]
+    let cmd = stand_in(root).unwrap_or(cmd);
+    let s = crate::spawn::setsid_git(&cmd).map_err(said)?;
+    let (mut out, mut err) = (Drain::of(s.stdout), Drain::of(s.stderr));
+    let start = crate::clock::now();
+    let mut stopped = false;
+    loop {
+        err.take();
+        if out.take() {
+            break;
+        }
+        if crate::clock::since(start) >= SCAN_LIMIT {
+            crate::spawn::term_group(s.pid);
+            stopped = true;
+            break;
+        }
+        crate::event::sleep(SCAN_POLL);
+    }
+    let status = crate::spawn::wait(s.pid).map_err(said)?;
+    err.take();
+    let (stdout, stderr) = (out.got, err.got);
+    match () {
+        _ if stopped => Ok(None),
+        _ if status.success() => Ok(Some(stdout)),
+        _ => {
+            let e = String::from_utf8_lossy(&stderr);
+            Err(e.lines().find(|l| !l.trim().is_empty()).unwrap_or("git failed").to_string())
+        }
+    }
+}
+
+/// A child's pipe read without waiting (`within`): what came so far, and whether it ended.
+struct Drain {
+    pipe: Option<std::io::PipeReader>,
+    got: Vec<u8>,
+}
+
+impl Drain {
+    fn of(pipe: Option<std::io::PipeReader>) -> Drain {
+        use std::os::fd::AsRawFd as _;
+        if let Some(p) = &pipe {
+            // SAFETY: fcntl on a descriptor this pipe owns, live for the calls.
+            unsafe {
+                let flags = libc::fcntl(p.as_raw_fd(), libc::F_GETFL);
+                libc::fcntl(p.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+        Drain { pipe, got: Vec::new() }
+    }
+
+    /// What's there read — whether the pipe has ended (or there's none).
+    fn take(&mut self) -> bool {
+        use std::io::Read as _;
+        let Some(p) = self.pipe.as_mut() else { return true };
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            match p.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => self.got.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return false,
+                Err(_) => break,
+            }
+        }
+        self.pipe = None;
+        true
+    }
+}
+
+/// Tests: checkouts whose untracked half is a stand-in git that never ends (`sleep`, harmless) — the cut's.
+#[cfg(test)]
+pub(crate) static SLOW: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn stand_in(root: &Path) -> Option<std::process::Command> {
+    let slow = SLOW.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|s| root.starts_with(s));
+    slow.then(|| {
+        let mut c = std::process::Command::new("sleep");
+        c.arg("120");
+        c
+    })
+}
+
+/// A file's first lines as `v` shows them (`PEEK_MAX`), blank ones left out — a link's target as `→ …`, read through no
+/// link and with no wait (a FIFO); none: not there.
+fn peek(path: &Path) -> Peeked {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if let Ok(t) = std::fs::read_link(path) {
+        return Peeked { lines: vec![format!("→ {}", t.display())], cut: false };
+    }
+    let Ok(f) =
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(path)
+    else {
+        return Peeked::default();
+    };
+    let mut b = Vec::new();
+    let _ = f.take(PEEK_MAX.0).read_to_end(&mut b);
+    let text = String::from_utf8_lossy(&b);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let cut = lines.len() > PEEK_MAX.1 || b.len() as u64 == PEEK_MAX.0;
+    Peeked { lines: lines.iter().take(PEEK_MAX.1).map(|l| l.to_string()).collect(), cut }
+}
+
+/// A found folder's hooks as `v` shows them: the names in `hooks/` that aren't git's own `*.sample`, sorted, at most
+/// `HOOKS_SHOWN` — of at most `HOOKS_MAX` + 1 entries read (`look_hash`'s bound); past either, cut. Only names: no hook
+/// is opened, a folder that's a link is named by its target as `→ …` and not read, nor is anything that isn't one.
+fn hooks(path: &Path) -> Peeked {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_symlink() => {
+            let to = std::fs::read_link(path).map(|t| t.display().to_string()).unwrap_or_default();
+            Peeked { lines: vec![format!("→ {to}")], cut: false }
+        }
+        Ok(m) if m.is_dir() => {
+            let read: Vec<String> = std::fs::read_dir(path)
+                .map(|r| {
+                    r.flatten()
+                        .take(HOOKS_MAX + 1)
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut names: Vec<String> = read.iter().filter(|n| !n.ends_with(".sample")).cloned().collect();
+            crate::sorting::sort(&mut names);
+            let cut = read.len() > HOOKS_MAX || names.len() > HOOKS_SHOWN;
+            names.truncate(HOOKS_SHOWN);
+            Peeked { lines: names, cut }
+        }
+        _ => Peeked::default(),
+    }
+}
+
 /// What decides folder `rel` (from `root`) and what it runs, as a digest (`Made.hash` of a look-alike): its `HEAD`,
 /// `commondir` and `config` (each within `HASH_MAX`, read through no link) and `hooks/`'s names and contents (within
 /// `HOOKS_MAX` entries) — past either, `big:`, never kept (`Made::keepable`).

@@ -172,7 +172,9 @@ impl Editor {
         // card and in the inbox; any other card's ask cut as the one-line forms cut it: the whole is for scripts —
         // Claude's level doesn't grow with a long card)
         let by_title = |kind: &str| {
-            kind.starts_with("plugin") || matches!(kind, "git-trust" | "claude-settings" | "repo-trust")
+            // (#610's look-alike card: folders' names and their config's lines)
+            kind.starts_with("plugin")
+                || matches!(kind, "git-trust" | "claude-settings" | "repo-trust" | "look-alike")
         };
         for c in &mut s.cards {
             c.asks = match by_title(c.kind) {

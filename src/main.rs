@@ -125,6 +125,7 @@ mod layouts;
 mod limits;
 mod llm;
 mod log;
+mod lookalike;
 mod lsp;
 mod lsp_editor;
 mod lspagent;

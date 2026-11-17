@@ -159,6 +159,8 @@ fn kind_heading(k: Kind) -> &'static str {
         Kind::Hook => "git hooks",
         Kind::Code => "code language servers run",
         Kind::Agent => "an agent's files in the project",
+        // (never listed: a note, kept as no — `trusted_in` finds no trusted version of it)
+        Kind::LookAlike => "folders git takes for a repository, noted",
     }
 }
 
@@ -582,6 +584,7 @@ impl Editor {
                 "Taken back — its language servers stopped; its card asks before they start again",
             ),
             Kind::Agent => self.set_status("Taken back — its card asks before the agent starts here again"),
+            Kind::LookAlike => self.set_status("A note, not a trust — nothing to take back"),
         }
     }
 }

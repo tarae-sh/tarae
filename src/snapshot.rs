@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod look;
-pub use look::{HEADS_MAX, Look, Parts};
+pub use look::{HEADS_MAX, Look, Parts, Peeked, Scan, Taken, git_uses, scan};
+#[cfg(test)]
+pub(crate) use look::{SCAN_LIMIT, SLOW};
 
 /// tarae's index for the checkout's snapshots, in its git folder.
 const INDEX: &str = "tarae-snapshot.index";

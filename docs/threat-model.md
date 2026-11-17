@@ -220,6 +220,19 @@ Kept:
   `snapshot::tests::empty_folders_beside_a_head_from_before_are_named` ·
   `snapshot::tests::a_change_in_a_noted_look_alike_is_named_again` · `snapshot::tests::r_removes_only_what_made_it_one` ·
   `sim::lookalike::a_look_alike_a_run_made_is_held_until_answered`
+- **A folder git takes for a repository, there before** (#610). One already in the checkout is named when it's first
+  opened since tarae started — before any trust is answered, whether a trust card shows or not — once until it changes:
+  one `git ls-files` of the paths named `HEAD` or `commondir` (held as every git of tarae's is until trust: a
+  `core.fsmonitor` doesn't run), git's own test on each folder, a card of its own; the git tab's pull and switch look
+  again. Its `y` is **a note, not a trust**: kept in `trust.json` as an answer of no of its own kind (`look-alike`, one
+  a repository, its version the folders' paths and what decides each — `HEAD`, `commondir`, `config`, `hooks/`), it
+  grants nothing (no other answer there moves, `:granted` lists nothing); its folders join the noted ones, so a run's
+  change to what decides one is named and held as above.
+  test: `git::tests::the_trust_scan_names_a_committed_look_alike` ·
+  `gitrepo::held::tests::fsmonitor_is_held_on_the_look_alike_scan` · `lookalike::tests::the_first_trust_card_comes_once` ·
+  `lookalike::tests::a_noted_look_alike_grants_nothing` ·
+  `snapshot::tests::a_change_in_a_look_alike_noted_at_trust_is_named_again` ·
+  `sim::trustscan::a_look_alike_found_at_first_trust_is_asked_once`
 
 Not kept:
 - **A folder git takes for a repository, past what the look sees** (#610). Your own git before you answer, or outside
@@ -228,8 +241,11 @@ Not kept:
   too (Seatbelt refuses `.git` by name, never a look-alike's names). Past 256 remembered folders holding a `HEAD`,
   empty `objects/` and `refs/` added beside one (the count said in Claude's run report). Below tools' output, `r`
   removes a `HEAD` only where the file system keeps when a file was made; else the folder is named with nothing for
-  `r`. What's noted and remembered lives until tarae quits. A folder opened for writing outside the project.
-  test: `snapshot::tests::past_the_bound_the_heads_not_looked_at_are_counted`
+  `r`. What's noted and remembered lives until tarae quits (a note given at the first-trust card is kept). A folder
+  opened for writing outside the project. At first open, the untracked files past 2 s and the folders past 4,096 aren't
+  looked at — said, on the card or in a toast.
+  test: `snapshot::tests::past_the_bound_the_heads_not_looked_at_are_counted` ·
+  `sim::trustscan::the_untracked_scan_is_cut_and_said` · `lookalike::tests::a_cut_with_no_card_is_said_once_in_a_toast`
 - **A protected name made where none is yet, or moved in inside a folder.** Linux: Landlock only grants. Where a
   run has a mount namespace of its own (tier own), each protected name is bound read-only over itself and every
   folder takes new files, so a new `build.rs` beside a `Cargo.toml` is made; each folder between the project and a

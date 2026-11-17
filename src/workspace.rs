@@ -286,6 +286,14 @@ pub struct Workspace {
     /// #610: the folders git takes for a repository noted on the protected-made card (`y`), whole, sorted — named
     /// again when a run changes what decides one (`look.rs`). In memory only.
     pub noted: Vec<std::path::PathBuf>,
+    /// #610: the folders the trust scan's line named in its checkout (from the root, `snapshot::Scan.folders`) — judged
+    /// again with the cached half when the git tab's pull or switch reruns it (`lookalike.rs`); and whether its cut was
+    /// said in a toast (once since tarae started). In memory only.
+    pub look_folders: Vec<String>,
+    pub look_cut_told: bool,
+    /// #610: the version of its card answered since tarae started (`y`, or `n` not now) — a rerun finding the same set
+    /// asks nothing; a changed one asks again. In memory only (`y`'s note is kept in `trust.json` too).
+    pub look_answered: Option<crate::trust::Digest>,
     /// A commit's tree being written for a run of its Claude's (`basetree.rs`) — another such run waits for
     /// that one's answer: they'd write the same tree.
     pub base_writing: bool,
@@ -526,6 +534,9 @@ impl Workspace {
             heads_past: 0,
             heads_told: 0,
             noted: Vec::new(),
+            look_folders: Vec::new(),
+            look_cut_told: false,
+            look_answered: None,
             base_writing: false,
             spawned: Vec::new(),
             viewed: Default::default(),

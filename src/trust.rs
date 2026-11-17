@@ -274,16 +274,22 @@ pub enum Kind {
     Code,
     /// A project's files an agent loads that run as you, its row's held paths (`agenttrust.rs`, guard 4).
     Agent,
+    /// #610: the folders git takes for a repository a checkout held when it was first opened, noted (`lookalike.rs`) —
+    /// one entry a repository (`Place::Repo`, file `.`), its version their paths and what decides each. **A note, never
+    /// a trust**: kept as an answer of no (`trusted` false), so nothing reads it as one — `trusted_in` (`:granted`)
+    /// lists no version of it, `state` finds it `Ignored`, and no other kind is kept at its place.
+    LookAlike,
 }
 
 impl Kind {
-    const WORDS: [(Kind, &str); 6] = [
+    const WORDS: [(Kind, &str); 7] = [
         (Kind::Tarae, "tarae"),
         (Kind::Claude, "claude"),
         (Kind::Git, "git"),
         (Kind::Hook, "hook"),
         (Kind::Code, "code"),
         (Kind::Agent, "agent"),
+        (Kind::LookAlike, "look-alike"),
     ];
 
     fn word(self) -> &'static str {
@@ -771,6 +777,9 @@ impl Write {
     /// As a quit that gave up waiting names it.
     fn said(&self) -> String {
         match self {
+            Write::Answer { kind: Kind::LookAlike, file, .. } => {
+                format!("folders git takes for a repository noted in {}", file.display())
+            }
             Write::Answer { file, trusted: true, .. } => format!("trust kept for {}", file.display()),
             Write::Answer { file, .. } => format!("trust held back for {}", file.display()),
             Write::Forget { place, .. } => format!("trust taken back for {}", place.shown(Path::new(""))),
