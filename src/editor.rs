@@ -1380,6 +1380,8 @@ pub struct Editor {
     /// The user's config file, where every saved setting is written (`save_setting`) — None in tests (they
     /// set a temp file).
     pub config_file: Option<std::path::PathBuf>,
+    /// The config files' times as the start's load read them, for the watch's first look (`config::Seen`).
+    pub config_seen: Option<crate::config::Seen>,
     /// The last frame drawn and its size — what the user sees (`chat::attach_screen`).
     pub last_frame: Option<(Vec<u8>, u16, u16)>,
     /// Bytes for the terminal itself, sent after the next frame (a copy through OSC 52 — `clipboard.rs`).
@@ -1780,6 +1782,7 @@ impl Editor {
             run_clock: None,
             sandbox_here: None,
             config_file: if cfg!(test) { None } else { crate::config::config_path() },
+            config_seen: None,
             last_frame: None,
             term_out: Vec::new(),
             unfocused: false,
@@ -2037,7 +2040,7 @@ impl Editor {
     /// and that checkout's HEAD, as session 0's (the other sessions' are watched as they open).
     pub fn watches_start(&mut self) {
         let root = self.started_root().to_path_buf();
-        crate::config::watch(&self.events, root.clone(), self.config_sources());
+        crate::config::watch(&self.events, root.clone(), self.config_sources(), self.config_seen.take());
         self.events_for(crate::event::WorkspaceId::HOME);
         crate::git::watch(&self.events, root);
         self.events_for(self.workspace.id);
@@ -10313,7 +10316,7 @@ mod tests {
         ed.workspace.root = dir.clone();
         let q = watches_queue(&ed);
         crate::git::watch(&q, dir.clone());
-        crate::config::watch(&q, dir.clone(), ed.config_sources());
+        crate::config::watch(&q, dir.clone(), ed.config_sources(), None);
         q.started();
         let round = q.recv_timeout(crate::test_results::PATIENCE).expect("the git watch's first round");
         assert_eq!(starts_from(&q, "src/git.rs").len(), 1, "sent, not applied: {:?}", q.starts_out());
@@ -10338,12 +10341,29 @@ mod tests {
         let ed = editor("");
         let q = watches_queue(&ed);
         let from = crate::config::Sources { user: Some(dir.join("config.toml")), trust: None };
-        crate::config::watch(&q, dir.clone(), from);
+        crate::config::watch(&q, dir.clone(), from, None);
         q.started();
         let sync = q.recv_timeout(crate::test_results::PATIENCE).expect("the plugins found");
         assert_eq!(starts_from(&q, "src/config.rs").len(), 1, "sent, not applied: {:?}", q.starts_out());
         drop(sync);
         assert!(q.starts_out().is_empty(), "gone with it: {:?}", q.starts_out());
+    }
+
+    /// #606: a `.tarae.toml` written after the start's load read the files and before the config watch's first look
+    /// (its thread late on a loaded machine) is read: that look compares with the files as the load found them, not
+    /// as it finds them itself. Its first look done (the start's count let go), the reload is sent already.
+    #[test]
+    fn a_config_written_before_the_watchs_first_look_is_read() {
+        let scratch = crate::scratch::Scratch::new("start-config-late");
+        let dir = scratch.path().to_path_buf();
+        let mut ed = editor("");
+        let q = watches_queue(&ed);
+        let seen = crate::config::seen(&dir, &ed.config_sources());
+        std::fs::write(dir.join(".tarae.toml"), "[editor]\nrestart-build = \"true\"\n").unwrap();
+        crate::config::watch(&q, dir.clone(), ed.config_sources(), Some(seen));
+        q.started();
+        settle_until(&mut ed, |_| q.starts_out().is_empty());
+        assert!(q.recv_timeout(std::time::Duration::ZERO).is_some(), "the file written meanwhile is read");
     }
 
     /// #210: a session restored at the start has its checkout's watch made as the restore's result is applied — the

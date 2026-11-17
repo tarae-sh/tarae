@@ -445,8 +445,12 @@ fn main() -> Result<()> {
     if let Some(state) = &restarted {
         restart::before_config(state);
     }
+    // (the files' times first: one written from here until the watch's first look is read again — #606)
+    // (of the root as the editor holds it, real: else the watch doesn't take it as of its files)
+    let seen = config::seen(&std::fs::canonicalize(&root).unwrap_or(root.clone()), &config::Sources::own());
     let (config, warnings) = config::load(&root, &config::Sources::own());
     let mut editor = editor::Editor::with_root(config, root);
+    editor.config_seen = Some(seen);
     // (what the editor reads of the interface — never the environment where it's asked)
     editor.interface = facts;
     (editor.host, editor.detached) = (host, host);

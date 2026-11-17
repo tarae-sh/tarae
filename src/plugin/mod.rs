@@ -2090,8 +2090,10 @@ mod tests {
         );
         refused_now(&mut ed, &reads);
         assert!(kept_has(&store, "demo"), "failed: the store still says approved");
-        settle_until(&mut ed, |_| !kept_has(&store, "demo"));
-        assert!(ed.plugins.as_ref().unwrap().perm_unwritten.is_empty());
+        // (#604: on what it asserts — the worker's write lands in the store an event before the main loop applies it
+        // and memory lets the change go; landed in memory, it's in the store)
+        settle_until(&mut ed, |ed| ed.plugins.as_ref().unwrap().perm_unwritten.is_empty());
+        assert!(!kept_has(&store, "demo"), "tried again: the store lets it go");
     }
 
     /// #461, at quit: a revoke whose write was held and then failed (its retry not come yet) is written by the quit's

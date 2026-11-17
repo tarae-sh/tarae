@@ -702,25 +702,53 @@ fn drop_typed(t: &mut toml::Table, path: &str, pass: &mut impl FnMut(String, &Va
     }
 }
 
+/// The files the watch looks at: the layers, and the project's own two even if missing yet — picked up as soon as
+/// they're created.
+fn watched(root: &Path, from: &Sources) -> Vec<PathBuf> {
+    let mut paths = layers(root, from.user.as_deref());
+    let p = root.join(".tarae.toml");
+    if !paths.contains(&p) {
+        paths.push(p);
+    }
+    if let Some(p) = local_path(root).filter(|p| !paths.contains(p)) {
+        paths.push(p);
+    }
+    paths
+}
+
+fn stamps_of(paths: &[PathBuf]) -> Vec<Option<std::time::SystemTime>> {
+    paths.iter().map(|p| fs::metadata(p).and_then(|m| m.modified()).ok()).collect()
+}
+
+/// The watched files' times as a load is about to read them: what the watch's first look compares with (#606: taken
+/// as its thread started, a file written between the start's load and that look — seconds on a loaded machine — was
+/// taken as read already and never read). Taken before the load, a file written meanwhile is read twice at worst.
+#[derive(Clone, Debug)]
+pub struct Seen {
+    paths: Vec<PathBuf>,
+    stamps: Vec<Option<std::time::SystemTime>>,
+}
+
+pub fn seen(root: &Path, from: &Sources) -> Seen {
+    let paths = watched(root, from);
+    let stamps = stamps_of(&paths);
+    Seen { paths, stamps }
+}
+
 /// Config file watcher thread — sleeps until the files may have changed (inotify/kqueue, see `fswatch`),
 /// then compares mtimes. On change, it reads and parses here and sends only the result to the main loop.
 /// The project's files are `root`'s (the editor's); yours and the trust answers are `from`'s. Its results are applied
 /// in whatever session is in front; made in the start, its first look is the start's until what it found (the
 /// plugins there) is applied, or it found nothing (`Queue::start_out`).
-pub fn watch(events: &crate::event::Queue, root: PathBuf, from: Sources) {
+/// Its first look compares with `seen`, the files as the start's load was about to read them (`seen`), where it's of
+/// these same files; else with what it finds as it starts.
+pub fn watch(events: &crate::event::Queue, root: PathBuf, from: Sources, seen: Option<Seen>) {
     let (tx, mut start) = (events.shared_sender(), events.start_out());
-    let mut paths = layers(&root, from.user.as_deref());
-    let p = root.join(".tarae.toml");
-    if !paths.contains(&p) {
-        paths.push(p); // even if missing yet — picked up as soon as it's created
-    }
-    if let Some(p) = local_path(&root).filter(|p| !paths.contains(p)) {
-        paths.push(p);
-    }
+    let paths = watched(&root, &from);
+    let seen = seen.filter(|s| s.paths == paths).map(|s| s.stamps);
     crate::event::thread("tarae-config", move || {
-        let stamps =
-            || -> Vec<_> { paths.iter().map(|p| fs::metadata(p).and_then(|m| m.modified()).ok()).collect() };
-        let mut last = stamps();
+        let stamps = || stamps_of(&paths);
+        let mut last = seen.unwrap_or_else(stamps);
         // The plugins folder rides along: a few more stats, and no thread of its own (beside your config —
         // `plugin::dir`, from `from`'s: none in tests)
         let plugin_dir = from.user.as_deref().and_then(Path::parent).map(|d| d.join("plugins"));
