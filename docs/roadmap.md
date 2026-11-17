@@ -201,10 +201,11 @@ Under way (2026-11-17):
    measured), then 18/23; C, holding 20/25 by cuts, isn't possible. Next, B measured as it would land (base, `s`, base
    `cargo perf` on a quiet machine); then the user sets the budget. Nothing is pushed before
    ([the size pass](#queued-not-scheduled)).
-5. **#609, git folders by other names kept from runs** (user, 2026-11-16: "추천대로 고쳐줘", #609 and #610):
-   L1 landed — the folder a `.git` file names, its common folder and where a `.git` folder's links lead are kept as
-   `.git` is, every path on the way locked (`ca0c491a`). L2, nested checkouts at a `repo` top's real size, comes with
-   `.repo` a protected name, kept as `.git` is (user, 11-16).
+5. **#609, git folders by other names kept from runs** (user, 2026-11-16: "추천대로 고쳐줘", #609 and #610), done:
+   L1 keeps the folder a `.git` file names, its common folder and where a `.git` folder's links lead as `.git` is,
+   every path on the way locked (`ca0c491a`); L2 the nested checkouts' git folders by the same rule — every one on
+   Linux, within the cap the locks share on macOS, said in counts past it — and `.repo` a protected name (user,
+   11-16), so a `repo` top costs a run nothing (`7c04a1cb`). Next, #610's plan.
 6. **The code tool stays on JS** (user, 2026-11-17): without the Rust compiler's help JS is better, and no design may
    need that compiler on a user's machine (11-16). The Rust-subset measure stopped in its step 0, nothing spent.
    Under way: an experiment with Bellard's original QuickJS (2026-06-04) beside QuickJS-ng v0.18.0, on the code tool's
@@ -238,8 +239,7 @@ The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#do
   (gopls isn't gated), #576 (a host's yes given mid-run opens cargo's caches only to the next run), #588 (Claude's edit
   isn't kept from tarae's own state folder when the project holds it), #593 (a read grant's key exception misses a VM
   tool's SSH key), #596 (a run's proxy variables, with their credential, copied into what the run makes that
-  outlives it), #609 (a git folder named by a checkout's `.git` file written by runs: L1 landed, `ca0c491a`; L2,
-  nested checkouts, open), #610 (a run can make a folder a bare-repository look-alike the person's git takes for the
+  outlives it), #610 (a run can make a folder a bare-repository look-alike the person's git takes for the
   repository there — to be fixed as recommended, the user's 11-16, not built) and #611 (Linux's keeper walks the
   whole project before every run, uncapped).
 - **Cards, reviews and brings**: #600 (a read already on a worker when its session or turn ends raises its card
@@ -267,9 +267,8 @@ The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#do
   one line) and #612 (a 200k-line file's first coloured frame ~2.1 s, the row `d98852ea` reports).
 - **Tests and measures**: #503 (an e2e tarae drew no first frame in 120 s under load), #504 (37 % of Claude's runs
   counted as not run), #532 (the `≈ tokens` estimates assume 4 bytes a token; code measured 2.8), #570 (`tarae state`
-  doesn't say what each language server is doing), #589 (three plugin CLI tests fail in a loaded full run), #597
-  (two live tests wait for words the screen no longer shows — B's live check waits on its rerun), and #604 and #606 (a
-  plugin test and an e2e card test that failed under load: determinism bugs).
+  doesn't say what each language server is doing), #589 (three plugin CLI tests fail in a loaded full run) and #597
+  (two live tests wait for words the screen no longer shows — B's live check waits on its rerun).
 - **Plugins**: #598 and #599 (the Kubernetes plugin's "not in <context>" for another namespace, and its permissions
   asked all at once).
 - **The videos' tooling and scenes** (xtask): #540, #548, #560, #580, #585 and #603 (the `orchestra-list` scene waits
@@ -290,9 +289,10 @@ own dries once as it lands in sight); #406 (`c523a4ea`); #409 (`e8b35568`); #410
 (`353f0ab5`); #531 (`43420d68`); #534 and #538 (`e5f621a1`); #535, #536 and #537 (`1cacc632`); #539 (`8d55eb57`);
 #541 and #542 (`c4352147`); #543 and #552 (`69f61f31`); #544 (`745d9906`, `52733aef`); #545, #546, #547 and #550
 (`1a0da371`); #549 (`d4f34ed0`); #551 (`eafec9eb`); #561 and #566 (`a76607e4`); #562, #563 and #564 (`d95e77a9`);
-#567 and #568 (`dc9f012a`); #569 (`1199cbea`); #575 (`b5fee213`); #605 (`eb2a00c5`, `15026c73`: a tunnel let go
-with no end said is a truncation to the run); #607 (`a9e7aafb`, `36d625a3`, `f4780ad8`: no read of git's files a
-project controls ever waits).
+#567 and #568 (`dc9f012a`); #569 (`1199cbea`); #575 (`b5fee213`); #604 and #606 (`5fa95422`: two tests that failed
+under load, the config watch's first look); #605 (`eb2a00c5`, `15026c73`: a tunnel let go with no end said is a
+truncation to the run); #607 (`a9e7aafb`, `36d625a3`, `f4780ad8`: no read of git's files a project controls ever
+waits); #609 (`ca0c491a`, `7c04a1cb`: git's folders by other names kept from runs, nested checkouts' too).
 
 ## Next
 
