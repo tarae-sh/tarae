@@ -2087,6 +2087,8 @@ fn snapshot_offer_run() {
     let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "run", "arguments": {"command": command, "outside_sandbox": true, "reason": reason}}});
     assert!(crate::tools::mcp(&mut s.ed, 0, "c1", &msg).is_none(), "it waits for the user");
+    // (an outside card comes through the worker that reads the kept places it names)
+    crate::test_results::settle_until(&mut s.ed, |ed| !ed.offers.is_empty());
     s.check("offer_run");
 }
 
@@ -2368,7 +2370,10 @@ fn snapshot_follow_offer_run() {
     let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "run", "arguments": {"command": "git commit -am 'Count words'",
             "outside_sandbox": true, "reason": "the hooks sign with the key in your agent"}}});
-    assert!(crate::tools::mcp(&mut s.ed, 0, "c1", &msg).is_none());
+    // (an outside card comes through the worker that reads the kept places it names — for the turn's own chat)
+    let generation = s.ed.workspace.claude.chat.as_ref().unwrap().generation();
+    assert!(crate::tools::mcp(&mut s.ed, generation, "c1", &msg).is_none());
+    crate::test_results::settle_until(&mut s.ed, |ed| !ed.offers.is_empty());
     s.frame();
     let mini = s.ed.screen.chat_mini.get().expect("the follow card stands for the chat");
     for &(row, from, to, _) in &s.ed.screen.offer_buttons {
@@ -8902,6 +8907,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         key: None,
         keys: None,
         granting: Some(crate::allow::Keys::Closed),
+        kept: Vec::new(),
     };
     let grant = crate::allow::Grant::Write(p("npm-cache"));
     let reason = "npm keeps its cache there";
@@ -10253,11 +10259,14 @@ fn a_cards_title_is_whole_at_80_columns() {
         json!({"command": "cargo test --quiet", "outside_sandbox": true, "reason": "it needs the registry"});
     let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "run", "arguments": args}});
     assert!(crate::tools::mcp(&mut s.ed, 0, "c1", &msg).is_none(), "it waits for the user");
+    // (an outside card comes through the worker that reads the kept places it names)
+    crate::test_results::settle_until(&mut s.ed, |ed| !ed.offers.is_empty());
     let screen = rows_of(&mut s, (0, 0, 80, 24)).join("\n");
     assert!(screen.contains(crate::tools::OUTSIDE_RUN_TITLE), "{screen}");
     // (and with a second card waiting: its peek under it, the title still whole)
     let msg = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "run", "arguments": args}});
     assert!(crate::tools::mcp(&mut s.ed, 0, "c2", &msg).is_none(), "it waits for the user");
+    crate::test_results::settle_until(&mut s.ed, |ed| ed.offers.len() == 2);
     let screen = rows_of(&mut s, (0, 0, 80, 24)).join("\n");
     assert!(
         screen.contains(crate::tools::OUTSIDE_RUN_TITLE) && s.ed.screen.asks_drawn.len() == 2,

@@ -415,11 +415,13 @@ tabs, the path bar. Type a label, or click the element, and its id goes into the
 (`card#12 goes with it`; Backspace in the empty input takes it off). The message tells Claude what you pointed
 at. Esc stops pointing ([screenshot](screenshots/chat-point-hanji.png)).
 
-A file named like a key, or one in a place that holds keys (`~/.ssh/config`, `~/.aws/config`), isn't sent with a
-message by being in front: its name goes, "not sent", and the chat says so once a conversation. Pointing at its pane
-is how it goes: a card asks first, saying it's named like a key or where keys are — `y` your message carries its
-text, that message only; `n` its name only. A key is opened once at a time, so `y` and `n` are all it offers. `C-s`
-blanks its pane, and the `ui` tool lists its rows without their text.
+A file named like a key, one in a place that holds keys (`~/.ssh/config`, `~/.aws/config`), or one in an agent's own
+place (`~/.claude/settings.json`, agy's sign-in) isn't sent with a message by being in front: its name goes, "not
+sent", and the chat says so once a conversation. Pointing at its pane is how it goes: a card asks first, saying it's
+named like a key, where keys are, or in whose own place ("Send to Claude — in agy's own place") — `y` your message
+carries its text, that message only; `n` its name only. A key is opened once at a time, so `y` and `n` are all it
+offers. `C-s` blanks its pane, and the `ui` tool lists its rows without their text. The agent itself never reads an
+agent's own place: its `read` is refused there, with no card.
 
 For the turn in hand, what went to Claude carries a faint `◦` — a card at its title row's end (before `1/N`), a
 panel row in its right margin, the path bar after the file — and what its answer cites a `•`. They go with the

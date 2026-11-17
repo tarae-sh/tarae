@@ -1044,6 +1044,36 @@ mod tests {
     use crate::offer::What;
     use std::path::PathBuf;
 
+    /// The kept-rows landing's condition 1, its third part: a card for a run outside the sandbox whole is never a
+    /// verdict's to answer (`cardreview::may`), whatever the card says — whatever it reads, reaches or warns,
+    /// sandboxed here or not, by any session's caps or none: its decision is `outside` (`no-sandbox` where there's
+    /// none), never `MAY_DECISION`, so `may` is false for every kind and every class list. Breaks if a run's reads
+    /// are decided before its being outside (`decide`).
+    #[test]
+    fn an_outside_whole_card_is_never_a_verdicts_whatever_it_says() {
+        use crate::cardreview::{AUTO, MAY_CLASSES, may};
+        let caps = [crate::caps::Caps::default(), crate::caps::Caps { outside: true, ..Default::default() }];
+        let classes: [&[&str]; 4] = [&[], &["home"], MAY_CLASSES, &["home", "secret"]];
+        for sandboxed in [true, false] {
+            for outward in [true, false] {
+                for reads in
+                    [vec![], vec![Class::Home], vec![Class::Home, Class::Secret], vec![Class::Elsewhere]]
+                {
+                    let r = Request::Run { past: Past::Outside, sandboxed, reads, outward };
+                    let decisions = caps.iter().map(|c| shadow(&r, Some(c)));
+                    for d in decisions.chain([shadow(&r, None)]) {
+                        assert!(matches!(d, "outside" | "no-sandbox"), "{r:?}: {d}");
+                        for (kind, _) in AUTO {
+                            for c in classes {
+                                assert!(!may(kind, d, c), "{kind} {r:?} {c:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// What the capability model asks about: past the sandbox, no sandbox, a read outside the places read
     /// by default, the screen, and what the sandbox blocked — never a command for what it is. Its gaps closed
     /// before P3 decides by it (cardauto piece 2): outside home is a default read, as runs read it (D3) — but

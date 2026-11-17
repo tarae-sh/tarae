@@ -8214,6 +8214,8 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "maskedother",
     "runtime",
     "rmcard",
+    "keptcard",
+    "keptblocked",
     "lookalike",
     "lookalikenoted",
     "safebare",
@@ -8413,6 +8415,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
             "rmcard" => turn.rm_card()?,
+            "keptcard" => turn.kept_card()?,
+            "keptblocked" => turn.kept_blocked()?,
             // (#610: a run makes a folder git takes for a repository — its card before the next run; `noted`: that card
             // answered y, then a run only edits its config — the card again, with no r)
             "lookalike" => turn.look_alike(false)?,
@@ -9578,6 +9582,29 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// Short 4's second turn: the `.env` read run again with that file allowed, its end sent by tarae by itself.
     fn runtime_allowed(&mut self) -> io::Result<()> {
         self.words("It read .env this time. The release is ready to publish.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The kept-rows landing's turn: a command outside the sandbox naming kept places — an agent's own, where keys are
+    /// —, its card's `names-kept` line saying each and whose. The shot's home is its own: nothing of yours is named.
+    fn kept_card(&mut self) -> io::Result<()> {
+        self.words("I will compare your Claude settings with the ssh config, outside the sandbox.")?;
+        self.text("\n")?;
+        let run = json!({"command": "diff ~/.claude/settings.json \"$HOME/.ssh/config\"", "outside_sandbox": true,
+            "reason": "both files are kept from sandboxed runs"});
+        self.call(1, "run", run)?;
+        self.words("Compared.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The kept-rows landing's run panel turn: a sandboxed read of Claude's own place, denied — what the sandbox
+    /// blocked (`space m s`) leads to the outside card, whose `names-kept` line says the place and whose. The shot's
+    /// home is its own: nothing of yours is named.
+    fn kept_blocked(&mut self) -> io::Result<()> {
+        self.words("I will read your Claude settings.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "cat ~/.claude/settings.json"}))?;
+        self.words("My runs can't read ~/.claude: it's kept from them.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

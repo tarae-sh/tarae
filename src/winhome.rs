@@ -108,6 +108,28 @@ impl Homes {
         })
     }
 
+    /// The row whose own place (`agent::own_places`, `{user-config}` as `AppData/Roaming`) `p` is in, else one it
+    /// holds, in a Windows profile — in any case, by its path alone.
+    pub fn own_of(&self, p: &Path) -> Option<crate::agent::OwnAt> {
+        let home = self.profile_of(p)?;
+        let mut held = None;
+        for (row, place) in crate::agent::own_places() {
+            for rel in crate::agent::own_leads(place, true) {
+                match crate::agent::meets(p, &home, &rel, true) {
+                    Some(false) => {
+                        let place = crate::agent::landed(p, &home, &rel);
+                        return Some(crate::agent::OwnAt { row, place, holds: false });
+                    }
+                    Some(true) if held.is_none() => {
+                        held = Some(crate::agent::OwnAt { row, place: home.join(&rel), holds: true })
+                    }
+                    _ => {}
+                }
+            }
+        }
+        held
+    }
+
     /// Whether `p` is a Windows profile or holds one (`/`, `/mnt`, `/mnt/c`, `/mnt/c/Users`) — by the drives alone.
     pub fn holds_a_home(&self, p: &Path) -> bool {
         let holds = self.drives.iter().any(|d| {
@@ -160,27 +182,58 @@ fn rows() -> impl Iterator<Item = &'static str> {
 }
 
 /// Profile `home`'s places that hold keys as `Homes.kept` has them: each row found on the drive in any case and
-/// spelled as it is there, else an `allow::SECRETS` row as written. Reads the folders on the way, each once.
+/// spelled as it is there, else an `allow::SECRETS` row as written — and each agent's own places
+/// (`agent::own_places`, `{user-config}` as `AppData/Roaming`: Antigravity's there unmeasured) where they are, a `*`
+/// name as every entry it starts. Reads the folders on the way, each once.
 fn kept_of(home: &Path) -> Vec<PathBuf> {
     let mut listed: std::collections::HashMap<PathBuf, Vec<std::ffi::OsString>> = Default::default();
     let mut kept = Vec::new();
     for row in rows() {
-        let mut at = Some(home.to_path_buf());
-        for name in names(Path::new(row)) {
-            let Some(dir) = at.take() else { break };
-            let there = listed.entry(dir.clone()).or_insert_with(|| {
-                let list = std::fs::read_dir(&dir).into_iter().flatten().flatten();
-                list.map(|e| e.file_name()).collect()
-            });
-            at = there.iter().find(|n| n.eq_ignore_ascii_case(name)).map(|n| dir.join(n));
-        }
-        match at {
+        match found(home, row, &mut listed).into_iter().next() {
             Some(p) => kept.push(p),
             None if crate::allow::SECRETS.contains(&row) => kept.push(home.join(row)),
             None => {}
         }
     }
+    let own = crate::agent::own_places().flat_map(|(_, p)| crate::agent::own_leads(p, true));
+    for rel in own.collect::<Vec<_>>() {
+        kept.extend(found(home, &rel, &mut listed));
+    }
     kept
+}
+
+/// Where `rel` is in `home` in any case, spelled as it is there — its last name ending in `*`: every entry that starts
+/// so. `listed`: the folders read so far.
+fn found(
+    home: &Path,
+    rel: &str,
+    listed: &mut std::collections::HashMap<PathBuf, Vec<std::ffi::OsString>>,
+) -> Vec<PathBuf> {
+    let mut at = vec![home.to_path_buf()];
+    for name in names(Path::new(rel)) {
+        let mut next = Vec::new();
+        for dir in at {
+            let there = listed.entry(dir.clone()).or_insert_with(|| {
+                let list = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+                list.map(|e| e.file_name()).collect()
+            });
+            let name = name.to_string_lossy();
+            let matched = |n: &std::ffi::OsString| {
+                let n = n.to_string_lossy();
+                match name.strip_suffix('*') {
+                    Some(start) => {
+                        n.len() >= start.len()
+                            && n.is_char_boundary(start.len())
+                            && n[..start.len()].eq_ignore_ascii_case(start)
+                    }
+                    None => n.eq_ignore_ascii_case(&name),
+                }
+            };
+            next.extend(there.iter().filter(|n| matched(n)).map(|n| dir.join(n)));
+        }
+        at = next;
+    }
+    at
 }
 
 /// The Windows drives in mount table `mounts` (`/proc/self/mounts`' text): drvfs — by its type, its 9p `aname`, or

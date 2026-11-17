@@ -22,6 +22,7 @@ struct Judge<'a> {
     reads: Vec<PathBuf>,
     outside: bool,
     script_changed: bool,
+    kept: Vec<String>,
 }
 
 impl Judge<'_> {
@@ -45,6 +46,7 @@ impl Judge<'_> {
                 script_changed: self.script_changed,
                 edit_protected: false,
                 outside: self.outside,
+                kept: &self.kept,
                 in_outputs: &in_outputs,
             },
         )
@@ -377,12 +379,21 @@ fn every_built_in_warning_fires_on_its_example_not_its_safe_form() {
     }
     // (an option's value is never an option: `ps -o user` reads no environment)
     assert!(!j.ids(w, "ps -o user -p 12").contains(&"process-env".to_string()));
-    // (only what reaches beyond, what's published, and a secret store read outside the sandbox are asked over `a`)
+    // (only what reaches beyond, what's published, a secret store read and a kept place named outside the sandbox
+    // are asked over `a`)
     let mut asks: Vec<&str> = w.iter().filter(|w| w.asks).map(|w| w.id.as_str()).collect();
     asks.sort();
     assert_eq!(
         asks,
-        ["cargo-publish", "keychain-dump", "keychain-read", "npm-publish", "outward", "secret-service-read"]
+        [
+            "cargo-publish",
+            "keychain-dump",
+            "keychain-read",
+            "names-kept",
+            "npm-publish",
+            "outward",
+            "secret-service-read"
+        ]
     );
     // (said as the run starts, with no card: what a manifest tool changes — and none of them asks)
     let mut start: Vec<&str> = w.iter().filter(|w| w.start).map(|w| w.id.as_str()).collect();
@@ -541,6 +552,196 @@ say = "cargo xtask linux runs Docker: {missing}."
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A scratch home (never yours) holding Claude's, agy's, a key's and tarae's own places — and the project in it.
+fn kept_home(name: &str) -> (crate::scratch::Scratch, PathBuf) {
+    let s = crate::scratch::Scratch::new(name);
+    let home = std::fs::canonicalize(s.path()).unwrap();
+    for d in
+        [".claude", ".ssh", ".local/state/tarae", "Library/Application Support/Antigravity", "p", "notes"]
+    {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    (s, home)
+}
+
+/// What `kept_named` says of `cmd` run from `home/p`.
+fn kept_of(cmd: &str, home: &Path) -> Vec<String> {
+    kept_named(cmd, &home.join("p"), home, &crate::sandbox::Here::default())
+}
+
+/// The kept-rows landing's condition 2: one reader of paths — `~` and `~/…`, `$HOME` and `${HOME}`, an absolute
+/// path, a quoted one with a space, a relative one from where it runs, a redirect's file, an option's `=value`, a
+/// glob by its fixed start, an `sh -c` body — each kept place named once with whose it is (condition 3), an agent's
+/// place made since by its name. Nothing for a path outside every kept place, home itself, or a variable it doesn't
+/// expand. A scratch home. Breaks if `~`, `$HOME`, absolute or quoted paths aren't read.
+#[test]
+fn an_outside_command_naming_a_kept_place_is_said_by_place_and_whose() {
+    let (_s, home) = kept_home("cardwarn-kept-named");
+    let h = home.display();
+    let claude = "~/.claude (Claude's own place)";
+    let ssh = "~/.ssh (where keys are)";
+    let agy = "~/Library/Application Support/Antigravity (agy's own place)";
+    for (cmd, said) in [
+        ("cat ~/.claude/settings.json".to_string(), vec![claude]),
+        ("cat $HOME/.ssh/config".into(), vec![ssh]),
+        ("cat \"${HOME}/.ssh/config\"".into(), vec![ssh]),
+        (format!("cat {h}/.claude/settings.json"), vec![claude]),
+        (format!("ls '{h}/Library/Application Support/Antigravity'"), vec![agy]),
+        ("ls \"$HOME/Library/Application Support/Antigravity/credential-user-scope\"".into(), vec![agy]),
+        ("cat ../.ssh/id_ed25519".into(), vec![ssh]),
+        ("echo x > ~/.claude/x; cp a --target-directory=$HOME/.ssh".into(), vec![claude, ssh]),
+        ("cat ~/.ssh/*".into(), vec![ssh]),
+        ("sh -c 'cat ~/.claude/x ~/.claude/y'".into(), vec![claude]),
+        (format!("tail {h}/.local/state/tarae/tarae.log"), vec!["~/.local/state/tarae (tarae's own state)"]),
+        ("ls ~/.antigravity-new/x".into(), vec!["~/.antigravity-new (agy's own place)"]),
+        ("ls ~/.gemini".into(), vec!["~/.gemini (agy's own place)"]),
+        ("du -sh ~/Library/Application\\ Support".into(), vec![agy]),
+    ] {
+        assert_eq!(kept_of(&cmd, &home), said, "`{cmd}`");
+    }
+    for cmd in [
+        "cat ~/notes/a.txt /etc/hosts",
+        "ls ~ && cd ~ && pwd",
+        "echo $SOMEWHERE/.ssh/config",
+        "cat ~other/.ssh/config",
+        "cargo build --release",
+        "ls ~/.sshx ~/.claudette ~/.antigrav",
+    ] {
+        assert_eq!(kept_of(cmd, &home), Vec::<String>::new(), "`{cmd}`");
+    }
+}
+
+/// Whose a kept place is, said truthfully (`whose_kept`, the design session's review): a pack's `kept` cache (Go's
+/// build cache, uv's) and the floor's daemons' registry (`~/.gradle/daemon`) are a toolchain's own place, not
+/// where keys are; cargo's credentials at its default home (`KEPT_FLOOR_KEYS`) and `SECRETS`' places are. Every
+/// `KEPT_FLOOR_KEYS` is the floor's. A scratch home. Breaks if every kept place that isn't an agent's or tarae's is
+/// said to hold keys.
+#[test]
+fn a_kept_place_is_said_by_its_kind() {
+    let (_s, home) = kept_home("cardwarn-kept-kinds");
+    let cache = if cfg!(target_os = "macos") { "Library/Caches" } else { ".cache" };
+    let toolchains = [format!("~/{cache}/go-build"), "~/.gradle/daemon".into(), "~/.kotlin/daemon".into()];
+    for t in &toolchains {
+        assert_eq!(kept_of(&format!("ls {t}/x"), &home), vec![format!("{t} (a toolchain's own place)")]);
+    }
+    for k in ["~/.cargo/credentials.toml", "~/.ssh", "~/.config/gh"] {
+        assert_eq!(kept_of(&format!("cat {k}"), &home), vec![format!("{k} (where keys are)")]);
+    }
+    assert!(crate::sandbox::KEPT_FLOOR_KEYS.iter().all(|k| crate::sandbox::KEPT_FLOOR.contains(k)));
+}
+
+/// With `XDG_CONFIG_HOME` moved (`Here`'s), agy's `{user-config}/Antigravity` there is named, as agy's — not "where
+/// keys are" —, as `allow::keepable` judges it (`xdg_config`). A scratch home. Breaks if `kept_named` passes no xdg.
+#[test]
+fn a_moved_config_folders_agent_place_is_named_as_the_agents() {
+    let (_s, home) = kept_home("cardwarn-kept-xdg");
+    let xdg = home.join("xdg");
+    std::fs::create_dir_all(xdg.join("Antigravity")).unwrap();
+    let env =
+        std::collections::HashMap::from([("XDG_CONFIG_HOME".to_string(), xdg.clone().into_os_string())]);
+    let here = crate::sandbox::Here { env, ..crate::sandbox::Here::default() };
+    let agy = "~/xdg/Antigravity (agy's own place)".to_string();
+    let said = kept_named("cat ~/xdg/Antigravity/credential-user-scope", &home.join("p"), &home, &here);
+    assert_eq!(said, vec![agy.clone()]);
+    // (the folder holding it: the keys `SECRETS` puts there too, each by its kind)
+    let said = kept_named("ls ~/xdg", &home.join("p"), &home, &here);
+    assert!(said.contains(&agy) && said.contains(&"~/xdg/gh (where keys are)".to_string()), "{said:?}");
+    // (not moved: nothing kept there)
+    assert_eq!(kept_of("cat ~/xdg/Antigravity/credential-user-scope", &home), Vec::<String>::new());
+}
+
+/// `names-kept`, the tools pack's (condition 3): said only outside the sandbox whole, with each place and whose it
+/// is — the first three and a count —, and it asks over `a`. Breaks if `{place}` isn't filled.
+#[test]
+fn names_kept_says_the_first_places_and_a_count_outside_only() {
+    let w = &crate::sandboxpack::get().warn;
+    let kept: Vec<String> =
+        ["~/.ssh (where keys are)", "~/.aws (where keys are)", "~/.claude (Claude's own place)"]
+            .into_iter()
+            .chain(["~/.gemini (agy's own place)"])
+            .map(String::from)
+            .collect();
+    let outside = Judge { outside: true, kept: kept.clone(), ..Judge::default() };
+    let said = outside.judged(w, "tar czf /tmp/x.tgz ~/.ssh ~/.aws ~/.claude ~/.gemini");
+    let n = said.iter().find(|x| x.id == "names-kept").expect("said outside");
+    assert_eq!(
+        n.said,
+        "It names ~/.ssh (where keys are), ~/.aws (where keys are), ~/.claude (Claude's own place) and 1 more: kept \
+         from every sandboxed run and every read — this run can read or change what's there."
+    );
+    assert!(n.asks && !n.start && n.whose == "tools pack", "{n:?}");
+    let one = Judge { outside: true, kept: kept[2..3].to_vec(), ..Judge::default() };
+    assert!(
+        one.judged(w, "cat x")
+            .iter()
+            .any(|x| x.said.starts_with("It names ~/.claude (Claude's own place): "))
+    );
+    let inside = Judge { kept, ..Judge::default() };
+    assert!(
+        !inside.ids(w, "cat x").contains(&"names-kept".to_string()),
+        "in the sandbox it can't reach them"
+    );
+    let none = Judge { outside: true, ..Judge::default() };
+    assert!(!none.ids(w, "cat x").contains(&"names-kept".to_string()), "naming none");
+    // (`{place}` is names-kept's alone)
+    let t: toml::Table =
+        "[[warn]]\nid = \"x\"\nfact = \"outside-sandbox\"\nsay = \"{place}\"\n".parse().unwrap();
+    let mut problems = Vec::new();
+    assert!(read(&t["warn"], "tools pack", &mut problems).is_empty() && problems[0].contains("`{place}`"));
+}
+
+/// Claude's `run` of `cmd` outside the sandbox (call `n`), with its reason — waiting for its card (its id).
+fn ask_outside(ed: &mut crate::editor::Editor, generation: u64, n: u64, cmd: &str) -> Option<u64> {
+    let input =
+        serde_json::json!({ "command": cmd, "outside_sandbox": true, "reason": "it reads my settings" });
+    let msg = serde_json::json!({"jsonrpc": "2.0", "id": n, "method": "tools/call",
+        "params": {"name": "run", "arguments": input}});
+    assert!(crate::tools::mcp(ed, generation, &format!("r{n}"), &msg).is_none(), "it waits");
+    pump_until(ed, &|ed| !ed.offers.is_empty() || answered(n).is_some(), "its card, or its end");
+    ed.offers.first().map(|o| o.id)
+}
+
+/// The kept-rows landing's condition 1: an outside command naming a kept place asks every time — its card says the
+/// place and whose (`names-kept`), offers no `a`, comes though an earlier `a` covers the same command, and the auto
+/// cards' reviewer may never answer it (its decision `outside` — `no-sandbox` where there's none —, never
+/// `cardreview::may`'s). The home is the test's own
+/// (`Editor.caps_home`), every answer `n`: nothing runs. Breaks if `names-kept` stops asking.
+#[test]
+fn an_outside_command_naming_a_kept_place_asks_every_time() {
+    let (mut ed, generation, dir) = chat_in("kept-asks", "");
+    let (_s, home) = kept_home("cardwarn-kept-asks");
+    ed.caps_home = Some(home.clone());
+    let cmd = "cat ~/.claude/settings.json";
+    // (an earlier `a` on the same command, where it runs)
+    let again = crate::tools::again(cmd).expect("an `a` can cover it in the sandbox");
+    ed.workspace.claude.chat.as_mut().unwrap().run_again.push(crate::tools::RunAgain {
+        cwd: ed.workspace.root.clone(),
+        socket: None,
+        again,
+    });
+    for n in 1..=2 {
+        let id = ask_outside(&mut ed, generation, n, cmd).expect("its card, each time");
+        let o = &ed.offers[0];
+        assert_eq!(o.title, crate::tools::OUTSIDE_RUN_TITLE);
+        assert!(o.question.contains("▲ It names ~/.claude (Claude's own place): "), "{}", o.question);
+        let keys: Vec<char> = o.answers(false).iter().map(|(k, _)| *k).collect();
+        assert!(keys.contains(&'y') && !keys.iter().any(|k| matches!(k, 'a' | 'A' | 's')), "{keys:?}");
+        let kind = o.kind().to_string();
+        ed.offer_dismiss();
+        pump_until(&mut ed, &|_| answered(n).is_some(), "told no");
+        let line =
+            crate::cards::logged_lines("card ").into_iter().find(|l| l.contains(&format!(" · card#{id} · ")));
+        let line = line.expect("its card line");
+        assert!(line.contains("warn=names-kept") || line.contains(",names-kept"), "{line}");
+        let shadow = line.split(" · ").find_map(|p| p.strip_prefix("shadow=")).expect("its decision");
+        // (`outside`, or `no-sandbox` here: the test's gate has none — never a read a verdict may answer)
+        assert!(matches!(shadow, "outside" | "no-sandbox"), "{line}");
+        assert!(!crate::cardreview::may(&kind, shadow, &["home"]), "never a verdict's");
+    }
+    assert!(!home.join(".claude/settings.json").exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// F2: a warning with a `lead` leads the card with what the command does — the bash pack's `rm -r`, with the folder
 /// it names — and the pack's how-to is the card's details: never drawn on it, whole on `v` (`C-q v`, as a person
 /// answers). Claude, the log and the run's record keep the whole words, as before: the lead is the card's alone.
@@ -601,6 +802,7 @@ fn a_cards_warning_leads_with_what_it_does_and_folds_the_how_to() {
             reads: &[],
             script_changed: false,
             outside: false,
+            kept: &[],
         },
     )[0];
     assert_eq!(warned.line(), format!("{say} (bash pack)"));

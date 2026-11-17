@@ -23,10 +23,12 @@
 //! a checked form's guards before its `rm`) and `same` (named groups equal across all of them — what a
 //! backreference would say); `unless-in = "outputs"` (every path it names
 //! is in the project below a pack's `outputs` folder: a build's scratch); `fact` (`reads-outside`,
-//! `script-changed`, `edit-protected`, `outside-sandbox`); `asks = true` (`a` on an earlier card doesn't let
+//! `script-changed`, `edit-protected`, `outside-sandbox`, `names-kept` — outside the sandbox whole, it names a kept
+//! place: `kept_named`); `asks = true` (`a` on an earlier card doesn't let
 //! it through unasked — D2); `start = true` (said before the run even with no card: one toast as it starts,
 //! its chat row marked from then, a line in Claude's report — what a manifest tool changes, piece F).
-//! `{missing}` and `{paths}` are filled in.
+//! `{missing}`, `{paths}` and `{place}` (`names-kept`'s: each place and whose it is, the first few and a count) are
+//! filled in.
 //!
 //! `lead` (F2): what it does, in plain words, for the person answering — the card's warning line, `say` then
 //! its details, folded off the card and whole on `v`; Claude, the log and the run's own record keep `say`. In a
@@ -58,6 +60,9 @@ pub enum Fact {
     EditProtected,
     /// It asks to run outside the sandbox.
     OutsideSandbox,
+    /// Outside the sandbox whole, it names a kept place (`kept_named`: where keys are, an agent's own, tarae's own
+    /// state) — which no sandboxed run and no read reaches.
+    NamesKept,
 }
 
 impl Fact {
@@ -67,6 +72,7 @@ impl Fact {
             "script-changed" => Some(Fact::ScriptChanged),
             "edit-protected" => Some(Fact::EditProtected),
             "outside-sandbox" => Some(Fact::OutsideSandbox),
+            "names-kept" => Some(Fact::NamesKept),
             _ => None,
         }
     }
@@ -201,7 +207,7 @@ fn entry(e: &Value, whose: &str) -> Result<Warn, String> {
     }
     let fact = match s("fact") {
         Some(f) => Some(Fact::of(&f).ok_or(format!(
-            "no fact `{f}` — reads-outside, script-changed, edit-protected, outside-sandbox"
+            "no fact `{f}` — reads-outside, script-changed, edit-protected, outside-sandbox, names-kept"
         ))?),
         None => None,
     };
@@ -247,6 +253,9 @@ fn entry(e: &Value, whose: &str) -> Result<Warn, String> {
     }
     if say.contains("{paths}") && fact != Some(Fact::ReadsOutside) {
         return Err("`{paths}` is said only with `fact = \"reads-outside\"`".into());
+    }
+    if say.contains("{place}") && fact != Some(Fact::NamesKept) {
+        return Err("`{place}` is said only with `fact = \"names-kept\"`".into());
     }
     if say.contains("{named}") || say.contains("{it}") {
         return Err("`{named}` and `{it}` are a `lead`'s".into());
@@ -297,6 +306,8 @@ pub struct Facts<'a> {
     pub script_changed: bool,
     pub edit_protected: bool,
     pub outside: bool,
+    /// The kept places it names, outside the sandbox whole, each with whose it is (`kept_named`).
+    pub kept: &'a [String],
     /// Whether a path it names is in the project below a pack's `outputs` folder (`unless-in`).
     pub in_outputs: &'a dyn Fn(&str) -> bool,
 }
@@ -436,15 +447,143 @@ fn holds(fact: Fact, f: &Facts) -> bool {
         Fact::ScriptChanged => f.script_changed,
         Fact::EditProtected => f.edit_protected,
         Fact::OutsideSandbox => f.outside,
+        Fact::NamesKept => f.outside && !f.kept.is_empty(),
     }
 }
 
-/// `w`'s words, `{missing}` and `{paths}` filled in — a path's control characters made spaces (a file's name
-/// may have a newline: the warning stays one line).
+/// `w`'s words, `{missing}`, `{paths}` and `{place}` filled in — a path's control characters made spaces (a file's
+/// name may have a newline: the warning stays one line); `{place}` the first `NAMED_MAX` and a count.
 fn fill(w: &Warn, missing: &[&str], f: &Facts) -> String {
+    let one_line =
+        |s: String| -> String { s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect() };
     let paths: Vec<String> = f.reads.iter().map(|p| crate::allow::tilde(p)).collect();
-    let paths: String = paths.join(", ").chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    w.say.replace("{missing}", &missing.join("; ")).replace("{paths}", &paths)
+    let paths = one_line(paths.join(", "));
+    let place = one_line(match f.kept.len() {
+        n if n <= NAMED_MAX => f.kept.join(", "),
+        n => format!("{} and {} more", f.kept[..NAMED_MAX].join(", "), n - NAMED_MAX),
+    });
+    w.say.replace("{missing}", &missing.join("; ")).replace("{paths}", &paths).replace("{place}", &place)
+}
+
+/// The kept places `cmd` names, run outside the sandbox whole from `cwd` — each as `~/.claude (Claude's own place)`,
+/// once, in the order named, whose it is said truthfully (`whose_kept`). A word is a
+/// path in it or a folder holding one (home and above aside: every command there would say it) — kept from
+/// `sandbox::kept_places` for `home` (what no sandboxed run reads) and every agent's own place by path
+/// (`agent::own_at`, where `here`'s `XDG_CONFIG_HOME` moves `.config` too, and a Windows profile's on WSL: one made
+/// since too). One reader of paths: the line split as `commands` splits it (quotes off,
+/// an `sh -c` body read), each word, an option's `=value`, a redirect's file: `~` and `~/…` as `readonly` fills
+/// them in, `$HOME` and `${HOME}` at a word's start, the packs' `$(…)` words where `allow::expanded` knows them, an
+/// absolute path, a relative one from `cwd`, a glob by its fixed start; links followed where they're there. What it
+/// doesn't expand isn't seen: any other variable, a `$(…)` of another, a path built while it runs, one a script
+/// file holds, one a program reads on its own (`docs/threat-model.md`). Reads the disk: a worker's.
+pub fn kept_named(cmd: &str, cwd: &Path, home: &Path, here: &crate::sandbox::Here) -> Vec<String> {
+    let mut text = cmd.to_string();
+    for (word, folder) in crate::allow::expanded(cmd, cwd) {
+        text = text.replace(&word, &folder.to_string_lossy());
+    }
+    let kept = crate::sandbox::kept_places(home, here);
+    let (taraes, keys) = (crate::sandbox::taraes_own(home, here), crate::sandbox::kept_keys(home, here));
+    let xdg = here.path("XDG_CONFIG_HOME").filter(|p| p.is_absolute());
+    let own = |p: &Path| crate::agent::own_at(p, home, xdg.as_deref()).or_else(|| here.windows.own_of(p));
+    let mut out: Vec<(PathBuf, String)> = Vec::new();
+    let mut say = |place: PathBuf, whose: String| {
+        if !out.iter().any(|(p, _)| *p == place) {
+            out.push((place, whose));
+        }
+    };
+    let whose = |k: &Path| match own(k).filter(|o| !o.holds) {
+        Some(o) => crate::agent::own_words(o.row),
+        None => whose_kept(k, &taraes, &keys).into(),
+    };
+    for c in commands(&text) {
+        for w in &c.words {
+            let Some(p) = path_of(w, cwd, home) else { continue };
+            let real = std::fs::canonicalize(&p).ok();
+            for p in std::iter::once(p).chain(real) {
+                if home.starts_with(&p) {
+                    continue;
+                }
+                for k in kept.iter().filter(|k| p.starts_with(k) || k.starts_with(&p)) {
+                    say(k.clone(), whose(k));
+                }
+                if let Some(o) = own(&p) {
+                    say(o.place.clone(), crate::agent::own_words(o.row));
+                }
+            }
+        }
+    }
+    out.into_iter().map(|(p, w)| format!("{} ({w})", crate::crash::tilde(&p, Some(home)))).collect()
+}
+
+/// Whose kept place `k` (real, not an agent's) is, in the words `kept_named` says: tarae's state or cache (`taraes`)
+/// "tarae's own state"; one of `keys` (`sandbox::kept_keys`: `allow::SECRETS`, cargo's credentials at its default
+/// home, the cloud CLIs' sign-in where moved, a Windows profile's) "where keys are"; the rest — a pack's `kept` or
+/// the floor's that holds no keys: a build cache, a daemons' registry — "a toolchain's own place".
+pub fn whose_kept(k: &Path, taraes: &[PathBuf], keys: &[PathBuf]) -> &'static str {
+    if taraes.iter().any(|t| k.starts_with(t)) {
+        "tarae's own state"
+    } else if keys.iter().any(|x| k.starts_with(x)) {
+        "where keys are"
+    } else {
+        "a toolchain's own place"
+    }
+}
+
+/// The `names-kept` warnings among `warns` for a run outside the sandbox whole of `cmd`, naming `kept`
+/// (`kept_named`'s) — the run panel's outside card's (`blocked.rs`): the same fact and words as Claude's outside card.
+pub fn names_kept<'w>(warns: impl IntoIterator<Item = &'w Warn>, cmd: &str, kept: &[String]) -> Vec<Warned> {
+    let (env, in_outputs) = (|_: &str| false, |_: &str| false);
+    let facts = Facts {
+        cmd,
+        scripts: &[],
+        env: &env,
+        wrappers: &[],
+        reads: &[],
+        script_changed: false,
+        edit_protected: false,
+        outside: true,
+        kept,
+        in_outputs: &in_outputs,
+    };
+    judge(warns.into_iter().filter(|w| w.fact == Some(Fact::NamesKept)), &facts)
+}
+
+/// The path word `w` names from `cwd` (`kept_named`'s rules), lexically whole — None: a variable other than home,
+/// or nothing left.
+fn path_of(w: &str, cwd: &Path, home: &Path) -> Option<PathBuf> {
+    // (a redirect's file: `>~/.x`, `2>>/x`, `<f`; an option's or an assignment's value: `--file=x`, `A=x`)
+    let w = w.trim_start_matches(|c: char| c.is_ascii_digit());
+    let w = w.trim_start_matches(['<', '>']).trim_start_matches('&');
+    let w = match w.split_once('=') {
+        Some((k, v)) if k.starts_with('-') || k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => v,
+        _ => w,
+    };
+    // (a glob by its fixed start)
+    let w = &w[..w.find(['*', '?', '[']).unwrap_or(w.len())];
+    let rest = |r: &str| home.join(r.trim_start_matches('/'));
+    let p = if w == "~" || w.starts_with("~/") {
+        rest(&w[1..])
+    } else if let Some(r) = w.strip_prefix("$HOME").or_else(|| w.strip_prefix("${HOME}")) {
+        if !(r.is_empty() || r.starts_with('/')) {
+            return None;
+        }
+        rest(r)
+    } else if w.is_empty() || w.contains('$') || w.starts_with('~') {
+        return None;
+    } else {
+        cwd.join(w)
+    };
+    let mut whole = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                whole.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => whole.push(c),
+        }
+    }
+    Some(whole)
 }
 
 /// What a command names (`words`, after its `run`): its words that aren't options — every one after a `--` —

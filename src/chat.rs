@@ -8397,6 +8397,94 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The kept-rows landing (2026-11-18): a file in an agent's own place — every row's, walked from the rows
+    /// (`agent::own_places`), not named like a key — counts as a key for the user's own sends, its words naming the
+    /// place's row by `Row.shown`: the message's marker, `space i`'s refusal, a grant of the key opening nothing (kept
+    /// wins: only this message's `y`). Pointing at agy's sign-in asks on the card saying whose place it is, `y · n`;
+    /// `y` sends its text with that message only. The home is the test's own, the token a fake, the claude a logging
+    /// stand-in. Breaks if the rows are out of `key_shut`.
+    #[test]
+    fn a_file_in_an_agents_own_place_reaches_claude_only_when_the_user_lets_it() {
+        let (dir, _, _, log, mut ed) = key_editor("own-place-messages");
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        let home = std::fs::canonicalize(dir.join("home")).unwrap();
+        ed.caps_home = Some(home.clone());
+        let vars = crate::sandbox::vars_in(&home, &crate::sandbox::Here::default());
+        let mut files = Vec::new();
+        for (row, p) in crate::agent::own_places() {
+            for at in vars.places_both(p) {
+                let f = PathBuf::from(at.to_string_lossy().replace('*', "-x")).join("settings.json");
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, "{\"token\": \"tarae-fake-token-own\"}\n").unwrap();
+                files.push((row, f));
+            }
+        }
+        assert!(files.len() >= 6, "{files:?}");
+        open(&mut ed);
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.kept_keys.is_some()));
+        for (row, f) in &files {
+            ed.open(f).unwrap();
+            let words = format!("in {}'s own place", row.shown);
+            assert!(!crate::sandbox::key_named(&ed.workspace.root, f), "not named like a key");
+            assert_eq!(crate::reads::shut_why(&ed, f), words);
+            assert_eq!(crate::reads::not_sent_said(&ed, f), format!("{words} — not sent"));
+            let said = crate::quote::taken(&ed, &[(0, 1)], None).err().expect("refused");
+            let name = crate::reads::named(&ed, f);
+            assert_eq!(said, format!("{name} is {words} — point at its pane (space @) to choose"));
+            // (a key opened for the conversation, or kept for the project: still shut — only `pass` counts)
+            let c = ed.workspace.claude.chat.as_mut().unwrap();
+            c.allowed.keys.push(f.clone());
+            c.kept_keys.get_or_insert_with(Vec::new).push(f.clone());
+            assert!(crate::reads::key_shut(&ed, f, &[]), "{}: a grant opens nothing", f.display());
+            assert!(!crate::reads::key_shut(&ed, f, std::slice::from_ref(f)), "this message's y");
+        }
+        // agy's sign-in, in front: what reaches claude names it only; pointing asks, `y · n`
+        let (_, sign_in) = files
+            .iter()
+            .find(|(r, f)| r.name == "agy" && f.to_string_lossy().contains("Antigravity"))
+            .unwrap();
+        ed.open(sign_in).unwrap();
+        let ask = |ed: &mut Editor, q: &str| {
+            ed.workspace.claude.chat.as_mut().unwrap().input = q.into();
+            send(ed);
+            turn_done(ed);
+            messages(&log).pop().unwrap()
+        };
+        let m = ask(&mut ed, "first");
+        assert!(
+            !m.contains("tarae-fake-token") && m.contains(" — in agy's own place — not sent\\ncursor:"),
+            "{m}"
+        );
+        let pane = format!("pane#{}", ed.workspace.viewer.focus);
+        label_typed(&mut ed, &pane);
+        let title = "Send to Claude — in agy's own place";
+        let card = ed.offers.iter().find(|o| o.title == title).expect("the card asks");
+        assert!(
+            card.question.contains("It's in agy's own place (")
+                && card.question.contains("Antigravity), where an agent keeps its sign-in, settings and conversations, and you pointed at it."),
+            "{}",
+            card.question
+        );
+        let keys: Vec<char> = card.answers(false).iter().map(|(k, _)| *k).collect();
+        assert!(keys.contains(&'y') && keys.contains(&'n'), "{keys:?}");
+        assert!(!keys.iter().any(|k| matches!(k, 'a' | 'A' | 's')), "{keys:?}");
+        answer_card(&mut ed, "y");
+        let m = ask(&mut ed, "this one");
+        assert!(m.contains("tarae-fake-token-own"), "y: this message carries it: {m}");
+        let m = ask(&mut ed, "and after");
+        assert!(!m.contains("tarae-fake-token"), "y was for that message only: {m}");
+        // (two agents' places at once: said as agents')
+        let claude = files.iter().find(|(r, _)| r.name == "claude").map(|(_, f)| f.clone()).unwrap();
+        let at = |f: &Path| match crate::reads::shut_of(&ed, f) {
+            Some(crate::reads::Shut::Own(o)) => o,
+            other => panic!("{other:?}"),
+        };
+        let (a, b) = (at(&claude), at(sign_in));
+        assert_eq!(crate::reads::pointed_own_title(&ed, &[&a]), "Send to Claude — in Claude's own place");
+        assert_eq!(crate::reads::pointed_own_title(&ed, &[&a, &b]), "Send to Claude — in agents' own places");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// `key_chat`, its fake one process for the whole chat: what's in line goes as a turn ends, to a claude still there.
     fn key_chat_lasting(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, Editor) {
         let (dir, env, plain, log, mut ed) = key_editor(name);

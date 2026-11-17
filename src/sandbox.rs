@@ -1293,6 +1293,13 @@ const HOME_READS: &[&str] = &[".gitconfig", ".config/git", ".CFUserTextEncoding"
 /// `.sb/java-checkpoint.md` c0: with it readable and this machine's ports open, a sandboxed `./gradlew`
 /// hands its build to a daemon started outside, and the build runs outside the sandbox).
 pub const KEPT_FLOOR: &[&str] = &[".cargo/credentials", ".cargo/credentials.toml", ".gradle/daemon"];
+/// Of `KEPT_FLOOR`, those that hold keys (cargo's credentials) — the rest a toolchain's own (a daemons' registry):
+/// how an outside card says whose a kept place is (`kept_keys`, `cardwarn::whose_kept`).
+pub const KEPT_FLOOR_KEYS: &[&str] = &[".cargo/credentials", ".cargo/credentials.toml"];
+
+/// What a pack's place or a folder its `ask` names may not be, nor hold — the list both refusals say
+/// (`ask_dir_verdict`, `sandboxpack::check_place`).
+pub const KEPT_KINDS: &str = "keys, an agent's own place or tarae's state";
 
 /// The packs' places (`sandboxpack::Vars`) for `home` as `here` says the variables — read from the process
 /// once, where a policy is made, and passed in: what's worked out from it is the same in a test as in a run (a
@@ -1485,8 +1492,29 @@ impl Here {
     fn asked(&self, _: &str) {}
 }
 
-/// Claude's own, in home: its settings, conversations and token cache — kept from its runs like keys.
-const CLAUDES: &[&str] = &[".claude", ".claude.json", ".claude.json.backup"];
+/// Every agent's own places (`agent::own_places`) where `vars` puts them — kept from every run, whichever agent the
+/// session runs. A `*` name is what's there now, srt's rule ("a file that appears later is not covered"): one listing
+/// of its folder, as the run is wrapped. Reads that folder: a worker's.
+fn rows_kept(vars: &crate::sandboxpack::Vars) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    for (_, p) in crate::agent::own_places() {
+        for at in vars.places_both(p) {
+            let name = at.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let (Some(start), Some(dir)) = (name.strip_suffix('*'), at.parent()) else {
+                v.push(at);
+                continue;
+            };
+            let list = std::fs::read_dir(dir).into_iter().flatten().flatten();
+            let mut found: Vec<PathBuf> = list
+                .filter(|e| e.file_name().to_string_lossy().starts_with(start))
+                .map(|e| e.path())
+                .collect();
+            crate::sorting::sort(&mut found);
+            v.extend(found);
+        }
+    }
+    v
+}
 
 /// The packs' `reads` where `vars` puts them — a home alone only where it's there (its variable may name a
 /// folder never made).
@@ -1602,7 +1630,8 @@ pub fn moved_said_of(moved: &[MovedHome], real: &Path) -> Option<String> {
 }
 
 /// What a run never reads, whatever is granted: the places that hold keys (`allow::SECRETS`, its `.config/…` rows
-/// where `$XDG_CONFIG_HOME` puts them too; on WSL each Windows profile's too — `winhome`), Claude's own (`CLAUDES`), `KEPT_FLOOR`, the packs'
+/// where `$XDG_CONFIG_HOME` puts them too; on WSL each Windows profile's too — `winhome`), every agent's own
+/// (`rows_kept`: `agent::own_places`, whichever agent the session runs), `KEPT_FLOOR`, the packs'
 /// `kept` at both a home's places, their `kept-moved` where the user's variables move them (the cloud CLIs'
 /// sign-in, #182), tarae's state (every session's conversations, turns, cards, what was allowed, its log) and
 /// tarae's cache (other runs' folders, other projects' run homes, the overlaps' snapshots — a run's own opened
@@ -1661,18 +1690,34 @@ fn cache_kept(cache: &Path) -> Option<PathBuf> {
     (!profile_path(&std::env::temp_dir()).starts_with(cache.join("runs"))).then_some(cache)
 }
 
-/// `kept_reads` with the packs' `kept` given.
-fn kept_in(home: &Path, vars: &crate::sandboxpack::Vars, packs: &[String]) -> Vec<PathBuf> {
+/// Among the kept places (`kept_in`), those that hold keys: `allow::SECRETS` (its `.config/…` rows where
+/// `$XDG_CONFIG_HOME` puts them too), `KEPT_FLOOR_KEYS`, the cloud CLIs' sign-in where their variables move it
+/// (`kept-moved`), and on WSL each Windows profile's (`winhome`). Real paths.
+fn keys_in(home: &Path, vars: &crate::sandboxpack::Vars) -> Vec<PathBuf> {
     let at = |p: PathBuf| profile_path(&p);
-    let floor = crate::allow::SECRETS.iter().chain(CLAUDES).chain(KEPT_FLOOR);
+    let floor = crate::allow::SECRETS.iter().chain(KEPT_FLOOR_KEYS);
     let mut v: Vec<PathBuf> = floor.map(|s| at(home.join(s))).collect();
-    v.extend(packs.iter().flat_map(|k| vars.places_both(k)).map(at));
     v.extend(vars.kept_moved.iter().cloned().map(at));
     // (the `.config/…` keys where `$XDG_CONFIG_HOME` puts them: git's credential store, gh's and gcloud's sign-in)
     let moved = crate::allow::SECRETS.iter().filter_map(|s| s.strip_prefix(".config/"));
     v.extend(moved.map(|s| at(vars.xdg_config.join(s))));
     // (WSL: each Windows profile's, outside home — `winhome`)
     v.extend(vars.windows.iter().cloned().map(at));
+    v
+}
+
+/// `keys_in` for `home` as `here` says the variables: which kept places an outside card says are where keys are.
+pub fn kept_keys(home: &Path, here: &Here) -> Vec<PathBuf> {
+    keys_in(home, &vars_in(home, here))
+}
+
+/// `kept_reads` with the packs' `kept` given.
+fn kept_in(home: &Path, vars: &crate::sandboxpack::Vars, packs: &[String]) -> Vec<PathBuf> {
+    let at = |p: PathBuf| profile_path(&p);
+    let mut v = keys_in(home, vars);
+    v.extend(KEPT_FLOOR.iter().map(|s| at(home.join(s))));
+    v.extend(rows_kept(vars).into_iter().map(at));
+    v.extend(packs.iter().flat_map(|k| vars.places_both(k)).map(at));
     crate::sorting::sort(&mut v);
     v.dedup();
     // tarae's state and its cache as the run's variables say it (`taraes_cache`'s rule: where its folder is made),
@@ -1758,10 +1803,14 @@ pub fn ask_dir_verdict(d: &Path, root: &Path, home: Option<&Path>, later: &RunsL
         return Err(why);
     }
     let Some(home) = home else { return Ok(()) };
-    let keys = crate::allow::SECRETS.iter().chain(CLAUDES).chain(KEPT_FLOOR).map(|k| home.join(k));
-    let mut keys = keys.chain(crate::config::state_dir().map(|s| profile_path(&s)));
-    if keys.any(|k| k.starts_with(d) || d.starts_with(&k)) {
-        return Err("it's where keys, Claude's or tarae's own are".into());
+    let keys = crate::allow::SECRETS.iter().chain(KEPT_FLOOR).map(|k| home.join(k));
+    let keys: Vec<PathBuf> = keys.chain(crate::config::state_dir().map(|s| profile_path(&s))).collect();
+    let own = crate::agent::own_at(d, home, None);
+    if keys.iter().any(|k| d.starts_with(k)) || own.as_ref().is_some_and(|o| !o.holds) {
+        return Err(format!("it's kept from every run: {KEPT_KINDS}"));
+    }
+    if keys.iter().any(|k| k.starts_with(d)) || own.is_some() {
+        return Err(format!("it holds what's kept from every run: {KEPT_KINDS}"));
     }
     let later = crate::allow::NEVER_WRITE.iter().map(|w| home.join(w));
     if later.into_iter().any(|w| w.starts_with(d) || d.starts_with(&w)) {
@@ -11365,8 +11414,15 @@ mod tests {
     fn the_kept_floor_holds_without_packs() {
         let home = Path::new("/Users/u");
         let kept = kept_in(home, &vars_in(home, &Here::default()), &[]);
-        for s in crate::allow::SECRETS.iter().chain(CLAUDES).chain(KEPT_FLOOR) {
+        for s in crate::allow::SECRETS.iter().chain(KEPT_FLOOR) {
             assert!(kept.contains(&home.join(s)), "{s}: {kept:?}");
+        }
+        // (every agent's own places, the stars' folders aside — `/Users/u` isn't there)
+        let vars = vars_in(home, &Here::default());
+        for (_, p) in crate::agent::own_places().filter(|(_, p)| !p.ends_with('*')) {
+            for at in vars.places_both(p) {
+                assert!(kept.contains(&at), "{p}: {kept:?}");
+            }
         }
         assert!(crate::config::state_dir().is_none_or(|s| kept.contains(&profile_path(&s))), "{kept:?}");
         // (#292: tarae's cache, where the run's variables put it — and Claude's reads keep its state there too)
@@ -16794,6 +16850,67 @@ mod tests {
         for f in &open {
             let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
             assert!(ok && out == FAKE, "{tier}: {} beside them: {err}", f.display());
+        }
+    }
+
+    /// For real (Seatbelt here, the keeper in `cargo xtask linux test`): every agent's own place, walked from the rows
+    /// (`agent::own_places`), is kept from a run whichever agent the session runs — a marker in each, a `*` place's in
+    /// an entry made before the run is wrapped (srt's rule) —, though the run's `Reads` has a read answer above each
+    /// place (`~/.config`, `~/Library/Application Support`: `allow::keepable` lets one last); a file in the project
+    /// and one beside the place in each answered folder read. A scratch home in the build folder (where no run reads),
+    /// never yours. Breaks if the rows are out of `kept_in`, or a read above a place opens it.
+    #[test]
+    fn every_rows_place_is_kept_from_runs() {
+        let test = "every_rows_place_is_kept_from_runs";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).expect("the build folder").to_path_buf();
+        std::fs::create_dir_all(&beside).unwrap();
+        let s = crate::scratch::Scratch::in_dir(&beside, "sb-rows-kept");
+        let t = profile_path(&s);
+        let (home, root) = (t.join("home"), t.join("home/project"));
+        let vars = vars_in(&home, &Here::default());
+        let mut closed = Vec::new();
+        // (a read answer above each place but home: the folder holding it, and both systems' `{user-config}`)
+        let mut above = vec![home.join(".config"), home.join("Library/Application Support")];
+        for (_, p) in crate::agent::own_places() {
+            for at in vars.places_both(p) {
+                let f = PathBuf::from(at.to_string_lossy().replace('*', "-x")).join("marker");
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(&f, FAKE).unwrap();
+                let parent = at.parent().unwrap().to_path_buf();
+                if parent != home && !above.contains(&parent) {
+                    above.push(parent);
+                }
+                closed.push(f);
+            }
+        }
+        let mut open = vec![root.join("own.txt")];
+        for a in &above {
+            open.push(a.join("beside.txt"));
+        }
+        for f in &open {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, FAKE).unwrap();
+        }
+        let allow: Vec<PathBuf> = above.iter().map(|a| profile_path(a)).collect();
+        let reads =
+            Reads { home: Some(home.clone()), allow, kept: kept_reads(&home, &vars), ..Reads::default() };
+        let p = Policy::for_project(&Env {
+            root: root.clone(),
+            reads,
+            run_env: run_env_here(),
+            ..Env::default()
+        });
+        for f in &closed {
+            let (ok, out, err) = sh_under(&p, &root, &format!("cat '{}'", f.display()));
+            assert!(!ok && !out.contains(FAKE), "{} read: {out} {err}", f.display());
+        }
+        for f in &open {
+            let (ok, out, err) = sh_under(&p, &root, &format!("cat '{}'", f.display()));
+            assert!(ok && out == FAKE, "{} beside them: {err}", f.display());
         }
     }
 

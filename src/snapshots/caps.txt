@@ -38,6 +38,7 @@ never read
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -50,6 +51,7 @@ never read
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $STATE
@@ -113,10 +115,12 @@ never read
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon

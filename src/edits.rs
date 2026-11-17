@@ -388,6 +388,7 @@ pub(crate) fn warned(ed: &Editor) -> Vec<crate::cardwarn::Warned> {
         script_changed: false,
         edit_protected: true,
         outside: false,
+        kept: &[],
         in_outputs: &no,
     };
     crate::cardwarn::judge(packs.warn.iter().chain(&ed.config.cards_warn), &facts)

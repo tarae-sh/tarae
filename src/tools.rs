@@ -1601,8 +1601,15 @@ fn also_ask(
                 .iter()
                 .filter_map(|s| s.text.as_ref().ok().map(|t| (crate::chat::shown(&root, &s.path), t.clone())))
                 .collect();
-            let on =
-                WarnOn { cmd: &cmd, cwd: &cwd, scripts: &texts, reads: &[], script_changed: false, outside: false };
+            let on = WarnOn {
+                cmd: &cmd,
+                cwd: &cwd,
+                scripts: &texts,
+                reads: &[],
+                script_changed: false,
+                outside: false,
+                kept: &[],
+            };
             let asks: Vec<crate::cardwarn::Warned> = match reach {
                 true => warned(ed, on).into_iter().filter(|w| w.asks).collect(),
                 false => Vec::new(),
@@ -2410,7 +2417,7 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
                 Some(s) => Some(socket_at(s)?),
                 None => None,
             };
-            Some(Beyond { reason: reason.to_string(), socket, cluster: None })
+            Some(Beyond { reason: reason.to_string(), socket, cluster: None, kept: Vec::new() })
         }
     };
     // (one socket this chat allows already — `a` on its card: the sandbox has it for every run of the chat,
@@ -2513,8 +2520,15 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
     // with the network closed it runs, and fails in the sandbox)
     let asks: Vec<String> = match allowed_again && could_reach_out(ed, outside.is_some()) {
         true => {
-            let on =
-                WarnOn { cmd, cwd: &cwd, scripts: &[], reads: &[], script_changed: false, outside: false };
+            let on = WarnOn {
+                cmd,
+                cwd: &cwd,
+                scripts: &[],
+                reads: &[],
+                script_changed: false,
+                outside: false,
+                kept: &[],
+            };
             warned(ed, on).into_iter().filter(|w| w.asks).map(|w| w.id).collect()
         }
         false => Vec::new(),
@@ -2593,6 +2607,9 @@ pub struct Beyond {
     pub socket: Option<PathBuf>,
     /// Outside it whole, a `kubectl` run's cluster as its card says it (`kubeconfig::said`, read in `card`).
     pub cluster: Option<crate::kubeconfig::Said>,
+    /// Outside it whole, the kept places it names, each with whose it is (`cardwarn::kept_named`, read in `card`):
+    /// the `names-kept` fact.
+    pub kept: Vec<String>,
 }
 
 /// The socket `unix_socket` names — `~/` from home — by its real path: a unix socket that's there. Err says
@@ -2631,9 +2648,12 @@ fn card(
     let yes = answered_before(ed, &cmd, &cwd, outside.as_ref());
     // (outside whole, a kubectl run's card names the cluster — its kubeconfig read here, the user's side: #182)
     let kube = outside.as_ref().is_some_and(|b| b.socket.is_none()) && crate::kubeconfig::runs(&cmd);
-    if unseen.is_empty() && scripts.is_empty() && yes.is_none() && !kube {
+    // (outside whole, the kept places it names — `names-kept`: worked out on the worker, every time)
+    let kept_look = outside.as_ref().is_some_and(|b| b.socket.is_none());
+    if unseen.is_empty() && scripts.is_empty() && yes.is_none() && !kube && !kept_look {
         return ask_with(ed, cmd, cwd, call, Default::default(), (Vec::new(), why), outside);
     }
+    let kept_home = kept_look.then(|| kept_home(ed)).flatten();
     let root = ed.workspace.root.clone();
     // (past the sandbox — outside it whole, or with a socket: Docker's is root's, and what any service behind
     // one does with the project the sandbox can't bound — the project's whole diff since, as outside)
@@ -2655,7 +2675,10 @@ fn card(
             };
             crate::kubeconfig::said(&cmd, &place)
         });
-        let outside = outside.map(|b| Beyond { cluster, ..b });
+        let kept = kept_home
+            .map(|h| crate::cardwarn::kept_named(&cmd, &cwd, &h, &crate::sandbox::Here::now()))
+            .unwrap_or_default();
+        let outside = outside.map(|b| Beyond { cluster, kept, ..b });
         let since = yes.map(|y| y.since(&root, &cwd, &cmd, whole, zone));
         let shown = match unseen.is_empty() {
             true => Ok(Vec::new()),
@@ -2682,6 +2705,7 @@ fn card(
                 Ok(shown) => shown,
                 Err(e) => {
                     let whole = outside.as_ref().is_some_and(|b| b.socket.is_none());
+                    let kept = outside.as_ref().filter(|_| whole).map(|b| b.kept.clone()).unwrap_or_default();
                     let on = WarnOn {
                         cmd: &cmd,
                         cwd: &cwd,
@@ -2689,6 +2713,7 @@ fn card(
                         reads: &[],
                         script_changed: false,
                         outside: whole,
+                        kept: &kept,
                     };
                     let asks = warned(ed, on).iter().any(|w| w.asks);
                     let request = run_request(ed, outside.as_ref(), &why, asks);
@@ -2815,6 +2840,7 @@ fn in_sandbox(ed: &mut Editor, call: Call, cmd: String, cwd: PathBuf) -> Result<
                 reads: &[],
                 script_changed: false,
                 outside: false,
+                kept: &[],
             };
             let asks: Vec<String> = match reach {
                 true => warned(ed, on).into_iter().filter(|w| w.asks).map(|w| w.id).collect(),
@@ -3176,9 +3202,22 @@ pub fn runs_unasked(cmd: &str, extra: &[String]) -> bool {
         || crate::readonly::read_only(cmd)
 }
 
+/// Home as an outside command's kept places are judged from (`cardwarn::kept_named`): the process's — a test's own,
+/// when it set one (`Editor.caps_home`). The run panel's outside card's too (`blocked.rs`).
+pub(crate) fn kept_home(ed: &Editor) -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(h) = &ed.caps_home {
+        return Some(h.clone());
+    }
+    #[cfg(not(test))]
+    let _ = ed;
+    crate::allow::home()
+}
+
 /// What a command of Claude's is judged on for its warnings (`warned`): the line, where it runs, the scripts it
 /// runs (shown name, text — none read here: the card's worker read them), where it reads outside the project,
-/// whether a script it runs changed since it was seen, whether it runs outside the sandbox.
+/// whether a script it runs changed since it was seen, whether it runs outside the sandbox, the kept places it
+/// names (outside it whole: `Beyond.kept`).
 pub(crate) struct WarnOn<'a> {
     pub cmd: &'a str,
     pub cwd: &'a Path,
@@ -3186,6 +3225,7 @@ pub(crate) struct WarnOn<'a> {
     pub reads: &'a [PathBuf],
     pub script_changed: bool,
     pub outside: bool,
+    pub kept: &'a [String],
 }
 
 /// The warnings that hold for a command (`cardwarn.rs`): the packs' and the project's (`[[cards.warn]]`). What
@@ -3214,6 +3254,7 @@ pub(crate) fn warned(ed: &Editor, on: WarnOn) -> Vec<crate::cardwarn::Warned> {
         script_changed: on.script_changed,
         edit_protected: false,
         outside: on.outside,
+        kept: on.kept,
         in_outputs: &in_outputs,
     };
     crate::cardwarn::judge(packs.warn.iter().chain(&ed.config.cards_warn), &facts)
@@ -3278,7 +3319,16 @@ fn ask_with(
     let script_changed =
         matches!(why, crate::cards::Why::ScriptChanged) || since.as_ref().is_some_and(|s| s.script_changed);
     let whole = outside.as_ref().is_some_and(|b| b.socket.is_none());
-    let on = WarnOn { cmd: &cmd, cwd: &cwd, scripts: &texts, reads: &reads, script_changed, outside: whole };
+    let kept = outside.as_ref().filter(|_| whole).map(|b| b.kept.clone()).unwrap_or_default();
+    let on = WarnOn {
+        cmd: &cmd,
+        cwd: &cwd,
+        scripts: &texts,
+        reads: &reads,
+        script_changed,
+        outside: whole,
+        kept: &kept,
+    };
     // — each leading with what it does where its data says it plainly, the rest folded to `v` (F2)
     let warned = warned(ed, on);
     let mut details = Vec::new();
@@ -6984,9 +7034,17 @@ mod tests {
             "{}",
             l[0]
         );
-        // Outside the sandbox: still a card under the model; never drawn
+        // Outside the sandbox: still a card under the model (through the worker that reads what kept places it
+        // names); never drawn
         let outside = json!({ "command": "ls", "outside_sandbox": true, "reason": "to see" });
         super::run(&mut ed, super::Call::of(generation, "r2", json!(2)), &outside).unwrap();
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while ed.offers.is_empty() {
+            assert!(std::time::Instant::now() < end, "the outside card");
+            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
         ed.offer_dismiss();
         let l = lines();
         assert!(l[1].contains("· run · why=outside · shadow=no-sandbox · n · not drawn · up "), "{}", l[1]);

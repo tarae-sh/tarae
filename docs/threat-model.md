@@ -387,14 +387,28 @@ Kept:
   (`clonefile`, `cp -c`) only where it reads everything below — tools' output in the project, its own folder, an
   install, a cache it writes (G35; by place, so for every key — past the cap, made since — a file's clone works).
   Key folders in home (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`,
-  `~/.config/gcloud`, `~/.azure`, `~/.docker`, `~/.config/gh`, `~/.claude`, `~/.claude.json`, `~/Library/Keychains`, …) are denied even inside a
-  grant.
+  `~/.config/gcloud`, `~/.azure`, `~/.docker`, `~/.config/gh`, `~/Library/Keychains`, …) and every agent's own places
+  (below) are denied even inside a grant.
   test: `sandbox::tests::a_run_cant_read_a_key_named_file` · `sandbox::tests::files_named_like_keys_are_closed_but_the_exceptions` ·
   `sandbox::tests::a_key_inside_a_protected_folder_is_closed` · `sandbox::linux::tests::keys_are_found_where_they_are` ·
   `sandbox::tests::a_run_cant_move_or_remove_a_folder_holding_a_key` ·
   `sandbox::keyfolders::tests::the_temp_folders_are_walked_shallow_first` ·
   `sandbox::keyfolders::tests::the_temp_folders_have_a_cap_of_their_own` ·
   `sandbox::tests::a_run_cant_clone_a_folder_where_keys_are_closed`
+- **Every agent's own places** (the user's decision, 2026-11-18), read from the rows (`agent::Row.own`, one list) and
+  kept whichever agent the session runs: Claude Code's `~/.claude`, `~/.claude.json`, `~/.claude.json.backup`; agy's
+  `{user-config}/Antigravity` (macOS's `~/Library/Application Support`, Linux's `$XDG_CONFIG_HOME` or `~/.config`),
+  `~/.antigravity*`, `~/.gemini`; on WSL each Windows profile's too (`AppData/Roaming` for `{user-config}`). A run is
+  denied them (a `*` place as what's there when the run is wrapped, srt's rule: a `~/.antigravity-…` made later isn't
+  denied to a run already wrapped); the session's `read` and `search` are refused with no card, in or holding one,
+  and no answer about them lasts — a stored grant opens nothing, the refusal comes first; a pack never names one.
+  Your own send of a file there (pointing, the message's context, `space i`, review comments, `C-s`) asks `y · n`
+  first, as a key's does, and no grant of a key opens it. Measured: only agy's `credential-user-scope` on macOS
+  (probe 2, #18) — the folder around it, `~/.antigravity*`, `~/.gemini`, Linux's `.config/Antigravity` and a Windows
+  profile's `AppData/Roaming/Antigravity` follow the tool's convention, unmeasured.
+  test: `reads::tests::every_rows_place_is_kept_from_every_session` · `sandbox::tests::every_rows_place_is_kept_from_runs` ·
+  `chat::tests::a_file_in_an_agents_own_place_reaches_claude_only_when_the_user_lets_it` ·
+  `agent::tests::every_row_says_what_it_keeps_in_home` · `sandboxpack::tests::a_pack_cant_name_an_agents_place`
 - macOS: what no run reads by its place — home, the kept places, a token's settings — isn't read through a clone of
   a folder above it either (G35): Seatbelt checks a folder's clone on its source alone, never as a read of what's in
   it, so the profile refuses every folder's clone but where a run reads everything below.
@@ -982,6 +996,23 @@ Not kept:
 | `y`/`a`/`A` on a read card (Claude's Read outside the project) | Claude reads there — this once, this conversation, or always (`$state/sandbox.json`); home, above it and key folders only once |
 | `y`/`s` on a no-sandbox card | commands as you, unconfined — `s` its checks and reads unasked until the session ends, in every chat of it, never kept past a restart |
 | `llm.sandbox = false` | every command of Claude's as you, unconfined, **unasked** — only the chat's title says `› no sandbox` |
+
+A run-outside card says the kept places its command names (`names-kept`, the tools pack's words: "It names
+~/.claude (Claude's own place), ~/.ssh (where keys are): kept from every sandboxed run and every read — this run can
+read or change what's there.") — where keys are, an agent's own places, tarae's own state, a toolchain's own place (a
+build cache, a daemons' registry), the first three and a count — Claude's card and the run panel's outside card alike,
+and Claude's asks every time: a whole outside run is never `a`, an earlier `a` never covers one, and the auto
+cards' reviewer never answers it (its decision is `outside`, never a read's). **What that line can't see**: it reads the command's words, not what runs — a
+program reading a kept place on its own (git through ssh reading `~/.ssh`, a tool's own sign-in), a path built while
+it runs (a variable but `$HOME`, a `$(…)` but the packs' words, a glob past its fixed start, `~user`), and one inside
+a script file it runs. Those run as you on `y` all the same; the line only says more. Cargo's credentials where
+`CARGO_HOME` moved them are said as "a toolchain's own place", not "where keys are" (#621) — the card names the path
+and asks every time.
+test: `cardwarn::tests::an_outside_command_naming_a_kept_place_is_said_by_place_and_whose` ·
+`cardwarn::tests::an_outside_command_naming_a_kept_place_asks_every_time` ·
+`cardwarn::tests::a_kept_place_is_said_by_its_kind` ·
+`cards::tests::an_outside_whole_card_is_never_a_verdicts_whatever_it_says` ·
+`blocked::tests::the_panels_outside_card_says_a_kept_place_it_names`
 
 test: `allow::tests::which_folders_a_denied_write_may_open` · `allow::tests::home_above_it_and_key_folders_are_never_kept` ·
 `tools::tests::also_asks_for_localhost_a_variable_and_the_terminals` ·

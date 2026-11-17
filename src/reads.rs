@@ -228,7 +228,7 @@ impl Gate {
 
     /// Why reading or searching `at` (real) is refused, no card asked: it's in tarae's own state or cache, or
     /// holds them (`sandbox::taraes_own` — every session's conversations and runs, #292) — but in a folder of
-    /// this chat's own runs. A worker's.
+    /// this chat's own runs —; or it's in or holds an agent's own place (`own_refused`). A worker's.
     pub fn refused(&self, at: &Path) -> Option<String> {
         // (but the chat's own runs' folders, in tarae's cache: what its runs left there is Claude's to read; and the
         // log itself, which asks — `is_log`)
@@ -237,14 +237,18 @@ impl Gate {
         }
         let (home, here) = self.home_here()?;
         let own = crate::sandbox::taraes_own(&home, &here);
-        let o = own.iter().find(|o| at.starts_with(o) || o.starts_with(at))?;
-        let how = if at.starts_with(o) { "is in" } else { "holds" };
+        let Some(o) = own.iter().find(|o| at.starts_with(o) || o.starts_with(at)) else {
+            return own_refused(at, &home);
+        };
+        let holds = !at.starts_with(o);
+        let how = if holds { "holds" } else { "is in" };
         Some(format!(
             "{}: refused — it {how} tarae's own state or cache ({}), which holds every session's conversations, \
              turns, runs and its log; it's kept from you and from every command, and no card opens it (the log \
-             file itself, tarae.log, asks the user on its card). Ask the user for what you need from there.",
+             file itself, tarae.log, asks the user on its card). {}",
             crate::allow::tilde(at),
-            crate::allow::tilde(o)
+            crate::allow::tilde(o),
+            instead(holds)
         ))
     }
 
@@ -303,6 +307,32 @@ impl Gate {
             false => split(look.at.as_deref().and_then(|at| repository_or_why(at, &caps))),
         };
         Err(Box::new(Ask { look, class, found, repository, not_whole, log, moved, turn: self.turn }))
+    }
+}
+
+/// Why reading or searching `at` (real) is refused for being in, or holding, an agent's own place
+/// (`allow::own_place`: every row's, whichever agent the session runs — the user's decision, 2026-11-18): no card,
+/// no lasting answer, a stored grant opening nothing (`refused` comes before every grant). The words name the
+/// place's row (`Row.shown`), not the session's agent.
+fn own_refused(at: &Path, home: &Path) -> Option<String> {
+    let o = crate::allow::own_place(at, Some(home))?;
+    let how = if o.holds { "holds" } else { "is in" };
+    Some(format!(
+        "{}: refused — it {how} {} ({}), where an agent keeps its sign-in, settings and conversations; it's kept \
+         from you and from every command, whichever agent this session runs, and no card opens it. {}",
+        crate::allow::tilde(at),
+        crate::agent::own_words(o.row),
+        crate::allow::tilde(&o.place),
+        instead(o.holds)
+    ))
+}
+
+/// What a refusal of a kept place tells the agent to do instead (`own_refused`, tarae's own in `Gate::refused`): a
+/// folder holding one — what's beside it is there to read; in one — only the user can give it.
+fn instead(holds: bool) -> &'static str {
+    match holds {
+        true => "Read or search a file or folder inside it instead.",
+        false => "Ask the user for what you need from there.",
     }
 }
 
@@ -726,43 +756,81 @@ fn home(ed: &Editor) -> Option<PathBuf> {
     crate::allow::home()
 }
 
-/// Whether `path` (real) is shut to the user's own sends by its place alone: in a place that holds keys — home's
-/// `allow::SECRETS`, a Windows profile's on WSL (`allow::secret`, as `cards::class` sorts a read there) — and not
-/// named like a key itself (`~/.ssh/config`, `~/.aws/config`). The words then say where it is.
-pub fn by_place(ed: &Editor, path: &Path) -> bool {
-    !crate::sandbox::key_named(&ed.workspace.root, path) && crate::allow::secret(path, home(ed).as_deref())
+/// Why a file is shut to the user's own sends (`shut_of`), the strongest fact first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shut {
+    /// In an agent's own place (`allow::own_place`: every row's — the user's decision, 2026-11-18), named like a
+    /// key or not.
+    Own(crate::agent::OwnAt),
+    /// Named like a key (in the project, or outside it by its name — `sandbox::key_named`).
+    Name,
+    /// In a place that holds keys — home's `allow::SECRETS`, a Windows profile's on WSL (`allow::secret`, as
+    /// `cards::class` sorts a read there) —, not named like one itself (`~/.ssh/config`, `~/.aws/config`).
+    Keys,
 }
 
-/// What a file `key_shut` keeps out is, in the words the user reads: `named like a key`, or `where keys are`
-/// (`by_place`).
-pub fn shut_why(ed: &Editor, path: &Path) -> &'static str {
-    match by_place(ed, path) {
-        true => "where keys are",
-        false => "named like a key",
-    }
-}
-
-/// `shut_why` said once for several files: the one word they share, else both.
-fn shut_whys<'a>(ed: &Editor, paths: impl IntoIterator<Item = &'a PathBuf>) -> &'static str {
-    let (mut place, mut name) = (false, false);
-    for p in paths {
-        match by_place(ed, p) {
-            true => place = true,
-            false => name = true,
+impl Shut {
+    /// In the words the user reads: `in agy's own place` (the place's row by `Row.shown`), `named like a key`,
+    /// `where keys are`.
+    pub fn words(&self) -> String {
+        match self {
+            Shut::Own(o) => format!("in {}", crate::agent::own_words(o.row)),
+            Shut::Name => "named like a key".into(),
+            Shut::Keys => "where keys are".into(),
         }
     }
-    match (place, name) {
-        (true, false) => "where keys are",
-        (true, true) => "named like a key or where keys are",
-        _ => "named like a key",
+}
+
+/// Why `path` (real) is shut to the user's own sends, by its place and its name — None: it isn't. No disk.
+pub fn shut_of(ed: &Editor, path: &Path) -> Option<Shut> {
+    let home = home(ed);
+    if let Some(o) = crate::allow::own_place(path, home.as_deref()).filter(|o| !o.holds) {
+        return Some(Shut::Own(o));
+    }
+    if crate::sandbox::key_named(&ed.workspace.root, path) {
+        return Some(Shut::Name);
+    }
+    crate::allow::secret(path, home.as_deref()).then_some(Shut::Keys)
+}
+
+/// What a file `key_shut` keeps out is, in the words the user reads (`Shut::words`).
+pub fn shut_why(ed: &Editor, path: &Path) -> String {
+    shut_of(ed, path).unwrap_or(Shut::Name).words()
+}
+
+/// `shut_why` said once for several files: the one word they share, else each — several agents' places as
+/// `in agents' own places`.
+fn shut_whys<'a>(ed: &Editor, paths: impl IntoIterator<Item = &'a PathBuf>) -> String {
+    let (mut rows, mut name, mut keys): (Vec<&'static crate::agent::Row>, bool, bool) =
+        (Vec::new(), false, false);
+    for p in paths {
+        match shut_of(ed, p).unwrap_or(Shut::Name) {
+            Shut::Own(o) if !rows.iter().any(|r| r.name == o.row.name) => rows.push(o.row),
+            Shut::Own(_) => {}
+            Shut::Name => name = true,
+            Shut::Keys => keys = true,
+        }
+    }
+    let mut said: Vec<String> = match rows.as_slice() {
+        [] => Vec::new(),
+        [one] => vec![format!("in {}", crate::agent::own_words(one))],
+        _ => vec!["in agents' own places".into()],
+    };
+    said.extend(name.then(|| Shut::Name.words()));
+    said.extend(keys.then(|| Shut::Keys.words()));
+    match said.split_last() {
+        None => Shut::Name.words(),
+        Some((last, [])) => last.clone(),
+        Some((last, first)) => format!("{} or {last}", first.join(", ")),
     }
 }
 
-/// The marker in place of `path`'s text: `NOT_SENT`, or `NOT_SENT_PLACE` (`by_place`).
-pub fn not_sent_said(ed: &Editor, path: &Path) -> &'static str {
-    match by_place(ed, path) {
-        true => NOT_SENT_PLACE,
-        false => NOT_SENT,
+/// The marker in place of `path`'s text: `NOT_SENT`, `NOT_SENT_PLACE`, or `in agy's own place — not sent`.
+pub fn not_sent_said(ed: &Editor, path: &Path) -> String {
+    match shut_of(ed, path) {
+        Some(Shut::Keys) => NOT_SENT_PLACE.into(),
+        Some(o @ Shut::Own(_)) => format!("{} — not sent", o.words()),
+        _ => NOT_SENT.into(),
     }
 }
 
@@ -774,18 +842,20 @@ pub fn named(ed: &Editor, path: &Path) -> String {
     }
 }
 
-/// Whether the file at `path` (a document's — real since it was opened, `Editor::open`) is named like a key
-/// (in the project, or outside it by its name — `sandbox::key_named`) or in a place that holds keys (`by_place`:
-/// the `SECRETS` widening, 2026-11-18 — for the user's own sends only, Claude's reads and runs go by their own
-/// rules) and not open to Claude: not opened for this conversation nor kept for the project (`Grant::Key` — an
-/// earlier build's `A`, the run's panel), nor in `pass` (what this one message may carry — `input_pass`). The main
-/// thread's, for the message's context and the screen: no disk — the kept ones are the chat's copy
-/// (`Chat.kept_keys`; not read yet, none counts as kept).
+/// Whether the file at `path` (a document's — real since it was opened, `Editor::open`) is shut (`shut_of`: in an
+/// agent's own place; named like a key, in the project or outside it by its name; or in a place that holds keys —
+/// the `SECRETS` widening, 2026-11-18 — for the user's own sends only, the agent's reads and runs go by their own
+/// rules) and not open to the agent: not opened for this conversation nor kept for the project (`Grant::Key` — an
+/// earlier build's `A`, the run's panel), nor in `pass` (what this one message may carry — `input_pass`). In an
+/// agent's own place only `pass` counts: kept wins over any grant. The main thread's, for the message's context
+/// and the screen: no disk — the kept ones are the chat's copy (`Chat.kept_keys`; not read yet, none counts as
+/// kept).
 pub fn key_shut(ed: &Editor, path: &Path, pass: &[PathBuf]) -> bool {
-    if !crate::sandbox::key_named(&ed.workspace.root, path) && !by_place(ed, path) {
-        return false;
-    }
+    let Some(shut) = shut_of(ed, path) else { return false };
     let path = path.to_path_buf();
+    if matches!(shut, Shut::Own(_)) {
+        return !pass.contains(&path);
+    }
     let Some(c) = ed.workspace.claude.chat.as_ref() else { return true };
     !(c.allowed.keys.contains(&path)
         || pass.contains(&path)
@@ -1069,10 +1139,30 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     let names: Vec<String> = keys.iter().map(|k| named(ed, k)).collect();
     let given = names.join(", ");
     let (it, is) = if keys.len() == 1 { ("it", "It's") } else { ("them", "They're") };
-    let why = shut_whys(ed, &keys);
-    let title = match keys.iter().all(|k| by_place(ed, k)) {
-        true => pointed_place_title(ed),
-        false => POINTED_TITLE.to_string(),
+    let shut: Vec<Option<Shut>> = keys.iter().map(|k| shut_of(ed, k)).collect();
+    let mut owners: Vec<&crate::agent::OwnAt> = Vec::new();
+    for o in shut.iter().flatten() {
+        if let Shut::Own(o) = o
+            && !owners.iter().any(|w| w.row.name == o.row.name && w.place == o.place)
+        {
+            owners.push(o);
+        }
+    }
+    // (one agent's place: where it is and what it holds, as the refused read says it)
+    let why = match owners.as_slice() {
+        [o] if shut.iter().all(|s| matches!(s, Some(Shut::Own(_)))) => format!(
+            "in {} ({}), where an agent keeps its sign-in, settings and conversations",
+            crate::agent::own_words(o.row),
+            crate::crash::tilde(&o.place, home(ed).as_deref())
+        ),
+        _ => shut_whys(ed, &keys),
+    };
+    let title = if !owners.is_empty() {
+        pointed_own_title(ed, &owners)
+    } else if shut.iter().all(|s| *s == Some(Shut::Keys)) {
+        pointed_place_title(ed)
+    } else {
+        POINTED_TITLE.to_string()
     };
     let (what, y) = match &own {
         Own::Chip(_) => (
@@ -1637,6 +1727,19 @@ pub const POINTED_TITLE: &str = "Send to Claude — named like a key";
 /// session's agent by its row's name.
 pub fn pointed_place_title(ed: &Editor) -> String {
     format!("Send to {} — where keys are", crate::llm::session_row(ed).shown)
+}
+
+/// `POINTED_TITLE` for files of which one is in an agent's own place (`Shut::Own` — the stronger fact): the
+/// session's agent and the place's owner each by its row's `shown`, several owners as agents'.
+pub fn pointed_own_title(ed: &Editor, owners: &[&crate::agent::OwnAt]) -> String {
+    let to = crate::llm::session_row(ed).shown;
+    let mut rows: Vec<&str> = owners.iter().map(|o| o.row.name).collect();
+    crate::sorting::sort(&mut rows);
+    rows.dedup();
+    match (owners.first(), rows.len()) {
+        (Some(o), 1) => format!("Send to {to} — in {}", crate::agent::own_words(o.row)),
+        _ => format!("Send to {to} — in agents' own places"),
+    }
 }
 
 /// The places other reads go (waiting, or let through once) — a card's folder for longer is offered beside
@@ -2735,5 +2838,85 @@ mod tests {
     /// `covered`, nothing made by a run.
     fn covered_by(look: &Look, caps: &crate::caps::Caps) -> bool {
         covered(look, caps, &Made::default())
+    }
+
+    /// Every agent's own place, walked from the rows (`agent::own_places` — the user's decision, 2026-11-18: every
+    /// row's, whichever agent the session runs), a `*` place by an entry made in its folder: a file in it, the place
+    /// and the folder holding it — the session's `read` refused, no card, its words naming the place's row (`agy's
+    /// own place` to a session of any agent), the holding folder's pointing inside it; no answer about the place or
+    /// in it lasts (`keepable`, `storable_place`, `Caps::storable_in` once) — one about the folder above may, as
+    /// `SECRETS`' rule (home itself never); kept from runs (`kept_places`); a grant of the place or of the folder
+    /// above it — for this call, or kept for the session — opens nothing and changes no word (`refused` first:
+    /// `Lines`). A scratch home, never yours. Breaks if a row's places are out of `refused`, `keepable` or
+    /// `kept_in`, or if a grant above one reaches `refused`.
+    #[test]
+    fn every_rows_place_is_kept_from_every_session() {
+        let s = crate::scratch::Scratch::new("reads-rows-kept");
+        let home = crate::paths::real(&s).unwrap();
+        let root = home.join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        let here = crate::sandbox::Here::default();
+        let vars = crate::sandbox::vars_in(&home, &here);
+        let mut walked = Vec::new();
+        for (row, p) in crate::agent::own_places() {
+            for at in vars.places_both(p) {
+                let place = PathBuf::from(at.to_string_lossy().replace('*', "-x"));
+                let file = place.join("credential-user-scope");
+                std::fs::create_dir_all(&place).unwrap();
+                std::fs::write(&file, "tarae-fake-token\n").unwrap();
+                let kept = crate::sandbox::kept_places(&home, &here);
+                assert!(kept.contains(&place), "{p}: kept from runs: {kept:?}");
+                let parent = place.parent().unwrap().to_path_buf();
+                let own = crate::agent::own_words(row);
+                for (at, how) in [(&file, "is in"), (&place, "is in"), (&parent, "holds")] {
+                    let alone = Gate::for_test(&root).at_home(home.clone()).refused(at);
+                    let alone = alone.unwrap_or_else(|| panic!("{p}: {} not refused", at.display()));
+                    // (home holds tarae's own state too: that's said first)
+                    if *at != home {
+                        assert!(alone.contains(&format!("it {how} {own} (")), "{p}: {alone}");
+                        assert!(alone.contains("no card opens it"), "{alone}");
+                        let instead = match how {
+                            "holds" => "Read or search a file or folder inside it instead.",
+                            _ => "Ask the user for what you need from there.",
+                        };
+                        assert!(alone.ends_with(instead), "{p}: {alone}");
+                    }
+                    for (granted, kept) in
+                        [(place.clone(), false), (parent.clone(), false), (parent.clone(), true)]
+                    {
+                        let mut gate = Gate::for_test(&root).at_home(home.clone());
+                        match kept {
+                            true => gate.basis.session.add(&crate::allow::Grant::Read(granted.clone())),
+                            false => gate = gate.granting(granted.clone()),
+                        }
+                        let why = gate.refused(at);
+                        assert_eq!(
+                            why.as_ref(),
+                            Some(&alone),
+                            "{p}: the same through {granted:?} (kept: {kept})"
+                        );
+                        let lines = crate::nav::Lines::new(root.clone(), gate);
+                        assert_eq!(lines.read(&file), None, "{p}: not read through {granted:?}");
+                    }
+                    // (the place and what's in it never last; the folder above may, but home)
+                    let lasts = *at == parent && parent != home;
+                    assert_eq!(crate::allow::keepable(at, Some(&home)), lasts, "{p}: {} kept", at.display());
+                    assert_eq!(crate::allow::storable_place(at, Some(&home)), lasts);
+                    let g = crate::allow::Grant::Read(at.to_path_buf());
+                    if !lasts {
+                        assert_eq!(crate::caps::Caps::storable_in(&g, Some(&home)), Scope::Once, "{p}");
+                    }
+                }
+                walked.push(p);
+            }
+        }
+        for p in ["~/.claude", "~/.claude.json", "~/.claude.json.backup", "{user-config}/Antigravity"] {
+            assert!(walked.contains(&p), "{p}: {walked:?}");
+        }
+        assert!(walked.contains(&"~/.antigravity*") && walked.contains(&"~/.gemini"), "{walked:?}");
+        // (beside them, a file in home asks as it did: not refused, its answer may last)
+        let beside = home.join(".config/else/f");
+        assert!(Gate::for_test(&root).at_home(home.clone()).refused(&beside).is_none());
+        assert!(crate::allow::keepable(&beside, Some(&home)));
     }
 }

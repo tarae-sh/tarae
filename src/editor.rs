@@ -20732,6 +20732,8 @@ mod tests {
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "run",
             "arguments": {"command": "cargo fetch", "outside_sandbox": true, "reason": "the network is closed"}}});
         assert!(crate::tools::mcp(&mut ed, 0, "c1", &msg).is_none(), "it waits for the user");
+        // (its card through the worker that reads which kept places it names)
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 120, 30).unwrap();
         let mut parser = vt100::Parser::new(30, 120, 0);

@@ -701,6 +701,35 @@ packages = ["gems", "site-packages", "lib/*", "lib/python3*/site-packages", "lib
     assert!(ours().packages.iter().all(|p| p.contains('/')), "{:?}", ours().packages);
 }
 
+/// A pack can't name an agent's own place (`agent::own_places`, at each system's place for it) for a run to read
+/// or write, nor a folder holding one: `{user-config}/Antigravity/x` (macOS's and Linux's), `~/.gemini`,
+/// `~/.antigravity-cache`, `~/.claude.json.backup` — every row's, read from the rows. Beside them, a place is fine.
+/// Breaks if the rows are out of `check_place`.
+#[test]
+fn a_pack_cant_name_an_agents_place() {
+    for p in [
+        "{user-config}/Antigravity/x",
+        "{xdg-config}/Antigravity",
+        "~/Library/Application Support/Antigravity",
+        "~/.gemini",
+        "~/.gemini/tmp",
+        "~/.antigravity-cache",
+        "~/.claude.json.backup",
+        "~/.claude/x",
+        "{user-config}",
+    ] {
+        for kind in [Kind::Read, Kind::Write, Kind::Tree] {
+            let why = check_place(p, kind, &[]).expect_err(p);
+            let how = if p == "{user-config}" { "holds what's" } else { "is" };
+            let said = format!("{how} kept from every run: keys, an agent's own place or tarae's state");
+            assert_eq!(why, said, "{p}");
+        }
+    }
+    for p in ["{user-config}/Code/x", "~/.gem/x", "~/.antigrav"] {
+        assert_eq!(check_place(p, Kind::Read, &[]), Ok(()), "{p}");
+    }
+}
+
 /// The words a pack says in Claude's prompt come in `rank` order, whatever the packs' names.
 #[test]
 fn the_packs_words_come_by_rank() {

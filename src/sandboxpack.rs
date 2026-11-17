@@ -1651,8 +1651,16 @@ fn check_place(p: &str, kind: Kind, homes: &[Home]) -> Result<(), String> {
     };
     // (a tool's settings file may be one kept for its tokens, itself — its copy without them stands in)
     let itself = |s: &str| kind == Kind::Setting && at.iter().all(|a| *a == home.join(s));
-    if crate::allow::SECRETS.iter().any(|s| near(s) && !itself(s)) || OWN.iter().any(|s| near(s)) {
-        return Err("is where keys or Claude's and tarae's own state are".into());
+    // (every agent's own places, at each system's place for them — `agent::own_places`)
+    let own: Vec<_> = at.iter().filter_map(|a| crate::agent::own_at(a, home, None)).collect();
+    let kept: Vec<&str> = crate::allow::SECRETS.iter().filter(|s| !itself(s)).chain(OWN).copied().collect();
+    let kinds = crate::sandbox::KEPT_KINDS;
+    let inside = |s: &&str| at.iter().any(|a| a.starts_with(home.join(s)));
+    if kept.iter().any(inside) || own.iter().any(|o| !o.holds) {
+        return Err(format!("is kept from every run: {kinds}"));
+    }
+    if kept.iter().any(|s| near(s)) || !own.is_empty() {
+        return Err(format!("holds what's kept from every run: {kinds}"));
     }
     let writes = matches!(kind, Kind::Write | Kind::WriteFile);
     if writes && crate::allow::NEVER_WRITE.iter().any(|s| near(s)) {
@@ -1661,8 +1669,9 @@ fn check_place(p: &str, kind: Kind, homes: &[Home]) -> Result<(), String> {
     Ok(())
 }
 
-/// Claude's own and tarae's state, from home — never in a pack's place.
-const OWN: &[&str] = &[".claude", ".claude.json", ".local/state/tarae", ".config/tarae"];
+/// tarae's state and config, from home — never in a pack's place (an agent's own places are its row's:
+/// `agent::own_places`).
+const OWN: &[&str] = &[".local/state/tarae", ".config/tarae"];
 
 /// Where place `p`'s start lands from home on each system: `~/` home itself, `{user-config}` macOS's and
 /// Linux's, a pack's home its `else` — None: a variable that's neither (`{run}` isn't in home).

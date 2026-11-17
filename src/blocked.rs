@@ -41,6 +41,9 @@ pub struct BlockedRun {
     /// What its card's grant of a place leaves of the files named like keys in it (`sandbox::grant_keys`, worked
     /// out on the card's worker) — None: not a place's, or not worked out (its words say them open).
     pub granting: Option<crate::allow::Keys>,
+    /// The kept places its command names, each with whose it is (`cardwarn::kept_named`, worked out on the list's
+    /// worker): its outside card's `names-kept` — a run denied at a kept place is the one that leads there.
+    pub kept: Vec<String>,
 }
 
 /// A run of the session's: its command's or its tests', and which of them (`generation`: each spawn a new one).
@@ -63,6 +66,7 @@ impl BlockedRun {
             key: None,
             keys: None,
             granting: None,
+            kept: Vec::new(),
         }
     }
 
@@ -357,9 +361,16 @@ impl Editor {
         // (what could open, by what the session may do — made on a worker: it reads the kept answers, and the
         // places never opened are looked for)
         let basis = self.caps_basis();
+        // (and the kept places its command names — its outside card's `names-kept`, as Claude's outside card's)
+        let (home, here) = (crate::tools::kept_home(self), self.sandbox_here.clone());
+        let mut run = run;
         self.events.jobs().spawn(move || {
             let mut list = choices_by(&run.denials, &basis.build(), run.keys.as_ref());
             list.extend(env_choices(&run.env));
+            if let (Job::Command(cmd, cwd), Some(home)) = (&run.job, home) {
+                let here = here.map_or_else(crate::sandbox::Here::now, |h| h());
+                run.kept = crate::cardwarn::kept_named(cmd, cwd, &home, &here);
+            }
             move |ed: &mut Editor| ed.blocked_open(Some(run), list)
         });
     }
@@ -438,28 +449,30 @@ impl Editor {
         let then = then_said(self, &run);
         let run = Box::new(run);
         let card = match arg.trim() {
-            "outside" => crate::offer::Offer::new(
-                OUTSIDE_TITLE.into(),
-                &format!(
-                    "{cmd}\n\nOutside the sandbox it runs with all your permissions — your files, your network — \
-                     this once. {then}"
-                ),
-                "",
-                String::new(),
-                crate::offer::What::Outside { run },
-            )
-            .asked(
-                Asked::new(
-                    Why::Blocked,
-                    Request::Run {
-                        past: Past::Outside,
-                        sandboxed: crate::cards::sandboxed(self.config.llm.sandbox, &self.sandbox),
-                        reads: Vec::new(),
-                        outward: false,
-                    },
-                )
-                .about(&cmd),
-            ),
+            "outside" => {
+                // (the kept places it names, under the command — the tools pack's `names-kept`, as on Claude's)
+                let warned = crate::cardwarn::names_kept(&crate::sandboxpack::get().warn, &cmd, &run.kept);
+                let (mut question, mut warnings, mut details) = (cmd.clone(), Vec::new(), Vec::new());
+                crate::cardwarn::put_on_card(&mut question, &warned, &mut warnings, &mut details);
+                question.push_str(&format!(
+                    "\n\nOutside the sandbox it runs with all your permissions — your files, your network — this \
+                     once. {then}"
+                ));
+                let request = Request::Run {
+                    past: Past::Outside,
+                    sandboxed: crate::cards::sandboxed(self.config.llm.sandbox, &self.sandbox),
+                    reads: Vec::new(),
+                    outward: false,
+                };
+                let ids = warned.iter().map(|w| w.id.clone()).collect();
+                let asked = Asked::new(Why::Blocked, request).about(&cmd).warned(ids);
+                let what = crate::offer::What::Outside { run };
+                let mut o =
+                    crate::offer::Offer::new(OUTSIDE_TITLE.into(), &question, "", String::new(), what);
+                o = o.asked(asked).with_details(details);
+                o.warnings = warnings;
+                o
+            }
             n => {
                 let Choice { grant, why, .. } =
                     n.parse::<usize>().ok().and_then(|i| list.get(i).cloned()).ok_or("no such row")?;
@@ -471,9 +484,11 @@ impl Editor {
                     let (n, here) = (n.clone(), self.sandbox_here.clone());
                     self.events.jobs().spawn(move || {
                         let here = here.map_or_else(crate::sandbox::Here::now, |h| h());
-                        let masking = here.env.get(&n).map(|v| Masking::of(v)).filter(|m| {
-                            m.hosts().is_some() || crate::tokens::secret_name(&n)
-                        });
+                        let masking = here
+                            .env
+                            .get(&n)
+                            .map(|v| Masking::of(v))
+                            .filter(|m| m.hosts().is_some() || crate::tokens::secret_name(&n));
                         move |ed: &mut Editor| {
                             let then = then_said(ed, &run);
                             let masking = masking.map(|m| crate::tools::masking_still(ed, m));
@@ -488,7 +503,8 @@ impl Editor {
                     return Ok(());
                 }
                 // A place: what its grant leaves of the files named like keys in it, by the rule its run will have
-                let (basis, llm, here) = (self.caps_basis(), self.config.llm.clone(), self.sandbox_here.clone());
+                let (basis, llm, here) =
+                    (self.caps_basis(), self.config.llm.clone(), self.sandbox_here.clone());
                 let mut run = run;
                 self.events.jobs().spawn(move || {
                     let said = match &grant {
@@ -1542,6 +1558,63 @@ mod tests {
         let g = Grant::Socket(sock);
         assert!(!g.keepable() && g.warning().is_some_and(|w| w.contains("mounts any folder")));
         assert!(Grant::Socket("/tmp/x/app.sock".into()).warning().is_none());
+    }
+
+    /// The kept-rows landing, review 4: the run panel's outside card says the kept places its command names — the tools
+    /// pack's `names-kept`, the words Claude's outside card says, worked out on the list's worker (`BlockedRun.kept`)
+    /// — right under the command, in the warning colour, and the card's record names it; a command naming none says
+    /// nothing of it. A scratch home (`Editor.caps_home`); every card dismissed: nothing runs. Breaks if the panel's
+    /// card stops saying it.
+    #[test]
+    fn the_panels_outside_card_says_a_kept_place_it_names() {
+        let scratch = crate::scratch::Scratch::new("blocked-kept");
+        let home = std::fs::canonicalize(&scratch).unwrap();
+        for d in [".claude", "p"] {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+        }
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = home.join("p");
+        ed.caps_home = Some(home.clone());
+        let said = "▲ It names ~/.claude (Claude's own place): kept from every sandboxed run and every read — this run \
+                    can read or change what's there. (tools pack)";
+        for (cmd, names) in [("cat ~/.claude/settings.json", true), ("cat notes.txt", false)] {
+            let watch = crate::sandbox::Watch::quiet("t.");
+            let target = if names { home.join(".claude/settings.json") } else { home.join("p/notes.txt") };
+            watch.record(Denial {
+                process: "cat".into(),
+                op: "file-read-data".into(),
+                target: target.display().to_string(),
+            });
+            let policy = crate::sandbox::Policy {
+                watch: Some(watch),
+                ..crate::sandbox::Policy::for_project(&crate::sandbox::Env::default())
+            };
+            let task = crate::task::Task { name: cmd.into(), cmd: cmd.into(), cwd: home.join("p") };
+            let mut run = crate::task::Run::for_test(task);
+            run.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
+            run.by_claude = true;
+            ed.workspace.task_run = Some(run);
+            ed.workspace.blocked = None;
+            ed.sandbox_blocked(Which::Task);
+            crate::test_results::settle_until(&mut ed, |ed| {
+                ed.workspace.blocked.as_ref().is_some_and(|(r, _)| r.label() == cmd)
+            });
+            ed.sandbox_grant("outside").unwrap();
+            let o = ed.offers.first().expect("its card");
+            assert_eq!(o.title, OUTSIDE_TITLE);
+            let lines: Vec<&str> = o.question.lines().collect();
+            match names {
+                true => {
+                    assert_eq!(lines[..3], [cmd, "", said], "{}", o.question);
+                    assert_eq!(o.warnings, vec![2..3]);
+                    assert!(o.asked.as_ref().is_some_and(|a| a.warn == ["names-kept"]), "{:?}", o.asked);
+                }
+                false => assert!(!o.question.contains("It names") && o.warnings.is_empty(), "{}", o.question),
+            }
+            assert!(o.question.contains("Outside the sandbox it runs with all your permissions"));
+            ed.offer_dismiss();
+            ed.picker = None;
+        }
     }
 
     /// R1's review, must 1: a yes on a place's card tells Claude, and toasts, what the card said of the files named

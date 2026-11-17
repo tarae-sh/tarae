@@ -51,8 +51,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X29")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X28"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X31")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X30"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4"))))) (with message "$TAG"))
 params:
   C:
     $HOME/.cargo/git
@@ -131,6 +131,7 @@ params:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -142,6 +143,7 @@ params:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -217,6 +219,7 @@ reads.kept:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -228,6 +231,7 @@ reads.kept:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -323,8 +327,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X30")) (subpath (param "X32")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X31"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X30")) (subpath (param "X31")) (subpath (param "X32")) (subpath (param "X34")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X33"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3"))))) (with message "$TAG"))
 params:
   C:
     $BASE/cargo-moved/git
@@ -402,6 +406,7 @@ params:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -413,6 +418,7 @@ params:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -488,6 +494,7 @@ reads.kept:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -499,6 +506,7 @@ reads.kept:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -593,8 +601,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X29")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X28"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5")) (subpath (param "W6")) (subpath (param "W7"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X31")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X30"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5")) (subpath (param "W6")) (subpath (param "W7"))))) (with message "$TAG"))
 params:
   F:
     $HOME/.cargo/.global-cache
@@ -672,6 +680,7 @@ params:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -683,6 +692,7 @@ params:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -758,6 +768,7 @@ reads.kept:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -769,6 +780,7 @@ reads.kept:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -876,8 +888,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X29")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X28"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X31")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X30"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5"))))) (with message "$TAG"))
 params:
   C:
     $HOME/.cargo/git
@@ -960,6 +972,7 @@ params:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -971,6 +984,7 @@ params:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -1049,6 +1063,7 @@ reads.kept:
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -1060,6 +1075,7 @@ reads.kept:
     $HOME/.password-store
     $HOME/.pypirc
     $HOME/.ssh
+    $HOME/Library/Application Support/Antigravity
     $HOME/Library/Caches/go-build
     $HOME/Library/Keychains
     $HOME/gocache
@@ -1154,8 +1170,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X29")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X28"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X31")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X30"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4"))))) (with message "$TAG"))
 params:
   C:
     $HOME/.cargo/git
@@ -1227,10 +1243,12 @@ params:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -1312,10 +1330,12 @@ reads.kept:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -1418,8 +1438,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X30")) (subpath (param "X32")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X31"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X30")) (subpath (param "X31")) (subpath (param "X32")) (subpath (param "X34")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X33"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3"))))) (with message "$TAG"))
 params:
   C:
     $BASE/cargo-moved/git
@@ -1490,10 +1510,12 @@ params:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -1575,10 +1597,12 @@ reads.kept:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -1680,8 +1704,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X29")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X28"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5")) (subpath (param "W6")) (subpath (param "W7"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X31")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X30"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5")) (subpath (param "W6")) (subpath (param "W7"))))) (with message "$TAG"))
 params:
   F:
     $HOME/.cargo/.global-cache
@@ -1752,10 +1776,12 @@ params:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -1837,10 +1863,12 @@ reads.kept:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -1954,8 +1982,8 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X29")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X28"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5"))))) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X31")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (require-all (require-any (subpath (param "X30"))) (require-not (require-any (subpath (param "ROOT")) (subpath (param "RUN")) (subpath (param "W0")) (subpath (param "W1")) (subpath (param "W2")) (subpath (param "W3")) (subpath (param "W4")) (subpath (param "W5"))))) (with message "$TAG"))
 params:
   C:
     $HOME/.cargo/git
@@ -2030,10 +2058,12 @@ params:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon
@@ -2118,10 +2148,12 @@ reads.kept:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/Antigravity
     $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
+    $HOME/.gemini
     $HOME/.git-credentials
     $HOME/.gnupg
     $HOME/.gradle/daemon

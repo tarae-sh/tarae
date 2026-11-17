@@ -163,6 +163,16 @@ fact = "outside-sandbox"
 asks = true
 say = "It reads your Secret Service outside the sandbox — tarae's API key would be there, and what it prints goes to Claude."
 
+# A kept place named outside the sandbox (the kept-rows landing): where keys are, an agent's own places, tarae's own
+# state — no sandboxed run and no read reaches them, but a command outside runs as you. The core reads the paths the
+# line names (`cardwarn::kept_named`) and says each place with whose it is; a program reading on its own, a path made
+# while it runs and one inside a script file aren't seen (docs/threat-model.md). Asked every time.
+[[claude.warn]]
+id = "names-kept"
+fact = "names-kept"
+asks = true
+say = "It names {place}: kept from every sandboxed run and every read — this run can read or change what's there."
+
 # What writing a model's prompt cache costs, per million tokens (`switchcost.rs`): the 5-minute and the hour-long
 # write — said as "≈ $X" when a switch of billing, model or effort throws a warm cache away — and `read`, a cache
 # hit (a fork's first request reads the source's context: `switchcost::fork_cost`). From

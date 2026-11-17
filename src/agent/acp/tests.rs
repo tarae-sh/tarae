@@ -898,6 +898,7 @@ fn a_test_never_starts_a_real_agent() {
             mode: None,
             held: &[],
             measured: None,
+            own: crate::agent::Own::None("a test's"),
         }));
         let s = Start::on(row, Role::Chat, &cfg);
         let refused = std::panic::catch_unwind(|| command(&s, &std::env::temp_dir(), None).map(|_| ()));

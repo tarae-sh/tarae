@@ -1151,18 +1151,34 @@ pub(crate) const SECRETS: &[&str] = &[
 ];
 
 /// Whether an answer about `real` may last past this once: not home itself or a folder above it (that's
-/// everything) — nor a Windows profile or a folder holding one (WSL's `/mnt/c`: `winhome`) —, and nothing in a place
-/// that holds keys.
+/// everything) — nor a Windows profile or a folder holding one (WSL's `/mnt/c`: `winhome`) —, nothing in a place
+/// that holds keys, and nothing in an agent's own place (`own_place`) — the places themselves, as `SECRETS`' rule:
+/// a folder above one (`~/.config`, `~/Library/Application Support`) may be kept, the place in it still refused
+/// (`reads::Gate::refused` comes before every grant) and kept from runs (`sandbox::kept_in`).
 pub fn keepable(real: &Path, home: Option<&Path>) -> bool {
     let windows = crate::winhome::drives();
-    if windows.holds_a_home(real) || windows.secret(real) {
+    let own_in = |o: Option<crate::agent::OwnAt>| o.is_some_and(|o| !o.holds);
+    if windows.holds_a_home(real) || windows.secret(real) || own_in(windows.own_of(real)) {
         return false;
     }
     let Some(home) = home else { return real != Path::new("/") };
     if home.starts_with(real) {
         return false;
     }
-    !secret(real, Some(home))
+    !secret(real, Some(home)) && !own_in(crate::agent::own_at(real, home, xdg_config().as_deref()))
+}
+
+/// The agent's own place `real` is in, or holds (`agent::own_at`): home's, where `$XDG_CONFIG_HOME` moves `.config`
+/// too, or a Windows profile's on WSL (`winhome::Homes::own_of`) — every row's, whichever agent the session runs
+/// (the user's decision, 2026-11-18). By path alone, no disk.
+pub fn own_place(real: &Path, home: Option<&Path>) -> Option<crate::agent::OwnAt> {
+    let homes = home.and_then(|h| crate::agent::own_at(real, h, xdg_config().as_deref()));
+    homes.or_else(|| crate::winhome::drives().own_of(real))
+}
+
+/// `$XDG_CONFIG_HOME` as the process has it, when it's an absolute path.
+pub fn xdg_config() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
 /// Whether an answer about `real` may be kept: `keepable`, and a path a store can hold — one that's no text would be

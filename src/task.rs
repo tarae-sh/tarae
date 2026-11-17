@@ -907,6 +907,7 @@ impl Editor {
                     reads: &[],
                     script_changed: false,
                     outside,
+                    kept: &[],
                 };
                 let warned = crate::tools::warned(self, on);
                 crate::cards::ran_warned(&self.workspace.log(), &task.cmd, &warned);

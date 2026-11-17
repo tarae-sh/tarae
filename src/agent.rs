@@ -8,6 +8,8 @@ mod process;
 #[cfg(test)]
 mod argv_tests;
 
+use std::path::{Path, PathBuf};
+
 /// A running agent: what tarae says to it. Its kind's lines are its wire's (`claude.rs`); everything above the
 /// wire asks this handle, and none of it names the kind.
 pub enum Agent {
@@ -189,11 +191,139 @@ pub struct Row {
     /// The version of it tarae's guards were measured on: another one it says at `initialize` is said once a version,
     /// never refused (`version_said`). None: nothing to compare (Claude's own update says its version).
     pub measured: Option<&'static str>,
+    /// What it keeps in home (its sign-in, settings, conversations), in the packs' place form: `~/…`, or
+    /// `{user-config}/…` (macOS's `Library/Application Support`, Linux's `$XDG_CONFIG_HOME` or `.config`; a Windows
+    /// profile's `AppData/Roaming` on WSL). A last part ending in `*` stands for every name in its folder that starts
+    /// that way. Kept from every session, whichever agent it runs (the user's decision, 2026-11-18): no card, no
+    /// lasting answer, the session's `read` refused (`reads::Gate::refused`), runs denied (`sandbox::kept_in`), a
+    /// pack's place never in it (`sandboxpack::check_place`). A `*` place is expanded for a run's policy to what's there
+    /// when the run is wrapped (srt's rule): a `~/.antigravity-…` that appears later isn't denied to a run already
+    /// wrapped. The card, a lasting answer and `read` match it by its folder and the name's start (`own_at`), with no
+    /// disk, so they cover one made at any time.
+    pub own: Own,
+}
+
+/// What an agent keeps in home (`Row.own`).
+#[derive(Debug, Clone, Copy)]
+pub enum Own {
+    Places(&'static [&'static str]),
+    /// It keeps nothing in home: why.
+    #[cfg_attr(not(test), allow(dead_code))] // (the stand-in's alone, for now)
+    None(&'static str),
+}
+
+impl Row {
+    /// Its own places (`Row.own`), none when it keeps nothing in home.
+    pub fn own_places(&self) -> &'static [&'static str] {
+        match self.own {
+            Own::Places(p) => p,
+            Own::None(_) => &[],
+        }
+    }
 }
 
 /// Every row's held paths (`Row.held`): what a folder's answer of `trust::Kind::Agent` is about (`trust::carried_rel`).
 pub fn held_paths() -> impl Iterator<Item = &'static str> {
     every_row().flat_map(|r| r.held.iter().copied())
+}
+
+/// Every row's own places (`Row.own`), each with its row — the one list of agents' places kept from every session
+/// (the stand-in's too in tests: it keeps none).
+pub fn own_places() -> impl Iterator<Item = (&'static Row, &'static str)> {
+    every_row().flat_map(|r| r.own_places().iter().map(move |p| (r, *p)))
+}
+
+/// Where own place `p` lands from a home, relative to it, at every system's place for its start: `~/x` → `x`;
+/// `{user-config}/x` → macOS's and Linux's; on a Windows profile (`windows`) → `AppData/Roaming/x`.
+pub fn own_leads(p: &str, windows: bool) -> Vec<String> {
+    if let Some(rest) = p.strip_prefix("~/") {
+        return vec![rest.to_string()];
+    }
+    let Some(rest) = p.strip_prefix("{user-config}/") else { return Vec::new() };
+    let leads: &[&str] = match windows {
+        true => &["AppData/Roaming"],
+        false => &["Library/Application Support", ".config"],
+    };
+    leads.iter().map(|l| format!("{l}/{rest}")).collect()
+}
+
+/// Where a path meets a row's own place (`own_at`): in it (or it), or a folder holding it.
+#[derive(Debug, Clone)]
+pub struct OwnAt {
+    pub row: &'static Row,
+    /// The place as it lands (real form); a `*` place held: its folder joined with the pattern as written.
+    pub place: PathBuf,
+    pub holds: bool,
+}
+
+impl PartialEq for OwnAt {
+    fn eq(&self, o: &OwnAt) -> bool {
+        std::ptr::eq(self.row, o.row) && self.place == o.place && self.holds == o.holds
+    }
+}
+
+impl Eq for OwnAt {}
+
+/// Whether `real` meets `rel` (a place from `base`, its last name maybe ending in `*`): `Some(false)` in it (or it),
+/// `Some(true)` a folder holding it — `fold`: names in any case (a Windows profile). No disk.
+pub fn meets(real: &Path, base: &Path, rel: &str, fold: bool) -> Option<bool> {
+    let want: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    let (last, folder) = want.split_last()?;
+    let rest: Vec<String> = match real.strip_prefix(base) {
+        Ok(r) => r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect(),
+        Err(_) => return None,
+    };
+    let same = |a: &str, b: &str| if fold { a.eq_ignore_ascii_case(b) } else { a == b };
+    let starts = |a: &str, b: &str| match fold {
+        true => a.len() >= b.len() && a.is_char_boundary(b.len()) && a[..b.len()].eq_ignore_ascii_case(b),
+        false => a.starts_with(b),
+    };
+    if rest.len() <= folder.len() {
+        return rest.iter().zip(folder.iter()).all(|(a, b)| same(a, b)).then_some(true);
+    }
+    let in_folder = rest.iter().zip(folder.iter()).all(|(a, b)| same(a, b));
+    let name = &rest[folder.len()];
+    let named = match last.strip_suffix('*') {
+        Some(start) => starts(name, start),
+        None => same(name, last),
+    };
+    (in_folder && named).then_some(false)
+}
+
+/// The row whose own place `real` is in, else one it holds, from home `home` at every system's place for it (and
+/// `xdg`: where `$XDG_CONFIG_HOME` moves `.config`, when it does). By path alone, no disk: the main thread's too.
+pub fn own_at(real: &Path, home: &Path, xdg: Option<&Path>) -> Option<OwnAt> {
+    let mut held = None;
+    for (row, p) in own_places() {
+        let mut bases: Vec<(PathBuf, String)> =
+            own_leads(p, false).into_iter().map(|l| (home.into(), l)).collect();
+        if let (Some(x), Some(rest)) = (xdg, p.strip_prefix("{user-config}/")) {
+            bases.push((x.to_path_buf(), rest.to_string()));
+        }
+        for (base, rel) in bases {
+            match meets(real, &base, &rel, false) {
+                Some(false) => return Some(OwnAt { row, place: landed(real, &base, &rel), holds: false }),
+                Some(true) if held.is_none() => {
+                    held = Some(OwnAt { row, place: base.join(&rel), holds: true })
+                }
+                _ => {}
+            }
+        }
+    }
+    held
+}
+
+/// The place `rel` from `base` that `real` is in, as it is there: a `*` name as `real` spells it.
+pub fn landed(real: &Path, base: &Path, rel: &str) -> PathBuf {
+    let n = rel.split('/').filter(|s| !s.is_empty()).count();
+    let rest =
+        real.strip_prefix(base).map(|r| r.components().take(n).collect::<PathBuf>()).unwrap_or_default();
+    base.join(rest)
+}
+
+/// A row's own place in the words the user and the agent read: `agy's own place`.
+pub fn own_words(row: &Row) -> String {
+    format!("{}'s own place", row.shown)
 }
 
 /// A config folder of tarae's own (`$state/agent-homes/<row>/<key>/`, one a project, `agentgate.rs`), and the files tarae writes there
@@ -247,12 +377,18 @@ pub static CLAUDE: Row = Row {
     // (its own gate is `claudetrust.rs`)
     held: &[],
     measured: None,
+    own: Own::Places(&["~/.claude", "~/.claude.json", "~/.claude.json.backup"]),
 };
 
 /// agy's row (Google's Antigravity CLI, `agy acp` — the structure plan §1): its own tools off by tarae's hook (guard 1),
 /// kept in its `default` mode (guard 2), a project's `.agents/` held until trusted (guard 4 — `.gemini/` wasn't loaded
 /// in the three shapes probe 1 tried, #17). Its program is `agy` on PATH, its arguments its own: no setting reaches
 /// them (`acp::args`). Chosen by `llm.agent` for a session that has no row yet (`llm::session_row`).
+///
+/// Its own places take the three folders whole. Measured: only `{user-config}/Antigravity/credential-user-scope` on
+/// macOS (probe 2, #18: its sign-in) — and probe 2 reported only the places it named, so what agy keeps in home is
+/// known at that one point. The folder around that file, `~/.antigravity*` and `~/.gemini` follow the tool's
+/// convention; Linux's `.config/Antigravity` and a Windows profile's `AppData/Roaming/Antigravity` are unmeasured.
 pub static AGY: Row = Row {
     name: "agy",
     shown: "agy",
@@ -264,6 +400,7 @@ pub static AGY: Row = Row {
     mode: Some("default"),
     held: &[".agents/"],
     measured: Some("1.5.9"),
+    own: Own::Places(&["{user-config}/Antigravity", "~/.antigravity*", "~/.gemini"]),
 };
 
 /// The stand-in ACP agent's row (`acp::standin`): the test binary re-run on its one test, speaking ACP on
@@ -280,6 +417,7 @@ pub static STAND_IN: Row = Row {
     mode: Some("default"),
     held: &[".stand-in/"],
     measured: None,
+    own: Own::None("the test binary re-run: it keeps nothing in home"),
 };
 
 /// Every row tarae has: what a kept conversation's name is looked up in (`row_named`), and `llm.agent`'s choices.
@@ -1083,6 +1221,7 @@ mod tests {
             mode: Some("default"),
             held: &[],
             measured: None,
+            own: super::Own::None("a test's"),
         };
         let asks = super::Caps { asks: true, ..super::acp::CAPS };
         assert_eq!(floor(&row(super::acp::CAPS, None)).len(), 1);
@@ -1167,6 +1306,7 @@ mod tests {
             mode: Some("default"),
             held: &[],
             measured: None,
+            own: super::Own::None("a test's"),
         };
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         ed.config.llm.agent = &EVERY;
@@ -1177,6 +1317,35 @@ mod tests {
         assert_eq!(held(&ed), ROLES.map(|_| Some(why.to_string())));
         ed.config.llm.agent = &super::CLAUDE;
         assert_eq!(held(&ed), ROLES.map(|_| None), "Claude's starts aren't the tripped row's");
+    }
+
+    /// Every row says what it keeps in home (`Row.own`): its places — not none, each from home or `{user-config}`, no
+    /// `.` or `..`, a `*` only at the end of its last part — or that it keeps nothing, and why. Breaks if agy's are
+    /// emptied.
+    #[test]
+    fn every_row_says_what_it_keeps_in_home() {
+        use super::{Own, every_row, own_leads};
+        for row in every_row() {
+            match row.own {
+                Own::Places(places) => {
+                    assert!(!places.is_empty(), "{}: places, or `None` with its reason", row.name);
+                    for p in places {
+                        assert!(
+                            !own_leads(p, false).is_empty(),
+                            "{}: {p} isn't from home or {{user-config}}",
+                            row.name
+                        );
+                        let parts: Vec<&str> = p.split('/').skip(1).collect();
+                        assert!(parts.iter().all(|s| !s.is_empty() && *s != "." && *s != ".."), "{p}");
+                        let (last, before) = parts.split_last().unwrap();
+                        assert!(before.iter().all(|s| !s.contains('*')), "{p}: a `*` in a folder's name");
+                        assert!(!last.trim_end_matches('*').contains('*'), "{p}: a `*` not at its end");
+                    }
+                }
+                Own::None(why) => assert!(!why.trim().is_empty(), "{}: why it keeps nothing", row.name),
+            }
+        }
+        assert!(!super::AGY.own_places().is_empty() && !super::CLAUDE.own_places().is_empty());
     }
 
     /// What builds or starts an agent's start: a function holding one asks `llm::held_for` in its own body.
@@ -1507,10 +1676,9 @@ mod tests {
             ("repotrust.rs", 2),
             ("reviewer.rs", 2),
             ("rundoc.rs", 2),
-            ("sandbox.rs", 5),
+            ("sandbox.rs", 4),
             ("sandbox/apparmor.rs", 2),
             ("sandbox/runenv.rs", 1),
-            ("sandboxpack.rs", 1),
             ("settings.rs", 37),
             ("sound.rs", 1),
             ("testing.rs", 1),
