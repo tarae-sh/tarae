@@ -485,6 +485,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.command = s(v).to_string(),
     },
     Setting {
+        path: "llm.agent",
+        kind: Kind::Enum(crate::agent::NAMES),
+        doc: "The agent a new session starts on — \"claude\" (Claude Code) or \"agy\" (Antigravity's agy, on PATH); a session keeps the one it began on",
+        get: |c| Value::from(c.llm.agent.name),
+        set: |c, v| c.llm.agent = crate::agent::row_named(s(v)).unwrap_or(&crate::agent::CLAUDE),
+    },
+    Setting {
         path: "llm.args",
         kind: Kind::StrList,
         doc: "Arguments for llm.command (default: claude -p with speed flags)",

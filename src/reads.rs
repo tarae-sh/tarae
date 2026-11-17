@@ -137,6 +137,8 @@ pub struct Gate {
     basis: crate::caps::Basis,
     made: Made,
     granted: Vec<PathBuf>,
+    /// The chat's turns over as it was made (`Chat.turns_over`): a read that asks after its turn ended asks no card.
+    turn: u64,
 }
 
 /// What a gate asks the user about: the read, where it is as the cards sort places, what looks like a token
@@ -151,6 +153,8 @@ pub struct Ask {
     log: bool,
     /// `Pending.moved`.
     moved: Option<String>,
+    /// `Gate.turn`: the turn its call was in.
+    turn: u64,
 }
 
 impl Ask {
@@ -184,7 +188,7 @@ impl Gate {
     pub fn for_test(root: &Path) -> Gate {
         let root = crate::paths::real(root).unwrap_or_else(|| root.to_path_buf());
         let basis = crate::caps::Basis { root, ..Default::default() };
-        Gate { basis, made: Made::default(), granted: Vec::new() }
+        Gate { basis, made: Made::default(), granted: Vec::new(), turn: 0 }
     }
 
     /// (Tests: reading outside home where the capability model does, as tarae does.)
@@ -217,8 +221,9 @@ impl Gate {
 
     /// For session `ed.workspace`'s chat, with what the user already let this call read.
     pub fn of(ed: &Editor, granted: Vec<PathBuf>) -> Gate {
-        let made = ed.workspace.claude.chat.as_ref().map(|c| Made::of(&c.ran)).unwrap_or_default();
-        Gate { basis: ed.caps_basis(), made, granted }
+        let c = ed.workspace.claude.chat.as_ref();
+        let (made, turn) = c.map(|c| (Made::of(&c.ran), c.turns_over)).unwrap_or_default();
+        Gate { basis: ed.caps_basis(), made, granted, turn }
     }
 
     /// Why reading or searching `at` (real) is refused, no card asked: it's in tarae's own state or cache, or
@@ -297,7 +302,7 @@ impl Gate {
             true => (None, None),
             false => split(look.at.as_deref().and_then(|at| repository_or_why(at, &caps))),
         };
-        Err(Box::new(Ask { look, class, found, repository, not_whole, log, moved }))
+        Err(Box::new(Ask { look, class, found, repository, not_whole, log, moved, turn: self.turn }))
     }
 }
 
@@ -311,7 +316,11 @@ pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
         return crate::tools::answer(ed, then.call, Err("the chat it came from is gone".into()));
     };
-    let Ask { mut look, class, found, repository, not_whole, log, moved } = ask;
+    // (its turn ended while it was judged on a worker — friction #600: no card nobody waits for, the call answered)
+    if ask.turn != c.turns_over {
+        return crate::tools::answer(ed, then.call, Err(TURN_ENDED.into()));
+    }
+    let Ask { mut look, class, found, repository, not_whole, log, moved, .. } = ask;
     // (tarae's search: its card says what it searches for — frictions29 33: `Gate::judge` knows only the place)
     if then.tool == "search" {
         let s = |k: &str| then.args[k].as_str().unwrap_or_default().to_string();
@@ -1130,7 +1139,7 @@ pub fn run_ended(ed: &mut Editor) {
 pub fn request(ed: &mut Editor, request_id: &str, tool: &str, input: Value) -> Option<Permission> {
     let tool = tool.to_string();
     let c = ed.workspace.claude.chat.as_ref()?;
-    let (generation, made) = (c.generation(), Made::of(&c.ran));
+    let (generation, made, turn) = (c.generation(), Made::of(&c.ran), c.turns_over);
     let request_id = request_id.to_string();
     // (the root, a real path, is where claude runs — its relative paths are from there)
     let basis = ed.caps_basis();
@@ -1153,6 +1162,11 @@ pub fn request(ed: &mut Editor, request_id: &str, tool: &str, input: Value) -> O
             };
             if ok {
                 return crate::chat::answer_permission(ed, &request_id, Permission::Allow { input });
+            }
+            // (its turn ended meanwhile — friction #600: no card nobody waits for)
+            if c.turns_over != turn {
+                let message = TURN_ENDED.into();
+                return crate::chat::answer_permission(ed, &request_id, Permission::Deny { message });
             }
             if let Some(message) = said_no(c, &look) {
                 return crate::chat::answer_permission(ed, &request_id, Permission::Deny { message });
@@ -1907,11 +1921,16 @@ pub fn program_ended(ed: &mut Editor, key: u32) {
     next(ed);
 }
 
-/// The turn ended: nothing waits for these asks any more, and what its runs made asks again. (A card the
-/// user's pointing raised waits for them, not for the turn.)
+/// What a read's call is answered when its turn ended before its card was answered — or before it was raised.
+pub const TURN_ENDED: &str = "the turn ended before the user answered";
+
+/// The turn ended: nothing waits for these asks any more, and what its runs made asks again — nor for one still on a
+/// worker, which lands in a turn over (`Chat.turns_over`). (A card the user's pointing raised waits for them, not for
+/// the turn.)
 pub fn turn_over(ed: &mut Editor) {
     let mut waiting = Vec::new();
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.turns_over += 1;
         waiting.extend(c.reads.drain(..).filter_map(|p| p.then));
         c.ran.clear();
         c.read_no.clear();
@@ -1919,7 +1938,7 @@ pub fn turn_over(ed: &mut Editor) {
     }
     // (a call of tarae's tools is always answered — its card's going answers the one up: `asking_sync`)
     for t in waiting {
-        crate::tools::answer(ed, t.call, Err("the turn ended before the user answered".into()));
+        crate::tools::answer(ed, t.call, Err(TURN_ENDED.into()));
     }
     ed.drop_cards(|w| matches!(w, crate::offer::What::Read { pending, .. } if pending.own.is_none()));
 }
@@ -1974,7 +1993,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = s.to_path_buf();
         let ask = Gate::of(&ed, Vec::new()).judge(&no_text(b"/opt/caf\xe9.txt"), true);
-        let Ask { look, class, found, repository, not_whole, log, moved } = *ask.expect_err("it asks");
+        let Ask { look, class, found, repository, not_whole, log, moved, .. } = *ask.expect_err("it asks");
         let mut chat = crate::chat::Chat::new();
         chat.reads.push_back(Pending {
             request_id: String::new(),
@@ -2511,7 +2530,7 @@ mod tests {
             decide("Grep", &json!({ "pattern": "x", "path": granted }), &basis.build(), &none);
         assert!(!covered && look.keys == [key.clone()], "a search of the folder: {:?}", look.keys);
         // tarae's own search of the folder leaves it out by name: not asked for it — its own read is
-        let gate = Gate { basis: basis.clone(), made: Made::default(), granted: Vec::new() };
+        let gate = Gate { basis: basis.clone(), made: Made::default(), granted: Vec::new(), turn: 0 };
         assert!(gate.judge(&granted, false).is_ok(), "the search");
         assert!(gate.judge(&key, true).is_err(), "the read");
         let keys = Keys {

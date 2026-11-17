@@ -581,6 +581,7 @@ fn set_value(editor: &mut Editor, path: &str, v: toml::Value, persist: bool) -> 
     // fails keeps it until you quit, said (the editor's own config file, as `space v a` writes it — none in tests
     // but the one they give)
     let kept = persist.then(|| editor.save_setting(path, &v).unwrap_or(Err("no config directory".into())));
+    let agent = crate::agent::row_of(&editor.config.llm);
     editor.config = next;
     editor.ensure_theme();
     editor.overrides.retain(|(p, _)| p != path);
@@ -600,6 +601,8 @@ fn set_value(editor: &mut Editor, path: &str, v: toml::Value, persist: bool) -> 
         }),
         None => editor.set_status(format!("{path} = {v}  (until you quit — :set! to save)")),
     }
+    // (a session that has its row stays on it, said — step 4's L2)
+    crate::chat::agent_moved(editor, agent);
     Ok(())
 }
 

@@ -803,6 +803,26 @@ fn an_agent_gets_none_of_the_names_that_move_gits_discovery() {
     assert_eq!(GIT_DISCOVERY, moving, "the list as the test's");
 }
 
+/// Step 4's L2 (the user's word on question 2, 2026-11-16): an agent that isn't Claude gets none of Google's API keys —
+/// agy signs in on its own, and no key of yours is billed unasked. (Fake values: the stand-in reads none.) The names
+/// are the test's own list, so one taken out of `API_KEYS` reaches the agent here.
+#[test]
+fn an_agent_gets_none_of_googles_api_keys() {
+    let keys = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
+    let mut env: Env = keys.iter().map(|n| (n.to_string(), "tarae-fake-token".to_string())).collect();
+    env.insert("GEMINI_KEPT_NAME".into(), "kept".into());
+    let mut script = handshake();
+    script.push(json!({"eof": true}));
+    let run = start(json!(script), Opts { env, ..Opts::default() });
+    run.until("ready");
+    let heard = run.heard();
+    let names: Vec<&str> = heard[0]["env"].as_array().unwrap().iter().filter_map(|n| n.as_str()).collect();
+    assert!(names.contains(&"GEMINI_KEPT_NAME"), "the rest as it is: {names:?}");
+    let got: Vec<&&str> = keys.iter().filter(|n| names.contains(n)).collect();
+    assert!(got.is_empty(), "passed on: {got:?}");
+    assert_eq!(super::API_KEYS, keys, "the list as the test's");
+}
+
 /// Step 3, L1: the agent has a session of its own (`spawn::setsid_fed_as`) — its session and group its own pid, the
 /// pid tarae started — and so no controlling terminal: it can't open `/dev/tty`. The session is what's checked first:
 /// a run with no terminal can't open `/dev/tty` whatever the agent's start, so that alone would hold on a runner
@@ -875,6 +895,7 @@ fn a_test_never_starts_a_real_agent() {
             own_tools: None,
             mode: None,
             held: &[],
+            measured: None,
         }));
         let s = Start::on(row, Role::Chat, &cfg);
         let refused = std::panic::catch_unwind(|| command(&s, &std::env::temp_dir(), None).map(|_| ()));
@@ -882,8 +903,14 @@ fn a_test_never_starts_a_real_agent() {
         let why = why.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(why.contains("a test started a real agent"), "{program}: {why}");
     }
-    // (and the stand-in's own isn't refused, its folder made)
+    // (nor agy's own row, now real — its folder made, nothing in its way but the assertion)
     let dir = crate::scratch::Scratch::new("acp-real-agent");
+    let made = crate::agentgate::prepare(&crate::agent::AGY, Some(dir.path()), dir.path()).unwrap();
+    let s = Start { prepared: Some(&made.prepared), ..Start::on(&crate::agent::AGY, Role::Chat, &cfg) };
+    let refused = std::panic::catch_unwind(|| command(&s, &std::env::temp_dir(), None).map(|_| ()));
+    let why = refused.expect_err("agy's row");
+    assert!(why.downcast_ref::<String>().is_some_and(|w| w.contains("a test started a real agent")));
+    // (and the stand-in's own isn't refused, its folder made)
     let made = crate::agentgate::prepare(&STAND_IN, Some(dir.path()), dir.path()).unwrap();
     let s = Start { prepared: Some(&made.prepared), ..Start::on(&STAND_IN, Role::Chat, &cfg) };
     assert!(command(&s, &std::env::temp_dir(), None).is_ok());

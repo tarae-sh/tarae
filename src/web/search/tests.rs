@@ -35,7 +35,7 @@ fn its_args_are_websearch_alone_on_the_settings_model() {
     let cfg = config(base.clone(), "haiku");
     assert_eq!((cfg.model.as_deref(), cfg.effort.as_str()), (Some("haiku"), ""));
     assert_eq!(config(base.clone(), " ").model.as_deref(), Some(MODEL), "empty: the default");
-    let args = &crate::agent::args(&helper(&cfg)).unwrap().args;
+    let args = &crate::agent::args(&helper(&crate::agent::CLAUDE, &cfg)).unwrap().args;
     for gone in ["--resume", "x", "--continue", "--append-system-prompt", "more"] {
         assert!(!args.iter().any(|a| a == gone), "{gone} in {args:?}");
     }
@@ -63,7 +63,8 @@ fn its_args_are_websearch_alone_on_the_settings_model() {
     let env_of = |names: &[(&str, &str)]| {
         let given: crate::llm::Env = names.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let cred = crate::billing::Credential::Subscription;
-        let cmd = crate::agent::command(&helper(&cfg), dir, Some(&given), Some(&cred)).unwrap();
+        let cmd = crate::agent::command(&helper(&crate::agent::CLAUDE, &cfg), dir, Some(&given), Some(&cred))
+            .unwrap();
         let env: std::collections::HashMap<String, Option<String>> = (cmd.get_envs())
             .map(|(k, v)| (k.to_string_lossy().into(), v.map(|v| v.to_string_lossy().into())))
             .collect();

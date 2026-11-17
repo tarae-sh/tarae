@@ -176,11 +176,14 @@ pub(crate) fn config(base: llm::LlmConfig, model: &str) -> llm::LlmConfig {
     llm::LlmConfig { model: Some(model.to_string()), effort: String::new(), ..base }
 }
 
-/// The helper's start on `cfg` (`config`'s).
-pub(crate) fn helper(cfg: &llm::LlmConfig) -> crate::agent::Start<'_> {
+/// The helper's start on `row` (the session's) and `cfg` (`config`'s).
+pub(crate) fn helper<'a>(
+    row: &'static crate::agent::Row,
+    cfg: &'a llm::LlmConfig,
+) -> crate::agent::Start<'a> {
     crate::agent::Start {
         system: Some(SYSTEM),
-        ..crate::agent::Start::new(crate::agent::Role::WebSearch, cfg)
+        ..crate::agent::Start::on(row, crate::agent::Role::WebSearch, cfg)
     }
 }
 
@@ -403,7 +406,7 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
         llm::LlmConfig { keep_env_key: keep, ..crate::models::config(ed) },
         &ed.config.llm.web_search_model,
     );
-    let id = crate::tools::generation();
+    let (id, row) = (crate::tools::generation(), llm::session_row(ed));
     let message = Prompt::Text(query.message());
     let (pid, folder) = match stand_in(ed) {
         Some(agent) => {
@@ -417,7 +420,7 @@ fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
             let route = move |ev| -> Option<crate::event::Apply> {
                 Some(Box::new(move |ed: &mut Editor| on_event(ed, id, ev)))
             };
-            let started = agent::start(&helper(&cfg), at, first, true, ed.events.sender(), route)
+            let started = agent::start(&helper(row, &cfg), at, first, true, ed.events.sender(), route)
                 .map_err(|e| e.said(&cfg.command, false))?;
             // (its handle dropped once sent: its stdin closes after the message, and `-p` answers it)
             (Some(started.pid), Some(folder))

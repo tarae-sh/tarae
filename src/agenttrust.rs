@@ -211,7 +211,7 @@ fn gather(root: &Path, path: &Path, depth: usize, found: &mut Vec<Found>) -> Res
 /// unhashed while the agent may still load it (the design session's L4 note 6).
 fn listed(entries: impl Iterator<Item = std::io::Result<PathBuf>>) -> std::io::Result<Vec<PathBuf>> {
     let mut paths = entries.collect::<std::io::Result<Vec<_>>>()?;
-    paths.sort();
+    crate::sorting::sort(&mut paths);
     Ok(paths)
 }
 
@@ -301,7 +301,7 @@ pub fn look(row: &Row, root: &Path, store: Option<&Path>) -> Result<Seen, String
     for h in chain.held(row.held) {
         gather(&chain.top, &chain.top.join(h), 0, &mut found).map_err(refused)?;
     }
-    found.sort_by(|a, b| a.rel().cmp(b.rel()));
+    crate::sorting::by(&mut found, |a, b| a.rel().cmp(b.rel()));
     let links = links_resolved(row, &chain, &found).map_err(refused)?;
     for f in &found {
         let Found::File(rel, bytes) = f else { continue };

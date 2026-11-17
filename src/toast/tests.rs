@@ -131,8 +131,9 @@ fn literal(body: &str) -> Option<(String, usize)> {
     Some((out, took))
 }
 
-/// The toasts the walk can't read, their text made away from the call — a count that only goes down.
-const MADE_ELSEWHERE: usize = 176;
+/// The toasts the walk can't read, their text made away from the call — a count that only goes down. (177: step 4's
+/// L2 lifted the agent gate, and with it `chat::send_from`'s hold said on the status line, `llm::held_for`'s words.)
+const MADE_ELSEWHERE: usize = 177;
 
 /// What's wrong with the notification card on the frame just drawn (80 columns): each toast on it read row by row — a
 /// word not the text's (cut, or broken across rows) or its lead (`term::toast_lead`) not whole —, the newest `texts[0]`,

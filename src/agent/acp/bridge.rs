@@ -178,29 +178,39 @@ impl Bridge {
         Ok(Bridge { path: dir.join(name), shared })
     }
 
-    /// Its socket.
+    /// Tests: its socket.
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// `session/new`'s (and `resume`'s, `load`'s) `mcpServers` entry: the relay on this socket, the token only in
-    /// its environment. A test build's relay is the test binary re-run on `relay`, speaking on descriptor 3 as the
-    /// stand-in does (libtest's own lines go to /dev/null), the socket its last argument.
+    /// its environment — `tarae agent-tools <socket>`, tarae the binary as it was started (`restart::exe`: once a
+    /// build replaces it, Linux names the running one "… (deleted)").
+    #[cfg(not(test))]
+    pub fn server(&self) -> Value {
+        let socket = self.path.to_string_lossy().into_owned();
+        let exe = crate::restart::exe().unwrap_or_default().to_string_lossy().into_owned();
+        self.entry(exe, vec!["agent-tools".to_string(), socket])
+    }
+
+    /// A test build's: the test binary re-run on `relay`, speaking on descriptor 3 as the stand-in does (libtest's
+    /// own lines go to /dev/null), the socket its last argument.
+    #[cfg(test)]
     pub fn server(&self) -> Value {
         let socket = self.path.to_string_lossy().into_owned();
         let exe = std::env::current_exe().unwrap_or_default().to_string_lossy().into_owned();
-        let (command, args) = match cfg!(test) {
-            true => {
-                let mut args: Vec<String> =
-                    super::standin::ARGS.iter().map(|a| a.replace(super::standin::SELF, &exe)).collect();
-                if let Some(test) = args.iter_mut().find(|a| a.as_str() == super::standin::TEST) {
-                    *test = RELAY_TEST.into();
-                }
-                args.push(socket);
-                ("sh".to_string(), args)
-            }
-            false => (exe, vec!["agent-tools".to_string(), socket]),
-        };
+        let mut args: Vec<String> =
+            super::standin::ARGS.iter().map(|a| a.replace(super::standin::SELF, &exe)).collect();
+        if let Some(test) = args.iter_mut().find(|a| a.as_str() == super::standin::TEST) {
+            *test = RELAY_TEST.into();
+        }
+        args.push(socket);
+        self.entry("sh".to_string(), args)
+    }
+
+    /// The entry for `command` on `args`, the token in its environment.
+    fn entry(&self, command: String, args: Vec<String>) -> Value {
         json!({"name": NAME, "command": command, "args": args,
             "env": [{"name": TOKEN, "value": self.shared.token}]})
     }
@@ -232,7 +242,7 @@ impl Drop for Bridge {
 /// Tests elsewhere (the sandbox's): a bridge of the test process's own, bound in `state`, and what tells the next
 /// message it handed the wire's thread within a wait — `linked N`, `bridged <message>`, `unlinked N`, in the one
 /// channel's order (None: none came). macOS's only, as its one caller is.
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 pub fn bound(state: &Path) -> (Bridge, impl Fn(std::time::Duration) -> Option<String> + use<>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let b = Bridge::listen(state, std::process::id(), tx).expect("a bridge bound");
@@ -388,6 +398,7 @@ fn writer(mut out: UnixStream) -> Sender<String> {
 // ── The relay ───────────────────────────────────────────────────────────
 
 /// The relay's test: what a test build's `server` runs.
+#[cfg(test)]
 const RELAY_TEST: &str = "agent::acp::bridge::relay_test";
 
 /// `tarae agent-tools <socket>`: connects (a path past `sun_path` from its folder), writes the token from its

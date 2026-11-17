@@ -49,7 +49,6 @@ impl<R> ReadAgain<R> {
     }
 
     /// From now on, read until bytes or the end come: its time was a first message's (the bridge's token).
-    #[cfg(test)]
     pub fn endless(&mut self) {
         self.until = None;
     }

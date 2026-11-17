@@ -102,10 +102,10 @@ fn taken_as(ed: &Editor) -> Result<Option<String>, String> {
     Ok((!file).then(|| format!("buffer-{}", &crate::quote::id_for(&d.text.to_string())[1..])))
 }
 
-/// The ask's start on `cfg`: tarae's words, its tools tarae's two, no conversation, no settings, a request cap —
-/// its wire's flags.
-pub(crate) fn agent_start(cfg: &llm::LlmConfig) -> agent::Start<'_> {
-    agent::Start { system: Some(SYSTEM), ..agent::Start::new(agent::Role::Ask, cfg) }
+/// The ask's start on `row` (the session's) and `cfg`: tarae's words, its tools tarae's two, no conversation, no
+/// settings, a request cap — its wire's flags.
+pub(crate) fn agent_start<'a>(row: &'static agent::Row, cfg: &'a llm::LlmConfig) -> agent::Start<'a> {
+    agent::Start { system: Some(SYSTEM), ..agent::Start::on(row, agent::Role::Ask, cfg) }
 }
 
 /// `:ask <instruction>` (`space i`'s prompt): the selections quoted, its claude started with the message, the
@@ -171,7 +171,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     let quotes = crate::quote::taken(ed, &ranges, buffer.as_deref())?;
     let blocks: Vec<String> = quotes.into_iter().map(|t| crate::quote::whole(t).block()).collect();
     let message = format!("{}\n\n{ASKS}{instruction}", blocks.join("\n"));
-    let cfg = crate::models::config(ed);
+    let (row, cfg) = (llm::session_row(ed), crate::models::config(ed));
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
     // (tarae's MCP server first, then the one message — written off the main loop: a selection can be 200 KB, and a
@@ -190,7 +190,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
             let route = move |ev| -> Option<crate::event::Apply> {
                 Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
             };
-            let started = agent::start(&agent_start(&cfg), at, first, true, ed.events.sender(), route)
+            let started = agent::start(&agent_start(row, &cfg), at, first, true, ed.events.sender(), route)
                 .map_err(|e| e.said(&cfg.command, false))?;
             (started.agent, Some(started.pid))
         }

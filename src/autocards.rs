@@ -91,6 +91,10 @@ pub struct Prepared {
     /// The card's session: it pays.
     billed: SessionId,
     billing: crate::billing::Billing,
+    /// The row its reviewer starts on (step 4's L2): its sessions' own — `chat`'s and `billed`'s (a proposal's two),
+    /// the stricter where one can't review, so no words of a session that can't go to the reviewer's agent; never the
+    /// row of whichever session is in front as it lands.
+    row: &'static crate::agent::Row,
 }
 
 /// A review's verdict, as the record keeps it.
@@ -234,6 +238,12 @@ pub fn prepare(ed: &Editor, o: &Offer) -> Option<Prepared> {
     if input.action.is_empty() {
         return None;
     }
+    // (the asker's row, and the card's session's: the one that can't review where either can't)
+    let (asker, here) = (llm::workspace_row(ed, whose), llm::workspace_row(ed, &ed.workspace));
+    let row = match crate::agent::can_be(asker, ROLE) {
+        Ok(_) => here,
+        Err(_) => asker,
+    };
     Some(Prepared {
         input,
         chat: whose.claude.id,
@@ -241,35 +251,41 @@ pub fn prepare(ed: &Editor, o: &Offer) -> Option<Prepared> {
         sent: c.map_or(0, sent),
         billed: ed.workspace.claude.id,
         billing: ed.workspace.claude.billing,
+        row,
     })
 }
 
-/// The reviewer's start on `cfg`, `policy` its system prompt (`POLICY`'s text): its flags its wire's —
-/// `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `claude::pump`, the model said by
-/// its config (`agent::command` adds it).
-fn start<'a>(cfg: &'a llm::LlmConfig, policy: &'a str) -> crate::agent::Start<'a> {
-    crate::agent::Start { system: Some(policy), ..crate::agent::Start::new(ROLE, cfg) }
+/// The reviewer's start on `row` (the session's) and `cfg`, `policy` its system prompt (`POLICY`'s text): its flags its
+/// wire's — `cardreview::args`' (no tools, no MCP, no settings, one turn), its stream read by `claude::pump`, the model
+/// said by its config (`agent::command` adds it).
+fn start<'a>(
+    row: &'static crate::agent::Row,
+    cfg: &'a llm::LlmConfig,
+    policy: &'a str,
+) -> crate::agent::Start<'a> {
+    crate::agent::Start { system: Some(policy), ..crate::agent::Start::on(row, ROLE, cfg) }
 }
 
 /// Tests: the reviewer's flags, as `start` gives them.
 #[cfg(test)]
 pub fn args() -> Vec<String> {
     let cfg = llm::LlmConfig::default();
-    crate::agent::args(&start(&cfg, &POLICY.text())).expect("its flags").args
+    crate::agent::args(&start(&crate::agent::CLAUDE, &cfg, &POLICY.text())).expect("its flags").args
 }
 
 static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Card `card` landed (inserted, parked, or merged into the one up, its `rev` bumped — `push_offer`): its review
 /// starts, beside it — never delaying it, changing its rank or anything drawn. An older rev's run is dropped, its cost
-/// kept. Off while the config's agent can't review a card (`agent::row_for`): no review, nothing kept, every card asks —
+/// kept. Off while the session's agent can't review a card (`agent::can_be`): no review, nothing kept, every card asks —
 /// said once.
 pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
     sweep(ed);
     let Some(p) = p else { return };
-    if crate::agent::row_for(&ed.config.llm, ROLE).is_err() {
+    let row = p.row;
+    if crate::agent::can_be(row, ROLE).is_err() {
         if !std::mem::replace(&mut ed.auto_cards_off_said, true) {
-            let name = crate::agent::row_of(&ed.config.llm).name;
+            let name = row.name;
             ed.set_warning(format!("not yet with {name} — auto cards are off, every card asks"));
         }
         return;
@@ -303,7 +319,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
         entry: None,
         late: false,
     };
-    let cred = match (revs > REVS_MAX, llm::held_for(ed, ROLE)) {
+    let cred = match (revs > REVS_MAX, llm::held_on(ed, row, ROLE)) {
         (true, _) => Err("merges"),
         (_, Some(_)) if llm::config_held(ed).is_some() => Err("config unread"),
         (_, Some(_)) => Err("held"),
@@ -342,7 +358,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
                         Some(Box::new(move |ed: &mut Editor| on_event(ed, card, run, ev)))
                     };
                     // (its handle dropped once sent: its stdin closes after the message)
-                    let started = agent::start(&start(&cfg, &policy), at, first, true, tx, route)
+                    let started = agent::start(&start(row, &cfg, &policy), at, first, true, tx, route)
                         .map_err(|e| e.said(&cfg.command, false))?;
                     Ok((started.pid, folder))
                 })();

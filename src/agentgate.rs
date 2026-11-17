@@ -195,7 +195,7 @@ fn servers_named_as_taraes(name: &str, folder: &Path, config: &Path, ours: &[&Pa
     use std::io::Read;
     let Ok(entries) = std::fs::read_dir(config) else { return Ok(()) };
     let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-    paths.sort();
+    crate::sorting::sort(&mut paths);
     for path in paths.iter().filter(|p| !ours.contains(&p.as_path())) {
         let rel = path.strip_prefix(folder).unwrap_or(path).display().to_string();
         let json = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
@@ -263,13 +263,16 @@ pub fn taraes_server(v: &Value) -> Option<String> {
     }
 }
 
-/// tarae's own path as the hook asks it (`hook::ENV`). A test build's: a program in its state folder that re-runs
-/// the test binary on `hook::child`, answering on descriptor 3 as the stand-in and the bridge's relay do.
+/// tarae's own path as the hook asks it (`hook::ENV`): the binary as it was started (`restart::exe` — once a build
+/// replaces it, Linux names the running one "… (deleted)", which no hook could run). A test build's: a program in its
+/// state folder that re-runs the test binary on `hook::child`, answering on descriptor 3 as the stand-in and the
+/// bridge's relay do.
 fn program(state: &Path) -> std::io::Result<PathBuf> {
-    let exe = std::env::current_exe()?;
     if !cfg!(test) {
-        return Ok(exe);
+        let unknown = || std::io::Error::new(std::io::ErrorKind::NotFound, "can't tell where this tarae is");
+        return crate::restart::exe().ok_or_else(unknown);
     }
+    let exe = std::env::current_exe()?;
     let path = state.join("agent-hook-test");
     let exe = crate::packs::sh_quote(&exe.to_string_lossy());
     let text = format!(
@@ -299,11 +302,14 @@ pub struct Gate {
     /// Its agent stopped by the watch, its end not landed yet (`changed_now`): what's sent meanwhile waits.
     stopping: Option<Stopping>,
     /// A simulation's starts: staged handles in place of processes (`sim/acp.rs`); None: real ones.
+    #[cfg(test)]
     pub(crate) stage: Option<Stage>,
 }
 
 /// A running agent's watch: what it compares, and its thread's waker (None: a staged start's, no thread).
 struct Watching {
+    /// (a staged start's scenario looks again with it — `look_again`)
+    #[cfg_attr(not(test), allow(dead_code))]
     watched: Watched,
     waker: Option<crate::fswatch::Waker>,
 }
@@ -317,6 +323,7 @@ struct Stopping {
 }
 
 /// A simulation's starts (`chat::ensure_proc`): each takes the next handle, counted, its process's generation kept.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Stage {
     pub agents: std::collections::VecDeque<crate::agent::Agent>,
@@ -336,6 +343,7 @@ impl Default for Gate {
             asked: None,
             watch: None,
             stopping: None,
+            #[cfg(test)]
             stage: None,
         }
     }
@@ -366,7 +374,7 @@ impl Gate {
 /// The chat's agent may start (`chat::ensure_proc`): its folder made and the project's files it holds trusted — None
 /// while that's done on a worker (it starts once it is, `made_now`) or their card waits.
 pub fn ready(ed: &mut Editor) -> Option<Prepared> {
-    let state = crate::agent::acp::state(ed.claude_env.as_ref());
+    let state = crate::agent::state_of(ed.claude_env.as_ref());
     let (root, store) = (ed.workspace.root.clone(), ed.trust_path.clone());
     let c = ed.workspace.claude.chat.as_mut()?;
     if let Some(p) = c.agent_gate.prepared.take() {
@@ -560,7 +568,11 @@ pub(crate) fn running(ed: &mut Editor, prepared: &Prepared) {
     let Some(ours) = row.own_tools.and_then(|r| ours(&r, &folder).ok()) else { return };
     let hash = c.agent_gate.files.as_ref().map(|s| s.hash);
     let w = Watched { row, root, folder, ours: ours.into(), hash, generation: c.generation() };
-    let waker = c.agent_gate.stage.is_none().then(crate::fswatch::Waker::new);
+    #[cfg(test)]
+    let staged = c.agent_gate.stage.is_some();
+    #[cfg(not(test))]
+    let staged = false;
+    let waker = (!staged).then(crate::fswatch::Waker::new);
     let old = c.agent_gate.watch.replace(Watching { watched: w.clone(), waker: waker.clone() });
     if let Some(old) = old.and_then(|o| o.waker) {
         old.wake();
@@ -586,6 +598,7 @@ pub(crate) fn running(ed: &mut Editor, prepared: &Prepared) {
 
 /// The watch's round as a job, for a staged start's scenario (`sim/acp.rs`): what it finds applied as the thread's
 /// is. Whether a watch was there to look.
+#[cfg(test)]
 pub(crate) fn look_again(ed: &mut Editor) -> bool {
     let c = ed.workspace.claude.chat.as_ref();
     let Some(w) = c.and_then(|c| c.agent_gate.watch.as_ref()).map(|w| w.watched.clone()) else {
@@ -612,24 +625,22 @@ fn changed_now(ed: &mut Editor, generation: u64, change: Change) {
     let Some(c) = chat.filter(|c| ours(c)) else { return };
     let name = c.agent.name;
     let ended = "stopped: it and everything it started ended";
-    let (said, toast, again) = match change {
+    let (said, ours, again) = match change {
         Change::Ours(rel) => (
             format!(
                 "{name}'s {rel} changed while it ran — {ended}. tarae writes it again at its next start."
             ),
-            format!("{name} stopped — its {rel} changed"),
+            Some(rel),
             false,
         ),
         Change::Held(Ok(_)) => (
             format!("{name}'s files in this project changed while it ran — {ended}. Their card asks again."),
-            format!("{name} stopped — its files in this project changed"),
+            None,
             true,
         ),
-        Change::Held(Err(why)) => (
-            format!("{name}'s files in this project changed while it ran — {ended}. {why}"),
-            format!("{name} stopped — its files in this project changed"),
-            false,
-        ),
+        Change::Held(Err(why)) => {
+            (format!("{name}'s files in this project changed while it ran — {ended}. {why}"), None, false)
+        }
     };
     log.line("agent", "warn", &said);
     let since = crate::clock::now();
@@ -637,7 +648,10 @@ fn changed_now(ed: &mut Editor, generation: u64, change: Change) {
     if !c.agent().is_some_and(|a| a.stop_with(said)) {
         c.stop_process();
     }
-    ed.set_error(toast);
+    match ours {
+        Some(rel) => ed.set_error(format!("{name} stopped — its {rel} changed")),
+        None => ed.set_error(format!("{name} stopped — its files in this project changed")),
+    }
 }
 
 /// The chat's agent ended (`chat`'s `Exit`): its watch with it. Stopped by the watch: its words said once in the

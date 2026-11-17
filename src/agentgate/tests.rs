@@ -68,7 +68,7 @@ fn a_folder_not_yours_alone_isnt_started_in() {
     let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
     ed.claude_env = Some(crate::llm::Env::from([("XDG_STATE_HOME".into(), state.to_string_lossy().into())]));
     let mut c = crate::chat::Chat::new();
-    c.agent = &STAND_IN;
+    (c.agent, c.agent_fixed) = (&STAND_IN, true);
     ed.workspace.claude.chat = Some(c);
     crate::chat::gate_opened(&mut ed);
     assert!(ed.workspace.claude.chat.as_ref().unwrap().starting(), "it waits for its folder");
@@ -112,7 +112,7 @@ fn running_editor(dir: &crate::scratch::Scratch, root: &Path) -> Editor {
     ]));
     ed.trust_path = Some(dir.join("trust.json"));
     let mut c = crate::chat::Chat::new();
-    c.agent = &STAND_IN;
+    (c.agent, c.agent_fixed) = (&STAND_IN, true);
     ed.workspace.claude.chat = Some(c);
     ed
 }

@@ -865,16 +865,21 @@ pub fn remember_exe() {
     EXE.get_or_init(|| std::env::current_exe().ok());
 }
 
+/// The binary as it was started (`EXE`), its path as it is on disk — a replaced one's " (deleted)" taken off: what a
+/// restart runs, and what an agent's hook and tools relay run (`agentgate::program`, `bridge::server`). None: unknown.
+pub fn exe() -> Option<PathBuf> {
+    let exe = EXE.get_or_init(|| std::env::current_exe().ok()).clone();
+    exe.map(|p| match p.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(s) => PathBuf::from(s),
+        None => p,
+    })
+}
+
 /// `editor.restart-binary`: "" = the one running, `~/…` from home, relative from the project root.
 fn resolve(binary: &str, root: &Path) -> Result<PathBuf, String> {
     let b = binary.trim();
     if b.is_empty() {
-        let exe = EXE.get_or_init(|| std::env::current_exe().ok()).clone();
-        let exe = exe.map(|p| match p.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
-            Some(s) => PathBuf::from(s),
-            None => p,
-        });
-        return exe.ok_or_else(|| "can't tell where this tarae is — set editor.restart-binary".into());
+        return exe().ok_or_else(|| "can't tell where this tarae is — set editor.restart-binary".into());
     }
     let p = match (b.strip_prefix("~/"), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest),

@@ -38,21 +38,18 @@ fn shadow(dir: &Scratch) -> (Editor, Receiver<String>) {
 
 /// Claude's `also` card for a read of `~/.cargo` (kind `grant`), up.
 fn card(ed: &mut Editor) -> u64 {
+    let o = also(ed);
+    ed.push_offer(o);
+    ed.offers.iter().map(|o| o.id).max().expect("its card")
+}
+
+/// The `also` card `card` raises, not pushed.
+fn also(ed: &Editor) -> crate::offer::Offer {
     let root = ed.workspace.root.clone();
     let cmd = "cargo test".to_string();
     let run = crate::blocked::BlockedRun::of(crate::tools::Job::Command(cmd.clone(), root));
     let grant = crate::allow::Grant::Read(PathBuf::from("/Users/u/.cargo"));
-    let o = crate::blocked::also_card(
-        grant,
-        "MARKER-REASON",
-        (&cmd, None),
-        Box::new(run),
-        None,
-        Vec::new(),
-        false,
-    );
-    ed.push_offer(o);
-    ed.offers.iter().map(|o| o.id).max().expect("its card")
+    crate::blocked::also_card(grant, "MARKER-REASON", (&cmd, None), Box::new(run), None, Vec::new(), false)
 }
 
 fn run_of(ed: &Editor, card: u64) -> u64 {
@@ -361,7 +358,7 @@ fn off_reviews_nothing_and_turning_it_off_writes_whats_held() {
 fn auto_cards_are_off_said_once_on_an_agent_that_cant_review() {
     let dir = Scratch::new("autocards-held");
     let (mut ed, told) = shadow(&dir);
-    ed.config.llm.row = Some(&crate::agent::STAND_IN);
+    ed.config.llm.agent = &crate::agent::STAND_IN;
     let said = "not yet with stand-in — auto cards are off, every card asks";
     let warned = |ed: &Editor| ed.toasts.iter().filter(|t| t.text == said).count();
     let id = card(&mut ed);
@@ -376,6 +373,79 @@ fn auto_cards_are_off_said_once_on_an_agent_that_cant_review() {
     assert_eq!(warned(&ed), 0, "said once");
     ed.offer_dismiss();
     assert!(record(&dir).iter().all(|e| e["reviewer"].is_null()), "no verdict kept: {:?}", record(&dir));
+}
+
+/// The shadow week with two sessions: the one in front on `front`, one behind on `behind` (each started: its row
+/// fixed, `Chat.agent_fixed`), the behind one's workspace id.
+fn two_sessions(
+    dir: &Scratch,
+    front: &'static crate::agent::Row,
+    behind: &'static crate::agent::Row,
+) -> (Editor, Receiver<String>, crate::event::WorkspaceId) {
+    let (mut ed, told) = shadow(dir);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    (c.agent, c.agent_fixed) = (front, true);
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("behind");
+    std::fs::create_dir(&root).unwrap();
+    let id = ed.workspace_add(root);
+    ed.with_workspace(id, |ed| {
+        let mut c = Chat::new();
+        (c.agent, c.agent_fixed) = (behind, true);
+        c.msgs.push(typed(Role::User, "read the cargo config"));
+        ed.workspace.claude.chat = Some(c);
+    });
+    (ed, told, id)
+}
+
+/// Session `id` behind raises Claude's card as it does: from its own event (`Event::For`, its results tagged with it),
+/// swapped in to apply it.
+fn raised_behind(ed: &mut Editor, id: crate::event::WorkspaceId) {
+    let raise: crate::event::Apply = Box::new(|ed: &mut Editor| {
+        let o = also(ed);
+        ed.push_offer(o);
+    });
+    ed.handle_event(crate::event::Event::For(id, ed.claude_of(id), raise));
+}
+
+/// Step 4's L2, one way: an agy session (the stand-in's row) behind a Claude one raises a card that auto cards would
+/// review — no reviewer starts for it, the front's Claude row lending nothing; nor for a card the agy session proposes
+/// while the Claude one is in place (its words are the agy session's).
+#[test]
+fn an_agy_session_behind_a_claude_one_starts_no_reviewer() {
+    use crate::agent::{CLAUDE, STAND_IN};
+    let dir = Scratch::new("autocards-agy-behind");
+    let (mut ed, told, id) = two_sessions(&dir, &CLAUDE, &STAND_IN);
+    raised_behind(&mut ed, id);
+    assert!(ed.workspaces.iter().any(|w| !w.parked.is_empty()), "its card waits behind");
+    assert_eq!(told.try_iter().count(), 0, "no reviewer started");
+    assert!(ed.auto_cards.is_empty());
+    // (a card it proposes, raised with the Claude session in place)
+    let mut o = also(&ed);
+    o.proposed = Some(crate::orchestra::Proposal {
+        act: crate::orchestra::Act::Board,
+        parent: ed.claude_of(id),
+        workspace: id,
+        by: "behind".into(),
+        child: "main".into(),
+        why: String::new(),
+        conversation: None,
+    });
+    ed.push_offer(o);
+    assert_eq!(told.try_iter().count(), 0, "none for its proposal either");
+    assert!(ed.auto_cards.is_empty());
+}
+
+/// Step 4's L2, the other way: a Claude session behind an agy one (the stand-in's row) raises the same card — its
+/// reviewer starts, once, the front's row holding nothing of it.
+#[test]
+fn a_claude_session_behind_an_agy_one_starts_its_reviewer() {
+    use crate::agent::{CLAUDE, STAND_IN};
+    let dir = Scratch::new("autocards-claude-behind");
+    let (mut ed, told, id) = two_sessions(&dir, &STAND_IN, &CLAUDE);
+    raised_behind(&mut ed, id);
+    assert_eq!(told.try_iter().count(), 1, "its reviewer started once");
+    assert_eq!(ed.auto_cards.len(), 1);
+    assert!(ed.toasts.iter().all(|t| !t.text.contains("auto cards are off")), "nothing held");
 }
 
 /// Keys: Claude's read outside the project comes up as its card in the chat, its review started beside it — its cost

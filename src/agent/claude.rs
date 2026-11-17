@@ -73,7 +73,7 @@ pub fn spawn(
     given: Option<&Env>,
     cred: &Credential,
 ) -> Result<(Spawned, PipeWriter), SpawnError> {
-    let s = crate::agent::Start::new(crate::agent::Role::Draft, cfg);
+    let s = crate::agent::Start::on(&crate::agent::CLAUDE, crate::agent::Role::Draft, cfg);
     let cmd = command(&s, &cfg.args, extra, dir, given, cred)?;
     crate::spawn::setsid_fed(&cmd).map_err(SpawnError::Start)
 }
@@ -678,7 +678,6 @@ pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<Event> {
                 models,
                 ms: ev["duration_ms"].as_u64(),
                 at_ms,
-                #[cfg(test)]
                 thought: None,
             }))
         }
@@ -1226,7 +1225,7 @@ echo closed > "$1/eof""#;
     fn every_claude_starts_as_its_own_program() {
         let dir = std::env::temp_dir();
         let cfg = LlmConfig { command: "tarae-stand-in-claude".into(), ..Default::default() };
-        let s = crate::agent::Start::new(crate::agent::Role::Draft, &cfg);
+        let s = crate::agent::Start::on(&crate::agent::CLAUDE, crate::agent::Role::Draft, &cfg);
         let cmd = command(&s, &cfg.args, &[], &dir, None, &Credential::Subscription).unwrap();
         assert_eq!(cmd.get_program(), "tarae-stand-in-claude");
         let args: Vec<_> = cmd.get_args().collect();

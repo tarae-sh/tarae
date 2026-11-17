@@ -27,6 +27,8 @@ pub const RISKY: &[&str] = &[
     "editor.restart-binary",
     "llm.command",
     "llm.args",
+    // (which agent starts, as you: another program with its own sign-in and its own files read)
+    "llm.agent",
     "llm.run-allow",
     // (what Docker's card's `a` lets vary: a project's could free `--image`, any image run with the socket)
     "llm.docker-inert",
@@ -271,32 +273,24 @@ pub enum Kind {
     /// A repository's code its language servers run (`codetrust.rs`, G13).
     Code,
     /// A project's files an agent loads that run as you, its row's held paths (`agenttrust.rs`, guard 4).
-    #[cfg(test)]
     Agent,
 }
 
 impl Kind {
-    const WORDS: [(Kind, &str); 5] = [
+    const WORDS: [(Kind, &str); 6] = [
         (Kind::Tarae, "tarae"),
         (Kind::Claude, "claude"),
         (Kind::Git, "git"),
         (Kind::Hook, "hook"),
         (Kind::Code, "code"),
+        (Kind::Agent, "agent"),
     ];
 
     fn word(self) -> &'static str {
-        #[cfg(test)]
-        if self == Kind::Agent {
-            return "agent";
-        }
         Kind::WORDS.iter().find(|(k, _)| *k == self).map_or("", |(_, w)| w)
     }
 
     fn of_word(w: &str) -> Option<Kind> {
-        #[cfg(test)]
-        if w == "agent" {
-            return Some(Kind::Agent);
-        }
         Kind::WORDS.iter().find(|(_, x)| *x == w).map(|(k, _)| *k)
     }
 }
@@ -390,7 +384,6 @@ fn carried_rel(kind: Kind, file: &Path) -> Option<(PathBuf, PathBuf)> {
         Kind::Claude if dir.file_name() == Some(".claude".as_ref()) => {
             Some((dir.parent()?.to_path_buf(), Path::new(".claude").join(name)))
         }
-        #[cfg(test)]
         Kind::Agent => crate::agent::held_paths().find_map(|h| {
             let rel = Path::new(h.trim_end_matches('/'));
             let up = rel.components().count();

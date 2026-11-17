@@ -1,9 +1,7 @@
-/// The Agent Client Protocol's wire (step 2): test-only until step 4 makes it reachable (the design session's §9.4).
-#[cfg(test)]
+/// The Agent Client Protocol's wire (step 2; reachable since step 4's L2: `llm.agent`).
 pub mod acp;
 pub mod claude;
-/// `tarae agent-hook`: guard 1's hook, under the gate with the ACP wire.
-#[cfg(test)]
+/// `tarae agent-hook`: guard 1's hook.
 pub mod hook;
 mod process;
 
@@ -14,7 +12,6 @@ mod argv_tests;
 /// wire asks this handle, and none of it names the kind.
 pub enum Agent {
     Claude(claude::Lines),
-    #[cfg(test)]
     Acp(acp::Proc),
 }
 
@@ -30,7 +27,6 @@ impl Agent {
     pub fn initialize(&self) -> std::io::Result<()> {
         match self {
             Agent::Claude(l) => l.initialize(),
-            #[cfg(test)]
             Agent::Acp(_) => Ok(()),
         }
     }
@@ -39,7 +35,6 @@ impl Agent {
     pub fn prompt(&self, p: Prompt) -> std::io::Result<()> {
         match self {
             Agent::Claude(l) => l.prompt(p),
-            #[cfg(test)]
             Agent::Acp(a) => a.prompt(p),
         }
     }
@@ -48,7 +43,6 @@ impl Agent {
     pub fn stop_turn(&self) -> bool {
         match self {
             Agent::Claude(l) => l.stop_turn(),
-            #[cfg(test)]
             Agent::Acp(a) => a.stop_turn(),
         }
     }
@@ -57,7 +51,6 @@ impl Agent {
     pub fn answer_mcp(&self, id: &str, response: serde_json::Value) {
         match self {
             Agent::Claude(l) => l.answer_mcp(id, response),
-            #[cfg(test)]
             Agent::Acp(a) => a.answer_mcp(id, response),
         }
     }
@@ -66,7 +59,6 @@ impl Agent {
     pub fn answer_permission(&self, id: &str, p: Permission) {
         match self {
             Agent::Claude(l) => l.answer_permission(id, p),
-            #[cfg(test)]
             Agent::Acp(a) => a.answer_permission(id, p),
         }
     }
@@ -74,7 +66,6 @@ impl Agent {
     /// Stopped by tarae with `said` (an agent's watch, `agentgate`), as the tripwire stops one: its group ended at once,
     /// its turn ended with those words, nothing it says after read, its end an `Exited` saying them. False: its wire
     /// can't (Claude's) or it's gone already — the caller ends its process.
-    #[cfg(test)]
     pub fn stop_with(&self, said: String) -> bool {
         match self {
             Agent::Claude(_) => false,
@@ -87,7 +78,6 @@ impl Agent {
     pub fn set_model(&self, model: &str) -> bool {
         match self {
             Agent::Claude(l) => l.set_model(model),
-            #[cfg(test)]
             Agent::Acp(_) => false,
         }
     }
@@ -96,7 +86,6 @@ impl Agent {
     pub fn set_effort(&self, effort: Option<&str>) -> bool {
         match self {
             Agent::Claude(l) => l.set_effort(effort),
-            #[cfg(test)]
             Agent::Acp(_) => false,
         }
     }
@@ -106,7 +95,6 @@ impl Agent {
     pub fn ask_limits(&self) -> bool {
         match self {
             Agent::Claude(l) => l.ask_limits(),
-            #[cfg(test)]
             Agent::Acp(_) => false,
         }
     }
@@ -115,7 +103,6 @@ impl Agent {
     pub fn caps(&self) -> &'static Caps {
         match self {
             Agent::Claude(_) => &CLAUDE.caps,
-            #[cfg(test)]
             Agent::Acp(_) => &acp::CAPS,
         }
     }
@@ -188,27 +175,29 @@ pub struct Row {
     /// How its own tools go off (guard 1). None: it has none of its own to turn off (Claude: `--tools ""`), or it
     /// can't — and then an ACP row's `caps.own_tools_off` is false (`every_acp_row_keeps_the_floor`), and `llm::held_for`
     /// refuses to start it.
-    #[cfg(test)]
     pub own_tools: Option<Recipe>,
     /// The session mode tarae keeps it in (guard 2): set at the start where its session says another, and set back if
     /// it moves (`acp::Wire`'s mode). None: it has no modes.
-    #[cfg(test)]
     pub mode: Option<&'static str>,
     /// What a project can make it load that runs as you, in every folder from the project's root up to its git top
     /// (guard 4, `agenttrust.rs`): held until you trust it on a card, the agent not started before. A path ending in `/` is a folder: every file under it.
-    #[cfg(test)]
     pub held: &'static [&'static str],
+    /// The version of it tarae's guards were measured on: another one it says at `initialize` is said once a version,
+    /// never refused (`version_said`). None: nothing to compare (Claude's own update says its version).
+    pub measured: Option<&'static str>,
 }
 
 /// Every row's held paths (`Row.held`): what a folder's answer of `trust::Kind::Agent` is about (`trust::carried_rel`).
-#[cfg(test)]
 pub fn held_paths() -> impl Iterator<Item = &'static str> {
-    ROWS.iter().copied().chain([&STAND_IN]).flat_map(|r| r.held.iter().copied())
+    #[cfg(test)]
+    let rows = ROWS.iter().copied().chain([&STAND_IN]);
+    #[cfg(not(test))]
+    let rows = ROWS.iter().copied();
+    rows.flat_map(|r| r.held.iter().copied())
 }
 
 /// A config folder of tarae's own (`$state/agent-homes/<row>/<key>/`, one a project, `agentgate.rs`), and the files tarae writes there
 /// before every start: the agent's own tools turned off by tarae's hook (guard 1).
-#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub struct Recipe {
     /// The argument that names the folder, its absolute path after it, after the row's `args`: `--gemini-dir`.
@@ -220,7 +209,6 @@ pub struct Recipe {
 }
 
 /// A hook's file and speech, by the agent family that reads it.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub enum Hook {
     /// agy 1.5.4 and 1.5.7, as the design session's probe saw them take it: one `PreToolUse` group, `matcher` `*`,
@@ -231,8 +219,9 @@ pub enum Hook {
 }
 
 /// agy's recipe (the design session's probe, Q1): `--gemini-dir <folder>`, its `config/hooks.json`. The stand-in
-/// plays agy's part, so it takes it too.
-#[cfg(test)]
+/// plays agy's part, so it takes it too. Its hook's timeout, 10 s: probe 2 (run A) measured agy enforcing it in seconds,
+/// the hook killed and its call failed closed — a long one costs nothing in safety, a short one would fail tarae's own
+/// tools on a loaded machine.
 pub const AGY_TOOLS_OFF: Recipe =
     Recipe { folder_arg: "--gemini-dir", hook_file: "config/hooks.json", hook: Hook::Agy { timeout: 10 } };
 
@@ -241,8 +230,7 @@ pub const AGY_TOOLS_OFF: Recipe =
 pub enum Wire {
     /// Claude Code's stream-json (`agent/claude.rs`).
     Claude,
-    /// The Agent Client Protocol (`agent/acp.rs`): test-only in step 2, no config reaches it.
-    #[cfg(test)]
+    /// The Agent Client Protocol (`agent/acp.rs`): `llm.agent`'s `agy`.
     Acp,
 }
 
@@ -253,13 +241,27 @@ pub static CLAUDE: Row = Row {
     command: "claude",
     args: claude::DEFAULT_ARGS,
     caps: claude::CAPS,
-    #[cfg(test)]
     own_tools: None,
-    #[cfg(test)]
     mode: None,
     // (its own gate is `claudetrust.rs`)
-    #[cfg(test)]
     held: &[],
+    measured: None,
+};
+
+/// agy's row (Google's Antigravity CLI, `agy acp` — the structure plan §1): its own tools off by tarae's hook (guard 1),
+/// kept in its `default` mode (guard 2), a project's `.agents/` held until trusted (guard 4 — `.gemini/` wasn't loaded
+/// in the three shapes probe 1 tried, #17). Its program is `agy` on PATH, its arguments its own: no setting reaches
+/// them (`acp::args`). Chosen by `llm.agent` for a session that has no row yet (`llm::session_row`).
+pub static AGY: Row = Row {
+    name: "agy",
+    wire: Wire::Acp,
+    command: "agy",
+    args: &["acp"],
+    caps: acp::CAPS,
+    own_tools: Some(AGY_TOOLS_OFF),
+    mode: Some("default"),
+    held: &[".agents/"],
+    measured: Some("1.5.9"),
 };
 
 /// The stand-in ACP agent's row (`acp::standin`): the test binary re-run on its one test, speaking ACP on
@@ -274,33 +276,46 @@ pub static STAND_IN: Row = Row {
     own_tools: Some(AGY_TOOLS_OFF),
     mode: Some("default"),
     held: &[".stand-in/"],
+    measured: None,
 };
 
-/// Every row tarae has: what a kept conversation's name is looked up in (`row_named`).
-static ROWS: &[&Row] = &[&CLAUDE];
+/// Every row tarae has: what a kept conversation's name is looked up in (`row_named`), and `llm.agent`'s choices.
+static ROWS: &[&Row] = &[&CLAUDE, &AGY];
 
-/// The row a start from `cfg` runs: Claude's, whatever `cfg` says — no setting names another (step 2); a test's
-/// config may (`LlmConfig.row`).
-pub fn row_of(_cfg: &crate::llm::LlmConfig) -> &'static Row {
-    #[cfg(test)]
-    if let Some(row) = _cfg.row {
-        return row;
-    }
-    &CLAUDE
+/// `llm.agent`'s choices: each row's name, in `ROWS`' order (`every_row_is_a_choice`).
+pub const NAMES: &[&str] = &["claude", "agy"];
+
+/// The config's row (`llm.agent`): what a session that has no row yet starts on — read by `llm::session_row` and where
+/// a session's row is picked, never by a start itself (`every_start_takes_the_sessions_row`).
+pub fn row_of(cfg: &crate::llm::LlmConfig) -> &'static Row {
+    cfg.agent
 }
 
-/// The row `role`'s start from `cfg` runs: the config's (`row_of`) where it can be that role (`Caps::roles` — the
-/// chat's, always), else why not, in the words said where it would start (step 4, C.2: the helpers wait for the
-/// second round).
-pub fn row_for(cfg: &crate::llm::LlmConfig, role: Role) -> Result<&'static Row, String> {
-    let row = row_of(cfg);
+/// The version an agent of `row` said at `initialize` (`version`; None: unsaid), as said once a version where it
+/// isn't the one its guards were measured on (`Row.measured`) — never refused. The version is the agent's text: cut
+/// and made plain as a tool's name is (`acp::shown`). None: nothing to say.
+pub fn version_said(row: &Row, version: Option<&str>) -> Option<String> {
+    let measured = row.measured?;
+    match version {
+        Some(v) if v == measured => None,
+        Some(v) => {
+            Some(format!("{} {}: tarae's guards were measured on {measured}", row.name, acp::shown(v)))
+        }
+        None => Some(format!("{}, its version unsaid: tarae's guards were measured on {measured}", row.name)),
+    }
+}
+
+/// `row` where it can be `role` (`Caps::roles` — the chat's, always), else why not, in the words said where it would
+/// start (step 4, C.2: the helpers wait for the second round).
+pub fn can_be(row: &'static Row, role: Role) -> Result<&'static Row, String> {
     match row.caps.roles.contains(&role.kind()) {
         true => Ok(row),
         false => Err(not_for(row, role)),
     }
 }
 
-/// Why `row` doesn't start as `role`: none of its roles.
+/// Why `row` doesn't start as `role`: none of its roles. (A debt against the user's 2026-11-13 decision — an agy
+/// session's other roles are to be its own agent's — carried in the plan: honest until then.)
 fn not_for(row: &Row, role: Role) -> String {
     format!("not yet with {} — {} runs on Claude's sessions only", row.name, role.said())
 }
@@ -400,19 +415,14 @@ pub struct Start<'a> {
     pub claude: ClaudeStart<'a>,
     /// Its folder made and its hook written (`agentgate::prepare`), where its row turns its own tools off: none, and
     /// such a row isn't started (`acp::command`).
-    #[cfg(test)]
     pub prepared: Option<&'a crate::agentgate::Prepared>,
 }
 
 impl<'a> Start<'a> {
-    /// `role`'s start on `cfg`, on its row (`row_of`): no words of tarae's, no conversation continued, no thinking
-    /// text, no settings. Its start asks `llm::held_for` first (`every_start_passes_through_held_for`), which holds a
-    /// role the row can't be (`row_for`); `start` refuses one all the same.
-    pub fn new(role: Role, cfg: &'a crate::llm::LlmConfig) -> Start<'a> {
-        Start::on(row_of(cfg), role, cfg)
-    }
-
-    /// `new` on `row` (a chat's: its conversation's).
+    /// `role`'s start on `row` — the session's (`llm::session_row`, `every_start_takes_the_sessions_row`) — and `cfg`:
+    /// no words of tarae's, no conversation continued, no thinking text, no settings. Its start asks `llm::held_for`
+    /// first (`every_start_passes_through_held_for`), which holds a role the row can't be (`can_be`); `start` refuses
+    /// one all the same.
     pub fn on(row: &'static Row, role: Role, cfg: &'a crate::llm::LlmConfig) -> Start<'a> {
         Start {
             row,
@@ -430,7 +440,6 @@ impl<'a> Start<'a> {
                 keep_env_key: cfg.keep_env_key,
                 settings: None,
             },
-            #[cfg(test)]
             prepared: None,
         }
     }
@@ -449,7 +458,6 @@ pub struct Again {
 pub fn again(row: &Row, err: &str, now: Option<Again>) -> Option<Again> {
     match row.wire {
         Wire::Claude => claude::again(err, now.unwrap_or_default()),
-        #[cfg(test)]
         Wire::Acp => None,
     }
 }
@@ -483,7 +491,6 @@ pub struct Args {
 pub fn args(s: &Start) -> Result<Args, String> {
     match s.row.wire {
         Wire::Claude => claude::flags::of(s),
-        #[cfg(test)]
         Wire::Acp => Ok(acp::args(s)),
     }
 }
@@ -498,7 +505,6 @@ pub fn command(
 ) -> Result<std::process::Command, SpawnError> {
     match s.row.wire {
         Wire::Claude => claude::flags::command(s, dir, given, cred),
-        #[cfg(test)]
         Wire::Acp => acp::command(s, dir, given),
     }
 }
@@ -560,14 +566,27 @@ pub fn start(
             let started = spawn(s, at.dir, at.given, at.cred)?;
             claude::begin(started, first, once, s.resume.is_some(), tx, route)
         }
-        #[cfg(test)]
         Wire::Acp => acp::begin(acp::spawn(s, at.dir, at.given)?, s, &at, first, once, tx, route),
     }
 }
 
-/// `tarae agent-tools <socket>`: the bridge's relay an ACP agent starts as tarae's MCP server (`acp::bridge`) —
-/// under the gate with the rest of the wire until step 4.
-#[cfg(test)]
+/// The tools a `tools/list` answer offers, by name: what an ACP agent's ask may be allowed for (`acp::offered`).
+pub fn tools_offered(answer: &serde_json::Value) -> Vec<String> {
+    acp::offered(answer)
+}
+
+/// Guard 2's ask rule: an ACP agent's ask for `tool` allowed where it's one of tarae's that its bridge `offered`
+/// (`acp::allowed_ask`).
+pub fn ask_allowed(tool: &str, offered: &[String]) -> bool {
+    acp::allowed_ask(tool, offered)
+}
+
+/// Where an agent's own folder is made (`agentgate`) and its bridge binds: `$state` (`acp::state`).
+pub fn state_of(given: Option<&crate::llm::Env>) -> Option<std::path::PathBuf> {
+    acp::state(given)
+}
+
+/// `tarae agent-tools <socket>`: the bridge's relay an ACP agent starts as tarae's MCP server (`acp::bridge`).
 pub fn tools_relay(args: &[String]) -> anyhow::Result<()> {
     acp::bridge::cli(args)
 }
@@ -708,11 +727,9 @@ pub enum Ended {
     Gone,
     /// Guard 3, the tripwire: it ran `tool` itself — one of its own reported done, or one of tarae's that tarae never
     /// ran — and was stopped, its group ended (`acp::Wire::trip`). The chat holds its row until you quit.
-    #[cfg(test)]
     Tripped { tool: String },
 }
 
-#[cfg(test)]
 impl Exit {
     /// An end that says `said` (ACP's wire and tests: Claude's reads its kind from its words, `claude::exit`).
     pub fn exited(said: impl Into<String>) -> Exit {
@@ -917,42 +934,69 @@ mod tests {
         assert_eq!(reaching_in(&made_up), ["chat.rs", "ask.rs", "llm.rs", "term.rs", "reviewer.rs"]);
     }
 
-    /// Agents beside Claude, step 2 (L2): no config chooses an agent — no setting names one or a wire, and the row
-    /// of any config is Claude's, whatever its program and arguments say (completed by L3 once the second wire is
-    /// there: a config can't start it).
+    /// Agents beside Claude, step 4's L2: only `llm.agent` chooses a row — no other setting names an agent or a wire;
+    /// the default and any `llm.command`/`llm.args` stay Claude's (the real `agy acp` among them, and the stand-in's
+    /// own program); `llm.agent = "agy"` is agy's row, on its real arguments; a name that's no row's is said and stays
+    /// Claude's, the stand-in's among them; a project's `llm.agent` waits for trust.
     #[test]
-    fn no_config_chooses_another_row() {
-        use super::{CLAUDE, Role, STAND_IN, Start, Wire, row_named, row_of};
+    fn only_llm_agent_chooses_a_row() {
+        use super::{AGY, CLAUDE, NAMES, ROWS, STAND_IN, Wire, row_named, row_of};
         let words = ["agent", "wire", "acp", "backend", "row"];
         let naming: Vec<&str> = (crate::settings::SETTINGS.iter().map(|s| s.path))
             .filter(|p| p.split(['.', '-']).any(|w| words.contains(&w)))
             .collect();
-        assert!(naming.is_empty(), "a setting names an agent: {naming:?}");
+        assert_eq!(naming, ["llm.agent"], "only llm.agent names an agent");
         let default = crate::llm::LlmConfig::default();
         let other = |command: &str, args: &[&str]| crate::llm::LlmConfig {
             command: command.into(),
             args: args.iter().map(|a| a.to_string()).collect(),
             ..crate::llm::LlmConfig::default()
         };
-        // (L3: a config can't start the ACP wire — not one naming an ACP agent, nor the stand-in's own program and
-        // arguments, the one row on that wire there is to miss)
-        assert_eq!(STAND_IN.wire, Wire::Acp);
         for cfg in [
             default.clone(),
-            other("agy", &["--acp"]),
+            other("agy", &["acp"]),
             other("/usr/bin/gemini", &["--experimental-acp"]),
             other(STAND_IN.command, STAND_IN.args),
         ] {
             assert!(std::ptr::eq(row_of(&cfg), &CLAUDE), "{} {:?}", cfg.command, cfg.args);
             assert_eq!(row_of(&cfg).wire, Wire::Claude);
-            assert!(std::ptr::eq(Start::new(Role::Chat, &cfg).row, &CLAUDE));
         }
-        // (`llm.command` and `llm.args` default to the row's own; a row is found by its kept name alone, and a kept
-        // conversation never names the stand-in's)
+        // (`llm.agent`, as your config file says it)
+        let (agy, warnings) = crate::config::parse("[llm]\nagent = \"agy\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(std::ptr::eq(row_of(&agy.editor.llm), &AGY));
+        assert_eq!((AGY.wire, AGY.command, AGY.args), (Wire::Acp, "agy", &["acp"][..]));
+        for name in [STAND_IN.name, "acp", "gemini"] {
+            let (cfg, warnings) = crate::config::parse(&format!("[llm]\nagent = \"{name}\"\n"));
+            assert!(!warnings.is_empty(), "{name}: said");
+            assert!(std::ptr::eq(row_of(&cfg.editor.llm), &CLAUDE), "{name}");
+        }
+        assert!(crate::trust::RISKY.contains(&"llm.agent"), "a project's waits for trust");
+        // (its choices are the rows' names, a row found by its kept name alone — never the stand-in's)
+        assert_eq!(ROWS.iter().map(|r| r.name).collect::<Vec<_>>(), NAMES);
+        assert!(row_named("agy").is_some_and(|r| std::ptr::eq(r, &AGY)));
+        assert!(row_named("acp").is_none() && row_named("").is_none() && row_named(STAND_IN.name).is_none());
+        // (`llm.command` and `llm.args` default to Claude's row's own)
         assert_eq!((default.command.as_str(), default.args.len()), (CLAUDE.command, CLAUDE.args.len()));
-        assert!(row_named("claude").is_some_and(|r| std::ptr::eq(r, &CLAUDE)));
-        assert!(row_named("acp").is_none() && row_named("").is_none());
-        assert!(row_named(STAND_IN.name).is_none());
+    }
+
+    /// Step 4's L2: an agent's version other than the one its guards were measured on is said, in plain words cut as a
+    /// tool's name is; none given is said too; the measured one, and Claude's any, say nothing.
+    #[test]
+    fn an_agents_other_version_is_said_never_refused() {
+        use super::{AGY, CLAUDE, version_said};
+        assert_eq!(version_said(&AGY, Some("1.5.9")), None);
+        assert_eq!(
+            version_said(&AGY, Some("1.6.0")).as_deref(),
+            Some("agy 1.6.0: tarae's guards were measured on 1.5.9")
+        );
+        assert_eq!(
+            version_said(&AGY, None).as_deref(),
+            Some("agy, its version unsaid: tarae's guards were measured on 1.5.9")
+        );
+        let odd = version_said(&AGY, Some("2\u{1b}[31m\n")).unwrap();
+        assert!(odd.starts_with("agy 2?[31m?:"), "{odd}");
+        assert_eq!(version_said(&CLAUDE, Some("9.9.9")), None);
     }
 
     /// Agents beside Claude, condition 5: nothing above the wire matches on which agent it has — what one can do
@@ -1011,6 +1055,7 @@ mod tests {
             own_tools,
             mode: Some("default"),
             held: &[],
+            measured: None,
         };
         let asks = super::Caps { asks: true, ..super::acp::CAPS };
         assert_eq!(floor(&row(super::acp::CAPS, None)).len(), 1);
@@ -1041,18 +1086,16 @@ mod tests {
         assert_eq!(RoleKind::ALL.len(), ROLES.len(), "each kind once");
     }
 
-    /// Agents beside Claude, step 4, C.2: a role's start runs the config's row where the row can be that role, else
-    /// it's held in that role's words.
+    /// Agents beside Claude, step 4, C.2: a role's start runs its row where the row can be that role, else it's held
+    /// in that role's words.
     #[test]
-    fn a_role_runs_the_configs_row_only_where_it_can_be_it() {
-        use super::{CLAUDE, STAND_IN, row_for};
-        let claude = crate::llm::LlmConfig::default();
-        let stand_in = crate::llm::LlmConfig { row: Some(&STAND_IN), ..claude.clone() };
+    fn a_role_runs_its_row_only_where_it_can_be_it() {
+        use super::{CLAUDE, STAND_IN, can_be};
         for role in ROLES {
-            assert!(row_for(&claude, role).is_ok_and(|r| std::ptr::eq(r, &CLAUDE)), "{role:?}");
+            assert!(can_be(&CLAUDE, role).is_ok_and(|r| std::ptr::eq(r, &CLAUDE)), "{role:?}");
         }
-        assert!(row_for(&stand_in, super::Role::Chat).is_ok_and(|r| std::ptr::eq(r, &STAND_IN)));
-        let said: Vec<String> = ROLES[1..].iter().map(|&r| row_for(&stand_in, r).unwrap_err()).collect();
+        assert!(can_be(&STAND_IN, super::Role::Chat).is_ok_and(|r| std::ptr::eq(r, &STAND_IN)));
+        let said: Vec<String> = ROLES[1..].iter().map(|&r| can_be(&STAND_IN, r).unwrap_err()).collect();
         assert_eq!(
             said,
             [
@@ -1070,8 +1113,8 @@ mod tests {
     #[test]
     fn a_role_its_row_cant_be_never_reaches_its_wire() {
         use super::{First, Place, Role, STAND_IN, SpawnError, Start, start};
-        let cfg = crate::llm::LlmConfig { row: Some(&STAND_IN), ..Default::default() };
-        let s = Start::new(Role::Ask, &cfg);
+        let cfg = crate::llm::LlmConfig::default();
+        let s = Start::on(&STAND_IN, Role::Ask, &cfg);
         assert!(std::ptr::eq(s.row, &STAND_IN));
         let ed = crate::editor::Editor::new(crate::config::Config::default());
         let at = Place { dir: &std::env::temp_dir(), given: None, cred: None };
@@ -1095,15 +1138,16 @@ mod tests {
             own_tools: Some(super::AGY_TOOLS_OFF),
             mode: Some("default"),
             held: &[],
+            measured: None,
         };
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.config.llm.row = Some(&EVERY);
+        ed.config.llm.agent = &EVERY;
         let held = |ed: &crate::editor::Editor| ROLES.map(|r| crate::llm::held_for(ed, r));
         assert_eq!(held(&ed), ROLES.map(|_| None), "a row that can be every role, not tripped");
         ed.agents_tripped.push(EVERY.name);
         let why = "no every until you quit — it ran a tool of its own";
         assert_eq!(held(&ed), ROLES.map(|_| Some(why.to_string())));
-        ed.config.llm.row = None;
+        ed.config.llm.agent = &super::CLAUDE;
         assert_eq!(held(&ed), ROLES.map(|_| None), "Claude's starts aren't the tripped row's");
     }
 
@@ -1114,7 +1158,6 @@ mod tests {
     /// `Start` for the one function that starts it, which asks. None of them starts one. This list only shrinks: a
     /// builder folded into its start leaves it, none is added.
     const BUILDERS: &[(&str, &str)] = &[
-        ("agent.rs", "new"),
         ("ask.rs", "agent_start"),
         ("autocards.rs", "start"),
         ("llm.rs", "draft_start"),
@@ -1125,6 +1168,22 @@ mod tests {
     /// The functions of `code` (a file's, literals emptied) holding one of `STARTS` that don't ask `held_for` in their
     /// own body, by name (`(outside a fn)` for one outside any), each with whether it starts one (`agent::start`).
     fn unheld(code: &str) -> Vec<(String, bool)> {
+        let fns = fns_of(code);
+        // (each name once: `agent::start` is looked for first, so of two of one name the one that starts is said)
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for pattern in STARTS {
+            for (name, body) in holding(code, &fns, pattern) {
+                let held = body.contains("held_for(") || body.contains("held_on(");
+                if !held && !out.iter().any(|(n, _)| n == name) {
+                    out.push((name.to_string(), body.contains("agent::start(")));
+                }
+            }
+        }
+        out
+    }
+
+    /// The functions of `code` (a file's, literals emptied): each one's name and its body's span.
+    fn fns_of(code: &str) -> Vec<(&str, usize, usize)> {
         let ident = |c: char| c.is_alphanumeric() || c == '_';
         let mut fns: Vec<(&str, usize, usize)> = Vec::new();
         for (at, _) in code.match_indices("fn ").filter(|(at, _)| !code[..*at].ends_with(ident)) {
@@ -1152,20 +1211,24 @@ mod tests {
             });
             fns.push((name, start, end.unwrap_or(code.len())));
         }
-        // (each name once: `agent::start` is looked for first, so of two of one name the one that starts is said)
-        let mut out: Vec<(String, bool)> = Vec::new();
-        for (at, _) in STARTS.iter().flat_map(|p| code.match_indices(p)) {
+        fns
+    }
+
+    /// Each place `pattern` is in `code` (not after an identifier's character: `myagent::start(` isn't
+    /// `agent::start(`), as the innermost of `fns` holding it — its name and body; `(outside a fn)` and nothing for one
+    /// outside any.
+    fn holding<'c>(code: &'c str, fns: &[(&'c str, usize, usize)], pattern: &str) -> Vec<(&'c str, &'c str)> {
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut out = Vec::new();
+        for (at, _) in code.match_indices(pattern) {
             if code[..at].ends_with(ident) {
                 continue;
             }
             let inner = fns.iter().filter(|f| f.1 <= at && at < f.2).max_by_key(|f| f.1);
-            let (name, body) = match inner {
+            out.push(match inner {
                 Some(&(name, start, end)) => (name, &code[start..end]),
                 None => ("(outside a fn)", ""),
-            };
-            if !body.contains("held_for(") && !out.iter().any(|(n, _)| n == name) {
-                out.push((name.to_string(), body.contains("agent::start(")));
-            }
+            });
         }
         out
     }
@@ -1189,7 +1252,7 @@ mod tests {
     /// builder of `BUILDERS`, a list that only shrinks.
     #[test]
     fn every_start_passes_through_held_for() {
-        assert!(BUILDERS.len() <= 6, "this list only shrinks");
+        assert!(BUILDERS.len() <= 5, "this list only shrinks");
         let codes = crate::sim::lint::codes();
         for (file, name) in BUILDERS {
             let code = codes.iter().find(|(key, _)| key == file).map(|(_, c)| c.as_str());
@@ -1226,5 +1289,73 @@ mod tests {
             "reviewer.rs: start",
         ];
         assert_eq!(skipping(&made_up), found);
+    }
+
+    /// What reads the config's row (`llm.agent`).
+    const CONFIG_ROW_READS: &[&str] = &["agent::row_of(", "llm.agent"];
+
+    /// The only functions that read the config's row: where a session that has none takes it (`llm::session_row`, a
+    /// chat made, restored or begun anew), the config read or set (a change said — `chat::agent_moved`), a session's
+    /// usage made before its chat, and the setting's own row. None of them builds or starts a start.
+    const CONFIG_ROW: &[(&str, &str)] = &[
+        ("llm.rs", "workspace_row"),
+        ("chat.rs", "made"),
+        ("chat.rs", "restore"),
+        ("chat.rs", "reset_said"),
+        ("chat.rs", "agent_moved"),
+        ("editor.rs", "with_root"),
+        ("editor.rs", "reload_config_ours"),
+        ("typed.rs", "set_value"),
+        ("workspace.rs", "workspace_add"),
+        ("settings.rs", "(outside a fn)"),
+    ];
+
+    /// What in `codes` reads the config's row outside `CONFIG_ROW`, or in one of them that builds or starts a start
+    /// (`STARTS`), as `file: fn`.
+    fn config_row_read(codes: &[(String, String)]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (key, code) in codes {
+            let fns = fns_of(code);
+            for (name, body) in CONFIG_ROW_READS.iter().flat_map(|p| holding(code, &fns, p)) {
+                let starts = STARTS.iter().any(|s| body.contains(s));
+                let said = format!("{key}: {name}");
+                if (starts || !CONFIG_ROW.contains(&(key.as_str(), name))) && !out.contains(&said) {
+                    out.push(said);
+                }
+            }
+        }
+        out
+    }
+
+    /// Agents beside Claude, step 4's L2 (the lint follows the row): every start takes the session's row
+    /// (`llm::session_row` — its own once fixed, else the config's), so the config's row (`llm.agent`) is read only
+    /// where a session that has none takes it, or a change of it is said — never by a builder or a start, which would
+    /// put a session begun on one agent on another.
+    #[test]
+    fn every_start_takes_the_sessions_row() {
+        let codes = crate::sim::lint::codes();
+        for (file, name) in CONFIG_ROW {
+            let code = codes.iter().find(|(key, _)| key == file).map(|(_, c)| c.as_str());
+            let reads = code.is_some_and(|c| {
+                let fns = fns_of(c);
+                CONFIG_ROW_READS.iter().any(|p| holding(c, &fns, p).iter().any(|(n, _)| n == name))
+            });
+            assert!(reads, "{file}: {name} reads no config's row now: take it off");
+        }
+        let reads = config_row_read(&codes);
+        assert!(reads.is_empty(), "the config's row read where a start is made: {reads:?}");
+        // (and it sees each: a builder reading it, a start reading its field, a listed one that starts, a listed one)
+        let code = |key: &str, c: &str| (key.to_string(), c.to_string());
+        let made_up = [
+            code("ask.rs", "fn agent_start(cfg: &C) -> S { Start::on(crate::agent::row_of(cfg), R, cfg) }"),
+            code(
+                "web/search.rs",
+                "fn start(ed: &mut E) { let row = ed.config.llm.agent; agent::start(&s); }",
+            ),
+            code("chat.rs", "fn agent_moved(ed: &mut E) { let r = agent::row_of(c); agent::start(&s); }"),
+            code("chat.rs", "fn made(ed: &mut E) { c.agent = crate::agent::row_of(&ed.config.llm); }"),
+        ];
+        let found = ["ask.rs: agent_start", "web/search.rs: start", "chat.rs: agent_moved"];
+        assert_eq!(config_row_read(&made_up), found);
     }
 }

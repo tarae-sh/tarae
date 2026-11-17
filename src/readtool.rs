@@ -1509,4 +1509,39 @@ mod tests {
         settle(&mut ed, &|ed| card(ed).is_some());
         std::fs::remove_dir_all(&base).unwrap();
     }
+
+    /// Friction #600, closed by step 4's L2: a read still judged on a worker as its turn ends asks no card when it
+    /// lands — nobody waits for it — and its call is answered that the turn ended; the next turn's read asks again.
+    #[test]
+    fn a_read_that_lands_after_its_turn_asks_no_card() {
+        let (dir, outside, base) = places("late");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
+        let settle = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while !done(ed) {
+                let left = end.saturating_duration_since(std::time::Instant::now());
+                let ev = ed.events.recv_timeout(left).expect("settled before the timeout");
+                ed.handle_event(ev);
+            }
+        };
+        let card = |ed: &Editor| ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::Read { .. }));
+        let answered = |id: u64| {
+            crate::tools::ANSWERED
+                .with(|a| a.borrow().iter().find(|(k, _)| *k == json!(id)).map(|(_, r)| r.clone()))
+        };
+        let args = json!({ "files": [outside.join("o.txt").display().to_string()] });
+        // (its judgement on a worker: the turn ends before it lands)
+        call(&mut ed, Call::of(generation, "", json!(905)), &args).unwrap();
+        crate::reads::turn_over(&mut ed);
+        settle(&mut ed, &|_| answered(905).is_some());
+        assert_eq!(answered(905).unwrap(), Err(crate::reads::TURN_ENDED.to_string()));
+        assert!(!card(&ed), "no card for a turn over");
+        // (the next turn's asks, its card up)
+        call(&mut ed, Call::of(generation, "", json!(906)), &args).unwrap();
+        settle(&mut ed, &|ed| card(ed));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }

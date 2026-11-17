@@ -203,7 +203,6 @@ pub enum What {
     ClaudeSettings { hash: crate::trust::Digest },
     /// The project's files an agent loads run as you (`agenttrust.rs`, guard 4): `y` trusts them and the agent starts,
     /// `n` it isn't started in this project until you quit. `hash` = what the card showed.
-    #[cfg(test)]
     AgentFiles { hash: crate::trust::Digest },
     /// A repository's own git settings and hooks run commands (`gittrust.rs`): `y` lets them run, `n` keeps
     /// them off (held — `gitrepo`).
@@ -359,7 +358,6 @@ pub const KINDS: &[&str] = &[
     "outside",
     "project-trust",
     "claude-settings",
-    #[cfg(test)]
     "agent-files",
     "git-trust",
     "repo-trust",
@@ -542,7 +540,6 @@ impl What {
             #[cfg(test)]
             What::Asks { .. } => Lost,
             // (the chat reads the files again when it starts)
-            #[cfg(test)]
             What::AgentFiles { .. } => ByItself,
         }
     }
@@ -813,7 +810,6 @@ impl Offer {
     /// Whether answering it runs something (an install, a plugin's permissions).
     pub fn weighty(&self) -> bool {
         // (an agent started on its yes, with what runs as you)
-        #[cfg(test)]
         if matches!(self.what, What::AgentFiles { .. }) {
             return true;
         }
@@ -1122,7 +1118,6 @@ impl Offer {
             'v' if self.output.is_some() => A::Output,
             // (its detail, kept off the card — it stands beside the work while Claude runs held back)
             'v' if matches!(self.what, What::ClaudeSettings { .. } | What::RepoTrust { .. }) => A::View,
-            #[cfg(test)]
             'v' if matches!(self.what, What::AgentFiles { .. }) => A::View,
             'v' if self.host_details().is_some() || self.read_details().is_some() => A::View,
             'v' if matches!(self.what, What::Instructions(_)) => A::View,
@@ -1283,7 +1278,6 @@ impl Offer {
     /// (#159: it stayed up in the other session, and `y` there ended that one's review).
     pub fn goes_with_workspace(&self) -> bool {
         // (its session's chat waits on it, as on Claude's settings)
-        #[cfg(test)]
         if matches!(self.what, What::AgentFiles { .. }) {
             return true;
         }
@@ -1462,7 +1456,6 @@ impl Offer {
             W::ClaudeSettings { .. } => {
                 vec![lasts('y', "Trust"), plain('v', "Details"), plain('n', "Hold back")]
             }
-            #[cfg(test)]
             W::AgentFiles { .. } => vec![lasts('y', "Trust"), plain('v', "Details"), plain('n', "Hold back")],
             W::GitTrust(_) => vec![lasts('y', "Trust"), plain('n', "Hold back")],
             W::RepoTrust { .. } => vec![lasts('y', "Trust"), plain('v', "Details"), plain('n', "Hold back")],
@@ -1787,7 +1780,6 @@ impl Offer {
             W::Outside { .. } => "outside",
             W::ProjectTrust { .. } => "project-trust",
             W::ClaudeSettings { .. } => "claude-settings",
-            #[cfg(test)]
             W::AgentFiles { .. } => "agent-files",
             W::GitTrust(_) => "git-trust",
             W::RepoTrust { .. } => "repo-trust",
@@ -2296,7 +2288,6 @@ impl crate::editor::Editor {
             }
             What::ProjectTrust { hash } => self.project_trust_answer(id, hash, true),
             What::ClaudeSettings { hash } => self.claude_settings_answer(id, hash, true),
-            #[cfg(test)]
             What::AgentFiles { hash } => self.agent_files_answer(id, hash, true),
             What::GitTrust(ask) => self.git_trust_answer(id, *ask, true),
             What::RepoTrust { parts, .. } => crate::repotrust::answer(self, id, parts, true),
@@ -2891,7 +2882,6 @@ impl crate::editor::Editor {
         if let Some(&What::ClaudeSettings { hash }) = self.offers.first().map(|o| &o.what) {
             return self.claude_settings_view(hash);
         }
-        #[cfg(test)]
         if let Some(&What::AgentFiles { hash }) = self.offers.first().map(|o| &o.what) {
             return self.agent_files_view(hash);
         }
@@ -3132,7 +3122,6 @@ impl crate::editor::Editor {
             What::ReviewAtEnd => self.set_status("Claude's edits come one at a time"),
             What::ProjectTrust { hash } => self.project_trust_answer(o.id, hash, false),
             What::ClaudeSettings { hash } => self.claude_settings_answer(o.id, hash, false),
-            #[cfg(test)]
             What::AgentFiles { hash } => self.agent_files_answer(o.id, hash, false),
             What::GitTrust(ask) => self.git_trust_answer(o.id, *ask, false),
             What::RepoTrust { parts, .. } => crate::repotrust::answer(self, o.id, parts, false),

@@ -698,6 +698,12 @@ pub struct Chat {
     /// The agent its conversation is with: the config's row as the chat is made (`agent::row_of`), a continued
     /// conversation's own (`chats::Saved.agent`). Its starts run it, and its capabilities say what it's asked.
     pub agent: &'static crate::agent::Row,
+    /// `agent` is this session's for good (step 4's L2): fixed at its first start, or by its conversation's record (a
+    /// continue, a restart's) — every role's start runs it whatever the config says since (`row`, `llm::session_row`).
+    /// Not yet: the config's, picked again at the start (a new conversation's too).
+    pub agent_fixed: bool,
+    /// Its turns over (`reads::turn_over`): a read judged on a worker meanwhile asks no card (friction #600).
+    pub(crate) turns_over: u64,
     /// The user said yes to the terminals on an `also` card this turn: asked again, they take none of its
     /// `ALSO_MAX` (frictions29 23: each e2e or scenes run asked, and the turn ran out of cards).
     pub also_yes: bool,
@@ -844,11 +850,9 @@ pub struct Chat {
     pub settings: crate::claudetrust::Gate,
     /// Its agent's own folder, made and its hook written before each start, where its row turns its own tools off
     /// (`agentgate.rs`, guard 1).
-    #[cfg(test)]
     pub(crate) agent_gate: crate::agentgate::Gate,
     /// The tools its process's `tools/list` was answered with, by name, and that process's generation: what an ACP
     /// agent's ask may be allowed for (`acp::allowed_ask`, guard 2's ask rule) — another process's count for nothing.
-    #[cfg(test)]
     pub(crate) offered_tools: (u64, Vec<String>),
     /// Who pays for its claude — what the last one was started on (`billing.rs`), what its `apiKeySource` is
     /// checked against (the session's may have changed since: a restart's list coming back). None: none started.
@@ -1260,6 +1264,8 @@ impl Chat {
             signed_read: false,
             // (`made` and `restore` set it from the config, a continue from its conversation)
             agent: &crate::agent::CLAUDE,
+            agent_fixed: false,
+            turns_over: 0,
             also_yes: false,
             run_scripts: Vec::new(),
             queued: None,
@@ -1317,9 +1323,7 @@ impl Chat {
             reruns: Vec::new(),
             rules_said: (None, Default::default()),
             settings: Default::default(),
-            #[cfg(test)]
             agent_gate: Default::default(),
-            #[cfg(test)]
             offered_tools: (0, Vec::new()),
             billing: None,
             launched: None,
@@ -1344,7 +1348,6 @@ impl Chat {
     /// Since when its agent has waited to start: the project's Claude settings being read (`claudetrust.rs`), or its
     /// own folder made (`agentgate.rs`, an agent whose own tools tarae turns off).
     pub(crate) fn starting_since(&self) -> Option<std::time::Instant> {
-        #[cfg(test)]
         if let Some(t) = self.agent_gate.waiting_since() {
             return Some(t);
         }
@@ -1381,6 +1384,11 @@ impl Chat {
 
     pub fn busy(&self) -> bool {
         self.state != State::Idle
+    }
+
+    /// This session's row, once fixed (`agent_fixed`) — None: it has none yet, and the config's is picked at its start.
+    pub fn row(&self) -> Option<&'static crate::agent::Row> {
+        self.agent_fixed.then_some(self.agent)
     }
 
     /// Something goes with the input's next message: an element pointed at, the screen, a quote.
@@ -1889,7 +1897,7 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
         c.conversation_left();
     }
     c.kill();
-    c.agent = row;
+    (c.agent, c.agent_fixed) = (row, true);
     c.msgs = crate::chats::msgs_of(&saved.rows);
     // (an earlier "continued" row says nothing now — one, at the end, says it)
     c.msgs.retain(|m| !(m.role == Role::Note && m.text.starts_with("continued from ")));
@@ -2004,8 +2012,11 @@ pub fn restore(ed: &mut Editor, r: Restored) {
         keeper.back(id.clone());
     }
     let mut c = Chat::new();
-    // (a row this tarae hasn't: the config's — its conversation, if any, then isn't continued)
-    c.agent = crate::agent::row_named(&r.agent).unwrap_or_else(|| crate::agent::row_of(&ed.config.llm));
+    // (a row this tarae hasn't: the config's — its conversation, if any, then isn't continued; one it has, with a
+    // conversation: the session's, fixed — the record's continue fixes it again as it lands)
+    let kept = crate::agent::row_named(&r.agent);
+    c.agent = kept.unwrap_or_else(|| crate::agent::row_of(&ed.config.llm));
+    c.agent_fixed = kept.is_some() && r.conversation.is_some();
     c.follow.on = r.follow;
     c.signed_read = r.signed_read;
     c.input.set_at(&r.input, r.cursor);
@@ -2387,8 +2398,8 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
         let agent = c.agent.name.into();
         c.past.insert(at, crate::chats::Past { id, title, updated, context, agent });
     }
-    // (a new conversation: on the config's agent, as a chat made is)
-    c.agent = crate::agent::row_of(&ed.config.llm);
+    // (a new conversation: on the config's agent, as a chat made is — picked again at its first start)
+    (c.agent, c.agent_fixed) = (crate::agent::row_of(&ed.config.llm), false);
     c.continued = None;
     c.msgs.clear();
     c.plan = None;
@@ -2424,6 +2435,29 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     crate::reads::conversation_new(ed);
     ensure_proc(ed);
     ed.set_status(said);
+}
+
+/// The config's agent changed from `before` (`llm.agent` — a reload, `:set`): a session that has its row stays on it
+/// (step 4's L2: a config change never moves a running session), said where you look — the session in front's — when
+/// the new one isn't its own; every chat with none yet, in front or behind, shows the new one, which its first start
+/// takes.
+pub(crate) fn agent_moved(ed: &mut Editor, before: &'static crate::agent::Row) {
+    let now = crate::agent::row_of(&ed.config.llm);
+    if std::ptr::eq(now, before) {
+        return;
+    }
+    let chats =
+        std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces).filter_map(|w| w.claude.chat.as_mut());
+    for c in chats.filter(|c| c.row().is_none()) {
+        c.agent = now;
+    }
+    let front = ed.workspace.claude.chat.as_ref().and_then(Chat::row);
+    if let Some(own) = front.filter(|own| !std::ptr::eq(*own, now)) {
+        ed.set_warning(format!(
+            "this session stays on {} — llm.agent's {} starts with a new conversation",
+            own.name, now.name
+        ));
+    }
 }
 
 /// The config reads again (`Editor::reload_config_ours`, friction #339): every chat a hold kept from its claude — in
@@ -2546,6 +2580,8 @@ fn settings_again(ed: &mut Editor) -> bool {
 pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     c.proc = Some(Proc { agent: Agent::stand_in(tx), pid: 0 });
+    // (started: its row is the session's from here, as a real start's is)
+    c.agent_fixed = true;
     rx
 }
 
@@ -2553,6 +2589,7 @@ pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
 #[cfg(test)]
 pub(crate) fn stand_in_agent(c: &mut Chat, agent: Agent) {
     c.proc = Some(Proc { agent, pid: 0 });
+    c.agent_fixed = true;
 }
 
 /// `stand_in`, its process a generation of its own as a real one's is — a tool call's answer reaches this chat alone
@@ -2617,10 +2654,13 @@ fn ensure_proc(ed: &mut Editor) {
     let (web_search, code) = (ed.config.llm.web_search, ed.config.llm.code);
     // (judged by its conversation's agent: one that tripped is held until you quit — `llm::held_for`)
     let held = llm::held_for(ed, crate::agent::Role::Chat).is_some();
+    // (the session's row: its own once fixed, else the config's now — fixed by this start, `llm::session_row`)
+    let row = llm::session_row(ed);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
     }
+    c.agent = row;
     // (none while the config doesn't read — `llm::held_for`: the chat says why where it would start, and it starts once it
     // reads, `config_read`)
     c.held = held;
@@ -2643,12 +2683,12 @@ fn ensure_proc(ed: &mut Editor) {
         // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
         c.generation = crate::tools::generation();
         c.proc = Some(Proc { agent: Agent::stand_in(tx), pid: 0 });
+        c.agent_fixed = true;
         (c.session_tools, c.web_search, c.code) = crate::tools::chat_gets(c.agent, parent, web_search, code);
         return;
     }
     // (an agent whose own tools tarae turns off: its folder made and its hook written first, on a worker — guard 1,
     // `agentgate.rs`; it starts once they are, or says why not)
-    #[cfg(test)]
     let prepared = match c.agent.own_tools.is_some() {
         true => match crate::agentgate::ready(ed) {
             Some(p) => Some(p),
@@ -2656,7 +2696,6 @@ fn ensure_proc(ed: &mut Editor) {
         },
         false => None,
     };
-    #[cfg(test)]
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     // (a simulation's start through its gate: a staged handle in place of the process, counted — `agentgate::Stage`)
     #[cfg(test)]
@@ -2666,6 +2705,7 @@ fn ensure_proc(ed: &mut Editor) {
         c.generation = crate::tools::generation();
         stage.generations.push(c.generation);
         c.proc = Some(Proc { agent, pid: 0 });
+        c.agent_fixed = true;
         (c.session_tools, c.web_search, c.code) = crate::tools::chat_gets(c.agent, parent, web_search, code);
         if let Some(p) = &prepared {
             crate::agentgate::running(ed, p);
@@ -2688,10 +2728,7 @@ fn ensure_proc(ed: &mut Editor) {
         ..crate::agent::Start::on(row, crate::agent::Role::Chat, &cfg)
     };
     start.claude.settings = settings.as_ref().map(|(s, sources)| (s.as_str(), sources.as_str()));
-    #[cfg(test)]
-    {
-        start.prepared = prepared.as_ref();
-    }
+    start.prepared = prepared.as_ref();
     // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
     let generation = crate::tools::generation();
     // Who pays (`billing.rs`), where its agent lets tarae choose: an API session's key helper goes into its
@@ -2733,6 +2770,7 @@ fn ensure_proc(ed: &mut Editor) {
     ed.workspace.claude.usage.caps = agent.caps();
     c.generation = generation;
     c.proc = Some(Proc { agent, pid });
+    c.agent_fixed = true;
     (c.session_tools, c.web_search, c.code) = crate::tools::chat_gets(c.agent, parent, web_search, code);
     // (a process replaced mid-turn: what the last one was writing is never heard of again — `writing.rs`)
     crate::writing::over(ed);
@@ -2747,9 +2785,28 @@ fn ensure_proc(ed: &mut Editor) {
     // (a session's instruction files: the main checkout's changes since its copy — #27)
     crate::instructions::follow(ed);
     // (watched while it runs: tarae's files in its folder and the project's held files — `agentgate::running`)
-    #[cfg(test)]
     if let Some(p) = &prepared {
         crate::agentgate::running(ed, p);
+    }
+}
+
+/// Whether the chat in front is process `generation`'s.
+fn c_is(ed: &Editor, generation: u64) -> bool {
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
+}
+
+/// `row`'s agent said `version` at its start: said once a version until you quit where it isn't the one its guards
+/// were measured on (`agent::version_said` — never refused), in the chat's transcript and the log.
+fn version_once(ed: &mut Editor, row: &'static crate::agent::Row, version: Option<&str>) {
+    let Some(said) = crate::agent::version_said(row, version) else { return };
+    let key = (row.name, version.map(String::from));
+    if ed.agent_versions_said.contains(&key) {
+        return;
+    }
+    ed.agent_versions_said.push(key);
+    crate::log::line(row.name, "warn", &said);
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.note(&said);
     }
 }
 
@@ -2853,7 +2910,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
         }
         // Kept from the first question on — a tarae closed mid-turn still has it
         Event::Conversation { id, model, version, key_source } => {
-            let new = c.conversation.as_deref() != Some(id.as_str());
+            let (new, row) = (c.conversation.as_deref() != Some(id.as_str()), c.agent);
             // (a fork's first: the copy is a conversation of its own from here — resumed as itself from now on)
             let forked = c.fork && c.generation == generation;
             // (a process that didn't resume one began it, or forked it: it has cost nothing before)
@@ -2861,8 +2918,13 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 true => ed.workspace.claude.usage.fresh(&id),
                 false => ed.workspace.claude.usage.resumed(&id),
             }
-            if let Some(v) = &version {
-                crate::claudeupdate::seen(ed, v);
+            // (Claude Code's version is its update's to read; another agent's is said where it isn't the one its guards
+            // were measured on)
+            match (row.wire, &version) {
+                (crate::agent::Wire::Claude, Some(v)) => crate::claudeupdate::seen(ed, v),
+                (crate::agent::Wire::Claude, None) => {}
+                (crate::agent::Wire::Acp, v) if c_is(ed, generation) => version_once(ed, row, v.as_deref()),
+                (crate::agent::Wire::Acp, _) => {}
             }
             let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation == generation) else {
                 return;
@@ -3048,15 +3110,13 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
         }
         // tarae's MCP server (its tools, `tools.rs`): answered now, or (an edit) once its review ends
         Event::Mcp { id, message } => {
-            #[cfg(test)]
             let listing = message["method"] == "tools/list";
             if let Some(response) = crate::tools::mcp(ed, generation, &id, &message)
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation == generation)
             {
                 // (what an ACP agent's ask may be allowed for: what this process was offered — `acp::allowed_ask`)
-                #[cfg(test)]
                 if listing && let Some(c) = ed.workspace.claude.chat.as_mut() {
-                    c.offered_tools = (generation, crate::agent::acp::offered(&response));
+                    c.offered_tools = (generation, crate::agent::tools_offered(&response));
                 }
                 answer_mcp(ed, &id, response);
             }
@@ -3069,13 +3129,11 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
         Event::Permission { id, tool, input } => {
             ed.workspace.claude.usage.tally.asked(&id, &tool);
             let asks = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.agent.caps.asks);
-            #[cfg(test)]
             let offered = ed.workspace.claude.chat.as_ref().is_some_and(|c| {
-                c.offered_tools.0 == generation && crate::agent::acp::allowed_ask(&tool, &c.offered_tools.1)
+                c.offered_tools.0 == generation && crate::agent::ask_allowed(&tool, &c.offered_tools.1)
             });
             let p = match asks {
                 true => crate::edits::request(ed, &id, &tool, input),
-                #[cfg(test)]
                 false if offered => Some(Permission::Allow { input: serde_json::Value::Null }),
                 false => Some(Permission::Deny { message: OWN_TOOLS_REFUSED.into() }),
             };
@@ -3248,7 +3306,6 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             // in the transcript once (the turn's end said it, unless no turn of its had begun or your stop's word took
             // its place) and as an error; a message of yours it never began is cut off in its words (as an exit's
             // below, its parent told), never "claude exited"
-            #[cfg(test)]
             if let crate::agent::Ended::Tripped { tool } = &kind {
                 let name = c.agent.name;
                 if !c.msgs.iter().any(|m| m.role == Role::Note && m.text == err) {
@@ -3265,9 +3322,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             }
             // (stopped by its watch — `agentgate::changed_now`: said once, its watch ended with it; its gate opens again
             // below where the held files changed or a message waits)
-            #[cfg(test)]
             let reopen = crate::agentgate::ended(ed);
-            #[cfg(test)]
             let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
             // The conversation is gone from claude (its own cleanup took it, or you deleted it): a fresh one, the
             // rows still shown, said once — and a message sent to the process that couldn't resume goes again, to
@@ -3395,7 +3450,6 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             if settings_again(ed) {
                 send_queued(ed);
             }
-            #[cfg(test)]
             if reopen {
                 gate_opened(ed);
             }
@@ -3623,7 +3677,6 @@ pub(crate) fn send_queued(ed: &mut Editor) {
         return;
     }
     // (nor while its agent's watch stops it: what waits goes to the next start, as its end lands — `agentgate::ended`)
-    #[cfg(test)]
     if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.agent_gate.stopping()) {
         return;
     }
@@ -3866,11 +3919,9 @@ fn send_from(ed: &mut Editor, slash: bool) {
     }
     // (an agent whose every start waits on its gate's job — `agentgate.rs`: begun now, so the message waits for the
     // start as it does behind the card, never left in the input)
-    #[cfg(test)]
     if !question.is_empty() && !c.running() && !c.starting() && c.agent.own_tools.is_some() {
         ensure_proc(ed);
     }
-    #[cfg(test)]
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     // Claude is working: it waits its turn (#23) — said over the input, sent when this turn ends; a second
     // one joins it. So it does while the project's settings are read (`claudetrust.rs` — their card doesn't
@@ -3949,7 +4000,6 @@ fn send_from(ed: &mut Editor, slash: bool) {
     }
     // (an agent that tripped starts nowhere until you quit: the message stays in the input, why said where you look —
     // never queued, as nothing would send it)
-    #[cfg(test)]
     if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.held && c.proc.is_none())
         && let Some(why) = llm::held_for(ed, crate::agent::Role::Chat)
     {
@@ -6410,7 +6460,7 @@ mod tests {
         ed.claude_env = Some(stand_in_env(&dir, &script_at, &heard_at));
         ed.config.llm.web_search = true;
         let mut c = Chat::new();
-        c.agent = &crate::agent::STAND_IN;
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
         c.hidden = true;
         ed.workspace.claude.chat = Some(c);
         let feed = |ed: &mut Editor, keys: &str| {
@@ -6490,7 +6540,7 @@ mod tests {
         let (tx, _lines) = std::sync::mpsc::channel();
         ed.claude_lines = Some(tx);
         let mut c = Chat::new();
-        c.agent = &crate::agent::STAND_IN;
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
         c.hidden = false;
         ed.workspace.claude.chat = Some(c);
         ensure_proc(&mut ed);
@@ -6567,7 +6617,7 @@ mod tests {
         std::fs::write(&script_at, script.to_string()).unwrap();
         ed.claude_env = Some(stand_in_env(&dir, &script_at, &heard_at));
         let mut c = Chat::new();
-        c.agent = &crate::agent::STAND_IN;
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
         ed.workspace.claude.chat = Some(c);
         ensure_proc(&mut ed);
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().proc.is_some());
@@ -6608,7 +6658,7 @@ mod tests {
         given.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         ed.claude_env = Some(given);
         let mut c = Chat::new();
-        c.agent = &crate::agent::STAND_IN;
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
         ed.workspace.claude.chat = Some(c);
         ensure_proc(&mut ed);
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().proc.is_some());

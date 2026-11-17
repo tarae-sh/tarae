@@ -125,7 +125,7 @@ fn run(choices: Choices) -> Vec<String> {
     ed.workspace.root = project.clone();
     let (mut staged, agent) = Staged::new(&project);
     let mut c = crate::chat::Chat::new();
-    c.agent = &crate::agent::STAND_IN;
+    (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
     c.hidden = false;
     crate::chat::stand_in_agent(&mut c, agent);
     ed.workspace.claude.chat = Some(c);
@@ -510,10 +510,10 @@ fn trip_run(choices: Choices) -> Vec<String> {
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = project.clone();
     // (the config's agent the stand-in's: `space i` judges its row — L1)
-    ed.config.llm.row = Some(&crate::agent::STAND_IN);
+    ed.config.llm.agent = &crate::agent::STAND_IN;
     let (mut staged, agent) = Staged::new(&project);
     let mut c = crate::chat::Chat::new();
-    c.agent = &crate::agent::STAND_IN;
+    (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
     c.hidden = false;
     crate::chat::stand_in_agent(&mut c, agent);
     ed.workspace.claude.chat = Some(c);
@@ -909,7 +909,7 @@ fn card_run(choices: Choices) -> Vec<String> {
     ed.claude_env = Some(crate::llm::Env::from([("XDG_STATE_HOME".into(), state)]));
     let ((first, a), (second, b)) = (Staged::new(&project), Staged::new(&project));
     let mut c = crate::chat::Chat::new();
-    c.agent = &crate::agent::STAND_IN;
+    (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
     c.hidden = false;
     let agents = [a, b].into_iter().collect();
     c.agent_gate.stage = Some(crate::agentgate::Stage { agents, ..Default::default() });

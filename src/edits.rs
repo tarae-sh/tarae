@@ -242,8 +242,21 @@ pub fn request(ed: &mut Editor, request_id: &str, tool: &str, input: Value) -> O
 /// taken lexically, then the parts that exist resolved — links followed (`src/x.rs -> ../build.rs`, a folder
 /// linked into `.git/hooks`) — and as the system would walk it too (a link before a `..`). From the root (as
 /// given, or real) when inside it; one that leads outside is judged as it leads, all its parts. A disk read: a
-/// worker's (the review of 4b: the path as written missed `src/../build.rs`, a link, a root given otherwise).
+/// worker's (the review of 4b: the path as written missed `src/../build.rs`, a link, a root given otherwise). And
+/// anything in tarae's own state or cache (`sandbox::taraes_own` — §9.6: in a project at `~`, an agent's hook file
+/// under `$state/agent-homes/` would otherwise apply with no card in the auto-apply mode).
 pub fn protected(root: &Path, path: &Path) -> bool {
+    // (tarae's own folders, from its environment: the same for the process's life — found once, not per file)
+    static OWN: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    let own = OWN.get_or_init(|| {
+        let here = crate::sandbox::Here::now();
+        crate::allow::home().map(|h| crate::sandbox::taraes_own(&h, &here)).unwrap_or_default()
+    });
+    protected_with(root, path, own)
+}
+
+/// `protected`, tarae's own folders `own` (real).
+fn protected_with(root: &Path, path: &Path, own: &[PathBuf]) -> bool {
     use std::path::Component;
     let mut lexical = PathBuf::new();
     for c in path.components() {
@@ -266,6 +279,9 @@ pub fn protected(root: &Path, path: &Path) -> bool {
     };
     let ways: Vec<PathBuf> =
         [crate::paths::real(&lexical), crate::paths::real(path)].into_iter().flatten().collect();
+    if ways.iter().chain([&lexical]).any(|p| own.iter().any(|o| p.starts_with(o))) {
+        return true;
+    }
     // (neither resolves — no folder of it there: judged as written, `.` and `..` gone)
     match ways.is_empty() {
         true => judged(&lexical),
@@ -682,5 +698,28 @@ mod tests {
         assert!(ed.workspace.claude.review.is_none(), "no review for it");
         assert_eq!(std::fs::read_to_string(dir.join("src/a.txt")).unwrap(), "ONE\n");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// §9.6, closed by step 4's L2: in a project at `~`, an edit into tarae's own state (an agent's hook file under
+    /// `$state/agent-homes/`) is protected — it always asks, never applied unseen in the auto-apply mode — as written,
+    /// through `..`, and through a link into it; a file of the project beside it isn't.
+    #[test]
+    fn an_edit_into_taraes_own_state_is_protected() {
+        let s = crate::scratch::Scratch::new("edits-own-state");
+        let home = std::fs::canonicalize(s.path()).unwrap();
+        let state = home.join(".local/state/tarae");
+        let hooks = state.join("agent-homes/agy/0123456789abcdef/config");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("hooks.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&hooks, home.join("config-link")).unwrap();
+        let own = [state.clone()];
+        let at = |p: &str| protected_with(&home, &home.join(p), &own);
+        let rel = ".local/state/tarae/agent-homes/agy/0123456789abcdef/config/hooks.json";
+        assert!(at(rel), "as written");
+        assert!(at(".local/state/tarae/agent-homes/agy/new/config/hooks.json"), "one not there yet");
+        assert!(at(&format!("src/../{rel}")), "through ..");
+        assert!(at("config-link/hooks.json"), "through a link");
+        assert!(!at("src/main.rs"), "the project's own");
+        assert!(!protected_with(&home, &home.join(rel), &[]), "(the name alone isn't a protected one)");
     }
 }

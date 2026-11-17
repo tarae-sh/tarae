@@ -35,7 +35,7 @@ fn editor(dir: &Scratch, root: &Path, tag: &str) -> Editor {
     ]));
     ed.trust_path = Some(dir.join("trust.json"));
     let mut c = crate::chat::Chat::new();
-    c.agent = &STAND_IN;
+    (c.agent, c.agent_fixed) = (&STAND_IN, true);
     ed.workspace.claude.chat = Some(c);
     ed
 }
@@ -242,7 +242,7 @@ fn a_no_holds_it_until_you_quit() {
         "never kept"
     );
     let mut c = crate::chat::Chat::new();
-    c.agent = &STAND_IN;
+    (c.agent, c.agent_fixed) = (&STAND_IN, true);
     ed.workspace.claude.chat = Some(c);
     crate::chat::gate_opened(&mut ed);
     settle_until(&mut ed, |ed| says(ed, held));

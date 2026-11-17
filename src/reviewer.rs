@@ -375,12 +375,16 @@ pub fn ask_in_for(
     });
 }
 
-/// Member `role`'s start on `cfg`: tarae's words beside Claude Code's own (its flags, each role's, its wire's —
-/// `agent::claude::flags::reviewer`).
-pub(crate) fn start(cfg: &llm::LlmConfig, role: Role) -> crate::agent::Start<'_> {
+/// Member `role`'s start on `row` (the session's) and `cfg`: tarae's words beside Claude Code's own (its flags, each
+/// role's, its wire's — `agent::claude::flags::reviewer`).
+pub(crate) fn start<'a>(
+    row: &'static crate::agent::Row,
+    cfg: &'a llm::LlmConfig,
+    role: Role,
+) -> crate::agent::Start<'a> {
     crate::agent::Start {
         system: Some(SYSTEM),
-        ..crate::agent::Start::new(crate::agent::Role::Reviewer(role), cfg)
+        ..crate::agent::Start::on(row, crate::agent::Role::Reviewer(role), cfg)
     }
 }
 
@@ -602,7 +606,7 @@ pub(crate) fn begin(
 ) {
     // (a board its members can't be started for: said once, before any is asked — never its settings dropped)
     if board.is_some()
-        && let Err(e) = crate::agent::args(&start(&ed.config.llm, Role::Angle(0)))
+        && let Err(e) = crate::agent::args(&start(llm::session_row(ed), &ed.config.llm, Role::Angle(0)))
     {
         // (one its parent's Claude proposed: that parent told, never left waiting for its end)
         if let Some(p) = parent {
@@ -940,7 +944,7 @@ fn launch(ed: &mut Editor, i: usize) {
     }
     let (role, root, content) = (m.role, r.root.clone(), content(r, m));
     let cfg = ed.config.llm.clone();
-    let start = start(&cfg, role);
+    let start = start(llm::session_row(ed), &cfg, role);
     // Who pays: `llm.reviewer-billing`, else its session's (`billing.rs`)
     let cred = crate::agent::args(&start)
         .and_then(|_| ed.credential(ed.reviewer_billing(), crate::billing::Role::Reviewer));
@@ -4235,8 +4239,13 @@ mod tests {
         let env: llm::Env = CACHE_TTL_ENV.iter().map(|n| (n.to_string(), "5m".to_string())).collect();
         let cred = ed.credential(Billing::Api, crate::billing::Role::Reviewer).unwrap();
         let kept = |role| {
-            let cmd =
-                crate::agent::command(&start(&ed.config.llm, role), &repo, Some(&env), Some(&cred)).unwrap();
+            let cmd = crate::agent::command(
+                &start(&crate::agent::CLAUDE, &ed.config.llm, role),
+                &repo,
+                Some(&env),
+                Some(&cred),
+            )
+            .unwrap();
             let mut kept: Vec<_> = cmd
                 .get_envs()
                 .filter(|(k, _)| CACHE_TTL_ENV.iter().any(|n| k == n))

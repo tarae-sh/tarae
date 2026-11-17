@@ -158,7 +158,6 @@ fn kind_heading(k: Kind) -> &'static str {
         Kind::Git => "git's own commands",
         Kind::Hook => "git hooks",
         Kind::Code => "code language servers run",
-        #[cfg(test)]
         Kind::Agent => "an agent's files in the project",
     }
 }
@@ -514,7 +513,6 @@ impl Editor {
     pub(crate) fn trust_take(&mut self, kind: Kind, place: Place) {
         let given = self.trust_taking_given(place.clone());
         // (an agent's files' yes in hand asks again — the store's goes below)
-        #[cfg(test)]
         if kind == Kind::Agent {
             crate::agentgate::forgotten(self, &place);
         }
@@ -571,17 +569,20 @@ impl Editor {
         for id in chats {
             self.with_workspace(id, crate::claudetrust::forgotten);
         }
-        self.set_status(match kind {
-            Kind::Tarae => {
-                "Taken back — the project's settings are held back; its card asks at the next look"
-            }
-            Kind::Claude => "Taken back — Claude runs without the project's settings; their card asks again",
-            Kind::Git => "Taken back — tarae's git holds this repository's commands; its card asks again",
-            Kind::Hook => "Taken back — the hook is asked about before it runs again",
-            Kind::Code => "Taken back — its language servers stopped; its card asks before they start again",
-            #[cfg(test)]
-            Kind::Agent => "Taken back — its card asks before the agent starts here again",
-        });
+        match kind {
+            Kind::Tarae => self.set_status(
+                "Taken back — the project's settings are held back; its card asks at the next look",
+            ),
+            Kind::Claude => self
+                .set_status("Taken back — Claude runs without the project's settings; their card asks again"),
+            Kind::Git => self
+                .set_status("Taken back — tarae's git holds this repository's commands; its card asks again"),
+            Kind::Hook => self.set_status("Taken back — the hook is asked about before it runs again"),
+            Kind::Code => self.set_status(
+                "Taken back — its language servers stopped; its card asks before they start again",
+            ),
+            Kind::Agent => self.set_status("Taken back — its card asks before the agent starts here again"),
+        }
     }
 }
 

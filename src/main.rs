@@ -5,11 +5,9 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests: not in the release binary"))]
 
 mod agent;
-/// Guard 1's folder, made before an agent's start (agents beside Claude, step 3): under the gate with the ACP wire.
-#[cfg(test)]
+/// Guard 1's folder, made before an agent's start (agents beside Claude, step 3).
 mod agentgate;
-/// Guard 4, a project's files an agent loads held until trusted (agents beside Claude, step 3): under the gate too.
-#[cfg(test)]
+/// Guard 4, a project's files an agent loads held until trusted (agents beside Claude, step 3).
 mod agenttrust;
 #[cfg(test)]
 mod allocs;
@@ -304,8 +302,7 @@ config: $XDG_CONFIG_HOME/tarae/config.toml (default ~/.config/tarae/config.toml)
 
 fn main() -> Result<()> {
     // An agent's hook (`tarae agent-hook`, `agent::hook`): its answer before anything else — no config, no state, no
-    // grammar. Under the gate with the rest of the ACP wire until step 4
-    #[cfg(test)]
+    // grammar
     if std::env::args_os().nth(1).is_some_and(|a| a == agent::hook::ARG) {
         agent::hook::cli();
     }
@@ -361,9 +358,8 @@ fn main() -> Result<()> {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 return plugin::cli(&rest);
             }
-            // (the bridge's relay an ACP agent starts as tarae's tools — `agent::tools_relay`; under the gate with the rest
-            // of that wire until step 4, so not in the usage either)
-            #[cfg(test)]
+            // (the bridge's relay an ACP agent starts as tarae's tools — `agent::tools_relay`: an agent's, not a
+            // person's, so not in the usage)
             "agent-tools" if files.is_empty() => {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 return agent::tools_relay(&rest);

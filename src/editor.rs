@@ -1427,13 +1427,13 @@ pub struct Editor {
     /// reader threads aren't the simulation's).
     #[cfg(test)]
     pub claude_lines: Option<std::sync::mpsc::Sender<String>>,
+    /// The agents' versions said, by row, until you quit (`chat::version_once`: once a version).
+    pub agent_versions_said: Vec<(&'static str, Option<String>)>,
     /// The agents that tripped (guard 3, `agent::Ended::Tripped`), by their row's name: none starts again until you
     /// quit (`llm::held_for`) — one of their sessions running elsewhere goes on, and trips on its own.
-    #[cfg(test)]
     pub agents_tripped: Vec<&'static str>,
     /// Where an agent's files were held back on their card (guard 4, `agenttrust.rs`), by the answer's place: no agent
     /// starts there until you quit — a no is never kept, as code trust's.
-    #[cfg(test)]
     pub agent_files_held: Vec<crate::trust::Place>,
     /// Tests: `space i`'s claude is no process — its stdin's lines go here (`ask.rs`; a simulation's stand-in, apart
     /// from the chat's).
@@ -1831,9 +1831,8 @@ impl Editor {
             reviewer_stand_in: false,
             #[cfg(test)]
             claude_lines: None,
-            #[cfg(test)]
+            agent_versions_said: Vec::new(),
             agents_tripped: Vec::new(),
-            #[cfg(test)]
             agent_files_held: Vec::new(),
             #[cfg(test)]
             ask_lines: None,
@@ -6162,6 +6161,18 @@ impl Editor {
     /// (`config::watch`), the settings it set: quiet while the config read again holds them (whoever set them said
     /// so), else said with why. A warning is said all the same.
     pub fn reload_config_ours(
+        &mut self,
+        config: Config,
+        warnings: Vec<String>,
+        ours: Option<Vec<(String, toml::Value)>>,
+    ) {
+        let agent = crate::agent::row_of(&self.config.llm);
+        self.reload_config_now(config, warnings, ours);
+        // (a session that has its row stays on it, said — step 4's L2)
+        crate::chat::agent_moved(self, agent);
+    }
+
+    fn reload_config_now(
         &mut self,
         mut config: Config,
         warnings: Vec<String>,

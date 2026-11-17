@@ -18,10 +18,11 @@
 //! `completed`, or one of tarae's the bridge never carried, stops it at once, its group ended (`Wire::trip`). This
 //! thread sees the agent's reports and the bridge's calls in one order, so the match needs no clock.
 //!
-//! Test-only in step 2 (the design session's answer, §9.4): no config reaches it, and a release build carries none
-//! of it.
+//! Test-only in steps 2 and 3 (the design session's answer, §9.4); since step 4's L2, `llm.agent`'s `agy` reaches it.
+//! The stand-in and the simulation's door (`Staged`) stay tests'.
 
 pub mod bridge;
+#[cfg(test)]
 pub mod standin;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -117,7 +118,7 @@ const ASKS_SAID_MAX: usize = 64;
 /// status line; `Ended::Tripped`; the log): the agent's string, as long as it likes, cut to `NAME_SHOWN` characters,
 /// and every character but a plain printable one (ASCII's, the space) made `?` — no newline, escape or bidi mark of
 /// the agent's reaches the screen or the log.
-fn shown(name: &str) -> String {
+pub(crate) fn shown(name: &str) -> String {
     let plain = |c: char| if c == ' ' || c.is_ascii_graphic() { c } else { '?' };
     let mut s: String = name.chars().take(NAME_SHOWN + 1).map(plain).collect();
     if s.len() > NAME_SHOWN {
@@ -147,16 +148,21 @@ pub const GIT_DISCOVERY: &[&str] = &[
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 ];
 
+/// The keys of Google's APIs a Gemini program would bill instead of its own sign-in (the user's word, 2026-11-16 —
+/// step 4's question 2): agy signs in on its own, and `Caps.billing` is false — tarae never chose who pays.
+pub const API_KEYS: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
+
 /// Whether an agent that isn't Claude never gets `name` from tarae's environment (condition 2): Claude Code's keys
 /// and settings (`ANTHROPIC_*`, `CLAUDE*` — `llm::claudes_own` —, and what a Claude Code session sets for what it
 /// starts — `llm::judged`'s, `AI_AGENT` and its trace context among them), the wikis' tokens (`web.signed-in`'s
-/// `token-env`), tarae's own sockets (`SOCKETS`), and what moves git's discovery (`GIT_DISCOVERY`). The rest of
-/// tarae's environment is its, as it would be any program's: removed by name, never cleared.
+/// `token-env`), tarae's own sockets (`SOCKETS`), what moves git's discovery (`GIT_DISCOVERY`), and Google's API keys
+/// (`API_KEYS`). The rest of tarae's environment is its, as it would be any program's: removed by name, never cleared.
 pub fn left_out(name: &str, signed_in: &[crate::web::signed::Wiki]) -> bool {
     crate::llm::claudes_own(name)
         || crate::llm::judged(name)
         || SOCKETS.contains(&name)
         || GIT_DISCOVERY.contains(&name)
+        || API_KEYS.contains(&name)
         || signed_in.iter().any(|w| w.token_env == name)
 }
 
@@ -814,7 +820,7 @@ impl Wire {
             .filter_map(|id| self.reports.remove(&id).map(|r| (id, r)))
             .filter(|(_, r)| taraes(&r.name).is_some() && !r.matched && r.done.is_some())
             .collect();
-        left.sort_by_key(|(_, r)| r.seq);
+        crate::sorting::by_key(&mut left, |(_, r)| r.seq);
         let name = self.begin.name;
         for (id, r) in left {
             let row = Event::Tool { id: id.clone(), name: r.name.clone(), input: r.input };
@@ -1276,6 +1282,7 @@ fn run(mut child: Spawned, mut w: Wire, rx: Receiver<In>, once: bool, send: &dyn
 /// messages handed in by the scenario, what the chat handed the handle taken a message at a time when it says, what
 /// went to the agent read back, and every event given back for the scenario to land — as `run` does, its order the
 /// scenario's choice.
+#[cfg(test)]
 pub struct Staged {
     w: Wire,
     rx: Receiver<In>,
@@ -1285,6 +1292,7 @@ pub struct Staged {
     exited: bool,
 }
 
+#[cfg(test)]
 impl Staged {
     /// A wire begun in `dir` (its `initialize` written), and the handle the chat holds.
     pub fn new(dir: &Path) -> (Staged, Agent) {

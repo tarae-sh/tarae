@@ -170,16 +170,15 @@ pub struct LlmConfig {
     /// estimate on its card and its start. Off (a shared screen, a recording): none of it; `:usage`, `/cost` and a
     /// board's report, which you ask for, still say it.
     pub cost: bool,
-    /// Tests: the row this config chooses (`agent::row_of`), as step 4's L2 setting will; no setting reaches it.
-    #[cfg(test)]
-    pub row: Option<&'static crate::agent::Row>,
+    /// `llm.agent`: the agent a session that has no row yet starts on (`agent::row_of`, `session_row`) — one of
+    /// `agent::NAMES`, Claude's by default. A session keeps its own (step 4's L2).
+    pub agent: &'static crate::agent::Row,
 }
 
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            #[cfg(test)]
-            row: None,
+            agent: &crate::agent::CLAUDE,
             command: crate::agent::CLAUDE.command.into(),
             args: crate::agent::CLAUDE.args.iter().map(|s| s.to_string()).collect(),
             model: None,
@@ -266,25 +265,43 @@ pub fn config_held(ed: &Editor) -> Option<String> {
         .then(|| format!("no claude until your config reads — {}: {HELD_WAY}", ed.config_unread.join("; ")))
 }
 
+/// The row every start of the session in front runs (step 4's L2, inside the user's 2026-11-13 decision: "a session
+/// begun on agy is Gemini's throughout, one begun on Claude Claude's"): its own once it has one — fixed at its first
+/// start, or by its conversation's record (`Chat::row`) — else the config's (`llm.agent`), for a session that has none.
+/// A config changed since doesn't move it (`chat::agent_moved` says so). Every start takes it
+/// (`every_start_takes_the_sessions_row`).
+pub fn session_row(ed: &Editor) -> &'static crate::agent::Row {
+    workspace_row(ed, &ed.workspace)
+}
+
+/// `session_row` for workspace `w`'s session, in front or not: a start for a session other than the one in place
+/// (auto cards' reviewer for a proposal's two sessions) asks it by its workspace. A start from a session behind runs
+/// with it in place already: its results come tagged with it (`event::Tx`, `Event::For`) and `with_workspace` swaps
+/// it in to apply them.
+pub fn workspace_row(ed: &Editor, w: &crate::workspace::Workspace) -> &'static crate::agent::Row {
+    let own = w.claude.chat.as_ref().and_then(crate::chat::Chat::row);
+    own.unwrap_or_else(|| crate::agent::row_of(&ed.config.llm))
+}
+
 /// Why `role`'s agent doesn't start now, or None — asked by every start of one, before it starts
 /// (`every_start_passes_through_held_for`): the config unread (`config_held`); a row that tripped (guard 3,
-/// `agent::Ended::Tripped`), until you quit, whatever the role; a row that can't be the role (`agent::row_for`: the
-/// chat's is any row's, the others wait for the second round, said); one that keeps tools of its own. The chat's is
-/// judged by its conversation's agent (`Chat.agent` — a continued conversation's may not be the config's; the
-/// config's where there's no chat), the others by the config's.
+/// `agent::Ended::Tripped`), until you quit, whatever the role; a row that can't be the role (`agent::can_be`: the
+/// chat's is any row's, the others wait for the second round, said); one that keeps tools of its own. Every role is
+/// judged by the session's row (`session_row`): a Claude session's helpers run on Claude whatever the config says, an
+/// agy session's are held, never run on Claude behind its back.
 pub fn held_for(ed: &Editor, role: crate::agent::Role) -> Option<String> {
+    held_on(ed, session_row(ed), role)
+}
+
+/// `held_for` for a start on `row` — a session's that isn't the one in place (`workspace_row`).
+pub fn held_on(ed: &Editor, row: &'static crate::agent::Row, role: crate::agent::Role) -> Option<String> {
     if let Some(why) = config_held(ed) {
         return Some(why);
     }
-    let chat = ed.workspace.claude.chat.as_ref().filter(|_| matches!(role, crate::agent::Role::Chat));
-    let row = chat.map_or_else(|| crate::agent::row_of(&ed.config.llm), |c| c.agent);
-    #[cfg(test)]
     if ed.agents_tripped.contains(&row.name) {
         return Some(format!("no {} until you quit — it ran a tool of its own", row.name));
     }
-    if chat.is_none()
-        && let Err(why) = crate::agent::row_for(&ed.config.llm, role)
-    {
+    if let Err(why) = crate::agent::can_be(row, role) {
         return Some(why);
     }
     // (nor one that keeps tools of its own: its reads, edits and runs would go around tarae's — never Claude's)
@@ -798,9 +815,12 @@ pub fn stop_waiting(ed: &mut Editor, generation: Option<u64>, said: &str) {
     ed.set_warning(format!("Claude's {what}: {said}"));
 }
 
-/// A commit draft's start on `cfg`: `llm.args` as given.
-pub(crate) fn draft_start(cfg: &LlmConfig) -> crate::agent::Start<'_> {
-    crate::agent::Start::new(crate::agent::Role::Draft, cfg)
+/// A commit draft's start on `row` (the session's) and `cfg`: `llm.args` as given.
+pub(crate) fn draft_start<'a>(
+    row: &'static crate::agent::Row,
+    cfg: &'a LlmConfig,
+) -> crate::agent::Start<'a> {
+    crate::agent::Start::on(row, crate::agent::Role::Draft, cfg)
 }
 
 /// A draft's answer for `hunk` of `doc_id`: the process, the review waiting for it, the stream into it — a turn
@@ -810,7 +830,7 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
         return Err(why);
     }
     let what = "draft";
-    let cfg = ed.config.llm.clone();
+    let (row, cfg) = (session_row(ed), ed.config.llm.clone());
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
     // (its own process, started now: posix_spawn returns at once, claude's start is the child's)
@@ -822,63 +842,68 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
         crate::agent::Place { dir: &ed.workspace.root, given: ed.claude_env.as_ref(), cred: Some(&cred) };
     let first =
         crate::agent::First { tools: false, prompt: Some(crate::agent::Prompt::Text(prompt.to_string())) };
-    let started = crate::agent::start(&draft_start(&cfg), at, first, true, ed.events.sender(), move |ev| {
-        Some(match ev {
-            Event::Thinking | Event::Thought(_) => Box::new(move |ed: &mut Editor| {
-                if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
-                    r.thinking = true;
+    let started =
+        crate::agent::start(&draft_start(row, &cfg), at, first, true, ed.events.sender(), move |ev| {
+            Some(match ev {
+                Event::Thinking | Event::Thought(_) => Box::new(move |ed: &mut Editor| {
+                    if let Some(r) =
+                        ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation)
+                    {
+                        r.thinking = true;
+                    }
+                }),
+                Event::Text(t) => Box::new(move |ed: &mut Editor| {
+                    if let Some(r) =
+                        ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation)
+                    {
+                        r.thinking = false;
+                        r.streamed.push_str(&t);
+                    }
+                }),
+                Event::Done(r) => {
+                    let result = r.map(|out| vec![answer_of(&out)]);
+                    Box::new(move |ed: &mut Editor| on_result(ed, generation, result))
                 }
-            }),
-            Event::Text(t) => Box::new(move |ed: &mut Editor| {
-                if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
-                    r.thinking = false;
-                    r.streamed.push_str(&t);
+                // (what it cost is the session's too — a turn of its own, beside the chat's conversation; a
+                // result that reports nothing has nothing to add)
+                Event::Spent(s) if !s.counts.any() && s.total_cost.is_none() => return None,
+                Event::Spent(s) => Box::new(move |ed: &mut Editor| {
+                    ed.workspace.claude.usage.aside(s, what);
+                    ed.calls_record();
+                    crate::usage::view_sync(ed);
+                }),
+                // (the account's limits, whichever claude says them)
+                Event::Limits(r) => Box::new(move |ed: &mut Editor| crate::limits::seen(ed, r)),
+                // (the credential it says it runs on — another than its billing's stops it: `billing.rs`)
+                Event::Conversation { key_source, .. } => {
+                    let role = crate::billing::Role::Ask;
+                    let said = crate::billing::checked(billing, keep, role, key_source.as_deref())?;
+                    Box::new(move |ed: &mut Editor| {
+                        crate::log::line("claude", "warn", &said);
+                        stop_waiting(ed, Some(generation), &said);
+                    })
                 }
-            }),
-            Event::Done(r) => {
-                let result = r.map(|out| vec![answer_of(&out)]);
-                Box::new(move |ed: &mut Editor| on_result(ed, generation, result))
-            }
-            // (what it cost is the session's too — a turn of its own, beside the chat's conversation; a
-            // result that reports nothing has nothing to add)
-            Event::Spent(s) if !s.counts.any() && s.total_cost.is_none() => return None,
-            Event::Spent(s) => Box::new(move |ed: &mut Editor| {
-                ed.workspace.claude.usage.aside(s, what);
-                ed.calls_record();
-                crate::usage::view_sync(ed);
-            }),
-            // (the account's limits, whichever claude says them)
-            Event::Limits(r) => Box::new(move |ed: &mut Editor| crate::limits::seen(ed, r)),
-            // (the credential it says it runs on — another than its billing's stops it: `billing.rs`)
-            Event::Conversation { key_source, .. } => {
-                let role = crate::billing::Role::Ask;
-                let said = crate::billing::checked(billing, keep, role, key_source.as_deref())?;
-                Box::new(move |ed: &mut Editor| {
-                    crate::log::line("claude", "warn", &said);
-                    stop_waiting(ed, Some(generation), &said);
-                })
-            }
-            // a draft runs without tools, and its conversation isn't kept
-            Event::Requesting(_)
-            | Event::Retry(_)
-            | Event::Money(_)
-            | Event::Usage(_)
-            | Event::Answered(_)
-            | Event::Ready { .. }
-            | Event::Tool { .. }
-            | Event::Writing(_)
-            | Event::ThinkingBlock(_)
-            | Event::ToolResult { .. }
-            | Event::Searched(_)
-            | Event::Mcp { .. }
-            | Event::Permission { .. }
-            | Event::Compaction(_)
-            | Event::Exit(_) => {
-                return None;
-            }
+                // a draft runs without tools, and its conversation isn't kept
+                Event::Requesting(_)
+                | Event::Retry(_)
+                | Event::Money(_)
+                | Event::Usage(_)
+                | Event::Answered(_)
+                | Event::Ready { .. }
+                | Event::Tool { .. }
+                | Event::Writing(_)
+                | Event::ThinkingBlock(_)
+                | Event::ToolResult { .. }
+                | Event::Searched(_)
+                | Event::Mcp { .. }
+                | Event::Permission { .. }
+                | Event::Compaction(_)
+                | Event::Exit(_) => {
+                    return None;
+                }
+            })
         })
-    })
-    .map_err(|e| e.said(&cfg.command, false))?;
+        .map_err(|e| e.said(&cfg.command, false))?;
     // (its handle dropped: its stdin closes after the message)
     ed.llm_generation = generation;
     ed.workspace.claude.review = Some(Review::new(generation, doc_id, instruction, vec![hunk]));

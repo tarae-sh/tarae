@@ -61,6 +61,7 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `llm.command` | string | `"claude"` | LLM CLI speaking claude's stream-json protocol |
+| `llm.agent` | `"claude"` · `"agy"` | `"claude"` | The agent a new session starts on — "claude" (Claude Code) or "agy" (Antigravity's agy, on PATH); a session keeps the one it began on |
 | `llm.args` | list of strings | `["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", ""]` | Arguments for llm.command (default: claude -p with speed flags) |
 | `llm.model` | string | `""` | Model for llm.command, e.g. "haiku" ("" = the CLI's default) |
 | `llm.effort` | `""` · `"low"` · `"medium"` · `"high"` · `"xhigh"` · `"max"` | `""` | How hard Claude thinks, for models that take it ("" = the model's default) |

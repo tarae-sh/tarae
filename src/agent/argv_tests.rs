@@ -1,6 +1,6 @@
 //! Landing 4's proof: every claude tarae starts gets the argv it got before Claude's flags moved into its wire.
 
-use crate::agent::Start;
+use crate::agent::{CLAUDE, Start};
 use crate::billing::Credential;
 use crate::llm::LlmConfig;
 
@@ -8,7 +8,7 @@ use crate::llm::LlmConfig;
 /// after its flag as `<system>`.
 fn line(cfg: &LlmConfig, extra: &[String]) -> String {
     let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
-    let s = Start::new(crate::agent::Role::Draft, cfg);
+    let s = Start::on(&CLAUDE, crate::agent::Role::Draft, cfg);
     let dir = std::env::temp_dir();
     quoted(
         &crate::agent::claude::command(&s, &cfg.args, &extra, &dir, None, &Credential::Subscription).unwrap(),
@@ -80,18 +80,21 @@ fn argvs() -> Vec<(String, String)> {
             }
         }
         // `space i`'s
-        out.push((format!("ask · {name}"), line_of(&crate::ask::agent_start(&base))));
+        out.push((format!("ask · {name}"), line_of(&crate::ask::agent_start(&CLAUDE, &base))));
         // The reviewer's, each role
         for role in
             [crate::reviewer::Role::One, crate::reviewer::Role::Angle(0), crate::reviewer::Role::Skeptic(0)]
         {
-            out.push((format!("reviewer {role:?} · {name}"), line_of(&crate::reviewer::start(&base, role))));
+            out.push((
+                format!("reviewer {role:?} · {name}"),
+                line_of(&crate::reviewer::start(&CLAUDE, &base, role)),
+            ));
         }
         // A commit draft's
-        out.push((format!("draft · {name}"), line_of(&crate::llm::draft_start(&base))));
+        out.push((format!("draft · {name}"), line_of(&crate::llm::draft_start(&CLAUDE, &base))));
         // The web search's helper
         let web = crate::web::search::config(base.clone(), "");
-        out.push((format!("web search · {name}"), line_of(&crate::web::search::helper(&web))));
+        out.push((format!("web search · {name}"), line_of(&crate::web::search::helper(&CLAUDE, &web))));
     }
     // Auto cards' reviewer (its own flags, whatever `llm.args` says)
     let cards = LlmConfig {
