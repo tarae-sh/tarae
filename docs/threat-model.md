@@ -159,6 +159,25 @@ Kept:
   `sandbox::gitfolders::tests::a_git_folder_where_the_git_dir_is_the_project_keeps_its_hooks_and_config` ·
   `hooks::tests::a_hooks_folder_in_a_kept_git_folder_is_the_sandboxs` (shown, macOS/Linux) ·
   `sandbox::gitfolders::tests::a_git_folders_links_are_followed_to_a_bound_in_name_order` (rule)
+- `.repo`, by name, as `.git` is (the tools pack's `protect`; the user's word, 2026-11-16): Android `repo` keeps its
+  checkouts' git folders there (`projects/`, `project-objects/`: each checkout's `.git` links lead there, its hooks
+  and config among them) and its own Python, which `repo sync` runs outside the sandbox (`.repo/repo/`). Kept by the
+  name, a `repo` top costs a run nothing per checkout: measured at 300 checkouts, 3 targets kept and 0 locks, the
+  rule 1.5 ms, where without the name macOS's cap kept ~3 of the 300 checkouts' git folders and the rest's hooks were
+  written. A run's `repo sync` or `repo start` there is refused, as its `git commit` is; so is a write in a folder
+  named `.repo` that isn't `repo`'s. The refusal says both.
+  test: `sandbox::gitfolders::tests::a_repo_tops_hooks_are_refused_to_runs` (shown, macOS/Linux) ·
+  `sandbox::gitfolders::tests::a_write_refused_under_repo_says_why` ·
+  `sandbox::gitfolders::tests::a_repo_tops_git_folders_are_kept_or_said` (rule)
+- A nested checkout's git folder by another name (`sub/.git` → `sub/gitdata`), found by the walk before each run, by
+  the same rule (#609 L2): Linux keeps every one; macOS keeps them within the cap its locks share (`GIT_LOCKS_MAX`,
+  32 with the project's ways, the folders first). The checkout's own folders that hold its git folder are on its way
+  (`mv sub subx` is refused). One a protected name already holds (a submodule's, in `.git/modules`; a `repo`
+  checkout's, in `.repo`) is the name's. The hooks card judges a checkout's hooks by the project's root, not the
+  checkout's top, once an action.
+  test: `sandbox::gitfolders::tests::a_nested_checkouts_git_folder_is_kept_from_runs_and_its_way_locked` ·
+  `sandbox::gitfolders::tests::a_submodules_git_folder_is_held_by_its_name` ·
+  `hooks::tests::a_nested_checkouts_hooks_in_the_project_are_judged_by_its_root`
 - `llm.sandbox-protect`'s paths: the folders on the way to each can't be removed, renamed or replaced either (macOS
   kept the path alone until #609: `mv a a2 && ln -s a2 a` put `a/b` in a run's hands).
   test: `sandbox::gitfolders::tests::a_protected_paths_folders_are_kept_as_a_git_folders_way` (shown, macOS/Linux)
@@ -259,10 +278,17 @@ Not kept:
   a link on the way or a kept path not there now pays it on every tier, tier own's too: a mount can't sit on what
   isn't there. The run's report says why a new file there was refused.
   test: `sandbox::gitfolders::tests::a_folder_on_a_git_folders_way_says_why_it_takes_no_new_file`
-- **A nested checkout's git folder named by its `.git` file** (`sub/.git` → `sub/gitdata`): only `.git` by name is
-  kept there until #609's second landing. And macOS: a git folder whose way passes `GIT_LOCKS_MAX` (32) paths isn't
-  locked (writes under it are still refused); the run's rules name it. A `.git` folder of more than 256 entries has
-  none of its links followed, said in the rules too.
+- **macOS: nested checkouts' git folders past the cap.** The walk's locks share `GIT_LOCKS_MAX` (32: each cost on
+  every command's start grows with the square of their count, G33's budget): a nested git folder past it isn't kept,
+  and one kept whose way doesn't fit isn't locked (writes under it are still refused). Many checkouts whose git
+  folders are in one store not under `.repo` (300, ten links each) get 32 of their 3,000 git folders kept, three
+  checkouts whole, their ways unlocked: the rest's `hooks` and `config` are written by runs. The run's rules say it in
+  counts, never a list. A nested
+  checkout past the walk's 20,000 entries isn't found; the rules name the folders not looked through. The project's
+  own git folder whose way passes the cap is said the same way. A `.git` folder of more than 256 entries has none of
+  its links followed, said in the rules too.
+  test: `sandbox::gitfolders::tests::a_repo_tops_git_folders_are_kept_or_said` ·
+  `sandbox::gitfolders::tests::a_nested_checkout_past_the_walks_cap_is_named`
 - **Names no pack knows.** A tool that runs a file by another name (`Taskfile.yml`, `noxfile.py`,
   `.pre-commit-config.yaml`) is protected only once a pack lists it or you add it to `llm.sandbox-protect`.
 - **What you accept in a review.** A `build.rs` you accept runs at your next build — and rust-analyzer runs it as

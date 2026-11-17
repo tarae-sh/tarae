@@ -117,6 +117,9 @@ pub struct Confine {
     /// target's way — `gitfolders::shut_by_marks`), not among `closed`: said as those are (`takes_no_new`), nothing
     /// granted by it — no `REMOVE_DIR`, no `Kept`.
     pub marked: Vec<PathBuf>,
+    /// What its run keeps of the nested checkouts' git folders (#609 L2, `gitfolders::nested_kept`): read before
+    /// it, so out of the policy's key (D14) — the words read it.
+    pub git: super::gitfolders::GitKept,
     /// The folders a run makes files in but can't read them back until its next run — each holds a file named
     /// like a key, or one below it (`grant_around`, 7b).
     pub unread: Vec<PathBuf>,
@@ -231,6 +234,7 @@ impl PartialEq for Confine {
             && self.no_userns == other.no_userns
             && self.closed == other.closed
             && self.marked == other.marked
+            && self.git == other.git
             && self.unread == other.unread
             && self.covers == other.covers
             && self.split_why == other.split_why
@@ -1012,6 +1016,11 @@ pub fn there(root: &Path, extra: &[PathBuf], open: &[PathBuf]) -> There {
         for e in entries.flatten() {
             let path = e.path();
             let Ok(t) = e.file_type() else { continue };
+            // (a checkout below the root, its own git folder read before the run — #609 L2; the root's is the
+            // policy's)
+            if dir != root && e.file_name() == ".git" {
+                out.checkouts.push(dir.to_path_buf());
+            }
             let protected = !within && super::protected_in(root, &path);
             if protected {
                 out.protected.push(path.clone());
@@ -1051,7 +1060,7 @@ pub fn there(root: &Path, extra: &[PathBuf], open: &[PathBuf]) -> There {
         }
     }
     let protected = extra.iter().filter(|p| p.symlink_metadata().is_ok()).cloned().collect();
-    let mut out = There { protected, keys: Vec::new(), unseen: Vec::new() };
+    let mut out = There { protected, keys: Vec::new(), unseen: Vec::new(), checkouts: Vec::new() };
     walk(root, root, open, false, &mut out);
     // (each key with more than one name: its file, how many names it has, the key)
     let linked: Vec<((u64, u64), u64, PathBuf)> = {
@@ -1088,6 +1097,8 @@ pub struct OpenedNames {
     pub names: Vec<(PathBuf, Vec<PathBuf>)>,
     /// What it couldn't look through, closed whole instead (a name there is never known), and why each.
     pub closed: Vec<(PathBuf, String)>,
+    /// The checkouts below the folders (a folder holding a `.git` of its own), in the walk's order (#609 L2).
+    pub checkouts: Vec<PathBuf>,
 }
 
 /// The protected names below each folder in `opened` (`Policy.opened`), found before each run as the key places'
@@ -1165,6 +1176,9 @@ pub fn opened_names(opened: &[PathBuf], mounts: &[PathBuf], remote: &[PathBuf], 
         for (name, e) in listed {
             let path = dir.join(&name);
             if super::protected_in(o, &path) {
+                if name == ".git" && dir != *o {
+                    out.checkouts.push(dir.clone());
+                }
                 out.names[i].1.push(path);
                 continue;
             }
@@ -1197,6 +1211,9 @@ pub struct There {
     /// The keys with a name outside the project (more names than the project holds): tarae can't see it, and it may
     /// be read there.
     pub unseen: Vec<PathBuf>,
+    /// The checkouts below the root (a folder holding a `.git` of its own), in the walk's order: their git folders
+    /// are read before the run (`gitfolders::nested_read`, #609 L2).
+    pub checkouts: Vec<PathBuf>,
 }
 
 // (the most entries the walk of the key places outside the project reads before a run, D-i — macOS's walk of the
@@ -1776,7 +1793,7 @@ pub(super) fn confine_in(
     let pts_hole: Vec<PathBuf> = ptys.map(|_| pts.to_path_buf()).into_iter().collect();
     // The project's protected names, and its files named like keys (7b): no place granted around those reads
     // them — each folder on the way down opened entry by entry (`grant_around`); every other folder stays one rule
-    let There { protected: found, mut keys, mut unseen } =
+    let There { protected: mut found, mut keys, mut unseen, checkouts } =
         there(&p.root, &p.protect, p.keys.as_deref().unwrap_or_default());
     if p.keys.is_none() {
         keys.clear();
@@ -1796,6 +1813,25 @@ pub(super) fn confine_in(
         let remote = own.table.as_deref().map(remote_points).unwrap_or_default();
         opened_names(&p.opened, &points, &remote, WALK_MAX)
     };
+    let mut opened = opened;
+    // (#609 L2: the git folders of the checkouts below the root and the opened folders, read once a path — one
+    // memo — and kept by the policy's rule, none capped: each kept target that's there is closed as a protected
+    // name is where it lies (sealed with them, or a hole), and the marks on its way, or itself not there, are
+    // holes as #609's are — below)
+    let nested = {
+        let mut memo = super::gitfolders::Memo::default();
+        let all: Vec<PathBuf> = checkouts.iter().chain(&opened.checkouts).cloned().collect();
+        let read = super::gitfolders::nested_read(&all, &mut memo);
+        let (kept_in, writes) = p.git_places();
+        let held = super::gitfolders::sorted(p.protect.iter().cloned());
+        super::gitfolders::nested_kept(&read, &kept_in, &writes, &held, None)
+    };
+    for t in nested.protect.iter().filter(|t| t.symlink_metadata().is_ok()) {
+        match opened.names.iter_mut().find(|(o, _)| t.starts_with(o)) {
+            Some((_, names)) => names.push(t.clone()),
+            None => found.push(t.clone()),
+        }
+    }
     let ways: Vec<(PathBuf, PathBuf)> = match &table {
         Some(table) => keys.iter().flat_map(|k| ways_through(table, k)).collect(),
         None => Vec::new(),
@@ -2049,7 +2085,8 @@ pub(super) fn confine_in(
         .git
         .marks
         .iter()
-        .chain(p.protect.iter().filter(|k| k.symlink_metadata().is_err()))
+        .chain(&nested.marks)
+        .chain(p.protect.iter().chain(&nested.protect).filter(|k| k.symlink_metadata().is_err()))
         .cloned()
         .collect();
     // (the break-once: no marks — a dangling way's missing step made by a run)
@@ -2160,6 +2197,7 @@ pub(super) fn confine_in(
         made: Arc::new(made),
         closed,
         marked,
+        git: nested,
         unread,
         covers: Covers { seals, pins, ..covers.unwrap_or_default() },
         split_why,

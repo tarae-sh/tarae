@@ -555,7 +555,11 @@ impl Guard {
         let (mut secret, mut services, mut copied) = (Vec::new(), Vec::new(), Vec::new());
         let (mut homes, mut ports, mut keys) = (Vec::new(), Vec::new(), Vec::new());
         let (mut beyond, mut temp_keys, mut locked) = (Vec::new(), Vec::new(), Vec::new());
-        let (mut cloned, mut gits) = (Vec::new(), Vec::new());
+        let (mut cloned, mut gits, mut repo) = (Vec::new(), Vec::new(), false);
+        // (git's folder by another name holding a path: the policy's, else a nested checkout's kept before the run —
+        // #609 L2)
+        let git_holding =
+            |path: &Path| p.git.holding(path).or_else(|| p.nested_git().and_then(|g| g.holding(path)));
         // (reads refused under a moved home's default place, by home — #521)
         let mut moved: Vec<Vec<String>> = vec![Vec::new(); p.moved_homes.len()];
         let refused_port = &crate::sandboxpack::get().refused_port;
@@ -607,7 +611,7 @@ impl Guard {
                 }),
                 // (git's folder by another name, or a path on the way to it: said as `.git` is, naming it; an
                 // `llm.sandbox-protect` entry or the way to one, as a protected name — #609)
-                _ if p.git.holding(path).is_some() => match p.git.holding(path) {
+                _ if git_holding(path).is_some() => match git_holding(path) {
                     Some((t, true)) => {
                         git = true;
                         gits.push(t.to_path_buf());
@@ -616,9 +620,11 @@ impl Guard {
                     None => {}
                 },
                 Ok(rel) if protected_in(&p.root, path) => {
-                    match rel.iter().any(|c| c.eq_ignore_ascii_case(".git")) {
-                        true => git = true,
-                        false => names.push(rel.display().to_string()),
+                    let named = |n: &str| rel.iter().any(|c| c.eq_ignore_ascii_case(n));
+                    match (named(".git"), named(".repo")) {
+                        (true, _) => git = true,
+                        (false, true) => repo = true,
+                        (false, false) => names.push(rel.display().to_string()),
                     }
                 }
                 // (what the key rule refused: a read; a change or a removal where runs write — B1, macOS; another
@@ -787,23 +793,33 @@ impl Guard {
         }
         if git {
             // (in the order they're kept: a place that's git's folder itself says `hooks and config`)
-            let gits: Vec<String> = p
-                .git
-                .git
-                .iter()
-                .filter(|g| gits.contains(*g))
-                .map(|g| crate::allow::from_project(&p.root, g))
-                .collect();
-            let here = match gits.as_slice() {
+            // (a nested checkout's after the policy's: at most `NAMED`, then how many more)
+            let nested = p.nested_git().into_iter().flat_map(|g| &g.git);
+            let all: Vec<&PathBuf> = p.git.git.iter().chain(nested).filter(|g| gits.contains(*g)).collect();
+            let shown = |g: &PathBuf| crate::allow::from_project(&p.root, g);
+            let here = match all.as_slice() {
                 [] => String::new(),
-                [one] => format!(", here {one},"),
-                [rest @ .., last] => format!(", here {} and {last},", rest.join(", ")),
+                [one] => format!(", here {},", shown(one)),
+                [rest @ .., last] if all.len() <= gitfolders::NAMED => {
+                    let rest: Vec<String> = rest.iter().map(|g| shown(g)).collect();
+                    format!(", here {} and {},", rest.join(", "), shown(last))
+                }
+                all => format!(", here {},", gitfolders::named(all, shown)),
             };
             s.push_str(&format!(
                 "Git's own folder{here} is kept from your commands: committing, staging, switching branches and the \
                  like are the user's (their git tab) — ask them, or ask to run it outside the sandbox \
                  (outside_sandbox, with your reason).\n",
             ));
+        }
+        if repo {
+            // (#609: `repo`'s folder, kept as git's own is — the user's word 2026-11-16; one that isn't `repo`'s too)
+            s.push_str(
+                ".repo is kept from your commands as git's own folder is: it's where Android's repo keeps its \
+                 checkouts' git folders and its own code, so repo sync, repo start and the like are the user's — ask \
+                 them, or ask to run it outside the sandbox (outside_sandbox, with your reason). A folder named .repo \
+                 that isn't repo's is kept all the same.\n",
+            );
         }
         for i in caches {
             s.push_str(&p.caches_said[i].kept());
@@ -1111,7 +1127,8 @@ impl Guard {
                     })
                     .collect();
                 // (#609: git's folders by other names, and what of them it couldn't lock or look through)
-                let names_where = format!("{names_where}{}", p.git.said(&p.root, p.supervised));
+                let kept: Vec<&gitfolders::GitKept> = std::iter::once(&p.git).chain(p.nested_git()).collect();
+                let names_where = format!("{names_where}{}", gitfolders::said(&kept, &p.root, p.supervised));
                 format!(
                     "In tarae's sandbox: it could {reads}write only in {project} — not {names}, {names_where} \
                      (your edits change those) — temp folders and the toolchain's own{crates}{net}.{gone}{granted}\
@@ -4448,11 +4465,35 @@ pub fn protected_names() -> impl Iterator<Item = &'static str> {
 /// Where a protected name (`protected_names`) starts among `parts` (a path's, from the project's root) —
 /// each name's parts matched in a row, in any case.
 pub fn protected_at(parts: &[&std::ffi::OsStr]) -> Vec<usize> {
+    // (the names split once: the one-part ones lowercased in a set, a lookup a part — a rule over a `repo` top's
+    // 3,000 git folders asks it of each, #609 L2 — and the few of several parts matched in a row; a part that isn't
+    // UTF-8 can't be a name, which is)
+    static SPLIT: OnceLock<(std::collections::HashSet<String>, Vec<Vec<String>>)> = OnceLock::new();
+    let (single, multi) = SPLIT.get_or_init(|| {
+        let (mut single, mut multi) = (std::collections::HashSet::new(), Vec::new());
+        for name in protected_names() {
+            let low = name.to_ascii_lowercase();
+            match low.contains('/') {
+                true => multi.push(low.split('/').map(str::to_string).collect()),
+                false => drop(single.insert(low)),
+            }
+        }
+        (single, multi)
+    });
     let mut at = Vec::new();
-    for name in protected_names() {
-        let want: Vec<&str> = name.split('/').collect();
+    let mut low = String::new();
+    for (i, p) in parts.iter().enumerate() {
+        let Some(p) = p.to_str() else { continue };
+        low.clear();
+        low.push_str(p);
+        low.make_ascii_lowercase();
+        if single.contains(&low) {
+            at.push(i);
+        }
+    }
+    for want in multi {
         for (i, w) in parts.windows(want.len()).enumerate() {
-            if w.iter().zip(&want).all(|(p, n)| p.eq_ignore_ascii_case(n)) {
+            if w.iter().zip(want).all(|(p, n)| p.eq_ignore_ascii_case(n)) {
                 at.push(i);
             }
         }
@@ -4631,11 +4672,26 @@ fn any_case(name: &str) -> String {
 /// Whether the profile keeps `path` (real) from a run in the project at `root` by its name
 /// (`protected_names`, `outputs`) — the profile's rule, in Rust: the report names what it denied.
 pub fn protected_in(root: &Path, path: &Path) -> bool {
-    let Ok(rel) = path.strip_prefix(root) else { return false };
+    // (by bytes where the path's start with the root's at a separator — the same parts but a leading `.`, no name;
+    // `strip_prefix` parses both paths' components at every call, and a rule over thousands of paths asks this of
+    // each, #609 L2)
+    let fast = {
+        use std::os::unix::ffi::OsStrExt as _;
+        let (r, p) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+        let rest = p.strip_prefix(r).filter(|_| !r.ends_with(b"/")).and_then(|rest| rest.strip_prefix(b"/"));
+        rest.map(|rest| Path::new(std::ffi::OsStr::from_bytes(rest)))
+    };
+    let Some(rel) = fast.or_else(|| path.strip_prefix(root).ok()) else { return false };
     let parts: Vec<&std::ffi::OsStr> = rel.iter().collect();
     let at = protected_at(&parts);
-    let output = parts.iter().position(|p| outputs().iter().any(|o| *p == o.as_str()));
-    !at.is_empty() && !output.is_some_and(|o| at.iter().any(|&i| i > o))
+    if at.is_empty() {
+        return false;
+    }
+    // (tools' output names in a set, made once)
+    static OUTPUTS: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+    let outputs = OUTPUTS.get_or_init(|| outputs().iter().map(String::as_str).collect());
+    let output = parts.iter().position(|p| p.to_str().is_some_and(|p| outputs.contains(p)));
+    !output.is_some_and(|o| at.iter().any(|&i| i > o))
 }
 
 /// Whether `path` (real) is a file named like a key (`secretnames`, its exceptions taken out) in the project at
@@ -12822,6 +12878,8 @@ mod tests {
             ".idea",
             ".mcp.json",
             ".gitmodules",
+            // (the tools pack's: Android repo's checkouts' git folders and its own code — #609)
+            ".repo",
         ];
         let java = [
             "build.gradle",

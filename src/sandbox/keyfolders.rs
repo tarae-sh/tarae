@@ -111,6 +111,10 @@ pub struct KeyFolders {
     pub mounts: Vec<PathBuf>,
     /// The folders it couldn't read, and why — none for one gone, nor one the user may not open (another user's).
     pub failed: Vec<(PathBuf, String)>,
+    /// What the run keeps of the nested checkouts' git folders the walk found (#609 L2, `gitfolders::nested_kept`):
+    /// each kept target a `G<n>` the profile denies writes below, the paths on its way `GD<n>`s after the policy's —
+    /// together within what's left of `gitfolders::GIT_LOCKS_MAX`, the targets first, before the keys' lock.
+    pub git: super::gitfolders::GitKept,
 }
 
 impl KeyFolders {
@@ -140,18 +144,31 @@ impl KeyFolders {
     /// conversation (`Guard::report_with`, `Told::lock_cut`), with how many keys this run; which they are, the rules
     /// name (`said`). Nothing where every key found was locked.
     pub fn lock_said(&self) -> String {
-        if self.unlocked.is_empty() {
-            return String::new();
+        let mut s = String::new();
+        if !self.unlocked.is_empty() {
+            let n = self.unlocked.len();
+            s = format!(
+                "Before a command the folders between each file named like a key and its place are locked, key by key, \
+                 up to {} folders and {} KB of their paths: past them — {n} {} here — a folder holding one can be \
+                 moved or removed by a command.",
+                crate::features::thousands(LOCKS_MAX as u64),
+                LOCKS_BYTES / 1024,
+                if n == 1 { "key" } else { "keys" }
+            );
         }
-        let n = self.unlocked.len();
-        format!(
-            "Before a command the folders between each file named like a key and its place are locked, key by key, up \
-             to {} folders and {} KB of their paths: past them — {n} {} here — a folder holding one can be moved or \
-             removed by a command.",
-            crate::features::thousands(LOCKS_MAX as u64),
-            LOCKS_BYTES / 1024,
-            if n == 1 { "key" } else { "keys" }
-        )
+        // (#609 L2: the nested checkouts' git folders past the cap they share — a count, never a list)
+        let gits = self.git.dropped.len() + self.git.unlocked.len();
+        if gits > 0 {
+            s += &format!(
+                "{}Before a command the nested checkouts' git folders are kept and the paths on the way to each locked, \
+                 up to {} together with the project's: past them — {gits} {} here — a git folder isn't kept, or the \
+                 way to it can be swapped, by a command.",
+                if s.is_empty() { "" } else { " " },
+                super::gitfolders::GIT_LOCKS_MAX,
+                if gits == 1 { "git folder" } else { "git folders" }
+            );
+        }
+        s
     }
 
     /// What the run's rules say of what the walk didn't lock: the folders past its cap in the places, on another
@@ -173,7 +190,7 @@ impl KeyFolders {
         if !self.unwalked.is_empty() {
             s += &format!(
                 " The places it writes hold more than the {} entries looked through before a command: {} weren't, \
-                 and {moved}.",
+                 and {moved}, nor is a checkout's git folder found there kept.",
                 crate::features::thousands(WALK_MAX as u64),
                 names(&self.unwalked, "folders")
             );
@@ -346,6 +363,9 @@ fn walk_in(p: &Policy, caps: Caps, shared: &dyn Fn(&Path) -> bool) -> KeyFolders
     // outermost; and those where a key was found, whose walk ended there)
     let unwritten = |d: &Path| (!p.writes_folder(d)).then(|| d.to_path_buf());
     let mut ended: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // (the checkouts below a place but the shared temp folders, in the walk's order: a folder holding a `.git` of
+    // its own — #609 L2; a place's own is the policy's)
+    let mut checkouts: Vec<PathBuf> = Vec::new();
     // (breadth-first from `queue`, `left` entries at most: the folders it didn't reach — None, it reached all)
     let mut bfs = |mut queue: VecDeque<(usize, PathBuf, Option<PathBuf>)>,
                    left: &mut usize,
@@ -375,6 +395,9 @@ fn walk_in(p: &Policy, caps: Caps, shared: &dyn Fn(&Path) -> bool) -> KeyFolders
                 }
                 let path = dir.join(&name);
                 let Ok(t) = e.file_type() else { continue };
+                if name == ".git" && i < own && !another(&dir) && checkouts.last() != Some(&dir) {
+                    checkouts.push(dir.clone());
+                }
                 if t.is_dir() {
                     // (named by hash, no key names: git's objects and LFS's)
                     let hashed =
@@ -440,9 +463,21 @@ fn walk_in(p: &Policy, caps: Caps, shared: &dyn Fn(&Path) -> bool) -> KeyFolders
     };
     let mut folders: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let (mut bytes, mut full) = (0, false);
-    // (the ways to git's folders are locked first, in the same op's literals — #609, capped on their own at
-    // `gitfolders::GIT_LOCKS_MAX` — so the keys get what's left of both caps)
-    let gits = p.git.locks();
+    // (the nested checkouts' git folders, read once a path, kept within what the policy's ways leave of
+    // `gitfolders::GIT_LOCKS_MAX` — the targets, then their ways — #609 L2)
+    {
+        use super::gitfolders;
+        let read = gitfolders::nested_read(&checkouts, &mut gitfolders::Memo::default());
+        let (kept_in, writes) = p.git_places();
+        let held = gitfolders::sorted(p.protect.iter().cloned());
+        let left = gitfolders::GIT_LOCKS_MAX.saturating_sub(p.git.locks().len());
+        found.git = gitfolders::nested_kept(&read, &kept_in, &writes, &held, Some(left));
+    }
+    // (git's folders and the ways to them are locked first — #609, capped on their own at
+    // `gitfolders::GIT_LOCKS_MAX`, the nested checkouts' `G<n>` counted with them — so the keys get what's left
+    // of both caps)
+    let mut gits = p.git_locks_with(&found.git);
+    gits.extend(found.git.git.iter().cloned());
     let (git_count, git_bytes) = (gits.len(), gits.iter().map(|g| g.as_os_str().len()).sum::<usize>());
     for (i, k, from) in keys {
         if !full {

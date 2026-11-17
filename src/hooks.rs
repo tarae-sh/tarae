@@ -157,35 +157,53 @@ pub struct Wait {
     go: Go,
 }
 
-/// The hooks folder git uses in the checkout `top` (by real path), when that folder is inside it and a run could
-/// write it — not under a `.git` by name, nor under one of `kept`: git's folders the sandbox keeps by another name
-/// (`gitfolders::GitKept::held` — the policy's own rule, #609; a folder it leaves out is asked about). With `top` by
-/// its real path.
-pub fn folder(top: &Path, kept: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
+/// The hooks folder git uses in the checkout `top`, when a run could write it: inside the project at `root` (the
+/// checkout's top where none holds it) — a nested checkout's git folder outside it but in the project is a run's to
+/// write as well (#609 L2, Q2) —, not under a protected name (`.git` among them), nor under one of `kept`: git's
+/// folders the sandbox keeps by another name (`gitfolders::GitKept::held` — the policy's own rule, #609; a folder it
+/// leaves out is asked about). With `top` by its real path.
+pub fn folder(root: Option<&Path>, top: &Path, kept: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
     let path = |args: &[&str]| -> Option<PathBuf> {
         let p = PathBuf::from(git(top, args, None).ok()?.trim());
         Some(std::fs::canonicalize(&p).unwrap_or(p))
     };
-    let top = std::fs::canonicalize(top).unwrap_or_else(|_| top.to_path_buf());
     let dir = path(&["rev-parse", "--path-format=absolute", "--git-path", "hooks"])?;
-    let rel = dir.strip_prefix(&top).ok()?;
-    let named = rel.iter().any(|c| c.eq_ignore_ascii_case(".git"));
-    (!named && !kept.iter().any(|k| dir.starts_with(k))).then_some((top, dir))
+    folder_of(root, top, dir, kept)
 }
 
-/// Git's folders the sandbox keeps from runs in the checkout `top` by another name, their ways locked
-/// (`gitfolders::git_kept` of what `git_folders` reads — the same rule as the policy's, #609).
-fn kept(top: &Path) -> Vec<PathBuf> {
-    kept_within(top, crate::sandbox::gitfolders::GIT_LOCKS_MAX, cfg!(target_os = "linux"))
+/// `folder`, git's hooks folder `dir` (real) given.
+fn folder_of(root: Option<&Path>, top: &Path, dir: PathBuf, kept: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let top = real(top);
+    let root = root.map(real).filter(|r| top.starts_with(r)).unwrap_or_else(|| top.clone());
+    dir.strip_prefix(&root).ok()?;
+    use crate::sandbox::gitfolders::{sorted, under_any};
+    let held = crate::sandbox::protected_in(&root, &dir) || under_any(&dir, &sorted(kept.iter().cloned()));
+    (!held).then_some((top, dir))
 }
 
-/// `kept`, the lock's cap `cap` and the system's way (`linux`: every way kept) given — tests lower the cap.
-fn kept_within(top: &Path, cap: usize, linux: bool) -> Vec<PathBuf> {
+/// Git's folders the sandbox keeps from runs in the checkout `top` by another name, in the project at `root`, their
+/// ways locked (`gitfolders::git_kept` of what `git_folders` reads — the same rule as the policy's, #609).
+fn kept(root: Option<&Path>, top: &Path) -> Vec<PathBuf> {
+    kept_within(root, top, crate::sandbox::gitfolders::GIT_LOCKS_MAX, cfg!(target_os = "linux"))
+}
+
+/// `kept`, the lock's cap `cap` and the system's way (`linux`: every way kept) given — tests lower the cap. A
+/// checkout below the root is kept by the walk before each run (#609 L2): on Linux every one; on macOS within a cap
+/// shared in the walk's order, which only that walk knows — so none here, and the card asks (the safe side).
+fn kept_within(root: Option<&Path>, top: &Path, cap: usize, linux: bool) -> Vec<PathBuf> {
     use crate::sandbox::gitfolders;
-    let top = std::fs::canonicalize(top).unwrap_or_else(|_| top.to_path_buf());
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let top = real(top);
+    let root = root.map(real).filter(|r| top.starts_with(r)).unwrap_or_else(|| top.clone());
     let read = gitfolders::git_folders(&top);
-    let places = [top];
-    gitfolders::git_kept(&read, &places, &places, cap).held(linux)
+    let nested = top != root;
+    let places = [root];
+    match (nested, linux) {
+        (false, _) => gitfolders::git_kept(&read, &places, &places, cap).held(linux),
+        (true, true) => gitfolders::nested_kept(&read, &places, &places, &[], None).held(true),
+        (true, false) => Vec::new(),
+    }
 }
 
 /// The files of the hooks folder git uses in the checkout `top`, when that folder is inside it, that are
@@ -195,9 +213,24 @@ fn kept_within(top: &Path, cap: usize, linux: bool) -> Vec<PathBuf> {
 /// store at `store` (`Ask::top`'s file, its SHA-256) isn't asked about. What it can't look at — a file it
 /// can't read or that isn't a plain one, a folder it can't list or deeper than `DEPTH_MAX`, the files past
 /// `FILES_MAX` — is asked about too, never left out: it can't be shown, so only `n` is offered.
-pub fn unseen(top: &Path, base: &str, likely: &[&str], store: Option<&Path>) -> Vec<Hook> {
-    let Some((top, dir)) = folder(top, &kept(top)) else { return Vec::new() };
-    let rel_of = |p: &Path| p.strip_prefix(&top).ok().map(|r| r.to_string_lossy().into_owned());
+pub fn unseen(
+    root: Option<&Path>,
+    top: &Path,
+    base: &str,
+    likely: &[&str],
+    store: Option<&Path>,
+) -> Vec<Hook> {
+    let Some((top, dir)) = folder(root, top, &kept(root, top)) else { return Vec::new() };
+    // (from the checkout's top; a hooks folder outside it, in the project — a nested checkout's git folder — by `..`)
+    let root = root.and_then(|r| std::fs::canonicalize(r).ok()).filter(|r| top.starts_with(r));
+    let rel_of = |p: &Path| match p.strip_prefix(&top) {
+        Ok(r) => Some(r.to_string_lossy().into_owned()),
+        Err(_) => {
+            let root = root.as_deref()?;
+            let ups = top.strip_prefix(root).ok()?.components().count();
+            Some(format!("{}{}", "../".repeat(ups), p.strip_prefix(root).ok()?.to_string_lossy()))
+        }
+    };
     let mut out = Vec::new();
     // (a folder, or what's past the walk in it: `p` from the checkout's top, then `then`)
     let mut whole = |p: &Path, then: String, kind| {
@@ -259,16 +292,19 @@ pub fn unseen(top: &Path, base: &str, likely: &[&str], store: Option<&Path>) -> 
                 continue;
             }
         };
-        let then = git(top.as_path(), &["show", &format!("{base}:{rel}")], None);
-        if then.as_deref().is_ok_and(|t| t.as_bytes() == now.as_slice()) {
+        // (what the checkout's history has of it: none outside it)
+        let inside = p.starts_with(&top);
+        let then =
+            inside.then(|| git(top.as_path(), &["show", &format!("{base}:{rel}")], None).ok()).flatten();
+        if then.as_deref().is_some_and(|t| t.as_bytes() == now.as_slice()) {
             continue;
         }
         let hash = crate::sha256::digest(&now);
         if kept.as_ref().is_some_and(|k| k.state(&p, hash) == crate::trust::State::Trusted) {
             continue;
         }
-        let tracked = git(&top, &["ls-files", "--error-unmatch", "--", &rel], None).is_ok();
-        let kind = match (tracked, then.is_ok()) {
+        let tracked = inside && git(&top, &["ls-files", "--error-unmatch", "--", &rel], None).is_ok();
+        let kind = match (tracked, then.is_some()) {
             (false, _) => "untracked",
             (true, false) => "new",
             (true, true) => "changed",
@@ -279,6 +315,22 @@ pub fn unseen(top: &Path, base: &str, likely: &[&str], store: Option<&Path>) -> 
     // (the ones this action runs first)
     crate::sorting::by_key(&mut out, |h| !h.likely);
     out
+}
+
+/// `rel` (a hook's, from the checkout's real top: `..` for one outside it) joined to `top`, the `..` taken: the file's
+/// real path, as `unseen` read it.
+fn joined(top: &Path, rel: &str) -> PathBuf {
+    let mut p = top.to_path_buf();
+    for c in Path::new(rel).components() {
+        match c {
+            std::path::Component::ParentDir => {
+                p.pop();
+            }
+            std::path::Component::Normal(n) => p.push(n),
+            _ => {}
+        }
+    }
+    p
 }
 
 impl Editor {
@@ -294,10 +346,12 @@ impl Editor {
         // (against the session's base — else what its checkout has committed)
         let base = self.workspace.base.clone().unwrap_or_else(|| "HEAD".into());
         let (what, session, store) = (what.to_string(), self.workspace.id, self.trust_path.clone());
+        let root = self.workspace.root.clone();
         self.events.jobs().spawn(move || {
             let top = crate::gitpanel::top_of(&cwd).ok();
-            let hooks =
-                top.as_ref().map(|top| unseen(top, &base, names, store.as_deref())).unwrap_or_default();
+            let hooks = (top.as_ref())
+                .map(|top| unseen(Some(&root), top, &base, names, store.as_deref()))
+                .unwrap_or_default();
             move |ed: &mut Editor| {
                 let Some(top) = top.filter(|_| !hooks.is_empty()) else {
                     return go(ed, &[]);
@@ -337,7 +391,7 @@ impl Editor {
             .map(|h| crate::trust::Write::Answer {
                 kind: crate::trust::Kind::Hook,
                 place: None,
-                file: ask.top.join(&h.rel),
+                file: joined(&ask.top, &h.rel),
                 hash: h.hash,
                 trusted: true,
                 given,
@@ -451,12 +505,12 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let s = crate::scratch::Scratch::new("hooks-unreadable");
         let dir = checkout(&s, &[("pre-commit", b"#!/bin/sh\nexit 0\n")]);
-        assert_eq!(said(&unseen(&dir, "HEAD", COMMIT, None)), [], "as the last commit has it");
+        assert_eq!(said(&unseen(None, &dir, "HEAD", COMMIT, None)), [], "as the last commit has it");
         let hook = dir.join(".githooks/pre-commit");
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o111)).unwrap();
         // (as root every file reads: nothing to see there)
         if std::fs::File::open(&hook).is_err() {
-            let hooks = unseen(&dir, "HEAD", COMMIT, None);
+            let hooks = unseen(None, &dir, "HEAD", COMMIT, None);
             assert_eq!(said(&hooks), [(".githooks/pre-commit", "can't be read", false)]);
             assert!(!Ask { what: "commit".into(), base: "HEAD".into(), hooks, top: dir.clone() }.runnable());
         }
@@ -466,7 +520,7 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
         let (tx, rx) = std::sync::mpsc::channel();
         let top = dir.clone();
-        std::thread::spawn(move || tx.send(unseen(&top, "HEAD", COMMIT, None)));
+        std::thread::spawn(move || tx.send(unseen(None, &top, "HEAD", COMMIT, None)));
         let hooks = rx.recv_timeout(crate::test_results::PATIENCE).expect("never waits on a FIFO");
         assert_eq!(said(&hooks), [(".githooks/pipe", "not a plain file", false)]);
     }
@@ -481,15 +535,19 @@ mod tests {
         let s = crate::scratch::Scratch::new("hooks-gitdata");
         let top = std::fs::canonicalize(s.path()).unwrap();
         git_in(&top, &["init", "-q", "--separate-git-dir", "gitdata"]);
-        assert_eq!(folder(&top, &kept(&top)), None, "(a) git_folder kept");
-        assert_eq!(folder(&top, &[]), Some((top.clone(), top.join("gitdata/hooks"))), "(a) without the rule");
+        assert_eq!(folder(None, &top, &kept(None, &top)), None, "(a) git_folder kept");
+        assert_eq!(
+            folder(None, &top, &[]),
+            Some((top.clone(), top.join("gitdata/hooks"))),
+            "(a) without the rule"
+        );
         let s = crate::scratch::Scratch::new("hooks-bare");
         let top = std::fs::canonicalize(s.path()).unwrap();
         git_in(&top, &["init", "-q", "--bare"]);
         std::fs::write(top.join(".git"), "gitdir: .\n").unwrap();
-        assert_eq!(kept(&top), [top.join("hooks"), top.join("config")]);
-        assert_eq!(folder(&top, &kept(&top)), None, "(b) its hooks kept");
-        assert_eq!(folder(&top, &[]), Some((top.clone(), top.join("hooks"))), "(b) without the rule");
+        assert_eq!(kept(None, &top), [top.join("hooks"), top.join("config")]);
+        assert_eq!(folder(None, &top, &kept(None, &top)), None, "(b) its hooks kept");
+        assert_eq!(folder(None, &top, &[]), Some((top.clone(), top.join("hooks"))), "(b) without the rule");
         let s = crate::scratch::Scratch::new("hooks-linked");
         let top = std::fs::canonicalize(s.path()).unwrap();
         git_in(&top, &["init", "-q"]);
@@ -497,13 +555,64 @@ mod tests {
         std::fs::create_dir_all(top.join("tools/githooks")).unwrap();
         std::os::unix::fs::symlink("../tools/githooks", top.join(".git/hooks")).unwrap();
         let dir = top.join("tools/githooks");
-        assert_eq!(folder(&top, &kept_within(&top, 32, false)), None, "(c) its way locked");
+        assert_eq!(folder(None, &top, &kept_within(None, &top, 32, false)), None, "(c) its way locked");
         assert_eq!(
-            folder(&top, &kept_within(&top, 0, false)),
+            folder(None, &top, &kept_within(None, &top, 0, false)),
             Some((top.clone(), dir.clone())),
             "(c) past the cap"
         );
-        assert_eq!(folder(&top, &kept_within(&top, 0, true)), None, "(c) Linux's way kept whatever the cap");
+        assert_eq!(
+            folder(None, &top, &kept_within(None, &top, 0, true)),
+            None,
+            "(c) Linux's way kept whatever the cap"
+        );
+    }
+
+    /// #609 L2, Q2: whether a run could write a checkout's hooks is judged by the project's root, not the checkout's
+    /// top — a nested checkout `sub` whose git folder lies outside it but in the project (`gitdir: ../gitdirs/sub`) is
+    /// asked about on macOS (what its walk keeps within the cap only that walk knows) and left to Linux's keeper, which
+    /// keeps every one; judged by the checkout alone it was never asked. Once an action: the one folder of the
+    /// checkout it acts in. At a `repo` top, by the name's switch (`REPO_NAMED`): held by `.repo`, or asked on macOS.
+    /// No git run: the hooks folder git would name is given. Broken by the checkout's top taken for the root.
+    #[test]
+    fn a_nested_checkouts_hooks_in_the_project_are_judged_by_its_root() {
+        use crate::sandbox::gitfolders::{REPO_NAMED, repo_top};
+        let s = crate::scratch::Scratch::new("hooks-nested");
+        let t = std::fs::canonicalize(s.path()).unwrap();
+        let sub = t.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), "gitdir: ../gitdirs/sub\n").unwrap();
+        let dir = t.join("gitdirs/sub/hooks");
+        std::fs::create_dir_all(&dir).unwrap();
+        let judged = |root: Option<&Path>, linux: bool| {
+            folder_of(root, &sub, dir.clone(), &kept_within(root, &sub, 32, linux))
+        };
+        assert_eq!(
+            judged(Some(&t), false),
+            Some((sub.clone(), dir.clone())),
+            "macOS: asked, this folder alone"
+        );
+        assert_eq!(judged(Some(&t), true), None, "Linux: the keeper's");
+        assert_eq!(judged(None, false), None, "by the checkout alone: outside it, never asked");
+        let s = crate::scratch::Scratch::new("hooks-repo-top");
+        let t = std::fs::canonicalize(s.path()).unwrap();
+        let c = repo_top(&t, 3).remove(0);
+        let dir = t.join(".repo/projects/d0/p0.git/hooks");
+        let mac = folder_of(Some(&t), &c, dir.clone(), &kept_within(Some(&t), &c, 32, false));
+        assert_eq!(mac, (!REPO_NAMED).then(|| (c.clone(), dir.clone())), "macOS at a repo top");
+        assert_eq!(folder_of(Some(&t), &c, dir.clone(), &kept_within(Some(&t), &c, 32, true)), None, "Linux");
+    }
+
+    /// A hook's `rel` from the checkout's top — `..` for one in the project outside it — is the file's real path again
+    /// where its `y` is kept.
+    #[test]
+    fn a_hooks_path_outside_its_checkout_is_kept_by_its_real_path() {
+        let top = Path::new("/w/p/d0/p0");
+        assert_eq!(
+            joined(top, "../../.repo/projects/d0/p0.git/hooks/pre-commit"),
+            Path::new("/w/p/.repo/projects/d0/p0.git/hooks/pre-commit")
+        );
+        assert_eq!(joined(top, ".githooks/pre-commit"), Path::new("/w/p/d0/p0/.githooks/pre-commit"));
     }
 
     /// auditfix2 F10: past what the walk looks at, the rest is asked about whole — 300 files committed as they
@@ -515,11 +624,11 @@ mod tests {
         let names: Vec<String> = (0..300).map(|i| format!("d{i:03}")).collect();
         let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"#!/bin/sh\n"[..])).collect();
         let dir = checkout(&s, &files);
-        let hooks = unseen(&dir, "HEAD", COMMIT, None);
+        let hooks = unseen(None, &dir, "HEAD", COMMIT, None);
         assert_eq!(said(&hooks), [(".githooks/… 44 more files", "not looked at", false)]);
         let s = crate::scratch::Scratch::new("hooks-deep");
         let dir = checkout(&s, &[("pre-commit", b"#!/bin/sh\n"), ("a/b/c/d/lib.sh", b"#!/bin/sh\n")]);
-        let hooks = unseen(&dir, "HEAD", COMMIT, None);
+        let hooks = unseen(None, &dir, "HEAD", COMMIT, None);
         assert_eq!(said(&hooks), [(".githooks/a/b/c/d/", "not looked at", false)]);
         let q = Ask { what: "commit".into(), base: "HEAD".into(), hooks, top: dir.clone() }.card().question;
         assert!(q.contains("\n\n.githooks/a/b/c/d/: not looked at — only n is offered"), "{q}");

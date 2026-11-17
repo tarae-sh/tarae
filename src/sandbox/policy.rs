@@ -850,10 +850,17 @@ impl Policy {
         // missing (#609): srt's `generateMoveBlockingRules`, both ops as srt has them — a step may be empty or not there
         // yet, so a rename onto it or one made there must be refused too (G33's key lock leaves create out: nothing
         // renames onto a folder holding a key). As literal parameters, as every path
-        let locks = if self.supervised { Vec::new() } else { self.git.locks() };
+        let locks = if self.supervised { Vec::new() } else { self.git_locks() };
         let locked: String = (0..locks.len()).map(|i| format!(" (literal (param \"GD{i}\"))")).collect();
         if !locked.is_empty() {
             p.push_str(&deny(&format!("file-write-unlink file-write-create{locked}")));
+        }
+        // …and the nested checkouts' git folders the walk before this run found and kept (#609 L2,
+        // `KeyFolders.git`): per run, so out of the policy's key
+        let n = if self.supervised { 0 } else { self.key_folders.git.git.len() };
+        let nested: String = (0..n).map(|i| format!(" (subpath (param \"G{i}\"))")).collect();
+        if !nested.is_empty() {
+            p.push_str(&deny(&format!("file-write*{nested}")));
         }
         // …the multiplexers' socket folders (they sit inside writable temp ones), cargo's caches
         let keep: String = (0..self.keep.len()).map(|i| format!(" (subpath (param \"K{i}\"))")).collect();
@@ -1622,6 +1629,40 @@ impl Policy {
         Vec::new()
     }
 
+    /// Where git's folders are kept and where runs write (`gitfolders::git_kept`'s `kept_in` and `writes`): the
+    /// project and the folders opened for writing; those and the other write places.
+    pub fn git_places(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let kept_in: Vec<PathBuf> =
+            std::iter::once(self.root.clone()).chain(self.opened.iter().cloned()).collect();
+        let writes = kept_in.iter().chain(&self.write).cloned().collect();
+        (kept_in, writes)
+    }
+
+    /// What its run keeps of the nested checkouts' git folders, found before it (#609 L2): macOS's walk
+    /// (`KeyFolders.git`), Linux's rules (`Confine.git`).
+    pub fn nested_git(&self) -> Option<&super::gitfolders::GitKept> {
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(c)) = &self.confine {
+            return Some(&c.git);
+        }
+        Some(&self.key_folders.git).filter(|g| *g != &super::gitfolders::GitKept::default())
+    }
+
+    /// Every path on the ways to git's folders the profile locks (`GD<n>`): the policy's, then the nested checkouts'
+    /// its walk found — sorted, once each.
+    pub fn git_locks(&self) -> Vec<PathBuf> {
+        self.git_locks_with(&self.key_folders.git)
+    }
+
+    /// `git_locks`, the nested checkouts' given (the walk, before it keeps them).
+    pub fn git_locks_with(&self, nested: &super::gitfolders::GitKept) -> Vec<PathBuf> {
+        let mut v = self.git.locks();
+        v.extend(nested.locks());
+        crate::sorting::sort(&mut v);
+        v.dedup();
+        v
+    }
+
     /// The profile's parameters (name, value).
     #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
     pub fn params(&self) -> Vec<(String, String)> {
@@ -1644,7 +1685,8 @@ impl Policy {
             v.extend(self.key_folders.folders.iter().enumerate().map(|(i, f)| (format!("KD{i}"), s(f))));
         }
         if !self.supervised {
-            v.extend(self.git.locks().iter().enumerate().map(|(i, f)| (format!("GD{i}"), s(f))));
+            v.extend(self.git_locks().iter().enumerate().map(|(i, f)| (format!("GD{i}"), s(f))));
+            v.extend(self.key_folders.git.git.iter().enumerate().map(|(i, f)| (format!("G{i}"), s(f))));
         }
         let r = &self.reads;
         v.extend(r.home.iter().map(|h| ("HOME".to_string(), s(h))));

@@ -6,6 +6,12 @@
 # Not direnv: a run's `sh -c` runs no prompt hook, so it has nothing to do — and `DIRENV_DIFF` is the exported
 # variables themselves, encoded, where no token check can see one.
 
+# What runs later outside Claude's sandbox, in every project (`packs::protect`): Android's `repo` keeps its
+# checkouts' git folders in `.repo` (`projects/`, `project-objects/` — each checkout's `.git` links lead there,
+# its hooks and config among them) and its own Python, which `repo sync` runs (`.repo/repo/`). Kept as `.git` is
+# (#609, the user's word 2026-11-16): a run's `repo sync` or `repo start` is refused, as its `git commit` is.
+protect = [".repo"]
+
 [sandbox]
 pass = ["MISE_*", "ASDF_*", "VOLTA_*", "SDKMAN_*"]
 # What the managers installed: an install's files, none closed by a name like a key's where a grant opened them
