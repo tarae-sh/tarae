@@ -310,9 +310,22 @@ pub fn held_for(ed: &Editor, role: crate::agent::Role) -> Option<String> {
 
 /// `held_for` for a start on `row` — a session's that isn't the one in place (`workspace_row`).
 pub fn held_on(ed: &Editor, row: &'static crate::agent::Row, role: crate::agent::Role) -> Option<String> {
-    if let Some(why) = config_held(ed) {
-        return Some(why);
-    }
+    config_held(ed).or_else(|| held_past_config(ed, row, role))
+}
+
+/// Whether `held_for(role)`'s hold lifts by itself: the config unread and nothing else — `config_read` starts the agent
+/// once it reads, and what waited goes. A tripped row (until you quit), one that can't be the role, one that keeps tools
+/// of its own: nothing starts it by itself, so nothing may wait for it (`Chat::starts_later`).
+pub fn held_lifts(ed: &Editor, role: crate::agent::Role) -> bool {
+    config_held(ed).is_some() && held_past_config(ed, session_row(ed), role).is_none()
+}
+
+/// `held_on`'s holds but the config's: the ones a config that reads again doesn't lift.
+fn held_past_config(
+    ed: &Editor,
+    row: &'static crate::agent::Row,
+    role: crate::agent::Role,
+) -> Option<String> {
     if ed.agents_tripped.contains(&row.name) {
         return Some(format!("no {} until you quit — it ran a tool of its own", row.name));
     }

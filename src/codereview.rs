@@ -5991,10 +5991,15 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
                 if k == 1 { "es" } else { "" }
             ));
         }
+        // (a hold that doesn't lift by itself — a tripped row's, until you quit: its reason said here, nothing queued)
         let who = crate::llm::session_row(ed).name;
-        not_sent(ed, &format!("couldn't reach its {who} — the findings are kept unsent"));
-        return ed
-            .set_warning(format!("couldn't reach {who} — the chat panel says why (the drafts are kept)"));
+        let held = crate::llm::held_for(ed, crate::agent::Role::Chat);
+        let (unsent, why) = match &held {
+            Some(why) => (format!("{why}; "), why.as_str()),
+            None => (String::new(), "the chat panel says why"),
+        };
+        not_sent(ed, &format!("couldn't reach its {who} — {unsent}the findings are kept unsent"));
+        return ed.set_warning(format!("couldn't reach {who} — {why} (the drafts are kept)"));
     }
     // (sent, they leave the code: their words are the message's, their lines places of its answer — flags, #388 Q9)
     let notes = &mut ed.workspace.claude.notes;

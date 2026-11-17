@@ -177,6 +177,116 @@ fn an_agents_other_version_is_said_once_a_version() {
     assert!(c.running(), "never refused");
 }
 
+/// `config`'s editor in `root`, its chat's agent a stand-in (`editor`'s).
+fn editor_in(config: Config, root: &std::path::Path) -> (Editor, Receiver<String>) {
+    let mut ed = Editor::with_root(config, root.to_path_buf());
+    let (tx, rx) = channel();
+    ed.claude_lines = Some(tx);
+    (ed, rx)
+}
+
+/// A review's draft of yours on `root/a.rs`, open: what `space v s` sends.
+fn drafted(ed: &mut Editor, root: &std::path::Path) {
+    let a = root.join("a.rs");
+    std::fs::write(&a, "fn a() {}\n").unwrap();
+    ed.open(&a).unwrap();
+    crate::notes::add(ed, &a, 0..1, crate::notes::By::You, "is this right?");
+}
+
+fn status(ed: &Editor) -> String {
+    ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default()
+}
+
+/// A tripped row's hold, as `llm::held_for` says it: until you quit.
+const TRIPPED: &str = "no stand-in until you quit — it ran a tool of its own";
+
+/// After a trip (guard 3: the row held until you quit), a review sent waits for nothing — nothing would send it: no
+/// `Later` queued, the drafts kept, the hold's reason said where "the chat panel says why" was.
+#[test]
+fn after_a_trip_a_review_queues_nothing_and_says_why() {
+    let s = crate::scratch::Scratch::new("held-trip-review");
+    let root = std::fs::canonicalize(s.path()).unwrap();
+    let (mut ed, rx) = editor_in(reads(), &root);
+    crate::chat::trip_for_test(&mut ed);
+    assert_eq!(crate::llm::held_for(&ed, crate::agent::Role::Chat).as_deref(), Some(TRIPPED));
+    rx.try_iter().for_each(drop);
+    drafted(&mut ed, &root);
+    ed.toasts.clear();
+    crate::codereview::send_as(&mut ed, Some(true));
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.sends.is_empty(), "nothing queued: {} waiting — {}", c.sends.len(), status(&ed));
+    assert!(!c.running(), "nothing started");
+    assert_eq!(ed.workspace.claude.notes.list.len(), 1, "the drafts kept");
+    assert_eq!(warnings(&ed), [format!("couldn't reach stand-in — {TRIPPED} (the drafts are kept)")]);
+    assert_eq!(rx.try_iter().count(), 0, "nothing reached an agent");
+}
+
+/// After a trip, a stopped rebase's ask waits for nothing (`waiting` stays empty): it's yours, said with the hold's
+/// reason, and `:rebase-continue` as before.
+#[test]
+fn after_a_trip_the_rebases_ask_doesnt_wait_and_says_why() {
+    let (mut ed, rx) = editor(reads());
+    crate::chat::trip_for_test(&mut ed);
+    rx.try_iter().for_each(drop);
+    ed.toasts.clear();
+    crate::rebase::ask_for_test(&mut ed, "resolve them");
+    assert!(!crate::rebase::ask_waits(&ed), "the ask doesn't wait — {}", status(&ed));
+    let warned = warnings(&ed);
+    let want = format!("— couldn't reach stand-in ({TRIPPED}); resolve them, then :rebase-continue");
+    assert!(warned.len() == 1 && warned[0].ends_with(&want), "{warned:?}");
+    assert_eq!(rx.try_iter().count(), 0, "nothing reached an agent");
+}
+
+/// The other hold, untouched: with the config unread (a hold that lifts by itself) a review sent queues and a rebase's
+/// ask waits, as before — and once it reads, what queued goes.
+#[test]
+fn with_the_config_unread_a_review_and_a_rebases_ask_still_wait() {
+    let s = crate::scratch::Scratch::new("held-config-review");
+    let root = std::fs::canonicalize(s.path()).unwrap();
+    let (mut ed, rx) = editor_in(parse(BROKEN).0, &root);
+    crate::chat::open(&mut ed);
+    drafted(&mut ed, &root);
+    crate::codereview::send_as(&mut ed, Some(true));
+    assert_eq!(
+        status(&ed),
+        "review queued — no agent until your config reads; its 1 comment goes once it's up"
+    );
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().sends.len(), 1, "the review waits");
+    crate::rebase::ask_for_test(&mut ed, "resolve them");
+    assert!(crate::rebase::ask_waits(&ed), "the ask waits — {}", status(&ed));
+    assert!(status(&ed).ends_with("— Claude is asked once it starts"), "{}", status(&ed));
+    assert_eq!(rx.try_iter().count(), 0, "nothing reached a claude");
+    ed.reload_config(reads(), Vec::new());
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().running(), "started once it reads");
+    assert!(rx.try_iter().any(|l| l.contains("is this right?")), "the review went");
+}
+
+/// After a trip, a config that goes unread and reads again (`chat::config_read`: the hold cleared, the gate opened,
+/// `ensure_proc` judging again) starts nothing and sends nothing — the trip's hold outlasts the config's, and what was
+/// sent meanwhile never queued.
+#[test]
+fn after_a_trip_a_config_reload_starts_and_sends_nothing() {
+    let s = crate::scratch::Scratch::new("held-trip-reload");
+    let root = std::fs::canonicalize(s.path()).unwrap();
+    let (mut ed, rx) = editor_in(reads(), &root);
+    crate::chat::trip_for_test(&mut ed);
+    rx.try_iter().for_each(drop);
+    let (broken, warned) = parse(BROKEN);
+    ed.reload_config(broken, warned);
+    // (both holds now: the config's said first, the trip's still there — so neither waits)
+    drafted(&mut ed, &root);
+    crate::codereview::send_as(&mut ed, Some(true));
+    crate::rebase::ask_for_test(&mut ed, "resolve them");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.sends.is_empty() && !crate::rebase::ask_waits(&ed), "nothing waits — {}", status(&ed));
+    ed.reload_config(reads(), Vec::new());
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(!c.running() && c.held, "nothing started: the trip's hold stays");
+    assert!(c.sends.is_empty() && c.queued.is_none(), "nothing queued");
+    assert_eq!(crate::llm::held_for(&ed, crate::agent::Role::Chat).as_deref(), Some(TRIPPED));
+    assert_eq!(rx.try_iter().count(), 0, "nothing reached an agent");
+}
+
 /// A config whose `llm.agent` is `row` (the stand-in's ACP row standing for agy, as no test starts agy).
 fn on(row: &'static crate::agent::Row) -> Config {
     let mut config = reads();

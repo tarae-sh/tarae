@@ -1836,11 +1836,15 @@ impl Editor {
                 r.waiting = Some(a);
                 self.set_status(format!("conflicts in {files} — {who} is asked once it starts"))
             }
-            // (not asked: it waits on you — the inbox lists it, its card goes on or aborts)
-            (false, false) => self.set_warning(format!(
-                "conflicts in {files} — couldn't reach {who} (the chat says why); resolve them, then \
-                 :rebase-continue"
-            )),
+            // (not asked: it waits on you — the inbox lists it, its card goes on or aborts; a hold that doesn't lift by
+            // itself, a tripped row's until you quit, said by its reason)
+            (false, false) => {
+                let why = crate::llm::held_for(self, crate::agent::Role::Chat)
+                    .unwrap_or_else(|| "the chat says why".into());
+                self.set_warning(format!(
+                    "conflicts in {files} — couldn't reach {who} ({why}); resolve them, then :rebase-continue"
+                ))
+            }
         }
     }
 
@@ -2993,6 +2997,12 @@ pub(crate) fn ask_for_test(ed: &mut Editor, question: &str) {
     });
     let a = Ask { question: question.into(), about: "<conflicts/>".into(), chip: "rebase".into() };
     ed.rebase_ask(a);
+}
+
+/// Tests elsewhere: whether the front session's rebase holds its ask for the agent's start or turn (`waiting`).
+#[cfg(test)]
+pub(crate) fn ask_waits(ed: &Editor) -> bool {
+    ed.workspace.rebase.as_ref().is_some_and(|r| r.waiting.is_some())
 }
 
 /// The front session's rebase stopped at a conflict its Claude resolved, the replayed commit's message

@@ -614,8 +614,12 @@ pub struct Chat {
     pub follow: crate::follow::Follow,
     /// How its next start differs, as its wire asked when the last one ended (`agent::again`) — None: as asked.
     again: Option<crate::agent::Again>,
-    /// Its claude would have started but the config doesn't read (`llm::held_for`): it starts once it does (`config_read`).
+    /// Its agent would have started but `llm::held_for` holds it: the config doesn't read (it starts once it does,
+    /// `config_read`), or its row tripped (until you quit), or another hold nothing lifts by itself.
     pub(crate) held: bool,
+    /// `held`'s hold lifts by itself (`llm::held_lifts`: the config unread and nothing else) — what's sent may wait for
+    /// it (`starts_later`); false for one that doesn't (a trip's), where nothing would send it.
+    held_lifts: bool,
     /// Its agent was stopped at its start (`agent::Ended::Unfit`): the top line says so, never "ready", until the next
     /// start.
     pub(crate) unfit: bool,
@@ -1238,6 +1242,7 @@ impl Chat {
             follow: Default::default(),
             again: None,
             held: false,
+            held_lifts: false,
             unfit: false,
             started_new: false,
             clear_asked: None,
@@ -1342,10 +1347,11 @@ impl Chat {
         self.proc.is_some()
     }
 
-    /// Its claude starts later, so what's sent waits for it: the project's Claude settings being read (`claudetrust.rs`),
-    /// or none until the config reads (`held`, `llm::held_for`).
+    /// Its claude starts later by itself, so what's sent may wait for it: the project's Claude settings being read
+    /// (`claudetrust.rs`), or none until the config reads (`held`, `llm::held_for`). Never for a hold that doesn't lift by
+    /// itself (`held_lifts`: a tripped row's, until you quit) — nothing would send what waited.
     pub(crate) fn starts_later(&self) -> bool {
-        self.starting() || (self.held && !self.running())
+        self.starting() || (self.held && self.held_lifts && !self.running())
     }
 
     /// Since when its agent has waited to start: the project's Claude settings being read (`claudetrust.rs`), or its
@@ -2477,7 +2483,7 @@ pub(crate) fn config_read(ed: &mut Editor) {
     for id in ids {
         ed.with_workspace(id, |ed| {
             if let Some(c) = ed.workspace.claude.chat.as_mut() {
-                c.held = false;
+                (c.held, c.held_lifts) = (false, false);
             }
             gate_opened(ed);
         });
@@ -2699,6 +2705,7 @@ fn ensure_proc(ed: &mut Editor) {
     let (web_search, code) = (ed.config.llm.web_search, ed.config.llm.code);
     // (judged by its conversation's agent: one that tripped is held until you quit — `llm::held_for`)
     let held = llm::held_for(ed, crate::agent::Role::Chat).is_some();
+    let lifts = held && llm::held_lifts(ed, crate::agent::Role::Chat);
     // (the session's row: its own once fixed, else the config's now — fixed by this start, `llm::session_row`)
     let row = llm::session_row(ed);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
@@ -2710,7 +2717,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.unfit = false;
     // (none while the config doesn't read — `llm::held_for`: the chat says why where it would start, and it starts once it
     // reads, `config_read`)
-    c.held = held;
+    (c.held, c.held_lifts) = (held, lifts);
     if c.held {
         return;
     }
@@ -2861,6 +2868,23 @@ fn version_once(ed: &mut Editor, row: &'static crate::agent::Row, version: Optio
 #[cfg(test)]
 pub(crate) fn stream_event(ed: &mut Editor, generation: u64, ev: Event) {
     on_event(ed, generation, ev)
+}
+
+/// For other modules' tests: the front chat on the stand-in's row (an ACP row, as agy's), its agent started on a
+/// message and then tripped (guard 3) as its wire ends it — the turn's end, then its exit: held until you quit.
+#[cfg(test)]
+pub(crate) fn trip_for_test(ed: &mut Editor) {
+    let mut c = Chat::new();
+    (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+    c.hidden = false;
+    ed.workspace.claude.chat = Some(c);
+    assert!(submit(ed, "go", None, None), "started before it tripped");
+    let g = ed.workspace.claude.chat.as_ref().unwrap().generation;
+    let said = "stand-in ran a tool of its own, run_command — stopped: it and everything it started ended.";
+    on_event(ed, g, Event::Done(Err(said.into())));
+    let kind = crate::agent::Ended::Tripped { tool: "run_command".into() };
+    on_event(ed, g, Event::Exit(crate::agent::Exit { said: said.into(), kind }));
+    assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.held && !c.running()), "held from the trip");
 }
 
 fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
@@ -3362,7 +3386,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 let name = c.agent.name;
                 // (held from here, the state the next send would find: the top line `▲ no …` and its row under the
                 // trip's note at once, never "ready" — `term::held_here`; a send then adds only its toast)
-                c.held = true;
+                (c.held, c.held_lifts) = (true, false);
                 if !c.msgs.iter().any(|m| m.role == Role::Note && m.text == err) {
                     c.msgs.push(Msg::new(Role::Note, err.clone(), ""));
                 }
