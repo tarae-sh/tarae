@@ -148,8 +148,11 @@ fn the_output_reader_says_no_denial_the_policy_wouldnt_make() {
                 _ => false,
             };
             assert!(policys, "{d:?} (reads {reads}, writes {writes}) from {out:?}");
-            // (`~/` alone is home, which no line spells but as `~`; `../` from the project a folder above it)
-            let home = std::env::var_os("HOME").is_some_and(|h| real == Path::new(&h));
+            // (`~/` alone is home, which no line spells but as `~`; `../` from the project a folder above it —
+            // home as written or its real path, the profile's form: a `HOME` under `/var` is `/private/var`'s)
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .is_some_and(|h| real == h || real == profile_path(&h));
             let above = Path::new(ROOT).starts_with(real);
             if d.op != "signal"
                 && let Some(name) = real.file_name()

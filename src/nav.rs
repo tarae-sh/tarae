@@ -3120,7 +3120,9 @@ mod tests {
     #[test]
     fn search_looks_inside_the_project() {
         let scratch = crate::scratch::Scratch::new("nav-search");
-        let dir = scratch.to_path_buf();
+        // (the project a folder down in the scratch one: its `..`, searched below as outside, is the test's own —
+        // the temp folder itself may hold tarae's state, from a `HOME` there, which no card opens)
+        let dir = scratch.join("p");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::create_dir_all(dir.join(".github")).unwrap();
         std::fs::write(dir.join("src/a.rs"), "fn Alpha() {}\nlet alpha = 1;\n// x\n").unwrap();

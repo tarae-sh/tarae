@@ -206,18 +206,40 @@ fn without_a_pin_the_binary_itself_is_checked() {
 /// The pins' folder is out of every sandboxed run's reach: no place a run may write (`sandbox::write_places`, the
 /// policy's own — on this system's sandbox) is it, holds it or is inside it, nor are tarae's cache's run homes
 /// near it. So between the check before a start and the shim's exec, nothing inside the sandbox can swap the pin.
+/// The home is the test's own, outside the temp folders, its state and cache where they are by default (in a process
+/// of its own: a test sets no variable of its binary) — a `HOME` in the temp folder, as the sessions' runs set it, is
+/// inside every test run's folders (`Here::runs`), and the test would judge its own stand-in. Never made (the check
+/// judges paths), in `/`, where only root makes a folder: nothing can stand there in its place.
 #[test]
 fn no_sandboxed_run_can_write_where_pins_are() {
-    let root = std::env::temp_dir().join(format!("tarae-nofile-places-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
-    let root = std::fs::canonicalize(&root).unwrap();
-    let Some(pins) = pins_dir() else {
-        eprintln!("nofile::tests::no_sandboxed_run_can_write_where_pins_are: no state folder here");
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "nofile::tests::pins_are_out_of_every_runs_reach", "--ignored", "--nocapture"])
+        .env(PLACES, "1")
+        .env("HOME", "/tarae-nofile-home")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "the pins' check failed:\n{stdout}\n{stderr}");
+    assert!(stdout.contains("1 passed"), "the pins' check didn't run:\n{stdout}\n{stderr}");
+}
+
+/// What tells `pins_are_out_of_every_runs_reach` its test started it.
+const PLACES: &str = "TARAE_NOFILE_PLACES";
+
+/// `no_sandboxed_run_can_write_where_pins_are`'s check, under the home it names.
+#[test]
+#[ignore = "run by no_sandboxed_run_can_write_where_pins_are with a home of its own"]
+fn pins_are_out_of_every_runs_reach() {
+    if std::env::var_os(PLACES).is_none() {
         return;
-    };
-    let pins = crate::sandbox::profile_path(&pins);
+    }
+    let scratch = crate::scratch::Scratch::new("nofile-places");
+    let root = crate::sandbox::profile_path(&scratch);
+    let pins = crate::sandbox::profile_path(&pins_dir().expect("the test's HOME"));
     let places = crate::sandbox::write_places(&root, &crate::llm::LlmConfig::default(), &[]);
-    std::fs::remove_dir_all(&root).ok();
     assert!(!places.is_empty(), "a run writes somewhere");
     for w in &places {
         assert!(!pins.starts_with(w) && !w.starts_with(&pins), "{} reaches {}", w.display(), pins.display());

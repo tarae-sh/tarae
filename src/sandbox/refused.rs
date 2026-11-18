@@ -74,7 +74,9 @@ struct Row {
 
 /// Runs `in_stand_in_home` in a child process whose `HOME` and `XDG_*` point at a scratch directory outside
 /// `/tmp` and `/var/folders`, so `config::state_dir()` and every path computed from the environment stay inside
-/// the scratch directory without calling `env::set_var`.
+/// the scratch directory without calling `env::set_var` — and its `GIT_CONFIG_GLOBAL` at the stand-in home's
+/// `.gitconfig`, whatever this process's says (the sessions' runs set one): the file whose token row 9 sees
+/// scrubbed is the one tarae copies for the run (`tokens::sources_on` follows the variable).
 #[test]
 fn must_be_refused() {
     if skipped("sandbox::refused::must_be_refused") {
@@ -96,6 +98,7 @@ fn must_be_refused() {
         .env("XDG_STATE_HOME", home.join(".local/state"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("GIT_CONFIG_GLOBAL", home.join(".gitconfig"))
         .env("TARAE_REFUSED_BASE", &base)
         .stdin(Stdio::null());
     // Row 26: the child's controlling terminal, a pty of the test's own (held open here until the child is done:
@@ -266,6 +269,8 @@ fn in_stand_in_home() {
     here.env.insert("XDG_STATE_HOME".into(), home.join(".local/state").into_os_string());
     here.env.insert("XDG_DATA_HOME".into(), home.join(".local/share").into_os_string());
     here.env.insert("XDG_CACHE_HOME".into(), home.join(".cache").into_os_string());
+    // (git's user settings: the stand-in home's, the token-holding file above — never the environment's)
+    here.env.insert("GIT_CONFIG_GLOBAL".into(), home.join(".gitconfig").into_os_string());
     for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "TARAE_SECRET"]
     {
         here.env.insert(k.into(), OsString::from(FAKE_TOKEN));
