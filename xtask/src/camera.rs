@@ -671,7 +671,7 @@ pub(crate) fn news_framed(
     // (moved up, on whole rows still: the nearest top that is, no lower than the move put it)
     match up == r {
         true => r,
-        false => on_rows(up, frame, size).into_iter().find(|c| c.y <= up.y + EPS).unwrap_or(up),
+        false => on_cells(up, frame, size).into_iter().find(|c| c.y <= up.y + EPS).unwrap_or(up),
     }
 }
 
@@ -775,7 +775,7 @@ const TAKEN_IN_MAX: f32 = 1.25;
 /// doesn't. Where no window does any of that, the card is taken in whatever it costs the zoom (a card wholly in or
 /// wholly out is the user's rule; the zoom gives way), to the whole screen if need be — a read the take then says it
 /// can't stand. Every card judged by what the frame shows of the window (`shown`), and every window as it holds on
-/// whole rows (`on_rows`). Inside the screen.
+/// whole rows and from a whole column (`on_cells`). Inside the screen.
 #[cfg(test)]
 pub(crate) fn framed(
     screen: &Cells,
@@ -862,7 +862,8 @@ fn shaped(
             meets && !whole
         })
     };
-    // (a window as it holds: on whole rows, near where it was placed, cutting no card and showing the target's cells)
+    // (a window as it holds: on whole rows from a whole column, near where it was placed, cutting no card and showing
+    // the target's cells)
     let settle = |window: Region| -> Option<Region> {
         let shows = |s: Region| {
             s.x <= target.x + AIR + EPS
@@ -870,7 +871,7 @@ fn shaped(
                 && s.y <= target.y + AIR + EPS
                 && target.y + target.h - AIR <= s.y + s.h + EPS
         };
-        (on_rows(window, frame, size).into_iter()).find(|&c| cuts(c).is_none() && shows(shown(c, frame)))
+        (on_cells(window, frame, size).into_iter()).find(|&c| cuts(c).is_none() && shows(shown(c, frame)))
     };
     let with = |want: Region, (r0, c0, r1, c1): Card| {
         let (x0, y0) = (want.x.min(c0 as f32), want.y.min(r0 as f32));
@@ -970,20 +971,84 @@ pub(crate) fn whole_rows(window: Region, frame: Frame, rows: u16) -> bool {
     (s.y <= EPS || whole(s.y)) && (s.y + s.h >= f32::from(rows) - EPS || whole(s.y + s.h))
 }
 
-/// `window` as it may hold, near it (`whole_rows`), inside the screen: itself alone where it is so; else scaled about
-/// its middle so the frame shows a whole number of rows — the nearest first, then fewer, then more —, kept to what it
-/// showed's left, middle or right, its top the nearest whole row (or where it was, past the screen's edge).
-pub(crate) fn on_rows(window: Region, frame: Frame, (cols, rows): (u16, u16)) -> Vec<Region> {
+/// Whether what the frame shows of `window` starts on a whole column — or past the screen's left edge, where the frame
+/// shows the pad: no column cut down at a held window's left.
+pub(crate) fn whole_left(window: Region, frame: Frame) -> bool {
+    let x = shown(window, frame).x;
+    x <= EPS || (x - x.round()).abs() < EPS
+}
+
+/// `window` as it may hold, near it, inside the screen: on whole rows (`on_rows`), then moved across by less than a
+/// cell so the frame shows it from a whole column (`whole_left`) — the nearer of the two first (the least move: one
+/// moved the other way most of a cell can drop the edge of the card its target is in, which the window may cut), then
+/// the other, but one that showed the screen's right edge (in the pad) first moved where it still does; at the
+/// screen's right edge, where it can't move right and moving left may lose a target there, then other sizes too
+/// (`on_rows`' wider choices). Its right edge falls where the frame's shape puts it: with its rows whole, the frame's
+/// width is a whole number of columns only by chance (the frame's shape is fixed, its glyphs never stretched), so one
+/// edge across is whole, the left, where a column of text starts and lines up. A read's window is taken only where it
+/// shows the target whole (`shaped`'s `settle`, `short::window`'s `shows`), so the right edge crops what's beyond the
+/// read, never the read.
+pub(crate) fn on_cells(window: Region, frame: Frame, (cols, rows): (u16, u16)) -> Vec<Region> {
+    let fits = |c: &Region| c.x >= -EPS && c.x + c.w <= f32::from(cols) + EPS;
+    let mut out: Vec<Region> = Vec::new();
+    // (each choice moved to a whole column, either way where it isn't on one; whether any had to be)
+    let add = |all: Vec<Region>, out: &mut Vec<Region>| {
+        let mut moved = false;
+        for c in all {
+            let s = shown(c, frame);
+            let (x, edge) = (s.x, f32::from(cols) - EPS);
+            let mut moves = match whole_left(c, frame) {
+                true => vec![0.0],
+                false => vec![x.floor() - x, x.ceil() - x],
+            };
+            // (the screen's right edge kept in sight where it was, then the least move)
+            let loses = |dx: f32| s.x + s.w >= edge && s.x + s.w + dx < edge;
+            moves.sort_by(|a, b| {
+                (loses(*a), a.abs()).partial_cmp(&(loses(*b), b.abs())).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            moved |= moves.len() > 1;
+            for dx in moves {
+                let k = Region { x: c.x + dx, ..c };
+                if fits(&k) && !out.contains(&k) {
+                    out.push(k);
+                }
+            }
+        }
+        moved
+    };
+    let moved = add(on_rows(window, frame, (cols, rows), false), &mut out);
+    let r = window.inside((cols, rows));
+    if moved && r.x + r.w >= f32::from(cols) - EPS {
+        add(on_rows(window, frame, (cols, rows), true), &mut out);
+    }
+    out
+}
+
+/// `window` as it may hold on whole rows (`whole_rows`), inside the screen: itself alone where it is so (first, where
+/// `wider`); else scaled about its middle so the frame shows a whole number of rows — the nearest first, then fewer,
+/// then more, and where `wider` then up to three rows either way (each size another chance for `on_cells` to start on
+/// a whole column where the screen's edge leaves it little room) —, kept to what it showed's left, middle or right, its
+/// top the nearest whole row (or where it was, past the screen's edge).
+fn on_rows(window: Region, frame: Frame, (cols, rows): (u16, u16), wider: bool) -> Vec<Region> {
     let (cw, rh) = (f32::from(cols), f32::from(rows));
     let r = window.inside((cols, rows));
     let seen = shown(r, frame);
     let fits = |c: &Region| c.x >= -EPS && c.y >= -EPS && c.x + c.w <= cw + EPS && c.y + c.h <= rh + EPS;
     let mut out: Vec<Region> = Vec::new();
     if whole_rows(r, frame, rows) {
-        return vec![r];
+        out.push(r);
+        if !wider {
+            return out;
+        }
     }
-    let mut sizes = vec![seen.h.round(), seen.h.floor(), seen.h.ceil()];
-    sizes.dedup();
+    let n = seen.h.round();
+    let more = [n - 1.0, n + 1.0, n - 2.0, n + 2.0, n - 3.0, n + 3.0];
+    let mut sizes: Vec<f32> = Vec::new();
+    for s in [n, seen.h.floor(), seen.h.ceil()].into_iter().chain(more.into_iter().filter(|_| wider)) {
+        if !sizes.contains(&s) {
+            sizes.push(s);
+        }
+    }
     for n in sizes.into_iter().filter(|&n| n >= 1.0) {
         let s = n / seen.h;
         let (w, h, sw) = (r.w * s, r.h * s, seen.w * s);

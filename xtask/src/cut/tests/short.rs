@@ -379,6 +379,33 @@ fn a_held_zooms_window_starts_and_ends_on_whole_rows() {
     assert!(checked > 300, "{checked} targets");
 }
 
+/// A held zoom's window, as the frame draws it, starts on a whole column — no glyph cut down at its left (the halil
+/// Short's first read: “Nothing here” a cell in from a board column's left, the cell a column cut in half would hide) —,
+/// its target shown, for targets all over the screen: the scenes' Short camera's snap (`camera::on_cells`). Its right
+/// edge is where the frame's shape puts it (whole rows and the frame's shape leave one edge across to choose).
+#[test]
+fn a_held_zooms_window_starts_on_a_whole_column() {
+    let fonts = fonts();
+    let lay = form::layout(&fonts, (80, 34)).unwrap();
+    let mut checked = 0;
+    for (w, h) in [(6.0, 2.0), (17.0, 1.0), (40.0, 7.0), (12.0, 3.4)] {
+        for x in (0..80).map(|x| x as f32 * 0.97).filter(|x| x + w <= 80.0) {
+            for y in [0.0, 5.0, 16.3, 34.0 - h] {
+                let t = Region { x, y, w, h };
+                let r = form::window(t, (80, 34), lay.glyph, &fonts);
+                for glyph in [None, Some(video::SHORT_PX_MAX as f32)] {
+                    let v = lay.view(r, (80, 34), &fonts, glyph);
+                    assert!(v.whole_left(lay.pic.0), "{t:?}: {r:?} shows columns {:?}", v.cols(lay.pic.0));
+                }
+                let s = crate::camera::shown(r, lay_frame(&lay, &fonts));
+                assert!(s.x <= t.x + 1e-3 && t.x + t.w <= s.x + s.w + 1e-3, "{t:?} not shown in {r:?}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 300, "{checked} targets");
+}
+
 /// How the frame shows a window on a Short's layout (`video::frame_of` of the screen's picture).
 fn lay_frame(lay: &crate::cut::draw::Layout, fonts: &Fonts) -> crate::camera::Frame {
     video::frame_of((80, 34), lay.pic, lay.glyph, |p| crate::shot::cell(fonts, p)).1

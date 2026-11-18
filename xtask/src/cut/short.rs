@@ -118,10 +118,10 @@ pub(crate) fn layout(fonts: &Fonts, size: (u16, u16)) -> Result<Layout> {
 
 /// A zoom's window for `target` on a `cols`×`rows` screen drawn whole at `glyph`, through the Short's camera: the
 /// screen's shape, never nearer than `video::SHORT_PX_MAX` draws it (nor `ZOOM_MAX`), the target's middle across at
-/// the window's and down at the eye's height (`video::short_eye`), inside the screen — then held on whole rows as the
-/// frame shows it, the scenes' Short camera's own snap (`camera::on_rows` through `video::frame_of`, of the screen's
-/// picture and its margin as `Layout::view` draws it): no row cut across at its top or bottom, the target still shown,
-/// never nearer than the most. Its columns aren't snapped: the scenes' camera doesn't either.
+/// the window's and down at the eye's height (`video::short_eye`), inside the screen — then held on whole rows and from a
+/// whole column as the frame shows it, the scenes' Short camera's own snap (`camera::on_cells` through
+/// `video::frame_of`, of the screen's picture and its margin as `Layout::view` draws it): no row cut across at its top
+/// or bottom nor a column down at its left, the target still shown, never nearer than the most.
 pub(crate) fn window(t: Region, (cols, rows): (u16, u16), glyph: f32, fonts: &Fonts) -> Region {
     let (c, r) = (f32::from(cols), f32::from(rows));
     let most = shot::cell(fonts, video::SHORT_PX_MAX as f32).0 as f32;
@@ -141,7 +141,7 @@ pub(crate) fn window(t: Region, (cols, rows): (u16, u16), glyph: f32, fonts: &Fo
         let e = 1e-3;
         s.x <= t.x + e && t.x + t.w <= s.x + s.w + e && s.y <= t.y + e && t.y + t.h <= s.y + s.h + e
     };
-    (camera::on_rows(eyed, frame, (cols, rows)).into_iter())
+    (camera::on_cells(eyed, frame, (cols, rows)).into_iter())
         .find(|k| k.w >= nearest - 1e-3 && shows(k))
         .unwrap_or(eyed)
 }

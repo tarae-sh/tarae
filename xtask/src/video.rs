@@ -528,7 +528,7 @@ pub(crate) fn make(
             // its largest)
             let (mut on_whole, mut zoomed, mut held) = (0u64, 0u64, 0u64);
             let (mut most, mut most_at) = (1.0f32, 0);
-            let mut cut_rows: Vec<usize> = Vec::new();
+            let (mut cut_rows, mut cut_cols): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
             for ms in (0..shown_ms).step_by(10) {
                 let at = path.at(ms);
                 if at == Region::all(screen) {
@@ -546,6 +546,15 @@ pub(crate) fn make(
                         missed.push(format!(
                             "the read held at {:.1} s cuts a row at its frame's edge: rows {top:.2} to {bottom:.2}",
                             s(ms)
+                        ));
+                    }
+                    // (…and from a whole column)
+                    if !v.whole_left(ww) && !cut_cols.contains(&i) {
+                        cut_cols.push(i);
+                        missed.push(format!(
+                            "the read held at {:.1} s cuts a column at its frame's left: from column {:.2}",
+                            s(ms),
+                            v.cols(ww).0
                         ));
                     }
                 }
@@ -1932,6 +1941,19 @@ impl View {
         ((o + 0.5 - s / 2.0 - self.pad) / ch, (o + 0.5 + (wh as f32 - 0.5) * s - self.pad) / ch)
     }
 
+    /// Where a window `ww` px wide starts and ends on the screen's columns (fractions where it cuts one).
+    pub(crate) fn cols(&self, ww: usize) -> (f32, f32) {
+        let (o, s, cw) = (self.origin.0, self.scale.0, self.cell.0 as f32);
+        ((o + 0.5 - s / 2.0 - self.pad) / cw, (o + 0.5 + (ww as f32 - 0.5) * s - self.pad) / cw)
+    }
+
+    /// Whether a window `ww` px wide starts on a whole column, or past the screen's left edge (the pad), to half a px.
+    pub(crate) fn whole_left(&self, ww: usize) -> bool {
+        let (left, _) = self.cols(ww);
+        let slack = 0.5 * self.scale.0 / self.cell.0 as f32;
+        left <= slack || (left - left.round()).abs() <= slack
+    }
+
     /// Whether a window `wh` px tall starts and ends on whole rows of a screen `rows` tall, or past its edges (the pad),
     /// to half a px.
     pub(crate) fn whole_rows(&self, wh: usize, rows: u16) -> bool {
@@ -2857,8 +2879,8 @@ mod tests {
 
     /// What the camera takes a frame to show of a window (`frame_of`: its shape and margin) is what `view` draws: a
     /// window on whole rows by the one is drawn on whole rows by the other, to half a px, and one off them is drawn
-    /// off them — Short 4's retake held windows that cut line 12's comment and the status line across. And every
-    /// read framed at a Short's frame is drawn so.
+    /// off them — Short 4's retake held windows that cut line 12's comment and the status line across; so is a window
+    /// from a whole column (`whole_left`). And every read framed at a Short's frame is drawn so.
     #[test]
     fn a_window_on_whole_rows_is_drawn_on_whole_rows() {
         let cell = |p: f32| ((p * 0.6).round() as usize, (p * 1.25).round() as usize);
@@ -2876,6 +2898,12 @@ mod tests {
                 "{r:?}: rows {:?}",
                 v.rows(wh)
             );
+            // (across: the window moved a tenth of a cell at a time, its frame's left on a column every ten)
+            let s = camera::shown(Region { x: 4.0, y: 3.0, w: 40.0, h: 14.0 }, frame);
+            let r = Region { x: 4.0 + (s.x.ceil() - s.x) + k as f32 * 0.1, y: 3.0, w: 40.0, h: 14.0 };
+            let v = view(r, screen, (ww, wh), whole, cell);
+            assert_eq!(camera::whole_left(r, frame), v.whole_left(ww), "{r:?}: columns {:?}", v.cols(ww));
+            assert_eq!(v.whole_left(ww), k % 10 == 0, "{r:?}: columns {:?}", v.cols(ww));
         }
         let mut p = vt100::Parser::new(34, 80, 0);
         p.process(
@@ -2888,6 +2916,7 @@ mod tests {
                 let window = camera::framed_among(&cells, target, (aspect, 0.33, 46.0, deep), (&[], frame));
                 let v = view(window, screen, (ww, wh), whole, cell);
                 assert!(v.whole_rows(wh, 34), "{spec} deep {deep}: {window:?}, rows {:?}", v.rows(wh));
+                assert!(v.whole_left(ww), "{spec} deep {deep}: {window:?}, columns {:?}", v.cols(ww));
             }
         }
     }
