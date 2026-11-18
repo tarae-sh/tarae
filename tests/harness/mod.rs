@@ -1715,9 +1715,11 @@ pub fn in_frame_after(bytes: &[u8], was: bool) -> bool {
 }
 
 /// The wakes of an idle tarae's main loop on a clock of their own, as the state's `events_for` names them, each with
-/// the work it brings (`Rest.work`): the disk watch's backstop round (`disk::ROUND`, 5 s — the other watchers'
-/// backstops wake with it) and the sampler's looks (`procs::LOOK_PROCS`, `LOOK_DISK` — 5 s at the fastest) — each
-/// once in a `Term::rest` at most. Measured (#191's review), quiet and loaded alike: a disk round 2–4 wakes on
+/// the work it brings (`Rest.work`): the disk watch's backstop round (`disk::ROUND`, 5 s) and the sampler's looks
+/// (`procs::LOOK_PROCS`, `LOOK_DISK` — 5 s at the fastest) — each once in a `Term::rest` at most. The other
+/// watchers' backstops don't wake with the round (#628): the git watch's and the config watch's (`fswatch`'s 5 s,
+/// each timed from its own last look) each wake their own thread, once in a rest at most, and send nothing when
+/// nothing changed — work inside `WORK_MAX`, no event. Measured (#191's review), quiet and loaded alike: a disk round 2–4 wakes on
 /// macOS (room 2), 7 on Linux (room 3) — with the disk's look beside it 3–7 there; a look is its thread's one
 /// wake and its result's (room 1). A thread polling every 100 ms is 20 a rest: past every sum, a clock's wake
 /// beside it or not (e2e's break: 21–22 beside a round on macOS, 24–27 beside a round and a look on Linux).
@@ -1859,7 +1861,6 @@ pub fn woke(before: &[Thread], after: &[Thread]) -> String {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated)] // (libc's mach_timebase_info)
 pub fn threads(pid: u32) -> Vec<Thread> {
     // (sys/proc_info.h's — not in libc)
     const PROC_PIDLISTTHREADS: libc::c_int = 6;
@@ -1869,8 +1870,6 @@ pub fn threads(pid: u32) -> Vec<Thread> {
         let size = (ids.len() * 8) as libc::c_int;
         let n = libc::proc_pidinfo(pid as i32, PROC_PIDLISTTHREADS, 0, ids.as_mut_ptr().cast(), size);
         ids.truncate(n.max(0) as usize / 8);
-        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
-        libc::mach_timebase_info(&mut tb);
         ids.iter()
             .filter_map(|&id| {
                 let mut info: libc::proc_threadinfo = std::mem::zeroed();
@@ -1885,9 +1884,11 @@ pub fn threads(pid: u32) -> Vec<Thread> {
                 (got == size).then(|| {
                     let name =
                         std::ffi::CStr::from_ptr(info.pth_name.as_ptr()).to_string_lossy().into_owned();
-                    let ticks = (info.pth_user_time + info.pth_system_time) as u128;
-                    let micros = ticks * tb.numer as u128 / tb.denom.max(1) as u128 / 1000;
-                    Thread { id, name, done: micros as u64 }
+                    // (nanoseconds, not Mach time units as `usage`'s task times are: xnu's
+                    // `fill_taskthreadinfo` writes the thread's `thread_basic_info` seconds and µs as ns — #629:
+                    // the timebase on top read 41.7× high on Apple silicon)
+                    let nanos = info.pth_user_time + info.pth_system_time;
+                    Thread { id, name, done: nanos / 1000 }
                 })
             })
             .collect()
@@ -1921,7 +1922,8 @@ pub fn usage(pid: u32) -> Usage {
         let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
         let n = libc::proc_pidinfo(pid as i32, libc::PROC_PIDTASKINFO, 0, (&raw mut info).cast(), size);
         assert_eq!(n, size, "proc_pidinfo({pid})");
-        // (CPU times are in Mach time units — not nanoseconds on Apple silicon)
+        // (CPU times are in Mach time units — not nanoseconds on Apple silicon: xnu's `fill_taskprocinfo` copies
+        // `task_absolutetime_info`'s; a thread's in `threads` are nanoseconds already)
         let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
         libc::mach_timebase_info(&mut tb);
         let ticks = (info.pti_total_user + info.pti_total_system) as u128;
@@ -2267,5 +2269,63 @@ mod tests {
             n >= POLLS / 2,
             "{n} wakes for {POLLS} sleeps beside a thread that ended\n{before:?}\n{after:?}"
         );
+    }
+
+    /// The CPU times `threads` and `usage` read are in the units they say (#629: macOS's `pth_user_time` is
+    /// nanoseconds already, and the Mach timebase on top read 41.7× high on Apple silicon — `woke:` said 42041 µs
+    /// for about 1 ms; an Intel Mac's timebase is 1/1, so only Apple silicon tells). Here, in this process: a
+    /// thread spins `SPIN` of its own CPU time, by its own clock, then waits while it's read — within a factor of 2
+    /// of that, and the process's whole within a factor of 2 of `getrusage`'s either side of it.
+    #[test]
+    fn cpu_times_read_in_their_own_units() {
+        use std::sync::mpsc::channel;
+        const SPIN: Duration = Duration::from_millis(100);
+        let own = || {
+            let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            // SAFETY: a plain out-struct the call only fills in.
+            let got = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
+            assert_eq!(got, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+            Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+        };
+        let process = || {
+            // SAFETY: as above.
+            let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+            // SAFETY: as above.
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) }, 0, "getrusage");
+            let us = |t: libc::timeval| t.tv_sec as u64 * 1_000_000 + t.tv_usec as u64;
+            Duration::from_micros(us(ru.ru_utime) + us(ru.ru_stime))
+        };
+        let (spun, read) = (channel(), channel::<()>());
+        let name = "tarae-629-spin";
+        let spinner = thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                while own() < SPIN {}
+                spun.0.send(own()).unwrap();
+                read.1.recv().ok();
+            })
+            .unwrap();
+        let cpu = spun.1.recv().unwrap();
+        let pid = std::process::id();
+        let (was, used, is) = (process(), usage(pid).cpu, process());
+        #[cfg(target_os = "macos")]
+        let its = threads(pid).into_iter().find(|t| t.name == name).map(|t| t.done);
+        read.0.send(()).unwrap();
+        spinner.join().unwrap();
+        assert!(
+            used >= was / 2 && used <= is * 2,
+            "usage's CPU {used:?}, getrusage's {was:?} before it and {is:?} after"
+        );
+        #[cfg(target_os = "macos")]
+        {
+            let its = its.unwrap_or_else(|| panic!("no thread named {name} in threads({pid})"));
+            let us = cpu.as_micros() as u64;
+            assert!(
+                its >= us / 2 && its <= us * 2,
+                "threads says {its} {THREAD_DONE} for a thread that spun {cpu:?} by its own clock"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = cpu; // (a thread's `done` is its switches here)
     }
 }
