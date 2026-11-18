@@ -294,7 +294,9 @@ pub const SCAN_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Folders the trust scan judges at most (~100 ms at the measured rate): past it the rest aren't, the cut said.
 pub const SCAN_MAX: usize = 4096;
 
-/// How often the bounded line is looked at while it runs.
+/// In a simulation, how far the clock moves at each look at the bounded line while it runs (`wait`); outside one, it's
+/// woken by what happens instead.
+#[cfg(test)]
 const SCAN_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// What `v` shows of a found folder's `HEAD` and `config`, at most (bytes, lines).
@@ -436,8 +438,9 @@ pub fn scan(root: &Path, again: Option<&[String]>) -> Result<Scan, String> {
 }
 
 /// The line `args` on `root`'s repository through the snapshot's builder, given `SCAN_LIMIT`: its stdout — None, stopped
-/// past it. Its pipes read as they fill, without waiting (a full one can't hold git up), between waits of `SCAN_POLL` by
-/// `event::sleep` on `clock`'s time (a simulation moves it) — no thread of its own.
+/// past it. Its pipes read as they fill, without waiting (a full one can't hold git up), between `wait`s that end when
+/// one has something or the cut comes, on `clock`'s time (a simulation moves it) — no thread of its own, and no wake
+/// while nothing happens (#627: one each 20 ms for as long as git ran).
 fn within(root: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
     let said = |e: std::io::Error| format!("git: {e}");
     let cmd = super::command_env(root, args, None, &[])?;
@@ -452,12 +455,13 @@ fn within(root: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
         if out.take() {
             break;
         }
-        if crate::clock::since(start) >= SCAN_LIMIT {
+        let left = SCAN_LIMIT.saturating_sub(crate::clock::since(start));
+        if left.is_zero() {
             crate::spawn::term_group(s.pid);
             stopped = true;
             break;
         }
-        crate::event::sleep(SCAN_POLL);
+        wait(&[&out, &err], left);
     }
     let status = crate::spawn::wait(s.pid).map_err(said)?;
     err.take();
@@ -470,6 +474,38 @@ fn within(root: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
             Err(e.lines().find(|l| !l.trim().is_empty()).unwrap_or("git failed").to_string())
         }
     }
+}
+
+/// `within`'s wait: until one of `pipes` has something to read or has ended, or `left` has passed — asleep in `poll(2)`
+/// meanwhile, woken by the pipes or the cut, never by a period. A spurious end is possible: the caller looks again. In a
+/// simulation its clock decides instead: an `event::sleep` of `SCAN_POLL` at most (`sim::sleep`: the job yields, the
+/// clock moves by the seed's steps), the pipes looked at after — a real `poll` there would wait outside the simulation's
+/// hold, on a clock it doesn't move.
+fn wait(pipes: &[&Drain], left: std::time::Duration) {
+    use std::os::fd::AsRawFd as _;
+    #[cfg(test)]
+    WAITS.set(WAITS.get() + 1);
+    #[cfg(test)]
+    if crate::sim::current().is_some() {
+        crate::event::sleep(left.min(SCAN_POLL));
+        return;
+    }
+    let mut fds: Vec<libc::pollfd> = pipes
+        .iter()
+        .filter_map(|d| d.pipe.as_ref())
+        .map(|p| libc::pollfd { fd: p.as_raw_fd(), events: libc::POLLIN, revents: 0 })
+        .collect();
+    // (rounded up: a timeout of 0 under the last millisecond would spin to the cut)
+    let ms = i32::try_from(left.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
+    // SAFETY: `fds` is a live array of `fds.len()` pollfds on descriptors the pipes own for the call. An end with
+    // nothing ready (the time, EINTR) is the caller's look again.
+    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: `wait`s on this thread so far.
+    static WAITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A child's pipe read without waiting (`within`): what came so far, and whether it ended.
@@ -514,10 +550,21 @@ impl Drain {
 #[cfg(test)]
 pub(crate) static SLOW: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
 
+/// Tests: checkouts whose untracked half is a stand-in git that takes a second, then names one `HEAD` and ends.
+#[cfg(test)]
+static SECOND: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 #[cfg(test)]
 fn stand_in(root: &Path) -> Option<std::process::Command> {
-    let slow = SLOW.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|s| root.starts_with(s));
-    slow.then(|| {
+    let on = |l: &std::sync::Mutex<Vec<std::path::PathBuf>>| {
+        l.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|s| root.starts_with(s))
+    };
+    if on(&SECOND) {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", r"sleep 1; printf 'a/HEAD\0'"]);
+        return Some(c);
+    }
+    on(&SLOW).then(|| {
         let mut c = std::process::Command::new("sleep");
         c.arg("120");
         c
@@ -607,5 +654,34 @@ pub(super) fn look_hash(root: &Path, rel: &str) -> String {
     match parts.iter().any(|p| p.starts_with(super::BIG)) {
         true => format!("{}{}", super::BIG, crate::sha256::hex(joined.as_bytes())),
         false => crate::sha256::hex(joined.as_bytes()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #627: a git that runs a second wakes the scan's thread when something happens — its output, its end — a handful
+    /// of times, not once each 20 ms (~50); what it wrote is all read. Breaks with the period back in `wait`.
+    #[test]
+    fn a_slow_scan_wakes_only_when_something_happens() {
+        let scratch = crate::scratch::Scratch::new("look-wakes");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["-c", "init.defaultBranch=main", "init", "-q"])
+            .arg(&root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git init: {}", String::from_utf8_lossy(&out.stderr));
+        super::SECOND.lock().unwrap_or_else(|e| e.into_inner()).push(root.clone());
+        // (the clock held: the cut never decides here, however loaded the machine)
+        crate::clock::hold();
+        let before = super::WAITS.get();
+        let got = super::within(&root, &["ls-files"]);
+        let waits = super::WAITS.get() - before;
+        crate::clock::release();
+        super::SECOND.lock().unwrap_or_else(|e| e.into_inner()).retain(|s| *s != root);
+        assert_eq!(got, Ok(Some(b"a/HEAD\0".to_vec())));
+        assert!(waits <= 5, "{waits} waits for a second's git");
     }
 }
