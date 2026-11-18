@@ -727,7 +727,7 @@ impl Guard {
             let what: Vec<String> =
                 secret.into_iter().chain(services.into_iter().map(String::from)).collect();
             s.push_str(&format!(
-                "{}: tarae keeps these from every command of yours in the sandbox — keys, tokens, Claude's and \
+                "{}: tarae keeps these from every command of yours in the sandbox — keys, tokens, agents' and \
                  tarae's own state and cache (every session's conversations, its log, other runs), the clipboard, \
                  the keychain — and nothing opens them there. If the command \
                  needs one, {OUTSIDE_WAY}; don't work around it (a copy, another HOME, the values in \
@@ -1069,12 +1069,12 @@ impl Guard {
                 let reads = match (p.reads.home.is_some(), p.reads.profiles.is_empty()) {
                     (true, true) => {
                         "read in your home folder only the project, the repository's other checkouts and the \
-                         toolchains' own folders — never keys, tokens, Claude's or tarae's state, the clipboard \
+                         toolchains' own folders — never keys, tokens, agents' or tarae's state, the clipboard \
                          or the keychain — "
                     }
                     (true, false) => {
                         "read in your home folder and the Windows profiles only the project, the repository's \
-                         other checkouts and the toolchains' own folders — never keys, tokens, Claude's or tarae's \
+                         other checkouts and the toolchains' own folders — never keys, tokens, agents' or tarae's \
                          state, the clipboard or the keychain — "
                     }
                     (false, _) => "",
@@ -1456,7 +1456,7 @@ impl Here {
             addresses: keeper::addresses()
                 .inspect_err(|e| {
                     let said = format!(
-                        "this machine's addresses couldn't be read ({e}): Claude's runs reach nothing beyond \
+                        "this machine's addresses couldn't be read ({e}): runs reach nothing beyond \
                          loopback until they can"
                     );
                     crate::log::line("sandbox", "warn", &said);
@@ -7841,7 +7841,7 @@ mod tests {
     fn sshds_port_is_risky_and_said_on_the_localhost_card() {
         // (S-E: `ssh localhost` from a run is a shell as you — no key or agent reaches a run, and this is the belt)
         assert!(RISKY_PORTS.iter().any(|(p, _)| *p == 22), "22 isn't risky");
-        let risk = crate::allow::Grant::Localhost.risk().unwrap();
+        let risk = crate::allow::Grant::Localhost.risk("Claude").unwrap();
         assert!(risk.contains("22 sshd"), "{risk}");
     }
 
@@ -11089,6 +11089,7 @@ mod tests {
                 let again = crate::blocked::rerun_head(&key, &run(), crate::allow::Scope::Once);
                 assert!(again.contains(&card), "{file:?}: Claude's run again: {again}");
                 let o = crate::blocked::also_card(
+                    "Claude",
                     key.clone(),
                     "it reads x",
                     ("cat x", None),

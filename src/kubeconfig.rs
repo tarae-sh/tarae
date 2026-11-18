@@ -232,9 +232,9 @@ fn shown(e: &Result<Named, String>) -> String {
     match &n.written {
         None => format!("{} ({})", n.name, n.from),
         Some(w) if crate::allow::tilde(w) == n.from => {
-            format!("{} ({} — Claude's runs can write it)", n.name, n.from)
+            format!("{} ({} — agents' runs can write it)", n.name, n.from)
         }
-        Some(w) => format!("{} ({} — Claude's runs can write {})", n.name, n.from, crate::allow::tilde(w)),
+        Some(w) => format!("{} ({} — agents' runs can write {})", n.name, n.from, crate::allow::tilde(w)),
     }
 }
 

@@ -134,7 +134,7 @@ fn a_programs_read_outside_asks_on_the_same_card_saying_so() {
         read.map(|o| o.title.clone())
     };
     settle_until(&mut ed, |ed| card(ed).is_some());
-    assert_eq!(card(&ed).unwrap(), crate::reads::SCRIPT_TITLE);
+    assert_eq!(card(&ed).unwrap(), crate::reads::script_title("Claude"));
     ed.offer_dismiss();
     settle_until(&mut ed, |_| answered(20).is_some());
     let said = answered(20).unwrap().unwrap();
@@ -297,7 +297,7 @@ fn a_place_named_like_a_key_asks_alone_and_the_batchs_answer_isnt_its() {
         assert_eq!(b.title, "Claude's program wants to read — 2 places outside the project");
         assert!(b.question.contains(&o) && b.question.contains(&q), "{}", b.question);
         assert!(!b.question.contains(".env") && !b.question.contains("like a key"), "{}", b.question);
-        assert_eq!(single.title, crate::reads::SCRIPT_KEYS_TITLE, "today's single card, by itself");
+        assert_eq!(single.title, crate::reads::script_keys_title("Claude"), "today's single card, by itself");
         assert!(single.question.contains(".env") && !single.question.contains(&o), "{}", single.question);
         // (the program's value is the key's read: what its own card said, not the batch's)
         let said = answered(n).unwrap().unwrap();
@@ -338,7 +338,7 @@ fn a_place_with_a_token_asks_alone_with_its_warning() {
     let (b, single) = (b[0], single[0]);
     assert!(b.question.contains(&o) && b.question.contains(&r) && !b.question.contains(&p), "{}", b.question);
     assert!(b.warnings.is_empty() && b.warning.is_none(), "{}", b.question);
-    assert_eq!(single.title, crate::reads::SCRIPT_TITLE);
+    assert_eq!(single.title, crate::reads::script_title("Claude"));
     let said = format!("{} holds a token-like line.", crate::allow::tilde(&other.join("p.txt")));
     let warned: Vec<&str> = single
         .question
@@ -349,6 +349,61 @@ fn a_place_with_a_token_asks_alone_with_its_warning() {
         .collect();
     assert_eq!(warned, [said.as_str()], "{}", single.question);
     assert!(!single.question.contains("tarae-fake-token"), "names, never values");
+}
+
+/// The naming landing's rule 1 on the program card (read-program, which no shot reaches: the shot's build has no code
+/// engine — `Engine::here`): on the stand-in's row, each card a program's reads raise — a single read outside, one named
+/// like a key, a batch of two — is `reads::next`'s, its title and words (`question`, `batch_text`) saying `stand-in`
+/// and no Claude.
+#[test]
+fn the_program_card_names_its_rows_agent() {
+    let s = crate::scratch::Scratch::new("codetool-card-row");
+    let (mut ed, _, outside) = editor(&s);
+    let a = crate::agent::STAND_IN.shown;
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+    let base = outside.parent().unwrap().to_path_buf();
+    for d in ["other", "single", "keyed"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    std::fs::write(base.join("other/q.txt"), "other marker\n").unwrap();
+    std::fs::write(base.join("single/s.txt"), "single marker\n").unwrap();
+    std::fs::write(base.join("keyed/.env"), "keyed marker\n").unwrap();
+    let file = |p: PathBuf| p.display().to_string();
+    // (a single read outside: its card alone)
+    start(
+        &mut ed,
+        66,
+        &[&pending(&[(0, "read", json!({ "files": [file(base.join("single/s.txt"))] }))]), "@"],
+    );
+    let mut cards = answer_cards(&mut ed, 66, |_| 'n');
+    // (two places and a key's file together: the batch card of two, and the key's own)
+    let calls = [
+        (0, "read", json!({ "files": [file(outside.join("o.txt"))] })),
+        (1, "read", json!({ "files": [file(base.join("other/q.txt"))] })),
+        (2, "read", json!({ "files": [file(base.join("keyed/.env"))] })),
+    ];
+    start(&mut ed, 67, &[&pending(&calls), WAITS, WAITS, "@"]);
+    cards.extend(answer_cards(&mut ed, 67, |_| 'n'));
+    let titles: Vec<&str> = cards.iter().map(|c| c.title.as_str()).collect();
+    let batch = format!("{a}'s program wants to read — 2 places outside the project");
+    let want = [crate::reads::script_title(a), batch, crate::reads::script_keys_title(a)];
+    let mut sorted = titles.clone();
+    sorted.sort_by_key(|t| want.iter().position(|w| w == t));
+    assert_eq!(sorted, want, "each card once, by its builder: {titles:?}");
+    for c in &cards {
+        let said = format!("{}\n{}", c.title, c.question);
+        assert!(said.contains(a) && !said.contains("Claude"), "not the stand-in's words:\n{said}");
+    }
+    // (each body is its builder's: `question` for a single read, `batch_text` for the batch)
+    for c in &cards {
+        let crate::offer::What::Read { pending, keep, .. } = &c.what else { panic!("a read card") };
+        let built = match pending.more.is_empty() {
+            true => crate::reads::question(a, &pending.look, *keep, None),
+            false => crate::reads::batch_text(a, pending),
+        };
+        assert!(c.question.starts_with(&built), "{}:\n{}\n— built —\n{built}", c.title, c.question);
+    }
 }
 
 /// …and a place where keys are (`Class::Secret`), though nothing in it is named like a key: a scratch home's
@@ -385,7 +440,7 @@ fn a_place_where_keys_are_asks_alone_though_not_named_like_one() {
         b.question
     );
     assert!(!b.question.contains("where keys are"), "{}", b.question);
-    assert_eq!(single.title, crate::reads::SCRIPT_TITLE, "today's single card, by itself");
+    assert_eq!(single.title, crate::reads::script_title("Claude"), "today's single card, by itself");
     assert!(single.question.contains(".ssh") && !single.question.contains(&o), "{}", single.question);
     // (its class on the card: what it asks, for its `card` line — today's single card's text names no class)
     let asked = single.asked.as_ref().map(|a| &a.request);

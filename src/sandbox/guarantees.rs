@@ -811,7 +811,7 @@ mod tests {
         {
             let g = run(served, probed);
             let h = g.hint.as_ref().expect("the hint");
-            assert!(h.said.starts_with(&format!("Claude's commands run in tier {tier} here")), "{}", h.said);
+            assert!(h.said.starts_with(&format!("Agents' commands run in tier {tier} here")), "{}", h.said);
             assert!(h.said.contains("To give them namespaces of their own, run once"), "{}", h.said);
             assert_eq!(g.hint_brief().as_deref(), Some(HINT_BRIEF), "probed in {probed:?}");
         }

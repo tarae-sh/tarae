@@ -293,7 +293,7 @@ fn a_read_at_a_moved_homes_default_says_where_the_home_is() {
         moved: Some(line.clone()),
         more: Vec::new(),
     };
-    let (q, _) = crate::reads::card_text(&p, false, None, None);
+    let (q, _) = crate::reads::card_text("Claude", &p, false, None, None);
     assert!(q.ends_with(&format!("\n\n{line}")), "{q}");
     // (a code program's read of it asks alone, its line with it: never on a batch card, which has none)
     assert!(p.warned(), "a moved home's place never rides in a program's batch");

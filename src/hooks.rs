@@ -107,8 +107,8 @@ impl Ask {
             q += &format!("\n  {} — {}{likely}", h.rel, h.kind);
         }
         q += match n {
-            1 => "\nIt runs as you, unsandboxed — a Claude here can write it.",
-            _ => "\nThey run as you, unsandboxed — a Claude here can write them.",
+            1 => "\nIt runs as you, unsandboxed — an agent here can write it.",
+            _ => "\nThey run as you, unsandboxed — an agent here can write them.",
         };
         if self.runnable() {
             q += match n {
@@ -439,7 +439,7 @@ mod tests {
         assert!(
             o.question.starts_with(
                 "These 2 hooks aren't as main has them:\n  .githooks/pre-commit — changed · this commit runs it\n  \
-                 .githooks/lib.sh — untracked\nThey run as you, unsandboxed — a Claude here can write them.\nA yes \
+                 .githooks/lib.sh — untracked\nThey run as you, unsandboxed — an agent here can write them.\nA yes \
                  is kept for these texts — a change asks again.\n\n"
             ),
             "{}",

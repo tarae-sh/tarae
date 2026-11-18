@@ -1354,7 +1354,10 @@ impl Editor {
                     "{names} paused until you answer the card — {}'s run {verb} a folder git takes for a repository",
                     crate::llm::session_row(self).shown
                 )),
-                None => self.set_warning(format!("{} {}", paused.join(", "), crate::tools::MADE_PAUSED)),
+                None => self.set_warning(format!(
+                    "{names} {}",
+                    crate::tools::made_paused(crate::llm::session_row(self).shown)
+                )),
             }
         }
     }

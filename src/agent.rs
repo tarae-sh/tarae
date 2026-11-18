@@ -1625,7 +1625,7 @@ mod tests {
     }
 
     /// The naming landing's rule 1 on another row: each builder of words about one session's agent, given the stand-in's
-    /// row, says `stand-in` and no Claude — carry's builders (the sandbox writer's join it with its landing). Byte for
+    /// row, says `stand-in` and no Claude — carry's builders and the sandbox writer's (its cards and refusals). Byte for
     /// byte as before on Claude's row where the words go to an agent (`chat::the_system_prompt_is_pinned`, the
     /// reviewers' below). What keeps a site this doesn't list from Claude's name: `no_words_take_claudes_row_whatever_the_sessions`.
     #[test]
@@ -1636,7 +1636,96 @@ mod tests {
         let boundary = serde_json::json!({"type": "system", "subtype": "compact_boundary",
             "compact_metadata": {"trigger": "auto", "pre_tokens": 9000, "post_tokens": 800}});
         let compacted = crate::compaction::Compaction::of(&boundary, 0).unwrap().note(a);
+        // (the sandbox's cards, each as its builder makes it: title and words together)
+        let card = |o: crate::offer::Offer| format!("{}\n{}", o.title, o.question);
+        let host = |open: bool| {
+            card(crate::hosts::card(
+                a,
+                crate::hosts::Ask {
+                    session: 1,
+                    run: 1,
+                    host: "example.com".into(),
+                    port: 443,
+                    process: "curl".into(),
+                    label: "curl example.com".into(),
+                    users: false,
+                    left: false,
+                    open,
+                    hosts: Default::default(),
+                    also: Vec::new(),
+                    ended: false,
+                },
+            ))
+        };
+        let also = |g: crate::allow::Grant| {
+            let job = crate::tools::Job::Command("psql".into(), std::path::PathBuf::from("/p"));
+            let run = Box::new(crate::blocked::BlockedRun::of(job));
+            card(crate::blocked::also_card(a, g, "r", ("psql", None), run, None, Vec::new(), false))
+        };
+        // (a program's batch card: two places outside, each a read its calls handed out together)
+        let waiting = |at: &str| crate::reads::Pending {
+            request_id: "r".into(),
+            generation: 1,
+            input: serde_json::Value::Null,
+            look: crate::reads::Look {
+                tool: "Read".into(),
+                at: Some(at.into()),
+                pattern: String::new(),
+                filter: String::new(),
+                given: at.into(),
+                file: true,
+                keys: Vec::new(),
+                cut: false,
+                part: String::new(),
+            },
+            class: crate::cards::Class::Elsewhere,
+            since: crate::clock::now(),
+            found: Default::default(),
+            repository: None,
+            not_whole: None,
+            own: None,
+            then: None,
+            log: false,
+            moved: None,
+            more: Vec::new(),
+        };
+        let batch = crate::reads::Pending { more: vec![waiting("/opt/b.txt")], ..waiting("/opt/a.txt") };
+        let read = crate::allow::Grant::Read(std::path::PathBuf::from("/opt/tools"));
+        let key = crate::allow::Grant::Key(std::path::PathBuf::from("/p/.env"));
+        use crate::tools::MadeFor;
+        let made = ("build.rs, a name", "it", "it's");
         let said: Vec<(&str, String)> = vec![
+            ("the run card", crate::tools::run_title(a)),
+            ("the run card outside", crate::tools::outside_run_title(a)),
+            ("the run card with a socket", crate::tools::socket_run_title(a)),
+            ("the run card without a sandbox", crate::tools::no_sandbox_title(a)),
+            ("the run card in a partial sandbox", crate::tools::partial_sandbox_title(a)),
+            ("the run card after a protected file", crate::tools::made_title(a, MadeFor::Agent)),
+            ("the run card after a git folder", crate::tools::made_looks_title(a, MadeFor::Agent, "made")),
+            ("the servers' card", crate::tools::made_title(a, MadeFor::Servers)),
+            ("the servers' git folder card", crate::tools::made_looks_title(a, MadeFor::Servers, "changed")),
+            ("your run's card", crate::tools::made_title(a, MadeFor::Yours)),
+            ("your run's git folder card", crate::tools::made_looks_title(a, MadeFor::Yours, "made")),
+            ("the servers' card's words", crate::tools::made_body(a, MadeFor::Servers, made)),
+            ("the run card's protected words", crate::tools::made_body(a, MadeFor::Agent, made)),
+            ("your run's protected words", crate::tools::made_body(a, MadeFor::Yours, made)),
+            ("the servers' pause", crate::tools::made_paused(a)),
+            ("a run not run for what it made", crate::tools::made_refused(a, "build.rs")),
+            ("a trace not run for what it made", crate::tools::made_not_run(a)),
+            ("the read card", crate::reads::title(a)),
+            ("the read card named like a key", crate::reads::keys_title(a)),
+            ("a program's read card", crate::reads::script_title(a)),
+            ("a program's read card named like a key", crate::reads::script_keys_title(a)),
+            ("a program's batch card", crate::reads::batch_text(a, &batch)),
+            ("the pointed card", crate::reads::pointed_title(a)),
+            ("the outside card's goes on", crate::blocked::goes_on(a)),
+            ("the outside card's next message", crate::blocked::next_message(a)),
+            ("the host card", host(true)),
+            ("the closed host card", host(false)),
+            ("the grant card", also(read.clone())),
+            ("a variable's grant card", also(crate::allow::Grant::Env("DATABASE_URL".into()))),
+            ("a key's risk", key.risk(a).unwrap_or_default()),
+            ("the allow toast", crate::allow::toasted(a, &read, &read.shown(), " — until you quit")),
             ("the chat's system prompt", crate::chat::system_as(a)),
             ("the child's frame", crate::orchestra::framed("main", a, "go", true)),
             ("the reviewer's prompt", crate::reviewer::system(&STAND_IN).to_string()),
@@ -1890,25 +1979,6 @@ mod tests {
     /// (read from the tables, so a status line can't hide as a doc), and as many as listed.
     const AGENT_DOC_FILES: &[(&str, usize)] = &[("cmdline.rs", 18), ("commands.rs", 17), ("settings.rs", 25)];
 
-    /// What the sandbox writer's landing moves to the row (its files, after #616 and #624): counted as they stand, a
-    /// list that only shrinks — lower a file's count as you move one, the list empty at its end.
-    const NOT_YET_MOVED: &[(&str, usize)] = &[
-        ("allow.rs", 5),
-        ("blocked.rs", 8),
-        ("cards.rs", 1),
-        ("gitrepo/held.rs", 2),
-        ("granted.rs", 1),
-        ("hooks.rs", 2),
-        ("hosts.rs", 3),
-        ("kubeconfig.rs", 2),
-        ("reads.rs", 9),
-        ("sandbox.rs", 4),
-        ("sandbox/apparmor.rs", 2),
-        ("sandbox/runenv.rs", 1),
-        ("tokens.rs", 2),
-        ("tools.rs", 33),
-    ];
-
     /// A doc as the walk compares it: its whitespace out (a literal's line breaks and their indent).
     fn squashed(s: &str) -> String {
         s.chars().filter(|c| !c.is_whitespace()).collect()
@@ -1956,7 +2026,7 @@ mod tests {
         let mut wrong: Vec<String> =
             stale.iter().map(|s| format!("{file}: Claude Code's own {s:?} matches nothing")).collect();
         let cut = |l: &String| l.chars().take(90).collect::<String>();
-        let rest = match AGENT_DOC_FILES.iter().find(|(f, _)| *f == file) {
+        match AGENT_DOC_FILES.iter().find(|(f, _)| *f == file) {
             Some((_, n)) => {
                 let (are, not): (Vec<&String>, Vec<&String>) =
                     rest.iter().partition(|l| docs.contains(&squashed(l)));
@@ -1966,15 +2036,7 @@ mod tests {
                 if are.len() != *n {
                     wrong.push(format!("{file}: {} docs naming Claude (listed {n})", are.len()));
                 }
-                Vec::new()
             }
-            None => rest,
-        };
-        match NOT_YET_MOVED.iter().find(|(f, _)| *f == file) {
-            Some((_, n)) if rest.len() != *n => {
-                wrong.push(format!("{file}: {} not yet moved (listed {n})", rest.len()))
-            }
-            Some(_) => {}
             None => wrong.extend(rest.iter().map(|l| format!("{file}: names Claude: {:?}", cut(l)))),
         }
         wrong
@@ -1983,14 +2045,13 @@ mod tests {
     /// Step 4's C.3 and Part C's naming landing: the literals naming Claude in every file of the code's roots. One about
     /// a session's agent — its ask, turn, edit, run or read — says that session's row's `Row.shown` (rule 1); one
     /// about every session's says no name, or "agent" (rule 2); what's left is Claude Code's own (`CLAUDE_CODES_OWN`,
-    /// each with its reason — rule 3), a command's or setting's doc drawn by `llm::agent_doc` (`AGENT_DOC_FILES`), or
-    /// the sandbox writer's still to move (`NOT_YET_MOVED`, which only shrinks). Anything else fails here with its
-    /// text; a file not listed is allowed none, so a new file can't skip it.
+    /// each with its reason — rule 3), or a command's or setting's doc drawn by `llm::agent_doc` (`AGENT_DOC_FILES`).
+    /// Anything else fails here with its text; a file not listed is allowed none, so a new file can't skip it.
     #[test]
     fn every_literal_naming_claude_on_screen_is_claudes_own() {
         let sources = crate::sim::lint::sources();
-        let listed = (CLAUDE_CODES_OWN.iter().map(|(f, ..)| *f))
-            .chain(AGENT_DOC_FILES.iter().chain(NOT_YET_MOVED).map(|(f, _)| *f));
+        let listed =
+            (CLAUDE_CODES_OWN.iter().map(|(f, ..)| *f)).chain(AGENT_DOC_FILES.iter().map(|(f, _)| *f));
         let missing: Vec<&str> = listed.filter(|f| !sources.iter().any(|(k, _)| k == f)).collect();
         assert!(missing.is_empty(), "listed but not in the code: {missing:?}");
         assert!(
@@ -2001,12 +2062,12 @@ mod tests {
         let wrong: Vec<String> =
             sources.iter().flat_map(|(file, src)| walk_file(file, &claude_literals(src), &docs)).collect();
         assert!(wrong.is_empty(), "literals naming Claude:\n{}", wrong.join("\n"));
-        // (and it sees each: a run card's title put back in a file to move, a status line in a docs' file, a doc gone
-        // from its table, a prefix too short to stand for more than itself)
+        // (and it sees each: a run card's title put back, a status line in a docs' file, a doc gone from its table, a
+        // prefix too short to stand for more than itself)
         let lit = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            walk_file("tools.rs", &lit(&["Claude wants to run"; 34]), &docs),
-            ["tools.rs: 34 not yet moved (listed 33)"]
+            walk_file("tools.rs", &lit(&["Claude wants to run"]), &docs),
+            ["tools.rs: names Claude: \"Claude wants to run\""]
         );
         let toast = walk_file("settings.rs", &lit(&["Claude's settings saved"]), &docs);
         assert!(toast.iter().any(|w| w.contains("not a command's or setting's doc")), "{toast:?}");

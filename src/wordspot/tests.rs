@@ -1457,6 +1457,7 @@ fn a_focusing_press_moves_no_answer() {
         let grant = crate::allow::Grant::Write(std::path::PathBuf::from("/tmp/tarae-not-there/npm-cache"));
         let reason = "npm keeps its cache there";
         ed.push_offer(crate::blocked::also_card(
+            "Claude",
             grant,
             reason,
             ("npm test", None),

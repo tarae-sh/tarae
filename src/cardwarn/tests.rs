@@ -722,7 +722,7 @@ fn an_outside_command_naming_a_kept_place_asks_every_time() {
     for n in 1..=2 {
         let id = ask_outside(&mut ed, generation, n, cmd).expect("its card, each time");
         let o = &ed.offers[0];
-        assert_eq!(o.title, crate::tools::OUTSIDE_RUN_TITLE);
+        assert_eq!(o.title, crate::tools::outside_run_title("Claude"));
         assert!(o.question.contains("▲ It names ~/.claude (Claude's own place): "), "{}", o.question);
         let keys: Vec<char> = o.answers(false).iter().map(|(k, _)| *k).collect();
         assert!(keys.contains(&'y') && !keys.iter().any(|k| matches!(k, 'a' | 'A' | 's')), "{keys:?}");

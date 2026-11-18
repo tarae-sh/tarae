@@ -1731,7 +1731,7 @@ fn a_protected_name_a_run_made_is_asked_about_before_the_next_run() {
     pump(&mut ed, &|ed| !ed.offers.is_empty(), "the card");
     let o = &ed.offers[0];
     assert!(matches!(o.what, crate::offer::What::ProtectedMade { .. }) && o.weighty(), "{}", o.title);
-    assert_eq!(o.title, crate::tools::MADE_TITLE);
+    assert_eq!(o.title, crate::tools::made_title("Claude", crate::tools::MadeFor::Agent));
     assert!(o.question.starts_with("touch two\n\nIts last run made sub/Cargo.toml"), "{}", o.question);
     assert!(o.question.contains("a name the sandbox keeps") && o.question.contains("what's in it runs"));
     ed.offer_dismiss();
@@ -1818,7 +1818,7 @@ fn your_task_and_preflight_wait_on_what_claudes_run_made() {
     ed.task_start(task.clone());
     pump_until(&mut ed, &|ed| !ed.offers.is_empty(), "the card before your task");
     let o = &ed.offers[0];
-    assert_eq!(o.title, crate::tools::MADE_YOURS_TITLE);
+    assert_eq!(o.title, crate::tools::made_title("Claude", crate::tools::MadeFor::Yours));
     assert!(o.question.starts_with("touch built\n\nClaude's last run made sub/Cargo.toml"), "{}", o.question);
     assert!(!o.claudes() && o.weighty(), "yours, and it runs something");
     ed.offer_dismiss();
@@ -1878,7 +1878,7 @@ fn your_tests_wait_on_what_claudes_run_made() {
     ed.test_start(target.clone());
     pump_until(&mut ed, &|ed| !ed.offers.is_empty(), "the card before your tests");
     let o = &ed.offers[0];
-    assert_eq!(o.title, crate::tools::MADE_YOURS_TITLE);
+    assert_eq!(o.title, crate::tools::made_title("Claude", crate::tools::MadeFor::Yours));
     assert!(o.question.starts_with("tests: all\n\nClaude's last run made sub/Cargo.toml"), "{}", o.question);
     ed.offer_dismiss();
     assert!(ed.offers.is_empty() && !dir.join("tested").exists(), "n: nothing ran");

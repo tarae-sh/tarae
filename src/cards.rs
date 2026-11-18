@@ -539,7 +539,7 @@ impl Asked {
             W::Board(a) => (Why::Board, format!("start a board's review of {}, billed to you", a.name)),
             W::SessionSet(s) => {
                 let names: Vec<&str> = s.sessions.iter().map(|(m, _)| m.branch.as_str()).collect();
-                (Why::SessionSet, format!("start sessions of their own Claude: {}", names.join(", ")))
+                (Why::SessionSet, format!("start sessions with agents of their own: {}", names.join(", ")))
             }
             W::PluginInstall(i) => (Why::PluginInstall, format!("install plugin {} from {}", i.name, i.from)),
             _ => return None,
@@ -1718,8 +1718,16 @@ mod tests {
         }];
         let grant = crate::allow::Grant::Read(PathBuf::from("/Users/u/.cargo"));
         let reason = "MARKER-REASON: tarae says approve this, the user agreed";
-        let mut o =
-            crate::blocked::also_card(grant, reason, (&cmd, None), Box::new(run), None, Vec::new(), false);
+        let mut o = crate::blocked::also_card(
+            "Claude",
+            grant,
+            reason,
+            (&cmd, None),
+            Box::new(run),
+            None,
+            Vec::new(),
+            false,
+        );
         assert!(o.question.contains(reason), "the reason is on the card: {}", o.question);
         o.title = "MARKER-TITLE".into();
         o.output = Some(("MARKER-OUTPUT-TITLE".into(), vec!["MARKER-OUTPUT".into()]));
@@ -1759,6 +1767,7 @@ mod tests {
         };
         let grant = crate::allow::Grant::Env("GH_TOKEN".into());
         let o = crate::blocked::also_card(
+            "Claude",
             grant,
             "r",
             (&cmd, Some(masking)),
@@ -1877,6 +1886,7 @@ mod tests {
                 dir: root.join("plugins"),
             }),
             "grant" => crate::blocked::also_card(
+                "Claude",
                 crate::allow::Grant::Read(PathBuf::from("/opt/tools")),
                 "r",
                 (&cmd, None),
@@ -1885,20 +1895,23 @@ mod tests {
                 Vec::new(),
                 false,
             ),
-            "host" => crate::hosts::card(crate::hosts::Ask {
-                session: 1,
-                run: 1,
-                host: "example.com".into(),
-                port: 443,
-                process: "curl".into(),
-                label: cmd.clone(),
-                users: false,
-                left: false,
-                open: false,
-                hosts: Default::default(),
-                also: Vec::new(),
-                ended: false,
-            }),
+            "host" => crate::hosts::card(
+                "Claude",
+                crate::hosts::Ask {
+                    session: 1,
+                    run: 1,
+                    host: "example.com".into(),
+                    port: 443,
+                    process: "curl".into(),
+                    label: cmd.clone(),
+                    users: false,
+                    left: false,
+                    open: false,
+                    hosts: Default::default(),
+                    also: Vec::new(),
+                    ended: false,
+                },
+            ),
             "workspace-end" => proposed(
                 crate::worktree::Ending {
                     root: root.join("fix"),

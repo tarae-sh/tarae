@@ -49,7 +49,16 @@ fn also(ed: &Editor) -> crate::offer::Offer {
     let cmd = "cargo test".to_string();
     let run = crate::blocked::BlockedRun::of(crate::tools::Job::Command(cmd.clone(), root));
     let grant = crate::allow::Grant::Read(PathBuf::from("/Users/u/.cargo"));
-    crate::blocked::also_card(grant, "MARKER-REASON", (&cmd, None), Box::new(run), None, Vec::new(), false)
+    crate::blocked::also_card(
+        "Claude",
+        grant,
+        "MARKER-REASON",
+        (&cmd, None),
+        Box::new(run),
+        None,
+        Vec::new(),
+        false,
+    )
 }
 
 fn run_of(ed: &Editor, card: u64) -> u64 {
@@ -317,8 +326,16 @@ fn no_secrets_value_reaches_the_reviewer() {
         closed: false,
     };
     let grant = crate::allow::Grant::Env("GH_TOKEN".into());
-    let o =
-        crate::blocked::also_card(grant, "r", (&cmd, Some(masking)), Box::new(run), None, Vec::new(), false);
+    let o = crate::blocked::also_card(
+        "Claude",
+        grant,
+        "r",
+        (&cmd, Some(masking)),
+        Box::new(run),
+        None,
+        Vec::new(),
+        false,
+    );
     ed.push_offer(o);
     let prompt = told.try_recv().expect("its review started");
     assert!(prompt.contains("GH_TOKEN"), "the variable by its name: {prompt}");

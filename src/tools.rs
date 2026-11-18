@@ -1030,7 +1030,8 @@ pub fn left_running(ed: &mut Editor, left: Vec<Left>) {
         })
         .collect();
     let them = if left.len() == 1 { "it" } else { "them" };
-    let q = format!("{}\n\nClaude's next runs there wait behind {them}.", rows.join("\n"));
+    let a = crate::llm::session_row(ed).shown;
+    let q = format!("{}\n\n{a}'s next runs there wait behind {them}.", rows.join("\n"));
     // (its runs at full strength: what the card is about)
     let rows = 0..left.len();
     ed.push_offer(
@@ -1375,10 +1376,10 @@ fn last_run_env(ed: &Editor) -> Option<crate::sandbox::runenv::RunEnv> {
     newest.cloned()
 }
 
-/// What no card opens, as Claude is told it.
+/// What no card opens, as the agent is told it.
 fn never_opened(p: &Path) -> String {
     format!(
-        "{} is a place no card opens to your commands — home or above, keys and tokens, tarae's and Claude's \
+        "{} is a place no card opens to your commands — home or above, keys and tokens, tarae's and agents' \
          state, what runs later (build files, folders of programs, shared caches, a toolchain's home). If the \
          command needs it, tell the user",
         crate::allow::tilde(p)
@@ -1620,7 +1621,9 @@ fn also_ask(
                 crate::blocked::BlockedRun { claude: Some(call), granting, ..crate::blocked::BlockedRun::of(job) };
             let closed = !ed.config.llm.sandbox_network;
             let masking = masking.map(|m| masking_still(ed, m));
-            let card = crate::blocked::also_card(g, &reason, (&cmd, masking), Box::new(run), tokens, asks, closed);
+            let a = crate::llm::session_row(ed).shown;
+            let card =
+                crate::blocked::also_card(a, g, &reason, (&cmd, masking), Box::new(run), tokens, asks, closed);
             ed.push_offer(card);
         }
     });
@@ -2395,8 +2398,8 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
     // the run's `TARAE_RUN` does)
     if runs_tarae_attach(cmd) {
         return Err(
-            "tarae attach is the user's: an interface to a tarae host, its keys and screen — a run of \
-                    Claude's never starts one, outside the sandbox neither. Ask the user to run it"
+            "tarae attach is the user's: an interface to a tarae host, its keys and screen — a run never \
+                    starts one, outside the sandbox neither. Ask the user to run it"
                 .into(),
         );
     }
@@ -3260,8 +3263,20 @@ pub(crate) fn warned(ed: &Editor, on: WarnOn) -> Vec<crate::cardwarn::Warned> {
     crate::cardwarn::judge(packs.warn.iter().chain(&ed.config.cards_warn), &facts)
 }
 
-pub const OUTSIDE_RUN_TITLE: &str = "Claude wants to run — outside the sandbox";
-pub const SOCKET_RUN_TITLE: &str = "Claude wants to run — with one socket";
+/// The run card's titles: `a` the asking session's agent (`Row.shown`), as in each below — a plain run's.
+pub fn run_title(a: &str) -> String {
+    format!("{a} wants to run")
+}
+
+/// One outside the sandbox (`Beyond`, with no socket).
+pub fn outside_run_title(a: &str) -> String {
+    format!("{a} wants to run — outside the sandbox")
+}
+
+/// One with one socket open (`Beyond.socket`).
+pub fn socket_run_title(a: &str) -> String {
+    format!("{a} wants to run — with one socket")
+}
 
 /// The card for `cmd`, saying too what it reads outside the project (`reads` — a read-only command's):
 /// those can be allowed for longer, as on a read's card, unless one of them never can. Outside the sandbox
@@ -3487,10 +3502,11 @@ fn ask_with(
     if let Some(u) = &unprotected {
         question.push_str(&format!("\n\n{u}"));
     }
+    let a = crate::llm::session_row(ed).shown;
     let title = match (&outside, &socket) {
-        (_, Some(_)) => SOCKET_RUN_TITLE.to_string(),
-        (Some(_), None) => OUTSIDE_RUN_TITLE.to_string(),
-        (None, None) => "Claude wants to run".to_string(),
+        (_, Some(_)) => socket_run_title(a),
+        (Some(_), None) => outside_run_title(a),
+        (None, None) => run_title(a),
     };
     let request = run_request(ed, outside.as_ref(), &why, warned.iter().any(|w| w.asks));
     let asked = crate::cards::Asked::new(why, request).ran(call.run_id(), &cmd, &cwd, &ed.workspace.root);
@@ -3524,7 +3540,7 @@ fn ask_with(
         context,
     };
     let what = crate::offer::What::Run(Box::new(card));
-    let o = crate::offer::Offer::new(title, &question, "Running…", "Claude's command".into(), what);
+    let o = crate::offer::Offer::new(title, &question, "Running…", format!("{a}'s command"), what);
     let mut o = o.deciding(decided).asked(asked).with_details(details);
     (o.diff, o.warnings, o.told) = (diff, warnings, tells);
     ed.push_offer(match warning {
@@ -3753,7 +3769,8 @@ fn fail(ed: &mut Editor, who: For, joined: Vec<crate::queued::Joined>, e: String
 fn not_started(ed: &mut Editor, who: For, joined: Vec<crate::queued::Joined>, why: String) {
     let said = match who {
         For::Claude(_) => {
-            ed.set_error(format!("Claude's command didn't run. {why}"));
+            let a = crate::llm::session_row(ed).shown;
+            ed.set_error(format!("{a}'s command didn't run. {why}"));
             format!("It didn't run. {why} Tell the user; don't work around it.")
         }
         // (`fail` says it to the user)
@@ -3771,14 +3788,15 @@ fn told(ed: &mut Editor, head: String, report: String) {
         Some(c.reruns.remove(at).1)
     });
     let text = format!("{head}\n{report}");
+    let a = crate::llm::session_row(ed).shown;
     if key.is_some_and(|k| goes_on(ed, k)) {
         let message = format!("{text}\n{SENT_BY_ITSELF}");
         if crate::chat::submit_by_itself(ed, &message, None, None) {
-            return ed.note("how it ended went to Claude, which goes on");
+            return ed.note(format!("how it ended went to {a}, which goes on"));
         }
     }
     ed.workspace.claude.checkpoints.tell.push(text);
-    ed.note("Claude hears how it ended with your next message");
+    ed.note(format!("{a} hears how it ended with your next message"));
 }
 
 /// The user's run again of Claude's last turn's failed run ended with `report`, the chat idle: told as `told` tells it,
@@ -4570,8 +4588,15 @@ fn slot_taken(ed: &Editor, job: &Job) -> bool {
     }
 }
 
-pub const NO_SANDBOX_TITLE: &str = "Claude wants to run — without a sandbox";
-pub const PARTIAL_SANDBOX_TITLE: &str = "Claude wants to run — in a partial sandbox";
+/// The run card's title with no sandbox here (`a`: the asking session's agent).
+pub fn no_sandbox_title(a: &str) -> String {
+    format!("{a} wants to run — without a sandbox")
+}
+
+/// The run card's title with a partial sandbox here.
+pub fn partial_sandbox_title(a: &str) -> String {
+    format!("{a} wants to run — in a partial sandbox")
+}
 
 /// Why a run of Claude's asks before it runs (`What::NoSandbox`): no sandbox here (why), or one that goes
 /// only so far (why — Linux's Landlock below ABI 3), the run going in it.
@@ -4625,15 +4650,16 @@ fn ask_unprotected(ed: &mut Editor, call: Call, job: Job, kind: Unsandboxed, rid
     // (one asking for the session at a time: a test run's card beside a command's asks for its run)
     let first = ed.workspace.claude.no_sandbox.is_none()
         && !ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::NoSandbox { first: true, .. }));
+    let a = crate::llm::session_row(ed).shown;
     let (title, there) = match &kind {
         Unsandboxed::Missing(why) => (
-            NO_SANDBOX_TITLE,
+            no_sandbox_title(a),
             format!(
                 "There's no sandbox here ({why}) — it runs with all your permissions: your files, your network."
             ),
         ),
         Unsandboxed::Partial(why) => (
-            PARTIAL_SANDBOX_TITLE,
+            partial_sandbox_title(a),
             format!("The sandbox here goes only so far ({why}) — it runs in it as far as it goes."),
         ),
     };
@@ -4653,7 +4679,7 @@ fn ask_unprotected(ed: &mut Editor, call: Call, job: Job, kind: Unsandboxed, rid
     let asked =
         crate::cards::Asked::new(Why::NoSandbox, request).ran(call.run_id(), &cmd, &cwd, &ed.workspace.root);
     let what = crate::offer::What::NoSandbox { job, call, ride: Box::new(ride), kind, first };
-    let o = crate::offer::Offer::new(title.into(), &question, "", String::new(), what);
+    let o = crate::offer::Offer::new(title, &question, "", String::new(), what);
     ed.push_offer(o.asked(asked));
 }
 
@@ -4699,7 +4725,8 @@ pub fn unprotected_answer(
             ),
         };
         if first {
-            ed.set_status("Claude's commands don't run until this session ends");
+            let a = crate::llm::session_row(ed).shown;
+            ed.set_status(format!("{a}'s commands don't run until this session ends"));
         }
         for c in std::iter::once(call).chain(ride.joined.into_iter().map(|j| j.call)) {
             answer(ed, c, Err(e.clone()));
@@ -4707,21 +4734,22 @@ pub fn unprotected_answer(
         return crate::queued::run_next(ed);
     }
     let session = answer_is == Unprotected::ThisSession;
+    let a = crate::llm::session_row(ed).shown;
     match kind {
         Unsandboxed::Missing(why) => {
             if session {
-                ed.set_warning(
-                    "Claude's checks and reads run without a sandbox, unasked, until this session ends",
-                );
+                ed.set_warning(format!(
+                    "{a}'s checks and reads run without a sandbox, unasked, until this session ends"
+                ));
             }
             go(ed, For::Claude(call), job, Some(Guard::Without(why)), ride)
         }
         // (in the sandbox: made again for it, now agreed)
         Unsandboxed::Partial(_) => {
             if session {
-                ed.set_warning(
-                    "Claude's checks and reads run in the partial sandbox unasked until this session ends",
-                );
+                ed.set_warning(format!(
+                    "{a}'s checks and reads run in the partial sandbox unasked until this session ends"
+                ));
             }
             guard_then_go(ed, For::Claude(call), job, Ride { unprotected: true, ..ride })
         }
@@ -4768,12 +4796,75 @@ fn run_folder(
     std::fs::canonicalize(&here).ok().filter(|c| roots.clone().any(|r| c.starts_with(r)))
 }
 
-pub const MADE_TITLE: &str = "Claude wants to run — after it made a protected file";
-pub const MADE_YOURS_TITLE: &str = "Before your run — Claude's run made a protected file";
-pub const MADE_SERVERS_TITLE: &str = "Language servers paused — Claude's run made a protected file";
-/// Said after the paused servers' names as they pause (`Editor::servers_hold`).
-pub const MADE_PAUSED: &str =
-    "paused — Claude's run made a protected file; asked about once its turn is over";
+/// Whose run waits on the protected-made card, as its words say it: the paused servers, the agent's next run,
+/// or yours (a task, the preflight, your tests, `:restart`'s build).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MadeFor {
+    Servers,
+    Agent,
+    Yours,
+}
+
+/// The protected-made card's title, `a` the session's agent (`Row.shown`) whose run made the names.
+pub fn made_title(a: &str, f: MadeFor) -> String {
+    match f {
+        MadeFor::Servers => format!("Language servers paused — {a}'s run made a protected file"),
+        MadeFor::Agent => format!("{a} wants to run — after it made a protected file"),
+        MadeFor::Yours => format!("Before your run — {a}'s run made a protected file"),
+    }
+}
+
+/// Its title when the names are only folders git takes for a repository (#610) — `verb` made or changed.
+pub fn made_looks_title(a: &str, f: MadeFor, verb: &str) -> String {
+    match f {
+        MadeFor::Servers => {
+            format!("Language servers paused — {a}'s run {verb} a folder git takes for a repository")
+        }
+        MadeFor::Agent => format!("{a} wants to run — after it {verb} a folder git takes for a repository"),
+        MadeFor::Yours => format!("Before your run — {a}'s run {verb} a folder git takes for a repository"),
+    }
+}
+
+/// Its body under what runs: `named` and `it` as `made_named` gives them, `among` `it's` or `they're`.
+pub fn made_body(a: &str, f: MadeFor, (named, it, among): (&str, &str, &str)) -> String {
+    match f {
+        MadeFor::Servers => format!(
+            "{a}'s last run made {named} the sandbox keeps from its commands: a language server \
+             loads what's in {it} outside the sandbox (rust-analyzer's check runs a new build.rs), so this \
+             checkout's servers are paused until you answer.\n\nLook at {it} first — {among} among {a}'s \
+             changes (space u takes its turn back); y keeps {it} and brings the servers back, r removes {it} \
+             — a link itself, never what it leads to — n leaves them paused (asked again before what runs \
+             next)."
+        ),
+        MadeFor::Agent => format!(
+            "Its last run made {named} the sandbox keeps from {a}'s commands: what's in {it} \
+             runs outside the sandbox, in your builds and your terminal. The sandbox couldn't refuse {it}: \
+             none was there yet.\n\nLook at {it} before this runs — {among} among this turn's changes \
+             (space u takes the turn back); r removes {it} — a link itself, never what it leads to."
+        ),
+        MadeFor::Yours => format!(
+            "{a}'s last run made {named} the sandbox keeps from its commands: what's in {it} \
+             runs in this, outside the sandbox. The sandbox couldn't refuse {it}: none was there yet.\n\n\
+             Look at {it} before this runs — {among} among {a}'s changes (space u takes its turn back); \
+             r removes {it} — a link itself, never what it leads to."
+        ),
+    }
+}
+
+/// Said after the paused servers' names as they pause (`Editor::servers_hold`), `a` the session's agent.
+pub fn made_paused(a: &str) -> String {
+    format!("paused — {a}'s run made a protected file; asked about once its turn is over")
+}
+
+/// A `n` on the card: what a run of yours that didn't run says why (`made`: the names, `some_named`).
+pub fn made_refused(a: &str, made: &str) -> String {
+    format!("{a}'s last run made {made}")
+}
+
+/// A run trace's end for a run of yours the card's `n` kept from running.
+pub fn made_not_run(a: &str) -> String {
+    format!("not run: a protected name {a} made")
+}
 
 /// What waits on the protected-made card (`What::ProtectedMade`): Claude's next run, or a run of yours in
 /// that checkout that runs what's there outside the sandbox — a task (your build), the preflight.
@@ -4829,6 +4920,15 @@ impl MadeThen {
         matches!(self, MadeThen::Servers)
     }
 
+    /// Whose it is, as the card's words say it.
+    fn made_for(&self) -> MadeFor {
+        match self {
+            MadeThen::Servers => MadeFor::Servers,
+            MadeThen::Claude { .. } => MadeFor::Agent,
+            _ => MadeFor::Yours,
+        }
+    }
+
     /// Whether Claude's call waits on it (else it's yours).
     pub fn call(&self) -> Option<&Call> {
         match self {
@@ -4873,54 +4973,14 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
         ed.drop_cards(|w| matches!(w, crate::offer::What::ProtectedMade { then, .. } if then.servers()));
         ed.workspace.servers_asked.clear();
     }
-    let (title, question) = match &then {
-        MadeThen::Servers => (
-            MADE_SERVERS_TITLE,
-            format!(
-                "Claude's last run made {named} the sandbox keeps from its commands: a language server \
-                 loads what's in {it} outside the sandbox (rust-analyzer's check runs a new build.rs), so this \
-                 checkout's servers are paused until you answer.\n\nLook at {it} first — {among} among Claude's \
-                 changes (space u takes its turn back); y keeps {it} and brings the servers back, r removes {it} \
-                 — a link itself, never what it leads to — n leaves them paused (asked again before what runs \
-                 next)."
-            ),
-        ),
-        MadeThen::Claude { .. } => (
-            MADE_TITLE,
-            format!(
-                "Its last run made {named} the sandbox keeps from Claude's commands: what's in {it} \
-                 runs outside the sandbox, in your builds and your terminal. The sandbox couldn't refuse {it}: \
-                 none was there yet.\n\nLook at {it} before this runs — {among} among this turn's changes \
-                 (space u takes the turn back); r removes {it} — a link itself, never what it leads to."
-            ),
-        ),
-        _ => (
-            MADE_YOURS_TITLE,
-            format!(
-                "Claude's last run made {named} the sandbox keeps from its commands: what's in {it} \
-                 runs in this, outside the sandbox. The sandbox couldn't refuse {it}: none was there yet.\n\n\
-                 Look at {it} before this runs — {among} among Claude's changes (space u takes its turn back); \
-                 r removes {it} — a link itself, never what it leads to."
-            ),
-        ),
-    };
+    let (a, f) = (crate::llm::session_row(ed).shown, then.made_for());
+    let (title, question) = (made_title(a, f), made_body(a, f, (&named, it, among)));
     let (title, question) = match (plain.is_empty(), looks.is_empty()) {
-        (false, true) => (title.to_string(), format!("{label}\n\n{question}")),
-        (false, false) => {
-            (title.to_string(), format!("{label}\n\n{question}\n\n{}", looks_card(&looks, &then)))
-        }
+        (false, true) => (title, format!("{label}\n\n{question}")),
+        (false, false) => (title, format!("{label}\n\n{question}\n\n{}", looks_card(&looks, &then))),
         (true, _) => {
             let verb = crate::snapshot::looks_verb(&made).unwrap_or("made");
-            let title = match &then {
-                MadeThen::Servers => format!(
-                    "Language servers paused — Claude's run {verb} a folder git takes for a repository"
-                ),
-                MadeThen::Claude { .. } => {
-                    format!("Claude wants to run — after it {verb} a folder git takes for a repository")
-                }
-                _ => format!("Before your run — Claude's run {verb} a folder git takes for a repository"),
-            };
-            (title, format!("{label}\n\n{}", looks_card(&looks, &then)))
+            (made_looks_title(a, f, verb), format!("{label}\n\n{}", looks_card(&looks, &then)))
         }
     };
     let mut question = question;
@@ -5131,6 +5191,7 @@ pub fn made_answer(
         MadeAnswer::No => {
             ed.offer_finished(id, Ok(()));
             let paths: Vec<String> = made.iter().map(|m| m.path.clone()).collect();
+            let a = crate::llm::session_row(ed).shown;
             match then {
                 MadeThen::Claude { job, call, ride } => {
                     let e = format!(
@@ -5143,33 +5204,29 @@ pub fn made_answer(
                     }
                 }
                 MadeThen::Tests { trace, .. } => {
-                    trace.end("not run: a protected name Claude made");
-                    ed.set_status(format!("tests not run — Claude's last run made {}", some_named(&paths)));
+                    trace.end(made_not_run(a));
+                    ed.set_status(format!("tests not run — {}", made_refused(a, &some_named(&paths))));
                 }
                 MadeThen::Restart { .. } => {
-                    crate::restart::called_off(ed, format!("Claude's last run made {}", some_named(&paths)))
+                    crate::restart::called_off(ed, made_refused(a, &some_named(&paths)))
                 }
                 MadeThen::Task { trace, .. } => {
-                    trace.end("not run: a protected name Claude made");
-                    ed.set_status(format!("not run — Claude's last run made {}", some_named(&paths)));
+                    trace.end(made_not_run(a));
+                    ed.set_status(format!("not run — {}", made_refused(a, &some_named(&paths))));
                 }
                 MadeThen::Servers => {
-                    ed.set_status(format!(
-                        "language servers still paused — Claude's last run made {}",
-                        some_named(&paths)
-                    ));
+                    let made = made_refused(a, &some_named(&paths));
+                    ed.set_status(format!("language servers still paused — {made}"));
                 }
                 MadeThen::Preflight { .. } => {
                     // (`p` on the bring card: the bring waited for this preflight — said, as a failed one is)
-                    let made = some_named(&paths);
+                    let made = made_refused(a, &some_named(&paths));
                     match std::mem::take(&mut ed.workspace.bring_after_preflight) {
                         true => {
                             let name = ed.workspace.label().to_string();
-                            ed.set_warning(format!(
-                                "{name} not brought — the preflight didn't run: Claude's last run made {made}"
-                            ))
+                            ed.set_warning(format!("{name} not brought — the preflight didn't run: {made}"))
                         }
-                        false => ed.set_status(format!("preflight not run — Claude's last run made {made}")),
+                        false => ed.set_status(format!("preflight not run — {made}")),
                     }
                 }
             }
@@ -5475,7 +5532,8 @@ fn loopback_card(ed: &mut Editor, card: &str, job: Job, call: Call, report: Stri
         report: Some(report),
         ..crate::blocked::BlockedRun::of(job)
     };
-    ed.push_offer(crate::blocked::loopback_card(card, &cmd, Box::new(run)));
+    let a = crate::llm::session_row(ed).shown;
+    ed.push_offer(crate::blocked::loopback_card(a, card, &cmd, Box::new(run)));
     Ok(())
 }
 
@@ -6387,7 +6445,7 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         let said = AtomicBool::new(false);
-        let hint = || Some("Claude's commands run in tier host here".to_string());
+        let hint = || Some("Agents' commands run in tier host here".to_string());
         let warnings = |ed: &crate::editor::Editor| {
             let w = ed.toasts.iter().filter(|t| t.kind == crate::editor::ToastKind::Warning);
             w.map(|t| t.text.clone()).collect::<Vec<_>>()
@@ -6395,7 +6453,7 @@ mod tests {
         super::hint_once_by(&mut ed, None, &said);
         assert!(warnings(&ed).is_empty(), "no hint, nothing said");
         super::hint_once_by(&mut ed, hint(), &said);
-        assert_eq!(warnings(&ed), ["Claude's commands run in tier host here"], "the first run's");
+        assert_eq!(warnings(&ed), ["Agents' commands run in tier host here"], "the first run's");
         ed.toasts.clear();
         super::hint_once_by(&mut ed, hint(), &said);
         assert!(warnings(&ed).is_empty(), "not again once it has gone: {:?}", warnings(&ed));
@@ -8862,9 +8920,9 @@ mod tests {
         c.conversation = Some("c1".into());
         c.state = crate::chat::State::Thinking;
         super::failed_in_turn(&mut ed, key);
-        assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::NEXT_MESSAGE, "busy");
+        assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::next_message("Claude"), "busy");
         ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
-        assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::GOES_ON);
+        assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::goes_on("Claude"));
         let sent = || std::fs::read_to_string(dir.join("sent.log")).unwrap_or_default();
         let rerun = |ed: &mut crate::editor::Editor, n: u32| {
             let head = format!("The user ran `true` again (#{n}). How it ended:");
@@ -8892,7 +8950,11 @@ mod tests {
         // That turn was a newer one: the failed run is no longer the last turn's, idle or not
         ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         ed.workspace.claude.checkpoints.tell.clear();
-        assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::NEXT_MESSAGE, "a newer turn");
+        assert_eq!(
+            crate::blocked::then_said(&ed, &run),
+            crate::blocked::next_message("Claude"),
+            "a newer turn"
+        );
         rerun(&mut ed, 3);
         assert!(ed.workspace.claude.checkpoints.tell.iter().any(|t| t.contains("REPORT-3")));
         // Another conversation: none
@@ -8901,7 +8963,7 @@ mod tests {
         ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
         assert_eq!(
             crate::blocked::then_said(&ed, &run),
-            crate::blocked::NEXT_MESSAGE,
+            crate::blocked::next_message("Claude"),
             "another conversation"
         );
         rerun(&mut ed, 4);
@@ -9187,7 +9249,7 @@ mod tests {
         };
         ask(&mut ed, sock.to_str().unwrap(), "docker runs the Linux checks").unwrap();
         let o = ed.offers.first().expect("its card");
-        assert_eq!(o.title, super::SOCKET_RUN_TITLE);
+        assert_eq!(o.title, super::socket_run_title("Claude"));
         let q = o.question.split_whitespace().collect::<Vec<_>>().join(" ");
         // (as the card shows it, `~` for home: the test's temp folder is in home in a sandboxed run)
         assert!(
@@ -9267,7 +9329,7 @@ mod tests {
         let first = "basename trace test | grep trace";
         ask(&mut ed, 1, first).unwrap();
         let o = ed.offers.first().expect("its card");
-        assert_eq!(o.title, super::SOCKET_RUN_TITLE);
+        assert_eq!(o.title, super::socket_run_title("Claude"));
         assert_eq!(o.answers(false), [('y', "Once"), ('a', "This command, this chat"), ('n', "No")]);
         let q = o.question.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(q.contains("a lets this command connect again for the rest of this chat"), "{q}");
@@ -9286,7 +9348,10 @@ mod tests {
         // Another command with it: the socket card
         ask(&mut ed, 3, "basename other").unwrap();
         pump(&mut ed, &|ed| !ed.offers.is_empty() || admitted("basename other").is_some());
-        assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some(super::SOCKET_RUN_TITLE));
+        assert_eq!(
+            ed.offers.first().map(|o| o.title.as_str()),
+            Some(super::socket_run_title("Claude").as_str())
+        );
         // The same command without the socket isn't it either: its own card
         ed.offers.clear();
         let bare = json!({ "command": first });
@@ -9305,7 +9370,10 @@ mod tests {
         ed.offers.clear();
         ask(&mut ed, 5, "basename five").unwrap();
         pump(&mut ed, &|ed| !ed.offers.is_empty() || admitted("basename five").is_some());
-        assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some(super::SOCKET_RUN_TITLE));
+        assert_eq!(
+            ed.offers.first().map(|o| o.title.as_str()),
+            Some(super::socket_run_title("Claude").as_str())
+        );
         let mut a = crate::allow::Allowed::default();
         a.add(&g);
         assert!(a.sockets.is_empty(), "never added");
@@ -9504,7 +9572,7 @@ mod tests {
             vec!["cargo xtask linux: clippy test --userns --docker-default --bin= --repeat= --".into()];
         send(&mut ed, "r1", "cargo xtask linux test -- sandbox::keeper");
         let o = ed.offers.first().expect("its card");
-        assert_eq!(o.title, super::SOCKET_RUN_TITLE);
+        assert_eq!(o.title, super::socket_run_title("Claude"));
         assert_eq!(
             o.answers(false),
             [('y', "Once"), ('a', "This command, these arguments, this chat"), ('n', "No")]
@@ -9589,7 +9657,7 @@ mod tests {
         // (stand-ins: `true` and `echo` touch nothing)
         ask(&mut ed, 1, "true").unwrap();
         let o = ed.offers.first().expect("its card");
-        assert_eq!(o.title, super::SOCKET_RUN_TITLE);
+        assert_eq!(o.title, super::socket_run_title("Claude"));
         assert_eq!(o.answers(false), [('y', "Once"), ('a', "This socket, this chat"), ('n', "No")]);
         let q = o.question.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(

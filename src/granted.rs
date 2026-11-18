@@ -478,7 +478,7 @@ impl Editor {
                     }
                 }
                 self.set_status(match other {
-                    false => format!("Claude's reads of pages at {h} ask again"),
+                    false => format!("Reads of pages at {h} ask again"),
                     true => format!("{was}'s yes for pages at {h} taken back — the other still lets them"),
                 });
             }
@@ -876,6 +876,7 @@ mod tests {
         let run =
             Box::new(crate::blocked::BlockedRun::of(crate::tools::Job::Command("gh pr list".into(), root)));
         let card = crate::blocked::also_card(
+            "Claude",
             Grant::Env("GH_TOKEN".into()),
             "gh reads it",
             ("gh pr list", None),
@@ -1087,7 +1088,7 @@ mod tests {
         assert!(said(&ed, "This session's yes for pages at docs.rs taken back — the other still"));
         ed.granted_take(Taken::Reads(at.0.clone(), at.1, false)).unwrap();
         assert!(ed.workspace.claude.chat.as_ref().unwrap().web_hosts.is_empty());
-        assert!(said(&ed, "Claude's reads of pages at docs.rs ask again"));
+        assert!(said(&ed, "Reads of pages at docs.rs ask again"));
     }
 
     /// The schema step (plan §2.2): a kept read a default covers now — here, in the checkout — is dropped from

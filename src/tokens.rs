@@ -605,7 +605,7 @@ impl Making<'_> {
 /// A copy's first line: what it's a copy of (a comment in every form here — Go skips lines not starting with
 /// a capital).
 fn copy_head(of: &Path, text: &str) -> String {
-    format!("# tarae: {} without its token-like lines — what Claude's commands read\n{text}", of.display())
+    format!("# tarae: {} without its token-like lines — what agents' commands read\n{text}", of.display())
 }
 
 /// configparser's files merged as pip reads them one after another: a section's keys gathered, a key read
@@ -817,7 +817,7 @@ pub fn tell_holders(ed: &mut Editor, holders: &[(PathBuf, String)], told: Option
         }
     }
     ed.set_warning(format!(
-        "{} {it}, and Claude's commands read {them} — {}",
+        "{} {it}, and agents' commands read {them} — {}",
         files.join(", "),
         tells.join(" ")
     ));
@@ -1512,7 +1512,7 @@ mod tests {
         assert_eq!(said(&ed), 1, "{:?}", ed.toasts);
         let m = ed.messages.iter().find(|m| m.2.contains("credentials.toml")).unwrap();
         assert!(
-            m.2.contains("hold tokens, and Claude's commands read them — cargo can't work without them."),
+            m.2.contains("hold tokens, and agents' commands read them — cargo can't work without them."),
             "{}",
             m.2
         );

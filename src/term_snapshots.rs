@@ -1555,7 +1555,7 @@ fn snapshot_host_card_closed() {
             also: vec!["crates.io".into(), "*.crates.io".into()],
             ended: false,
         };
-        s.ed.push_offer(crate::hosts::card(a));
+        s.ed.push_offer(crate::hosts::card("Claude", a));
         s.check(name);
         s.frames_both(name);
     }
@@ -1611,7 +1611,7 @@ fn frames_of_the_answer_words() {
             also: Vec::new(),
             ended: false,
         };
-        s.ed.push_offer(crate::hosts::card(a));
+        s.ed.push_offer(crate::hosts::card("Claude", a));
     });
     // The three trust cards: `y Trust · n Hold back`
     shot("f_project_trust", &|s| {
@@ -1936,7 +1936,7 @@ fn frames_of_frictions30() {
             also: Vec::new(),
             ended: true,
         };
-        s.ed.push_offer(crate::hosts::card(a));
+        s.ed.push_offer(crate::hosts::card("Claude", a));
         s.frames_both(&format!("f30_host_ended-{w}"));
         // 11: a read in a repository outside the project that isn't offered whole, and why
         let mut s = shot();
@@ -2017,9 +2017,10 @@ fn frames_of_the_read_card_with_its_repository() {
             moved: None,
             more: Vec::new(),
         };
-        let (q, warning) = crate::reads::card_text(&p, true, Some((&repo, &Default::default())), None);
+        let (q, warning) =
+            crate::reads::card_text("Claude", &p, true, Some((&repo, &Default::default())), None);
         let what = crate::offer::What::Read { pending: Box::new(p), keep: true, folder: Some(repo.clone()) };
-        let mut o = crate::offer::Offer::new(crate::reads::TITLE.into(), &q, "", String::new(), what);
+        let mut o = crate::offer::Offer::new(crate::reads::title("Claude"), &q, "", String::new(), what);
         o.warning = warning;
         s.ed.push_offer(o);
         s.frames_both(&format!("j_read_repository{wide}"));
@@ -8936,6 +8937,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         (
             "grant",
             crate::blocked::also_card(
+                "Claude",
                 grant,
                 reason,
                 ("npm test", None),
@@ -8948,7 +8950,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         ),
         (
             "host",
-            crate::hosts::card(host),
+            crate::hosts::card("Claude", host),
             "╰─ C-q answer · y once · a chat · s session · v details · n no ─╯",
         ),
     ]
@@ -10262,14 +10264,14 @@ fn a_cards_title_is_whole_at_80_columns() {
     // (an outside card comes through the worker that reads the kept places it names)
     crate::test_results::settle_until(&mut s.ed, |ed| !ed.offers.is_empty());
     let screen = rows_of(&mut s, (0, 0, 80, 24)).join("\n");
-    assert!(screen.contains(crate::tools::OUTSIDE_RUN_TITLE), "{screen}");
+    assert!(screen.contains(&crate::tools::outside_run_title("Claude")), "{screen}");
     // (and with a second card waiting: its peek under it, the title still whole)
     let msg = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "run", "arguments": args}});
     assert!(crate::tools::mcp(&mut s.ed, 0, "c2", &msg).is_none(), "it waits for the user");
     crate::test_results::settle_until(&mut s.ed, |ed| ed.offers.len() == 2);
     let screen = rows_of(&mut s, (0, 0, 80, 24)).join("\n");
     assert!(
-        screen.contains(crate::tools::OUTSIDE_RUN_TITLE) && s.ed.screen.asks_drawn.len() == 2,
+        screen.contains(&crate::tools::outside_run_title("Claude")) && s.ed.screen.asks_drawn.len() == 2,
         "{screen}"
     );
 }

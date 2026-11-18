@@ -173,7 +173,7 @@ impl Ask {
     /// Its card's words as a fresh read card would say them (`question`). (Tests.)
     #[cfg(test)]
     pub fn question(&self) -> String {
-        question(&self.look, false, None)
+        question("Claude", &self.look, false, None)
     }
 
     /// What of the file it reads, for its card (`Look.part`).
@@ -1162,7 +1162,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     } else if shut.iter().all(|s| *s == Some(Shut::Keys)) {
         pointed_place_title(ed)
     } else {
-        POINTED_TITLE.to_string()
+        pointed_title(crate::llm::session_row(ed).shown)
     };
     let (what, y) = match &own {
         Own::Chip(_) => (
@@ -1209,7 +1209,8 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     let mut q = format!("{}\n\n{is} {why}, and {what}. {y}.", p.look.given);
     if keep {
         let only = if p.look.keys.len() == 1 { "that file only" } else { "those files only" };
-        q.push_str(&format!("\n\na, s and A open {it} to Claude and its commands too — {only}."));
+        let a = crate::llm::session_row(ed).shown;
+        q.push_str(&format!("\n\na, s and A open {it} to {a} and its commands too — {only}."));
     }
     let asked = crate::cards::Asked::new(crate::cards::Why::Read, crate::cards::Request::Read(p.class))
         .about(&p.look.given);
@@ -1533,8 +1534,9 @@ fn refold(ed: &mut Editor) {
         if offered.is_none() && why.is_none() {
             continue;
         }
+        let a = crate::llm::session_row(ed).shown;
         let (mut q, warning) =
-            card_text(&p, true, offered.as_ref().map(|(f, found)| (f.as_path(), found)), why.as_deref());
+            card_text(a, &p, true, offered.as_ref().map(|(f, found)| (f.as_path(), found)), why.as_deref());
         let f = offered.map(|(f, _)| f);
         let what = crate::offer::What::Read { pending: Box::new(p), keep: true, folder: f.clone() };
         if let Some(line) = ed.always_line(&what) {
@@ -1678,15 +1680,16 @@ fn scanned(ed: &mut Editor, f: &Path) -> Option<crate::tokens::Found> {
 }
 
 /// The card's text, and its lines that warn: what `y` reads — or what `a`/`A` open (`folder`, with what it
-/// holds) — holds a token-like line (names, never values).
+/// holds) — holds a token-like line (names, never values). `a`: the session's agent (`Row.shown`).
 pub fn card_text(
+    a: &str,
     p: &Pending,
     keep: bool,
     folder: Option<(&Path, &crate::tokens::Found)>,
     not_whole: Option<&str>,
 ) -> (String, Option<std::ops::Range<usize>>) {
     let whole = folder.map(|(f, _)| (f, p.repository.as_deref() == Some(f)));
-    let mut q = question(&p.look, keep, whole);
+    let mut q = question(a, &p.look, keep, whole);
     // (the log: what it holds, one line after what it reads — #292)
     if p.log {
         let at = q.find("\n\n").unwrap_or(q.len());
@@ -1711,25 +1714,36 @@ pub fn card_text(
     (q, warning)
 }
 
-pub const TITLE: &str = "Claude wants to read — outside the project";
+/// The read card's title: `a` the asking session's agent (`Row.shown`), as in each below.
+pub fn title(a: &str) -> String {
+    format!("{a} wants to read — outside the project")
+}
 
 /// A read that opens files named like keys (`Look.keys`) — in the project, or outside it by their names.
-pub const KEYS_TITLE: &str = "Claude wants to read — named like a key";
+pub fn keys_title(a: &str) -> String {
+    format!("{a} wants to read — named like a key")
+}
 
-/// The two above, for a read a code program of Claude's asks (`codetool::tool`).
-pub const SCRIPT_TITLE: &str = "Claude's program wants to read — outside the project";
-pub const SCRIPT_KEYS_TITLE: &str = "Claude's program wants to read — named like a key";
+/// The two above, for a read a code program of the agent's asks (`codetool::tool`).
+pub fn script_title(a: &str) -> String {
+    format!("{a}'s program wants to read — outside the project")
+}
+pub fn script_keys_title(a: &str) -> String {
+    format!("{a}'s program wants to read — named like a key")
+}
 
-/// The user pointed at a file named like a key (`point`).
-pub const POINTED_TITLE: &str = "Send to Claude — named like a key";
+/// The user pointed at a file named like a key (`point`): sent to the session in front's agent.
+pub fn pointed_title(a: &str) -> String {
+    format!("Send to {a} — named like a key")
+}
 
-/// `POINTED_TITLE` for files in a place that holds keys, none named like one (`by_place`): where they are, the
+/// `pointed_title` for files in a place that holds keys, none named like one (`by_place`): where they are, the
 /// session's agent by its row's name.
 pub fn pointed_place_title(ed: &Editor) -> String {
     format!("Send to {} — where keys are", crate::llm::session_row(ed).shown)
 }
 
-/// `POINTED_TITLE` for files of which one is in an agent's own place (`Shut::Own` — the stronger fact): the
+/// `pointed_title` for files of which one is in an agent's own place (`Shut::Own` — the stronger fact): the
 /// session's agent and the place's owner each by its row's `shown`, several owners as agents'.
 pub fn pointed_own_title(ed: &Editor, owners: &[&crate::agent::OwnAt]) -> String {
     let to = crate::llm::session_row(ed).shown;
@@ -1772,13 +1786,14 @@ pub fn next(ed: &mut Editor) {
     let others = others(c);
     let folder = (keep && !p.log).then(|| folder_for(ed, &p, &others, home.as_deref())).flatten();
     let why = not_whole(ed, &p, folder.as_ref().map(|(f, _)| f.as_path()));
+    let a = crate::llm::session_row(ed).shown;
     let (q, warning, warnings) = match p.more.is_empty() {
         true => {
             let f = folder.as_ref().map(|(f, found)| (f.as_path(), found));
-            let (q, warning) = card_text(&p, keep, f, why.as_deref());
+            let (q, warning) = card_text(a, &p, keep, f, why.as_deref());
             (q, warning, Vec::new())
         }
-        false => (batch_text(&p), None, Vec::new()),
+        false => (batch_text(a, &p), None, Vec::new()),
     };
     let asked = crate::cards::Asked::new(crate::cards::Why::Read, crate::cards::Request::Read(p.class))
         .about(&p.look.given);
@@ -1787,12 +1802,12 @@ pub fn next(ed: &mut Editor) {
     let program = p.then.as_ref().is_some_and(|t| t.call.program().is_some());
     let title = match (!p.look.keys.is_empty(), program) {
         _ if !p.more.is_empty() => {
-            format!("Claude's program wants to read — {} places outside the project", 1 + p.more.len())
+            format!("{a}'s program wants to read — {} places outside the project", 1 + p.more.len())
         }
-        (true, false) => KEYS_TITLE.into(),
-        (false, false) => TITLE.into(),
-        (true, true) => SCRIPT_KEYS_TITLE.into(),
-        (false, true) => SCRIPT_TITLE.into(),
+        (true, false) => keys_title(a),
+        (false, false) => title(a),
+        (true, true) => script_keys_title(a),
+        (false, true) => script_title(a),
     };
     let what = crate::offer::What::Read { pending: Box::new(p), keep, folder: folder.map(|(f, _)| f) };
     let mut o = crate::offer::Offer::new(title, &q, "", String::new(), what).asked(asked);
@@ -1802,8 +1817,8 @@ pub fn next(ed: &mut Editor) {
 
 /// A program's batch card's text: each place it reads, a line each with its class (`cards::Class::place`) — the
 /// card's own rules cut a long one, its whole under the pointer; then where it goes and what `y` and `n` do. No
-/// warning lines: a place with one never rides in a batch (`Pending::warned`).
-pub fn batch_text(p: &Pending) -> String {
+/// warning lines: a place with one never rides in a batch (`Pending::warned`). `a`: the session's agent.
+pub fn batch_text(a: &str, p: &Pending) -> String {
     let mut q = String::new();
     for w in std::iter::once(p).chain(&p.more) {
         let at = place_of(w);
@@ -1813,7 +1828,7 @@ pub fn batch_text(p: &Pending) -> String {
         };
         q.push_str(&format!("{what}  · {}\n", w.class.place()));
     }
-    q.push_str("\nWhat it reads goes to Claude's program, and what the program returns to Claude.");
+    q.push_str(&format!("\nWhat it reads goes to {a}'s program, and what the program returns to {a}."));
     q.push_str("\n\ny lets each of them through once; n refuses them all.");
     q
 }
@@ -1847,7 +1862,7 @@ const KEYS_SHOWN: usize = 5;
 /// The card's text: exactly what's read (the files named like keys it opens by name), and where it goes —
 /// and, when `a`/`A` allow more than its place (`folder`: a folder, and whether it's the repository it reads
 /// in), that.
-pub fn question(look: &Look, keep: bool, folder: Option<(&Path, bool)>) -> String {
+pub fn question(a: &str, look: &Look, keep: bool, folder: Option<(&Path, bool)>) -> String {
     let at = match &look.at {
         Some(at) => at.display().to_string(),
         None => format!("{} (where it leads can't be told)", look.given),
@@ -1882,7 +1897,7 @@ pub fn question(look: &Look, keep: bool, folder: Option<(&Path, bool)>) -> Strin
     if look.cut {
         q.push_str("\n\nIt holds too much to look through for files named like keys — a yes lets it search any there.");
     }
-    q.push_str("\n\nWhat it reads goes to Claude.");
+    q.push_str(&format!("\n\nWhat it reads goes to {a}."));
     if keep && !look.keys.is_empty() {
         let (them, only) = if look.keys.len() == 1 { ("it", "that file") } else { ("them", "those files") };
         q.push_str(&format!("\n\na, s and A open {them} to its commands too — {only} only."));
@@ -2334,8 +2349,9 @@ mod tests {
         std::fs::create_dir_all(dir.join("out")).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         std::fs::write(dir.join("out/m.txt"), "marker\n").unwrap();
-        let q =
-            |path: PathBuf| question(&look("Grep", &json!({"pattern": "x", "path": path}), &dir), true, None);
+        let q = |path: PathBuf| {
+            question("Claude", &look("Grep", &json!({"pattern": "x", "path": path}), &dir), true, None)
+        };
         let (folder, file) = (dir.join("out"), dir.join("out/m.txt"));
         assert!(
             q(folder.clone())
@@ -2769,7 +2785,7 @@ mod tests {
         assert!(look.cut && !covered, "{look:?}");
         let cut = Look { cut: true, ..read(&basis, &granted.join("README.md")).0 };
         assert!(!covered_by(&cut, &basis.build()), "a walk cut short asks");
-        assert!(question(&cut, false, None).contains("too much to look through"));
+        assert!(question("Claude", &cut, false, None).contains("too much to look through"));
     }
 
     /// frictions29 round 3, through the requests' own path (`caps_for` — the chat's `request`, `reviewer::read`) and

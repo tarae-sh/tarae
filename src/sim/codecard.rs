@@ -187,7 +187,7 @@ fn batch_card(name: &str, choices: Choices, kind: Kind) -> Vec<String> {
             }
             // (a place named like a key: on today's single key card, by itself)
             let others = o.question.contains(&file(0)) || o.question.contains(&file(1));
-            if o.question.contains(&key) && (others || o.title != crate::reads::SCRIPT_KEYS_TITLE) {
+            if o.question.contains(&key) && (others || o.title != crate::reads::script_keys_title("Claude")) {
                 return Err(format!(
                     "a key rode with others, or not on its own card: {}\n{}",
                     o.title, o.question

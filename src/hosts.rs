@@ -126,6 +126,7 @@ pub fn asked(ed: &mut Editor, ask: FromProxy) {
     let a = Ask { session, run, host, port, process, label, users, left, open, hosts, also, ended: false };
     ed.with_workspace(id, move |ed| {
         let front = !ed.background();
+        let agent = crate::llm::session_row(ed).shown;
         let cards = ed.workspace.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
         for o in cards {
             if let Some(h) = o.host()
@@ -134,7 +135,7 @@ pub fn asked(ed: &mut Editor, ask: FromProxy) {
                 // (another run's)
                 if h.run != a.run {
                     // (whole: an ended card's extra line moved what's decided and the warning's row)
-                    let fresh = card(a);
+                    let fresh = card(agent, a);
                     (o.question, o.what, o.asked, o.decided, o.warning) =
                         (fresh.question, fresh.what, fresh.asked, fresh.decided, fresh.warning);
                     o.rev += 1;
@@ -142,7 +143,7 @@ pub fn asked(ed: &mut Editor, ask: FromProxy) {
                 return;
             }
         }
-        ed.push_offer(card(a));
+        ed.push_offer(card(agent, a));
     });
 }
 
@@ -163,16 +164,17 @@ fn open_lasts(hosts: &crate::llm::Hosts) -> &'static str {
     }
 }
 
-/// The card for `a` — the network open's, else the closed one's.
-pub fn card(a: Ask) -> Offer {
+/// The card for `a` — the network open's, else the closed one's; `agent` the session's (`Row.shown`), whose
+/// command it may be.
+pub fn card(agent: &str, a: Ask) -> Offer {
     use crate::cards::{Asked, Request, Why};
     if !a.open {
-        return closed_card(a);
+        return closed_card(agent, a);
     }
     let by = match (a.left, a.users) {
         (true, _) => format!("asked by {}, left running by a run that's over", a.process),
         (false, true) => format!("asked by {} in `{}`, your command", a.process, a.label),
-        (false, false) => format!("asked by {} in `{}`, Claude's command", a.process, a.label),
+        (false, false) => format!("asked by {} in `{}`, {agent}'s command", a.process, a.label),
     };
     let (waits, lasting) = (waits(), open_lasts(&a.hosts));
     let packs = crate::sandboxpack::get();
@@ -251,14 +253,14 @@ fn suggested(
 /// and where; what a yes lets in besides (a pack's other registries, decided); what it risks (one warning: what's
 /// read can go there, a pack's caches open from the next run); the keys. The wait, how long a yes lasts and the
 /// caches' long form are behind `v` (`details`).
-fn closed_card(a: Ask) -> Offer {
+fn closed_card(agent: &str, a: Ask) -> Offer {
     use crate::cards::{Asked, Request, Why};
     let packs = crate::sandboxpack::get();
     let pack = registry_of(&packs.registries, &a.host, a.port);
     let (whose, by) = match (a.left, a.users) {
-        (true, _) => ("a", format!("{}, left running by a run that's over", a.process)),
-        (false, true) => ("your", format!("{}, in `{}`", a.process, a.label)),
-        (false, false) => ("Claude's", format!("{}, in `{}`", a.process, a.label)),
+        (true, _) => ("a".to_string(), format!("{}, left running by a run that's over", a.process)),
+        (false, true) => ("your".into(), format!("{}, in `{}`", a.process, a.label)),
+        (false, false) => (format!("{agent}'s"), format!("{}, in `{}`", a.process, a.label)),
     };
     let mut lines = vec![format!("{by} · port {} · through tarae's proxy", a.port)];
     if a.ended {
@@ -561,7 +563,8 @@ fn next_run(ed: &mut Editor, a: &Ask) {
         "The user let your next command {doing} — its run had ended before they answered. Run it again if you \
          still need it."
     ));
-    ed.set_success(format!("Claude's next run may {doing}"));
+    let agent = crate::llm::session_row(ed).shown;
+    ed.set_success(format!("{agent}'s next run may {doing}"));
 }
 
 /// Run `run` ended (reaped — its panel's end, in its session): a card for a run of Claude's stays, saying so — `y`
@@ -573,10 +576,11 @@ pub fn run_ended(ed: &mut Editor, run: Option<u64>) {
     let yours = |w: &What| matches!(w, What::Host(h) if h.run == run && h.users && !h.left);
     ed.drop_cards_for(yours, "its run ended");
     let front = !ed.background();
+    let agent = crate::llm::session_row(ed).shown;
     let cards = ed.workspace.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
     for o in cards {
         let Some(a) = o.host().filter(|h| h.run == run && !h.ended && !h.left).cloned() else { continue };
-        let fresh = card(Ask { ended: true, ..a });
+        let fresh = card(agent, Ask { ended: true, ..a });
         (o.question, o.what, o.asked, o.decided, o.warning) =
             (fresh.question, fresh.what, fresh.asked, fresh.decided, fresh.warning);
         o.rev += 1;

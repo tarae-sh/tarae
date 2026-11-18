@@ -128,14 +128,14 @@ pub fn step(place: &Place) -> Option<String> {
 /// or why there's none.
 pub fn hint(tier: &str, place: &Place) -> String {
     let why = format!(
-        "Claude's commands run in tier {tier} here (no namespaces of their own): Ubuntu lets a program make \
+        "Agents' commands run in tier {tier} here (no namespaces of their own): Ubuntu lets a program make \
          user namespaces only through an AppArmor profile that names it, and none names tarae"
     );
     let path = place.path.display();
     match (step(place), &place.root_owned) {
         (Some(step), _) => format!(
             "{why}. To give them namespaces of their own, run once, then restart tarae — your terminal and tools keep user \
-             namespaces, as VS Code's do; Claude's and plugins' commands don't: {step}"
+             namespaces, as VS Code's do; agents' and plugins' commands don't: {step}"
         ),
         (None, Err(not)) => format!(
             "{why}. A profile is safe only for a tarae only root can replace, and {path} isn't ({not}) — install \
@@ -214,16 +214,16 @@ mod tests {
     }
 
     /// The hint says the tier and why, then the one way on: the step — saying what the profile changes beyond
-    /// the runs: the user's terminal and tools keep user namespaces, Claude's and plugins' commands don't — or,
+    /// the runs: the user's terminal and tools keep user namespaces, agents' and plugins' commands don't — or,
     /// for a tarae not only root can replace, never a profile for it, only where to install one that can have it.
     #[test]
     fn the_hint_gives_the_step_or_says_why_not() {
         let root = hint("host", &place("/usr/local/bin/tarae", Ok(())));
-        assert!(root.starts_with("Claude's commands run in tier host here"), "{root}");
+        assert!(root.starts_with("Agents' commands run in tier host here"), "{root}");
         assert!(root.contains("To give them namespaces of their own, run once"), "{root}");
         assert!(
             root.contains(
-                "your terminal and tools keep user namespaces, as VS Code's do; Claude's and plugins' commands \
+                "your terminal and tools keep user namespaces, as VS Code's do; agents' and plugins' commands \
                  don't: printf '"
             ),
             "{root}"

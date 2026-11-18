@@ -6670,6 +6670,45 @@ mod tests {
         ed.workspace.claude.chat = None;
     }
 
+    /// The same through `run`, the sandbox's own card: the stand-in asks one run through its MCP relay (`pwd`, outside
+    /// the sandbox with a reason — always a card, never run unasked), and the run card names it — `stand-in wants to
+    /// run`, never Claude. Nothing runs: the card is left unanswered and the chat dropped.
+    #[test]
+    fn a_run_an_acp_agent_asks_through_the_bridge_names_it() {
+        let dir = crate::scratch::Scratch::new("chat-acp-names-its-run");
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        let mut ed = Editor::with_root(crate::config::Config::default(), dir.join("project"));
+        let mcp = |m: serde_json::Value| serde_json::json!({"mcp": m});
+        let args =
+            serde_json::json!({"command": "pwd", "outside_sandbox": true, "reason": "to see where it is"});
+        let script = serde_json::json!([
+            {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
+            {"expect": "session/new", "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}},
+            {"expect": "session/prompt"},
+            mcp(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"}})),
+            mcp(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
+            mcp(serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "run", "arguments": args}})),
+        ]);
+        let (script_at, heard_at) = (dir.join("script.json"), dir.join("heard"));
+        std::fs::write(&script_at, script.to_string()).unwrap();
+        ed.claude_env = Some(stand_in_env(&dir, &script_at, &heard_at));
+        let mut c = Chat::new();
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+        c.hidden = false;
+        ed.workspace.claude.chat = Some(c);
+        ensure_proc(&mut ed);
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().proc.is_some());
+        assert!(submit(&mut ed, "where are you", None, None));
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
+        let o = &ed.offers[0];
+        assert_eq!(o.title, "stand-in wants to run — outside the sandbox");
+        assert_eq!(o.failed, "stand-in's command", "what its failure is said as");
+        assert!(!format!("{}{}", o.title, o.question).contains("Claude"), "{}", o.question);
+        ed.workspace.claude.chat = None;
+    }
+
     /// Guard 3 in the chat (Q6, §9.1): an agent that tripped — its turn ended in tarae's words, then its end — is said
     /// once in the transcript and as an error, and its row is held until you quit: a message after it starts nothing
     /// and stays in the input, why said on the status line and where it would start. The hold is judged by the chat's
@@ -7855,7 +7894,10 @@ mod tests {
     /// `C-o` and the label of element `id` typed, on the frame drawn now — the read card asks.
     fn point_at(ed: &mut Editor, id: &str) {
         label_typed(ed, id);
-        assert!(ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE), "the read card asks");
+        assert!(
+            ed.offers.iter().any(|o| o.title == crate::reads::pointed_title("Claude")),
+            "the read card asks"
+        );
     }
 
     /// `C-o` and the label of element `id` typed, on the frame drawn now.
@@ -7982,7 +8024,10 @@ mod tests {
         };
         point(&mut ed);
         chip_off(&mut ed);
-        assert!(!ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE), "dropped with its chip");
+        assert!(
+            !ed.offers.iter().any(|o| o.title == crate::reads::pointed_title("Claude")),
+            "dropped with its chip"
+        );
         point(&mut ed);
         answer(&mut ed, "y");
         chip_off(&mut ed);
@@ -7992,13 +8037,19 @@ mod tests {
         // A new conversation: a card pointing raised doesn't hold its first message
         point(&mut ed);
         reset(&mut ed);
-        assert!(!ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE), "dropped with it");
+        assert!(
+            !ed.offers.iter().any(|o| o.title == crate::reads::pointed_title("Claude")),
+            "dropped with it"
+        );
         let m = ask(&mut ed, "a new conversation, first");
         assert!(!m.contains("tarae-fake-token") && m.contains("not sent"), "{m}");
         // `A` isn't an answer: a key is opened once at a time (`Caps::storable`)
         point(&mut ed);
         answer(&mut ed, "A");
-        assert!(ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE), "A refused on the card");
+        assert!(
+            ed.offers.iter().any(|o| o.title == crate::reads::pointed_title("Claude")),
+            "A refused on the card"
+        );
         answer(&mut ed, "n");
         // Kept for the project by an earlier build's `A`: the chat's copy read again — a new conversation sends it
         let store = ed.allow_path.clone().expect("a stand-in sandbox.json");
@@ -8023,7 +8074,8 @@ mod tests {
     fn other_senders_go_while_a_pointing_card_waits_and_never_use_its_yes() {
         let (dir, env, plain, log, mut ed) = key_chat("key-senders");
         let pane = format!("pane#{}", ed.workspace.viewer.focus);
-        let pointing_up = |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE);
+        let pointing_up =
+            |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::pointed_title("Claude"));
         let chips = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().pointed.clone();
         // Each sender goes, and carries neither the key's text nor the input's chip
         let went = |ed: &mut Editor, what: &str, send: &dyn Fn(&mut Editor)| {
@@ -8074,7 +8126,7 @@ mod tests {
         assert!(ed.workspace.claude.chat.is_none(), "the chat isn't open yet");
         crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::You, "this line");
         crate::codereview::send(&mut ed);
-        let asked = |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE);
+        let asked = |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::pointed_title("Claude"));
         assert!(!asked(&ed), "not asked before the kept keys are read");
         settle_until(&mut ed, |ed| asked(ed) || messages(&log).len() == 1);
         assert!(!asked(&ed), "kept open for the project: not asked again");
@@ -8253,7 +8305,7 @@ mod tests {
     #[test]
     fn a_note_or_review_on_a_key_named_file_asks_before_its_lines_go() {
         let (dir, env, _, log, mut ed) = key_chat("key-notes");
-        let up = |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE);
+        let up = |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::pointed_title("Claude"));
         let last = || messages(&log).pop().unwrap_or_default();
         let answered = |ed: &mut Editor, k: &str| {
             let n = messages(&log).len();

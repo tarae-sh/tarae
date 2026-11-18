@@ -502,19 +502,18 @@ impl Grant {
         self.warning().is_some()
     }
 
-    /// What yes risks beyond what the grant says, on its card (`warning` in `warning`, the terminals').
-    pub fn risk(&self) -> Option<String> {
+    /// What yes risks beyond what the grant says, on its card (`warning` in `warning`, the terminals') — `a` the
+    /// asking session's agent (`Row.shown`).
+    pub fn risk(&self, a: &str) -> Option<String> {
         match self {
             Grant::Terminals => Some(
                 "macOS's sandbox can't tell a terminal a command made from yours: its commands could read what \
                  you type in your shells, tarae's and other sessions', and type into them."
                     .into(),
             ),
-            Grant::Key(_) => Some(
-                "Its commands read what's in it — a key or a token, by its name — and what they print reaches \
-                 Claude."
-                    .into(),
-            ),
+            Grant::Key(_) => Some(format!(
+                "Its commands read what's in it — a key or a token, by its name — and what they print reaches {a}."
+            )),
             Grant::Localhost => {
                 let risky: Vec<String> = crate::sandbox::RISKY_PORTS
                     .iter()
@@ -525,7 +524,7 @@ impl Grant {
                     risky.join(" · ")
                 ))
             }
-            Grant::Env(_) => Some("Its commands read its value, and what they print reaches Claude.".into()),
+            Grant::Env(_) => Some(format!("Its commands read its value, and what they print reaches {a}.")),
             _ => self.warning().map(String::from),
         }
     }
@@ -1782,7 +1781,8 @@ pub fn grant_reads(ed: &mut crate::editor::Editor, places: &[PathBuf], scope: Sc
     add_for(ed, &grants, scope, scope.key());
     let shown = places.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
     let toast = lasting(ed, scope, &grants).1;
-    ed.set_success(format!("Claude may read {shown}{toast}"));
+    let a = crate::llm::session_row(ed).shown;
+    ed.set_success(format!("{a} may read {shown}{toast}"));
 }
 
 /// `a`/`A` on a read card naming files in the project named like keys (`reads.rs`): Claude may read `keys`
@@ -1807,7 +1807,8 @@ pub fn grant_keys(ed: &mut crate::editor::Editor, keys: &[PathBuf], scope: Scope
         "The user let you read {shown}, named like a key, and your commands use it as any file there — {when}."
     );
     ed.workspace.claude.checkpoints.tell.push(tell);
-    ed.set_success(format!("Claude may read {shown}, its commands use it{toast}"));
+    let a = crate::llm::session_row(ed).shown;
+    ed.set_success(format!("{a} may read {shown}, its commands use it{toast}"));
 }
 
 /// `a`/`s`/`A` on a card about what the sandbox blocked: Claude's commands may do `g` for the rest of this
@@ -1830,16 +1831,17 @@ pub fn grant_by(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope, key: ch
     let (when, toast) = lasting(ed, scope, std::slice::from_ref(g));
     let shown = granting.map_or_else(|| g.shown(), |k| g.shown_with(k));
     ed.workspace.claude.checkpoints.tell.push(format!("The user let your commands {shown} — {when}."));
-    ed.set_success(toasted(g, &shown, &toast));
+    let a = crate::llm::session_row(ed).shown;
+    ed.set_success(toasted(a, g, &shown, &toast));
 }
 
 /// A grant's toast, `toast` how long it lasts after it: what's let, as the card said it — a masked variable's what
 /// happens first, then its hosts, before any cut (#480b, as #470's): `GH_TOKEN masked → api.github.com · github.com
-/// only, until you quit — :granted lists it`; else `shown`, as Claude is told it.
-fn toasted(g: &Grant, shown: &str, toast: &str) -> String {
+/// only, until you quit — :granted lists it`; else `shown`, as the agent (`a`, its `Row.shown`) is told it.
+pub(crate) fn toasted(a: &str, g: &Grant, shown: &str, toast: &str) -> String {
     match g {
         Grant::Masked(n, hosts) => format!("{n} masked → {} only,{toast}", hosts.join(" · ")),
-        _ => format!("Claude's commands may {shown}{toast}"),
+        _ => format!("{a}'s commands may {shown}{toast}"),
     }
 }
 

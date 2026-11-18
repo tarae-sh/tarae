@@ -405,7 +405,7 @@ impl RunEnv {
     /// `:sandbox-env`'s page: what goes in and why, then what's left out — names only.
     pub fn page(&self) -> String {
         let mut s = String::from(
-            "# What Claude's sandboxed commands get of tarae's environment — names only, never a value\n\n## Passed\n",
+            "# What agents' sandboxed commands get of tarae's environment — names only, never a value\n\n## Passed\n",
         );
         let w = self.vars.iter().map(|(k, ..)| k.len()).max().unwrap_or(0);
         for (k, _, by) in &self.vars {

@@ -11182,7 +11182,7 @@ mod tests {
             !ed.offers.is_empty() || !ed.workspace.claude.chat.as_ref().unwrap().busy()
         });
         let o = ed.offers.first().expect("asked, not run");
-        assert_eq!(o.title, crate::tools::OUTSIDE_RUN_TITLE);
+        assert_eq!(o.title, crate::tools::outside_run_title("Claude"));
         assert!(o.question.contains(&format!("Its reason: {reason}")), "{}", o.question);
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 140, 40).unwrap();
@@ -12503,7 +12503,7 @@ mod tests {
         let log = run_turn(&mut ed, &dir, &command);
         let o = &ed.offers[0];
         assert!(matches!(o.what, What::NoSandbox { first: true, .. }), "{}", o.title);
-        assert_eq!(o.title, crate::tools::PARTIAL_SANDBOX_TITLE);
+        assert_eq!(o.title, crate::tools::partial_sandbox_title("Claude"));
         assert!(o.question.contains(why) && o.question.contains("goes only so far"), "{}", o.question);
         ed.offer_dismiss();
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
@@ -12835,7 +12835,7 @@ mod tests {
         let idle = |ed: &Editor| !ed.workspace.claude.chat.as_ref().unwrap().busy();
         let (mut ed, log) = start();
         let o = &ed.offers[0];
-        assert_eq!(o.title, crate::tools::PARTIAL_SANDBOX_TITLE);
+        assert_eq!(o.title, crate::tools::partial_sandbox_title("Claude"));
         assert!(o.question.contains(why) && o.weighty(), "{}", o.question);
         ed.offer_dismiss();
         settle_until(&mut ed, idle);
@@ -13417,7 +13417,7 @@ mod tests {
     /// folder it said no to is told so at once, in those words, with no card; the turn's end lets it ask again.
     #[test]
     fn a_reads_no_holds_until_the_turn_ends() {
-        use crate::reads::TITLE;
+        let title = crate::reads::title("Claude");
         use serde_json::json;
         let scratch = crate::scratch::Scratch::new("reads-no");
         let dir = std::fs::canonicalize(scratch.path()).unwrap();
@@ -13438,7 +13438,7 @@ mod tests {
             permission_answer_to(&log, id)
         };
         feed(&mut ed, "<space>lread them<ret>");
-        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.title == TITLE));
+        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.title == title));
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 140, 40).unwrap();
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
@@ -13452,7 +13452,7 @@ mod tests {
         assert_eq!(a["behavior"], "deny");
         let said = format!("the user said no to {} this turn", out.display());
         assert!(a["message"].as_str().unwrap().starts_with(&said), "{a}");
-        assert!(!ed.offers.iter().any(|o| o.title == TITLE), "no card");
+        assert!(!ed.offers.iter().any(|o| o.title == title), "no card");
         // The turn's end: the no is gone with it
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.read_no.is_empty()));
     }
@@ -13464,7 +13464,7 @@ mod tests {
     /// is read here: the fake claude only asks, and its paths are this test's own temp folder.
     #[test]
     fn claudes_reads_outside_the_project_ask_first() {
-        use crate::reads::TITLE;
+        let title = crate::reads::title("Claude");
         use serde_json::json;
         let scratch = crate::scratch::Scratch::new("reads-ask");
         let dir = scratch.to_path_buf();
@@ -13508,7 +13508,7 @@ mod tests {
         // The card up, drawn, and in sight long enough for an answer — what it says (a long path wraps on
         // screen) and the screen
         let card = |ed: &mut Editor| {
-            settle_until(ed, |ed| ed.offers.iter().any(|o| o.title == TITLE));
+            settle_until(ed, |ed| ed.offers.iter().any(|o| o.title == title));
             let s = screen(ed);
             let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
             ed.card_focus = Some((o.0, o.1));
@@ -13545,7 +13545,7 @@ mod tests {
         let (q, s) = card(&mut ed);
         assert!(q.contains("Only once") && s.contains("y Once") && !s.contains("A Always"), "not kept: {s}");
         answer(&mut ed, "A");
-        assert!(ed.offers.iter().any(|o| o.title == TITLE), "A isn't an answer here");
+        assert!(ed.offers.iter().any(|o| o.title == title), "A isn't an answer here");
         answer(&mut ed, "y");
         assert_eq!(answered(&mut ed, "p6")["behavior"], "allow");
         // `s`: this session's — not the conversation's, not the project's
@@ -13575,7 +13575,7 @@ mod tests {
     /// only asks, and its paths are this test's own temp folder.
     #[test]
     fn reading_a_key_named_file_in_the_project_asks() {
-        use crate::reads::KEYS_TITLE;
+        let title = crate::reads::keys_title("Claude");
         use serde_json::json;
         let scratch = crate::scratch::Scratch::new("key-reads");
         let dir = scratch.to_path_buf();
@@ -13616,7 +13616,7 @@ mod tests {
         };
         // The card up, drawn, and in sight long enough for an answer — what it says and the screen
         let card = |ed: &mut Editor| {
-            settle_until(ed, |ed| ed.offers.iter().any(|o| o.title == KEYS_TITLE));
+            settle_until(ed, |ed| ed.offers.iter().any(|o| o.title == title));
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, 140, 40).unwrap();
             let mut parser = vt100::Parser::new(40, 140, 0);
@@ -13637,7 +13637,7 @@ mod tests {
         assert!(s.contains("y Once") && !s.contains("a This chat") && !s.contains("A Always"), "{s}");
         answer(&mut ed, "a");
         answer(&mut ed, "A");
-        assert!(ed.offers.iter().any(|o| o.title == KEYS_TITLE), "a and A aren't answers here");
+        assert!(ed.offers.iter().any(|o| o.title == title), "a and A aren't answers here");
         answer(&mut ed, "y");
         assert_eq!(answered(&mut ed, "p2")["behavior"], "allow");
         card(&mut ed);
@@ -13668,7 +13668,7 @@ mod tests {
         assert_eq!(a["behavior"], "deny");
         let said = format!("the user said no to {} this turn", project.display());
         assert!(a["message"].as_str().unwrap().starts_with(&said), "{a}");
-        assert!(!ed.offers.iter().any(|o| o.title == KEYS_TITLE));
+        assert!(!ed.offers.iter().any(|o| o.title == title));
         // Kept for the project by an earlier build's `A`: a later conversation reads it unasked
         crate::allow::keep(&store, &project, |a| a.add(&crate::allow::Grant::Key(pem.clone()))).unwrap();
         let basis =
@@ -13712,7 +13712,7 @@ mod tests {
             permission_answer_to(&log, id)
         };
         assert_eq!(answered(&mut ed, "p1")["behavior"], "allow", "made by its run: unasked");
-        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.title == crate::reads::TITLE));
+        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.title == crate::reads::title("Claude")));
         assert!(ed.offers[0].question.starts_with(&old.display().to_string()), "there before: asks");
         // (drawn, and in sight long enough for an answer)
         crate::term::render(&mut ed, &mut Vec::new(), 140, 40).unwrap();
@@ -20743,9 +20743,9 @@ mod tests {
             !ed.offers.is_empty() || !ed.workspace.claude.chat.as_ref().unwrap().busy()
         });
         let o = ed.offers.first().expect("asked, not run");
-        assert_eq!(o.title, crate::tools::OUTSIDE_RUN_TITLE);
+        assert_eq!(o.title, crate::tools::outside_run_title("Claude"));
         let shown = crate::allow::tilde(&kc);
-        let line = format!("\n  kubectl's context: standin-eks ({shown} — Claude's runs can write it)");
+        let line = format!("\n  kubectl's context: standin-eks ({shown} — agents' runs can write it)");
         assert!(o.question.contains(&format!("{cmd}{line}")), "right under the command: {}", o.question);
         let at = o.question.split('\n').position(|l| l.contains("kubectl's context")).unwrap();
         assert!(!o.decides(at) && o.told == [at] && o.warnings.iter().any(|w| w.contains(&at)));

@@ -284,10 +284,10 @@ fn a_kubeconfig_claudes_runs_can_write_is_said_so_never_decided() {
     };
     let dev = at(&cwd.join("dev.yaml"));
     let s = said("kubectl --kubeconfig dev.yaml get pods", Some(&writes));
-    assert_eq!(s.line, format!("kubectl's context: dev ({dev} — Claude's runs can write it)"));
+    assert_eq!(s.line, format!("kubectl's context: dev ({dev} — agents' runs can write it)"));
     assert!(s.written && s.warns());
     let s = said("kubectl --kubeconfig dev.yaml --context prod get pods", Some(&writes));
-    assert_eq!(s.line, format!("kubectl's context: prod (its --context — Claude's runs can write {dev})"));
+    assert_eq!(s.line, format!("kubectl's context: prod (its --context — agents' runs can write {dev})"));
     assert!(s.written && s.warns(), "its clusters are the file's");
     // A link in the project to home's: the link is Claude's to change
     std::os::unix::fs::symlink(home.join(".kube/config"), cwd.join("kc")).unwrap();

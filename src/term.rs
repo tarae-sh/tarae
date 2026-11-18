@@ -27028,6 +27028,7 @@ mod tests {
             let run = crate::blocked::BlockedRun::of(crate::tools::Job::Command("true".into(), base.clone()));
             let why = "Reading the notes on the strands it was asked about, which live outside the project.";
             crate::blocked::also_card(
+                "Claude",
                 g,
                 why,
                 ("cat notes/strands.md", None),

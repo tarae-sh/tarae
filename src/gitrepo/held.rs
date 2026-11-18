@@ -54,9 +54,9 @@ pub const GUARDED: &[Guard] = &[
     Guard {
         key: "core.fsmonitor",
         off: Off::Value("false"),
-        runs: "on every status: the git tab, a review, Claude's runs",
+        runs: "on every status: the git tab, a review, agents' runs",
     },
-    Guard { key: "filter.*.clean", off: Off::Filter, runs: "when a file is stored: staging, Claude's runs" },
+    Guard { key: "filter.*.clean", off: Off::Filter, runs: "when a file is stored: staging, agents' runs" },
     Guard {
         key: "filter.*.smudge",
         off: Off::Filter,

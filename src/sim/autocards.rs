@@ -96,7 +96,8 @@ fn raise(ed: &mut Editor) {
     let job = crate::tools::Job::Command(cmd.clone(), ed.workspace.root.clone());
     let run = crate::blocked::BlockedRun::of(job);
     let grant = crate::allow::Grant::Read(PathBuf::from("/Users/u/.cargo"));
-    let o = crate::blocked::also_card(grant, "r", (&cmd, None), Box::new(run), None, Vec::new(), false);
+    let o =
+        crate::blocked::also_card("Claude", grant, "r", (&cmd, None), Box::new(run), None, Vec::new(), false);
     ed.push_offer(o);
 }
 

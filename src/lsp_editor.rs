@@ -4124,13 +4124,14 @@ mod tests {
         assert!(ed.lsp.clients.is_empty() && ed.doc().lsp.client.is_none(), "stopped");
         assert!(ed.workspace.servers_held && ed.workspace.asleep.contains(&ed.doc().id));
         // (said at once, and for as long as it lasts — compat7 review 11)
-        let said = |ed: &Editor| ed.toasts.iter().any(|t| t.text.contains(crate::tools::MADE_PAUSED));
+        let said =
+            |ed: &Editor| ed.toasts.iter().any(|t| t.text.contains(&crate::tools::made_paused("Claude")));
         assert!(said(&ed), "said as they pause");
         assert_eq!(ed.lsp_state(), Some((LspDot::Paused, "rust".into())), "the status line says it");
         ed.attach_lsp(ed.doc().id);
         assert!(ed.lsp.clients.is_empty(), "none started while they wait");
         let card = ed.offers.first().expect("the paused servers' card");
-        assert_eq!(card.title, crate::tools::MADE_SERVERS_TITLE);
+        assert_eq!(card.title, crate::tools::made_title("Claude", crate::tools::MadeFor::Servers));
         assert!(
             card.question.contains("build.rs, a name") && card.question.contains("paused"),
             "{}",
@@ -4188,7 +4189,7 @@ mod tests {
         // (from here what's said is this test's: a protected name's pause, a "ready", the pause again — the shot's order)
         ed.toasts.clear();
         let made = "fake paused — Claude's run made a protected file";
-        assert!(crate::tools::MADE_PAUSED.starts_with(&made["fake ".len()..]));
+        assert!(crate::tools::made_paused("Claude").starts_with(&made["fake ".len()..]));
         hold(&mut ed, name(), made);
         back(&mut ed);
         hold(&mut ed, name(), made);

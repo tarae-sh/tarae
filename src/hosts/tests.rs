@@ -353,7 +353,7 @@ fn a_hosts_always_in_a_repository_is_every_checkouts_and_says_so() {
         also: Vec::new(),
         ended: false,
     };
-    ed.push_offer(card(a.clone()));
+    ed.push_offer(card("Claude", a.clone()));
     let q = ed.offers[0].question.clone();
     assert!(q.ends_with("A is for every checkout of main."), "{q}");
     let id = ed.offers[0].id;
@@ -566,20 +566,23 @@ fn a_project_opened_through_a_link_is_one_session_to_both() {
 #[test]
 fn a_registry_is_named_on_the_hosts_card() {
     let card_at = |host: &str, port: u16| {
-        card(Ask {
-            session: 1,
-            run: 2,
-            host: host.into(),
-            port,
-            process: "cargo".into(),
-            label: "cargo build".into(),
-            users: false,
-            left: false,
-            open: false,
-            hosts: Default::default(),
-            also: Vec::new(),
-            ended: false,
-        })
+        card(
+            "Claude",
+            Ask {
+                session: 1,
+                run: 2,
+                host: host.into(),
+                port,
+                process: "cargo".into(),
+                label: "cargo build".into(),
+                users: false,
+                left: false,
+                open: false,
+                hosts: Default::default(),
+                also: Vec::new(),
+                ended: false,
+            },
+        )
     };
     let (named, plain) = (card_at("static.crates.io", 443), card_at(HOST, 443));
     assert!(named.question.contains("\nRust's registry\n"), "{}", named.question);
@@ -625,7 +628,7 @@ fn the_open_cards_words_follow_the_hosts_setting() {
             also: Vec::new(),
             ended: false,
         };
-        card(a).question
+        card("Claude", a).question
     };
     let old = "llm.sandbox-hosts lists the hosts reached without asking";
     let default = question(Hosts::Registries);
@@ -825,7 +828,7 @@ fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     let o = ed.offers.iter().find(|o| o.host().is_some_and(|a| a.host == "third.example.invalid")).unwrap();
     let a = o.host().unwrap().clone();
     assert_eq!((a.run, a.ended), (fourth, false));
-    let fresh = card(a);
+    let fresh = card("Claude", a);
     assert_eq!((&o.question, &o.decided, &o.warning), (&fresh.question, &fresh.decided, &fresh.warning));
     // Ended again; then the conversation ends: the ended card goes, and what the first `y` gave
     run_ended(&mut ed, Some(fourth));

@@ -178,7 +178,7 @@ fn held(ed: &Editor, kc: &Path, w: &mut World) -> Result<(), String> {
             return Err(format!("call {n}'s card has no command: {}", o.question));
         };
         let line = lines.get(at).copied().unwrap_or_default();
-        let want = format!(" ({} — Claude's runs can write it)", crate::allow::tilde(kc));
+        let want = format!(" ({} — agents' runs can write it)", crate::allow::tilde(kc));
         let named = line.strip_prefix("  kubectl's context: ").and_then(|l| l.strip_suffix(&want));
         let Some(named) = named else {
             return Err(format!("call {n}'s line under its command isn't its context, Claude's: {line:?}"));
