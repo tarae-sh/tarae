@@ -24,7 +24,7 @@
 //!   `WIDE_UNDER_LU` and `LEAD_OVER_LU`): where the keys may sound (`realtime`), the bed `under` LU under the keys' own
 //!   loudness (each alone); on a sped span and the cards it leads, `over` LU over that; eased `DUCK_US` — down before
 //!   the stretch, up after it. `cut.txt` says the whole's quietest and loudest three seconds.
-//! - **The whole** at `CUT_LUFS` as encoded and its AAC under `video::AAC_PEAK_DB` (`search`): a gain over the mix as
+//! - **The whole** at `CUT_LUFS` as encoded (a Short's too) and its AAC under `video::AAC_PEAK_DB` (`search`): a gain over the mix as
 //!   laid for the level, the limiter's ceiling (`sound::SHORT_CEILING_DB`, the keys' cap made for it) never moved, but
 //!   dipped over the AAC frames that came out over the aim — the encoder's overshoot is a frame's own, and uneven.
 //! - **The brush on the tablet** (`brushing.rs`): a soft stroke under each sweep of the character's painting, in the
@@ -662,6 +662,8 @@ fn over_aim(aac: &[Vec<f32>; 2]) -> Vec<(usize, usize, f32)> {
 
 /// The cut's loudness as encoded (LUFS integrated, the MP4's AAC as `ebur128` reads it): take 3's 2160p final's, the
 /// level the user watched it at (2026-11-13; the keys alone stand near −20, the 2026-11-05 decision).
+/// A Short from the cut (`form = "short"`) is levelled here too: one chosen level, the same mix and search (a scene's
+/// Short's level is open — main's showcase.md: "one decision for all four").
 pub(crate) const CUT_LUFS: f32 = -20.5;
 
 /// A try's sound as mixed: its two sides and the levels they came to.
@@ -916,12 +918,14 @@ pub(crate) fn make(
     };
     // (each try's sound written, its AAC heard back; only the last held — the one kept made again where it isn't)
     let mut last: Option<(Plan, Mixed)> = None;
+    // (a Short's AAC heard at a Short's rate, as its MP4 encodes it)
+    let form = if cut.short.is_some() { video::Form::Short } else { video::Form::Wide };
     let (tried, pick) = search(|plan| {
         last = None;
         let y = made(plan);
         sound::wav_sides(wav, &[&y.0[0], &y.0[1]]).map_err(|e| e.to_string())?;
         last = Some((plan.clone(), y));
-        let aac = video::aac_heard(ffmpeg, wav, video::Form::Wide)?;
+        let aac = video::aac_heard(ffmpeg, wav, form)?;
         Ok(Encoded { lufs: aac.lufs, peak: aac.peak, over: over_aim(&aac.sides) })
     });
     let again = last.as_ref().is_none_or(|l| l.0 != tried[pick].0);

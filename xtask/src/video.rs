@@ -75,7 +75,7 @@ pub(crate) const SHORT: (usize, usize) = (1080, 1920);
 /// What YouTube's Shorts player draws over the picture, kept clear (top, right, bottom, left, px): its bar at the top,
 /// the buttons down the right edge, the title, channel and description over the bottom ~21 %. YouTube publishes no
 /// pixel figures; these are the usual 1080×1920 template's, a little wider at the right and bottom.
-const SAFE: (usize, usize, usize, usize) = (150, 150, 400, 48);
+pub(crate) const SAFE: (usize, usize, usize, usize) = (150, 150, 400, 48);
 /// A Short's screen fills the frame's width (CLAUDE.md's Shorts bullet, the user 2026-11-05: "just fill the width" —
 /// YouTube's buttons over its right edge taken): its window from the frame's left edge to its right, from the safe
 /// area's top — YouTube's bar (its back arrow, search and menu) stands over the top `SAFE.0`, where the screen's first
@@ -85,27 +85,27 @@ const SAFE: (usize, usize, usize, usize) = (150, 150, 400, 48);
 const SHORT_SCREEN_H: usize = 1_150;
 /// A Short's captions' band (px): the safe area's foot under tarae's screen ("under tarae's screen", never over the code
 /// or a card).
-const SHORT_BAND: usize = SHORT.1 - SAFE.0 - SAFE.2 - SHORT_SCREEN_H;
+pub(crate) const SHORT_BAND: usize = SHORT.1 - SAFE.0 - SAFE.2 - SHORT_SCREEN_H;
 /// A Short's captions (`captions.rs`, in its band): their glyphs, JetBrains Mono Bold (read on a phone held
 /// upright: ~3.5 mm), the box's air round its lines across and down and its corners' radius (px), its ground and ink —
 /// a quiet dark box under light words, the same on either theme, so it reads over anything.
-const CAPTION_SHORT_PX: f32 = 54.0;
-const CAPTION_PAD: (usize, usize) = (26, 12);
+pub(crate) const CAPTION_SHORT_PX: f32 = 54.0;
+pub(crate) const CAPTION_PAD: (usize, usize) = (26, 12);
 const CAPTION_R: f32 = 18.0;
 const CAPTION_GROUND: Rgb = [0x0b, 0x0d, 0x11];
 const CAPTION_INK: Rgb = [0xe6, 0xe1, 0xcf];
 /// A Short's title said as a caption on its end card: its first word with the brush's tap.
-const TITLE_FROM: u64 = 800;
+pub(crate) const TITLE_FROM: u64 = 800;
 /// The air between the end card's name and the caption's box (px).
 const INTRO_ABOVE: usize = 48;
 /// A Short's screen: a laptop's narrow terminal's columns; its rows what the window holds at their width.
 pub(crate) const SHORT_COLS: u16 = 80;
 /// The largest glyph a Short's camera draws (a narrow card's: ~36 columns across).
-const SHORT_PX_MAX: u32 = 40;
+pub(crate) const SHORT_PX_MAX: u32 = 40;
 /// A Short's end card, the brand (CLAUDE.md's Shorts bullet: the hook first, the brand last — 10-27's brush swing): its
 /// length — the swing, the brush's tap on the cursor at 0.8 s, the name and the title risen under it, then held. Its
 /// frames are made once (`INTRO_FPS`, main's `.sb/youtube/shorts-intro/`, `intro_dir`), the last held.
-const BRAND_MS: u64 = 3_000;
+pub(crate) const BRAND_MS: u64 = 3_000;
 // (the title is the Short's last caption: it stands as long as a last beat's)
 const _: () = assert!(BRAND_MS - TITLE_FROM >= captions::TAIL_MIN_MS);
 const INTRO_FPS: u64 = 30;
@@ -118,8 +118,10 @@ const INTRO_NAME_PX: f32 = 96.0;
 const SHORT_END_MS: u64 = 2_500;
 /// A `@zoom`'s target may be drawn a frame after its key: looked for this long after it.
 const FIND_MS: u64 = 2_000;
-/// A Short's longest: YouTube's.
-const SHORT_MAX_MS: u64 = 60_000;
+/// A Short's longest: YouTube's — a square or upright video up to three minutes is a Short (its help page,
+/// support.google.com/youtube/answer/15424877, read 2026-11-18; the user's own rule: over a minute is fine). A scene's
+/// Short past it is said; a cut's is refused (`cut`'s `form = "short"`).
+pub(crate) const SHORT_MAX_MS: u64 = 180_000;
 /// A key this soon after a `@sound:stamp` is the stamp's: it sounds as the stamp alone.
 const STAMP_KEY_MS: u64 = 150;
 /// How wide a phone's screen is, held upright (mm) — what a glyph's size on it is said by — and the glyph a Short
@@ -257,13 +259,13 @@ pub(crate) fn short_window() -> (usize, usize, usize, usize) {
 
 /// The safe area's width: what YouTube's buttons at the right and the edge at the left leave — the captions' and the
 /// intro's, never the screen's.
-fn safe_w() -> usize {
+pub(crate) fn safe_w() -> usize {
     SHORT.0 - SAFE.1 - SAFE.3
 }
 
 /// A Short's captions' band in the video's px: under the window's last row to the safe area's bottom, across the safe
 /// area (YouTube's buttons stand over the right edge there).
-fn band_px() -> Px {
+pub(crate) fn band_px() -> Px {
     let (_, y, _, h) = short_window();
     Px { x: SAFE.3 as f32, y: (y + h) as f32, w: safe_w() as f32, h: SHORT_BAND as f32 }
 }
@@ -391,16 +393,14 @@ pub(crate) fn make(
     missed.extend(noted_missed);
     // (a Short's end card, the brand: the mascot's swing and the name above the caption's place, its own title said
     // there — the mascot made smaller where the two don't fit above it)
-    let brand = match (form, intro_frames(bg)) {
-        (Form::Wide, _) => None,
-        (Form::Short, Ok(frames)) => {
-            let name = brand_name(&look, &fonts);
-            let room = brand_room(title, &fonts);
-            let k = frames.first().map_or(1.0, |f| intro_fit(f.1, name.1, room));
-            let frames = if k < 1.0 { frames.iter().map(|f| shrunk(f, k)).collect() } else { frames };
-            Some(Brand { frames, name, title: captions::phrase(title, TITLE_FROM, &[]), room })
-        }
-        (Form::Short, Err(e)) => {
+    let brand = match form {
+        Form::Wide => None,
+        Form::Short => Some(brand(bg, &look, &fonts, title, caption_size(title, &fonts).1 as usize)),
+    };
+    let brand = match brand {
+        None => None,
+        Some(Ok(b)) => Some(b),
+        Some(Err(e)) => {
             missed.push(format!("no brush swing ({e}): the title card for the end card"));
             None
         }
@@ -1349,7 +1349,7 @@ pub(crate) fn fit(fonts: &Fonts, cols: usize, rows: usize) -> Option<f32> {
 
 /// `text` in as few lines of at most `cols` characters as it takes, broken between words and balanced (each line as
 /// near the same length as the words let it — never one word left alone under a full line).
-fn wrap(text: &str, cols: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, cols: usize) -> Vec<String> {
     let lines = greedy(text, cols);
     let total = text.chars().count();
     (total.div_ceil(lines.len().max(1))..cols)
@@ -1605,7 +1605,7 @@ fn stacked(pics: &[Picture], up: usize, ground: Rgb) -> Picture {
 }
 
 /// A caption's lines, a row of cells each at `CAPTION_SHORT_PX`, bold, in its ink on its ground, by the shots' renderer.
-fn caption_text(lines: &[String], fonts: &Fonts) -> Picture {
+pub(crate) fn caption_text(lines: &[String], fonts: &Fonts) -> Picture {
     let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(1).max(1) as u16;
     let mut p = vt100::Parser::new(lines.len().max(1) as u16, cols, 0);
     let ([r, g, b], [gr, gg, gb]) = (CAPTION_INK, CAPTION_GROUND);
@@ -1615,6 +1615,54 @@ fn caption_text(lines: &[String], fonts: &Fonts) -> Picture {
     }
     p.process(bytes.as_bytes());
     shot::render_px(p.screen(), fonts, CAPTION_SHORT_PX, None)
+}
+
+/// A Short's caption box round its lines' picture `pic` (px): the picture and `CAPTION_PAD`'s air.
+pub(crate) fn caption_box(pic: &Picture) -> (usize, usize) {
+    (pic.0 + 2 * CAPTION_PAD.0, pic.1 + 2 * CAPTION_PAD.1)
+}
+
+/// A caption on a Short's frame `out`, `alpha` of it: its lines' picture `pic` (`caption_text`'s) on its quiet box
+/// (`caption_box`), its corners `CAPTION_R` round, the box's top left at `(x0, y0)`.
+pub(crate) fn caption_boxed(out: &mut [u8], pic: &Picture, (x0, y0): (usize, usize), alpha: f32) {
+    let (pw, ph) = (pic.0, pic.1);
+    let (w, h) = caption_box(pic);
+    let shape = Px { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+    for y in 0..h.min(SHORT.1.saturating_sub(y0)) {
+        for x in 0..w.min(SHORT.0.saturating_sub(x0)) {
+            let edge = captions::rounded(shape, CAPTION_R, (x as f32 + 0.5, y as f32 + 0.5));
+            let cover = (0.5 - edge).clamp(0.0, 1.0) * alpha;
+            if cover <= 0.0 {
+                continue;
+            }
+            let (tx, ty) = (x.wrapping_sub(CAPTION_PAD.0), y.wrapping_sub(CAPTION_PAD.1));
+            let c = if tx < pw && ty < ph {
+                let s = &pic.2[(ty * pw + tx) * 3..][..3];
+                [s[0], s[1], s[2]]
+            } else {
+                CAPTION_GROUND
+            };
+            mix(&mut out[((y0 + y) * SHORT.0 + x0 + x) * 3..][..3], c, (cover * 255.0).round() as u8);
+        }
+    }
+}
+
+/// A Short's end card `ms` in: the swing's frame then (the last held) over the ground, the name rising in under it
+/// (`NAME_RISE`: eased, `INTRO_RISE_PX` up); its title is the caption's, laid over it apart.
+pub(crate) fn brand_frame(intro: &Brand, look: &Look, ms: u64) -> Vec<u8> {
+    let mut out = look.ground.repeat(SHORT.0 * SHORT.1);
+    let laid = intro_laid(intro);
+    let k = ((ms * INTRO_FPS / 1000) as usize).min(intro.frames.len() - 1);
+    stamp(&mut out, SHORT, &intro.frames[k], laid[0]);
+    let rise = |(from, to): (u64, u64)| {
+        camera::ease_out(ms.saturating_sub(from) as f32 / (to - from) as f32) * f32::from(ms >= from)
+    };
+    let up = rise(NAME_RISE);
+    if up > 0.0 {
+        let (x, y) = laid[1];
+        blit(&mut out, SHORT, &intro.name, x, y + ((1.0 - up) * INTRO_RISE_PX) as usize, (up * 255.0) as u8);
+    }
+    out
 }
 
 /// The air between a card's words and its seal (px at 1080p).
@@ -1879,14 +1927,14 @@ impl View {
     }
 
     /// Where a window `wh` px tall starts and ends on the screen's rows (fractions where it cuts one).
-    fn rows(&self, wh: usize) -> (f32, f32) {
+    pub(crate) fn rows(&self, wh: usize) -> (f32, f32) {
         let (o, s, ch) = (self.origin.1, self.scale.1, self.cell.1 as f32);
         ((o + 0.5 - s / 2.0 - self.pad) / ch, (o + 0.5 + (wh as f32 - 0.5) * s - self.pad) / ch)
     }
 
     /// Whether a window `wh` px tall starts and ends on whole rows of a screen `rows` tall, or past its edges (the pad),
     /// to half a px.
-    fn whole_rows(&self, wh: usize, rows: u16) -> bool {
+    pub(crate) fn whole_rows(&self, wh: usize, rows: u16) -> bool {
         let (top, bottom) = self.rows(wh);
         let slack = 0.5 * self.scale.1 / self.cell.1 as f32;
         let whole = |v: f32| (v - v.round()).abs() <= slack;
@@ -1957,7 +2005,7 @@ pub(crate) fn view_drawn(
 
 /// A read window's shape (columns a row, at a mid zoom's cells) and how a frame shows a window (`camera::Frame`, as
 /// `view` draws it): the frame's shape at the whole's cells, and the whole's fill of it — its pad round the screen.
-fn frame_of(
+pub(crate) fn frame_of(
     (cols, rows): (u16, u16),
     (ww, wh): (usize, usize),
     whole: f32,
@@ -2063,10 +2111,16 @@ fn taps(o: f32, s: f32, n: usize, len: usize) -> Vec<Option<(usize, Vec<u32>)>> 
         .collect()
 }
 
-/// The end card's room above its `title` said as the caption (`intro_room`): `INTRO_ABOVE` over that box as drawn, its
-/// lines however many (a title of two stands half a line higher than one).
-fn brand_room(title: &str, fonts: &Fonts) -> (usize, usize) {
-    intro_room(caption_size(title, fonts).1 as usize)
+/// A Short's end card for `bg`, its `title` said as its caption in a box `title_h` px tall (`caption_size`'s): the swing's
+/// frames, made smaller where the swing and the name don't fit above the caption's place (`intro_room` — a title of
+/// two lines stands half a line higher than one), and the name. Refused where the swing's frames aren't there.
+pub(crate) fn brand(bg: Bg, look: &Look, fonts: &Fonts, title: &str, title_h: usize) -> Result<Brand> {
+    let frames = intro_frames(bg)?;
+    let name = brand_name(look, fonts);
+    let room = intro_room(title_h);
+    let k = frames.first().map_or(1.0, |f| intro_fit(f.1, name.1, room));
+    let frames = if k < 1.0 { frames.iter().map(|f| shrunk(f, k)).collect() } else { frames };
+    Ok(Brand { frames, name, title: captions::phrase(title, TITLE_FROM, &[]), room })
 }
 
 /// A phrase at its fullest as a caption's lines: wrapped to the safe zone's width less its box's air.
@@ -2169,7 +2223,7 @@ struct Video<'a> {
 /// A Short's end card, the brand: the swing's frames (RGBA, the mascot alone, made smaller where it must be —
 /// `intro_fit`), its name and address drawn by the recorder (`brand_name`), its title said as its caption and the room above the caption's place
 /// (`intro_room`).
-struct Brand {
+pub(crate) struct Brand {
     frames: Vec<Rgba>,
     name: Picture,
     title: captions::Phrase,
@@ -2331,28 +2385,9 @@ impl Video<'_> {
     ) {
         let laid = caption_laid(fullest, &self.caption_lines(fullest), shown);
         let pic = pics.entry(format!("caption {laid:?}")).or_insert_with(|| caption_text(&laid, &self.fonts));
-        let (pw, ph) = (pic.0, pic.1);
-        let (w, h) = (pw + 2 * CAPTION_PAD.0, ph + 2 * CAPTION_PAD.1);
+        let (w, h) = caption_box(pic);
         let r = captions::at(band_px(), (w as f32, h as f32));
-        let (x0, y0) = (r.x.round().max(0.0) as usize, r.y.round().max(0.0) as usize);
-        let shape = Px { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
-        for y in 0..h.min(SHORT.1.saturating_sub(y0)) {
-            for x in 0..w.min(SHORT.0.saturating_sub(x0)) {
-                let edge = captions::rounded(shape, CAPTION_R, (x as f32 + 0.5, y as f32 + 0.5));
-                let cover = (0.5 - edge).clamp(0.0, 1.0) * alpha;
-                if cover <= 0.0 {
-                    continue;
-                }
-                let (tx, ty) = (x.wrapping_sub(CAPTION_PAD.0), y.wrapping_sub(CAPTION_PAD.1));
-                let c = if tx < pw && ty < ph {
-                    let s = &pic.2[(ty * pw + tx) * 3..][..3];
-                    [s[0], s[1], s[2]]
-                } else {
-                    CAPTION_GROUND
-                };
-                mix(&mut out[((y0 + y) * SHORT.0 + x0 + x) * 3..][..3], c, (cover * 255.0).round() as u8);
-            }
-        }
+        caption_boxed(out, pic, (r.x.round().max(0.0) as usize, r.y.round().max(0.0) as usize), alpha);
     }
 
     /// The `k`th frame's ms in the video.
@@ -2443,30 +2478,13 @@ impl Video<'_> {
         px
     }
 
-    /// A Short's end card `ms` in: the swing's frame then (the last held) over the ground, the name rising in under it
-    /// (`NAME_RISE`: eased, `INTRO_RISE_PX` up) — its title the caption's (`band`).
+    /// A Short's end card `ms` in (`brand_frame`; the title card where it has no swing) — its title the caption's
+    /// (`band`).
     fn brand_frame(&self, ms: u64) -> Vec<u8> {
-        let Some(intro) = &self.brand else { return self.cards.0.clone() };
-        let mut out = self.look.ground.repeat(SHORT.0 * SHORT.1);
-        let laid = intro_laid(intro);
-        let k = ((ms * INTRO_FPS / 1000) as usize).min(intro.frames.len() - 1);
-        stamp(&mut out, SHORT, &intro.frames[k], laid[0]);
-        let rise = |(from, to): (u64, u64)| {
-            camera::ease_out(ms.saturating_sub(from) as f32 / (to - from) as f32) * f32::from(ms >= from)
-        };
-        let up = rise(NAME_RISE);
-        if up > 0.0 {
-            let (x, y) = laid[1];
-            blit(
-                &mut out,
-                SHORT,
-                &intro.name,
-                x,
-                y + ((1.0 - up) * INTRO_RISE_PX) as usize,
-                (up * 255.0) as u8,
-            );
+        match &self.brand {
+            Some(intro) => brand_frame(intro, &self.look, ms),
+            None => self.cards.0.clone(),
         }
-        out
     }
 
     /// A Short's frame: the screen in force drawn through the camera's region (`view`, `resample`) — over the one it
@@ -2998,7 +3016,8 @@ mod tests {
         // (all of it `INTRO_ABOVE` over the title's box as drawn, its lines however many)
         for title in ["Several Claudes. One repository.", "Watch Claude work. Take it back.", "tarae"] {
             let drawn = captions::at(band_px(), caption_size(title, &fonts));
-            assert_eq!(brand_room(title, &fonts).1, drawn.y as usize - INTRO_ABOVE, "{title}");
+            let room = intro_room(caption_size(title, &fonts).1 as usize);
+            assert_eq!(room.1, drawn.y as usize - INTRO_ABOVE, "{title}");
         }
         assert_eq!(caption_lines("Watch Claude work. Take it back.", &fonts).len(), 2, "one that takes two");
         // (each centred across the widest, `up` into the one above, its ground left out there)

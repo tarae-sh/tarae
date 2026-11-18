@@ -90,7 +90,8 @@ pub(super) fn run(
         .chain([cut.opening.name.as_str(), cut.opening.line.as_str()])
         .chain(cut.opening.code.iter().map(String::as_str))
         .chain(cut.opening.label.iter().chain(&cut.opening.label_line).map(String::as_str))
-        .chain(cut.pictures.iter().flat_map(|p| &p.steps).flat_map(|s| &s.text).map(String::as_str));
+        .chain(cut.pictures.iter().flat_map(|p| &p.steps).flat_map(|s| &s.text).map(String::as_str))
+        .chain(cut.short.iter().flat_map(|s| std::iter::once(&s.hook).chain(&s.title)).map(String::as_str));
     for w in words {
         none_of_yours(&[w.chars().map(String::from).collect()], yours.as_deref())?;
     }
@@ -205,7 +206,7 @@ pub(crate) type Kept = (bool, u64, u32, Vec<Blank>);
 
 /// `text` at `px` (1080p's) in `fg`, drawn at `scale`, kept: the band's words repeat.
 pub(crate) struct Words<'f> {
-    fonts: &'f Fonts,
+    pub(crate) fonts: &'f Fonts,
     ground: Rgb,
     scale: Scale,
     kept: HashMap<(String, u32, Rgb, bool), Picture>,
@@ -229,6 +230,17 @@ impl<'f> Words<'f> {
         (self.kept.entry((text.to_string(), px as u32, fg, bold)))
             .or_insert_with(|| video::text_at(text, px, fg, ground, bold, fonts, s))
     }
+
+    /// A Short's line in its box (`short::caption_pic`), kept as the words are.
+    pub(crate) fn caption(&mut self, lines: &[String]) -> &Picture {
+        if self.kept.len() > 512 {
+            self.kept.clear();
+        }
+        let fonts = self.fonts;
+        // (no word holds a NUL: never one of `word`'s)
+        let key = (format!("\0caption\n{}", lines.join("\n")), 0, [0; 3], true);
+        self.kept.entry(key).or_insert_with(|| super::short::caption_pic(lines, fonts))
+    }
 }
 
 /// Where a take's frame puts things at a scale (px): the picture; the screen's glyph (1080p's px, drawn at `scale`:
@@ -244,6 +256,8 @@ pub(crate) struct Layout {
     pub(crate) rule: usize,
     pub(crate) mid: usize,
     pub(crate) pad: usize,
+    /// A Short's (`short::layout`): upright, the band `short.rs`'s, no rule drawn.
+    pub(crate) short: bool,
 }
 
 /// The layout of a take `size` cells at `s` — refused where its cells don't fit 1080p's picture over the band.
@@ -265,6 +279,7 @@ pub(crate) fn layout(fonts: &Fonts, size: (u16, u16), s: Scale) -> Result<Layout
         rule: h - band,
         mid: h - band / 2,
         pad: s.px(PAD),
+        short: false,
     })
 }
 
@@ -503,6 +518,11 @@ impl<'a> Stage<'a> {
         let lay = &self.lay;
         let w = lay.dims.0;
         let x0 = lay.at.0;
+        // (a Short's band: no rule, no words over where it ends, no route — its list has none)
+        if lay.short {
+            super::short::band(&mut px, f, self.cut, self.look, words);
+            return px;
+        }
 
         // (the words over where it ends, on the board as this frame drew it)
         if let (Some(l), Some(title)) = (f.label, &self.cut.opening.label) {
@@ -703,7 +723,20 @@ pub(crate) fn make(
     let size = take.size;
     let k = scale.k();
     let fonts = Fonts::load(k)?;
-    let lay = layout(&fonts, size, scale)?;
+    let lay = match cut.short {
+        // (a Short is 1080×1920, as YouTube plays one)
+        Some(_) if scale != Scale::HD => {
+            return Err(format!(
+                "{}: a Short is {}×{} — --size {} is the wide video's",
+                cut.file,
+                video::SHORT.0,
+                video::SHORT.1,
+                scale.name()
+            ));
+        }
+        Some(_) => super::short::layout(&fonts, size)?,
+        None => layout(&fonts, size, scale)?,
+    };
     let (glyph, (pw, ph), (x0, y0)) = (lay.glyph, lay.pic, lay.at);
     let dims = lay.dims;
     let mut said = vec![format!(
@@ -727,12 +760,36 @@ pub(crate) fn make(
             }
         };
     let loaded = loaded.elapsed();
+    // (a Short's character placed by its ink: how far it reaches, said)
+    if let (Some(_), Some((art, place))) = (&cut.short, &mascot)
+        && let Some(r) = art.ink_reach()
+    {
+        said.push(format!(
+            "the character placed by its ink: over its {} pictures (every frame this cut can draw) the ink reaches left \
+             to x {} ({}) and down to y {} ({}) of its {}×{} box — the box at ({}, {}), the ink's corner at ({}, {}), \
+             the band's",
+            r.pictures,
+            r.left.0,
+            r.left.1,
+            r.bottom.0,
+            r.bottom.1,
+            mascot::BOX.0,
+            mascot::BOX.1,
+            place.x,
+            place.y,
+            place.x + r.left.0,
+            place.y + r.bottom.0
+        ));
+    }
     let look = video::look(cut.bg);
     let stage = Stage::new(lay, &look, cut, mascot);
     let mascot = &stage.mascot;
     let marks_right = stage.marks_right;
-    // (measured at 1080p: every width doubles at 2160p)
-    captions_clear(cut, &Fonts::load(1)?, (marks_right / k, mascot.is_some()))?;
+    // (measured at 1080p: every width doubles at 2160p; a Short's lines in two beside the mascot)
+    match cut.short {
+        Some(_) => super::short::check(cut, &fonts)?,
+        None => captions_clear(cut, &Fonts::load(1)?, (marks_right / k, mascot.is_some()))?,
+    }
     // (the pictures' files, checked at 2160p before any frame; their boards at the video's size, read as they come)
     let checking = Instant::now();
     let found = picture::check(cut, look.ground)?;
@@ -800,6 +857,9 @@ pub(crate) fn make(
     };
     let (prog, (taps, stamps_keyless, hands, pops), plan, held) = held_ends(cut, laid, |w| moving(take, w));
     said.extend(held);
+    if cut.short.is_some() {
+        super::short::length(&prog)?;
+    }
     let planned = planned.elapsed();
     // (the seal made at the picture's size, else 1080p's — smaller, never stretched —, said)
     let seal = match video::seal_at(cut.bg, scale) {
@@ -813,10 +873,18 @@ pub(crate) fn make(
     let card = |lines: &[(&str, f32, Rgb, bool)]| video::card_at(lines, &seal, &look, &fonts, dims, scale);
     let name = ("t a r a e", video::NAME_PX, look.accent, true);
     let told = told(super::worked(cut), prog.total);
-    let built_card = opening::card(&cut.opening, &told, cut.bg, &look, &fonts, scale);
+    let short = cut.short.as_ref();
+    // (a Short has no intro and no card of what's built: the hook first)
+    let built_card = match short {
+        Some(_) => Vec::new(),
+        None => opening::card(&cut.opening, &told, cut.bg, &look, &fonts, scale),
+    };
     // (the intro: the swing's frames, else the name and the seal — said)
-    let intro = match video::WideIntro::new(cut.bg, &look, &fonts, scale) {
-        Ok(i) => {
+    let intro = match short
+        .map_or_else(|| video::WideIntro::new(cut.bg, &look, &fonts, scale).map(Some), |_| Ok(None))
+    {
+        Ok(None) => Err(Vec::new()),
+        Ok(Some(i)) => {
             let (n, (w, h), _) = i.drawn();
             said.push(format!(
                 "the intro: the brush's swing, {n} frames made {}×{} and drawn {w}×{h} (from its first that shows \
@@ -834,7 +902,9 @@ pub(crate) fn make(
             Err(card(&[name]))
         }
     };
-    said.push(format!("the card of what's built: “{}” — “{told}”", cut.opening.name));
+    if short.is_none() {
+        said.push(format!("the card of what's built: “{}” — “{told}”", cut.opening.name));
+    }
     if let Some(t) = &cut.opening.label {
         let small = cut.opening.label_line.as_ref().map_or(String::new(), |s| format!(" / “{s}”"));
         said.push(format!(
@@ -846,6 +916,20 @@ pub(crate) fn make(
         ));
     }
     let end_card = card(&[name, ("tarae.sh", video::LINE_PX, look.ink, false)]);
+    // (a Short's end card: the brand's swing and name, its title in the caption's box — the still card where the
+    // swing's frames aren't there, said)
+    let title = short.map(|s| super::short::caption_pic(&s.title, &fonts));
+    let brand = match (short, &title) {
+        (Some(s), Some(t)) => {
+            let b = video::brand(cut.bg, &look, &fonts, &s.title.join(" "), video::caption_box(t).1);
+            said.push(match &b {
+                Ok(_) => format!("the end card: the brand's swing, its title “{}”", s.title.join(" / ")),
+                Err(e) => format!("the end card: no brush swing ({e}) — the name and the seal, still"),
+            });
+            Some(b)
+        }
+        _ => None,
+    };
     let chapter_cards: Vec<Vec<u8>> = (cut.chapters.iter().enumerate())
         .map(|(i, c)| {
             let n = format!("{}", i + 1);
@@ -870,7 +954,10 @@ pub(crate) fn make(
                 FIND_MS / 1000
             )
         })?;
-        let window = wide_window(target, size);
+        let window = match short {
+            Some(_) => super::short::window(target, size, glyph, &fonts),
+            None => wide_window(target, size),
+        };
         windows.push(window);
         said.push(format!(
             "zoom at {} on \"{}\": {:.0}×{:.0} cells at ({:.0}, {:.0}), {:.2}× the whole",
@@ -899,7 +986,10 @@ pub(crate) fn make(
                     clock(o.from + o.len)
                 )
             })?;
-            let w = wide_window(target, size);
+            let w = match short {
+                Some(_) => super::short::window(target, size, glyph, &fonts),
+                None => wide_window(target, size),
+            };
             said.push(format!(
                 "where it ends: zoom on \"{on}\" from {}: {:.0}×{:.0} cells at ({:.0}, {:.0}), {:.2}× the whole",
                 clock(when),
@@ -941,10 +1031,9 @@ pub(crate) fn make(
         }
         None => None,
     };
+    let form = if short.is_some() { video::Form::Short } else { video::Form::Wide };
     let mut child = match &ffmpeg {
-        Some(f) => {
-            Some(video::encoder(f, &mp4, dims, heard.as_ref().map(|_| (wav.as_path(), video::Form::Wide)))?)
-        }
+        Some(f) => Some(video::encoder(f, &mp4, dims, heard.as_ref().map(|_| (wav.as_path(), form)))?),
         None => None,
     };
     let mut stdin = child.as_mut().and_then(|c| c.stdin.take());
@@ -995,6 +1084,12 @@ pub(crate) fn make(
             },
             Some(Card::Built) => (built_card.clone(), 0),
             Some(Card::End) => (end_card.clone(), 0),
+            Some(Card::Brand(ms)) => match (&brand, &title) {
+                (Some(b), Some(t)) => {
+                    (super::short::end_card(b.as_ref().map_err(|_| &end_card), t, &look, ms), 0)
+                }
+                _ => (end_card.clone(), 0),
+            },
             Some(Card::Chapter(i)) => (chapter_cards[i].clone(), 0),
             None => {
                 let camera = (key.region, drawn_at(f, &glyphs));
@@ -1100,8 +1195,9 @@ pub(crate) fn make(
             let px = px.expect("a frame the sheet picks is drawn");
             hashes.push((k, v, fnv1a(px)));
             let label = label(&prog, v, &f, region != all, marks);
-            let cols = W / 2 / shot::cell(&sheet_fonts, 15.0).0;
-            sheet.push(crate::recording::labelled(sheet_picture(px, &lay), &label, cols, &sheet_fonts));
+            let pic = sheet_picture(px, &lay);
+            let cols = pic.0 / shot::cell(&sheet_fonts, 15.0).0;
+            sheet.push(crate::recording::labelled(pic, &label, cols, &sheet_fonts));
             if sheet.len() == PAGE {
                 pages += 1;
                 crate::recording::grid(&sheet, &out.join(format!("sheet-{pages:02}.png")))?;
@@ -1256,10 +1352,13 @@ pub(crate) fn make(
             }
         }
     };
+    // (no chapters.txt for a Short: it has none)
     let (chapters, warned) = prog.chapters();
-    let p = out.join("chapters.txt");
-    std::fs::write(&p, &chapters).map_err(|e| format!("{}: {e}", p.display()))?;
-    said.extend(warned);
+    if short.is_none() {
+        let p = out.join("chapters.txt");
+        std::fs::write(&p, &chapters).map_err(|e| format!("{}: {e}", p.display()))?;
+        said.extend(warned);
+    }
 
     let s = |us: u64| us as f64 / 1e6;
     let mut head = vec![match only_picks {
@@ -1292,7 +1391,9 @@ pub(crate) fn make(
         eprintln!("cut: {l}");
     }
     head.extend(super::check::said(&prog, &hits, &masks.hidden(), source));
-    head.push(format!("chapters.txt:\n{}", chapters.trim_end()));
+    if short.is_none() {
+        head.push(format!("chapters.txt:\n{}", chapters.trim_end()));
+    }
     head.extend(said);
     if let (Some(mut heard), Some(f)) = (heard, &ffmpeg)
         && encoded.is_ok()

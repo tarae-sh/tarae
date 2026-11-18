@@ -14,6 +14,8 @@ use crate::camera::Region;
 use crate::record::{Rec, Replay, SCREEN, SCRIPT, Take};
 use crate::sound::{Heard, RATE};
 
+mod short;
+
 /// A made-up take's landmarks, two minutes long: the front `main` at 1 s; a turn 10–40 s with a run card shown at 12 s
 /// and answered at 15 s; `fix` in front at 50 s; a bring card 55–56 s.
 fn marks() -> Marks {
@@ -236,8 +238,8 @@ fn a_file_out_of_the_takes_order_is_refused_with_its_line() {
         ),
         ("default = 4\n[[span]]\nfrom = \"10s\"\nto = \"20s\"\nsped = 2\n", "cut.toml:5: span: no key sped"),
         ("bg = \"dark\"\n", "cut.toml:1: no default"),
-        // (the title and the hook are gone: the opening says what the video is)
-        ("title = \"x\"\ndefault = 4\n", "cut.toml:1: the file: no key title"),
+        // (the title and the hook are gone: the opening says what the video is — a title is a Short's end card's)
+        ("title = \"x\"\ndefault = 4\n", "cut.toml:1: title: a Short's end card's caption"),
         ("default = 4\n[hook]\nat = \"start\"\nfor = \"1s\"\n", "cut.toml:1: the file: no key hook"),
     ];
     for (text, want) in refused {
@@ -469,6 +471,7 @@ fn a_crossing_between_two_identical_pictures_draws_nothing() {
             Some(Card::Built) => 215,
             Some(Card::Chapter(_)) => 230,
             Some(Card::End) => 245,
+            Some(Card::Brand(_)) => 250,
         };
         let band = 40 + (f.clock.unwrap_or(0) / 1000 % 60) as u8 + if f.speed.is_some() { 100 } else { 0 };
         [[screen; 3].repeat(4), [band; 3].repeat(2)].concat()

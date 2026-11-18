@@ -973,7 +973,7 @@ pub(crate) fn whole_rows(window: Region, frame: Frame, rows: u16) -> bool {
 /// `window` as it may hold, near it (`whole_rows`), inside the screen: itself alone where it is so; else scaled about
 /// its middle so the frame shows a whole number of rows — the nearest first, then fewer, then more —, kept to what it
 /// showed's left, middle or right, its top the nearest whole row (or where it was, past the screen's edge).
-fn on_rows(window: Region, frame: Frame, (cols, rows): (u16, u16)) -> Vec<Region> {
+pub(crate) fn on_rows(window: Region, frame: Frame, (cols, rows): (u16, u16)) -> Vec<Region> {
     let (cw, rh) = (f32::from(cols), f32::from(rows));
     let r = window.inside((cols, rows));
     let seen = shown(r, frame);

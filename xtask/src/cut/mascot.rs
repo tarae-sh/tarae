@@ -490,6 +490,15 @@ pub(crate) struct Art {
     pub(crate) marks: Vec<Option<Rgba>>,
 }
 
+/// How far the loaded pictures' ink reaches in the box (`Art::ink_reach`): its leftmost column and past its lowest row
+/// (px), each with the picture that reaches it; how many pictures were read.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Reach {
+    pub(crate) left: (usize, String),
+    pub(crate) bottom: (usize, String),
+    pub(crate) pictures: usize,
+}
+
 /// The swing's frames that draw the big V in the lane (`Pic::Swing(n)`, n from this): the down-stroke, the whole V, it
 /// drying (`swing-mark-3`, `-4`, `-5`). Without them all, or with the lane off, the box's own swing frames carry the
 /// small V (`swing-3-v` … `-5-v`, where found; else the swing's usual frames).
@@ -619,6 +628,26 @@ impl Art {
             .collect()
     }
 
+    /// How far the ink of every loaded picture reaches in the box (alpha over a tenth): its leftmost column and past its
+    /// lowest row (px from the box's left and top), each with the picture that reaches it, over all of them — every
+    /// frame this cut can draw —, and how many pictures that is; none where nothing is inked.
+    pub(crate) fn ink_reach(&self) -> Option<Reach> {
+        let mut r = Reach { left: (usize::MAX, String::new()), bottom: (0, String::new()), pictures: 0 };
+        for (i, (w, h, px)) in self.pics.iter().enumerate().filter_map(|(i, p)| Some((i, p.as_ref()?))) {
+            r.pictures += 1;
+            let name = || Pic::all().into_iter().find(|p| p.index() == i).map_or(format!("#{i}"), Pic::name);
+            let inked = (0..w * h).filter(|k| px[k * 4 + 3] > 25);
+            let (left, bottom) = inked.fold((usize::MAX, 0), |m, k| (m.0.min(k % w), m.1.max(k / w + 1)));
+            if left < r.left.0 {
+                r.left = (left, name());
+            }
+            if bottom > r.bottom.0 {
+                r.bottom = (bottom, name());
+            }
+        }
+        (r.bottom.0 > 0).then_some(r)
+    }
+
     /// The leftmost ink of any loaded picture within `rows` of the box's row `row` (alpha over a tenth), from its left.
     fn ink_from(&self, row: usize, rows: usize) -> Option<usize> {
         ink_in(self.pics.iter().flatten(), row, rows)
@@ -653,8 +682,13 @@ pub(crate) fn found(
     if !cut.pictures.is_empty() {
         optional.extend(Pic::painting());
     }
+    // (a Short's at the band's left end, `short.rs`'s)
+    let placed = |a: &Art| match cut.short {
+        Some(_) => super::short::place(a),
+        None => place(a, screen, cells_bottom, lane),
+    };
     let got = (Art::load(cut.bg, dir, s, (&Pic::needed(&cut.mascot), &optional), lane))
-        .and_then(|a| Ok((place(&a, screen, cells_bottom, lane)?, a)));
+        .and_then(|a| Ok((placed(&a)?, a)));
     got.map(|(p, a)| (a, p)).map_err(|e| format!("the mascot: none — {e}; the cut is made without it"))
 }
 

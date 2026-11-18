@@ -116,6 +116,30 @@
 //! over = 6                                # the bed where it leads, over that: the swing
 //! ```
 //!
+//! A Short (`short.rs`, main's `.sb/cut-short-form-brief.md`): the same list drawn upright on `video.rs`'s Short, its
+//! take 80×34 (`video::short_size`, any other refused). What changes in the file:
+//!
+//! ```toml
+//! form = "short"                          # ("wide" if left out)
+//! title = ["halil 0.2.0", "cargo install halil"]   # the end card's caption, the Short's title: a line, or two
+//!
+//! [opening]                               # the hook first: where it ends alone, its line as its caption — no
+//! at = "end - 3s"                         # intro, no card of what's built (name, line, code, label, label-line
+//! for = "3s"                              # and picture refused)
+//! zoom = "card:Run these checks"
+//! hook = "Four notes on halil. One minute."
+//!
+//! [mascot]                                # says = true and keys = false if left out; key pops refused
+//!
+//! [[music]]                               # one bed, from the first frame: no chapter
+//! file = "beds/one.mp3"
+//! ```
+//!
+//! A caption is the character's line beside it: two lines at most of the band's width (`short::Band::cols`), refused
+//! with its text and count. No `[[chapter]]`, `[[picture]]`, `[route]` or `[[station]]` (each refused with its line);
+//! the video up to `video::SHORT_MAX_MS`, a frame more refused; it ends on the brand's end card (`video::brand`); no
+//! `chapters.txt`.
+//!
 //! A time in the take: `start`, `end`, a clock (`1:02:03.5`, `37:12`), a length from the start (`72.5s`), or a landmark
 //! (`landmarks.jsonl`) — `turn N start|end`, `[KIND] card N shown|answered` (`run card 2 shown`: the second card of kind
 //! `run`), `run N start|end`, `review N`, `front N` or `front NAME` (when that workspace came to the front), `bring N`
@@ -151,6 +175,7 @@ mod mask;
 mod opening;
 mod picture;
 mod route;
+mod short;
 mod sound;
 #[cfg(test)]
 mod tests;
@@ -730,10 +755,22 @@ pub(crate) const GAIN_MOST_DB: f64 = 24.0;
 /// A loop's shortest (ms): a seam every few seconds is no bed.
 pub(crate) const LOOP_MIN: u64 = 2_000;
 
+/// A Short's own words (`form = "short"`): the hook line, the caption over where it ends (its line in the file), and
+/// the end card's title, a line or two (its line).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Short {
+    pub(crate) hook: String,
+    pub(crate) hook_at: usize,
+    pub(crate) title: Vec<String>,
+    pub(crate) title_at: usize,
+}
+
 /// An edit list read and resolved against its take.
 #[derive(Debug)]
 pub(crate) struct Cut {
     pub(crate) file: String,
+    /// A Short's words where the list is one (`form = "short"`); none for the wide video.
+    pub(crate) short: Option<Short>,
     pub(crate) bg: Bg,
     pub(crate) mascot: mascot::Switches,
     /// The list's own seed (the FNV-1a of what it says, but its `[mascot]`): the mascot's blinks, glances and pops' steps
@@ -855,14 +892,28 @@ impl Cut {
     /// less than its reading time; shown while a chapter stands in the band (`banded`) or on both sides of a chapter's
     /// card (`carded`: the map's µs, the chapter's line); out of the take's order or shown while the one `before` it
     /// still stands (a row's own lines are back to back).
-    fn caption(c: &Caption, e: &Entry, chapters: Chapters, before: Option<&Caption>) -> Result<()> {
+    /// A Short's (`short`) has no `CAPTION_MAX`: its two lines beside the mascot are measured before a frame
+    /// (`short::check`).
+    fn caption(
+        c: &Caption,
+        e: &Entry,
+        chapters: Chapters,
+        before: Option<&Caption>,
+        short: bool,
+    ) -> Result<()> {
         let (banded, carded) = chapters;
         let who = match c.row {
             (_, 1) => "caption".to_string(),
             (k, n) => format!("caption, line {} of {n}", k + 1),
         };
         let n = c.text.chars().count();
-        if n == 0 || n > CAPTION_MAX || c.text.contains('\n') {
+        if short && (n == 0 || c.text.contains('\n')) {
+            return Err(e.err(
+                "text",
+                format!("{who}: its words, wrapped by the band into two lines at most ({n} here)"),
+            ));
+        }
+        if !short && (n == 0 || n > CAPTION_MAX || c.text.contains('\n')) {
             return Err(e.err("text", format!("{who}: one line of 1 to {CAPTION_MAX} characters ({n} here)")));
         }
         let need = reading_ms(n);
@@ -926,8 +977,31 @@ impl Cut {
         let root = Entry { t: &top, line: 0, src: &src, name: "the file" };
         root.keys(&[
             "bg", "default", "mascot", "opening", "span", "chapter", "caption", "zoom", "music", "sound",
-            "mask", "picture", "route", "station",
+            "mask", "picture", "route", "station", "form", "title",
         ])?;
+        let short = match root.text("form")? {
+            None | Some("wide") => false,
+            Some("short") => true,
+            Some(w) => return Err(root.err("form", format!("form = \"{w}\": \"wide\" or \"short\""))),
+        };
+        // (what a Short has none of, each refused where it's written)
+        let none = [
+            ("chapter", Some(0), "chapters — one story, from the hook to the brand"),
+            ("picture", Some(0), "pictures — the take alone"),
+            ("route", None, "route — the take alone"),
+            ("station", Some(0), "stations — the take alone"),
+        ];
+        for (name, k, why) in none.into_iter().filter(|_| short) {
+            if top.contains_key(name) {
+                return Err(src.at(src.header(name, k), format!("{name}: a Short has no {why}")));
+            }
+        }
+        if !short && top.contains_key("title") {
+            return Err(root.err(
+                "title",
+                "title: a Short's end card's caption (form = \"short\") — the wide video's end card is tarae's own",
+            ));
+        }
         // (a picture's files: from the list's folder, or whole paths)
         let dir = Path::new(file).parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let mascot = match top.get("mascot") {
@@ -975,6 +1049,22 @@ impl Cut {
                     "mascot: true or false, or a table ([mascot]: blink, glance, surprise, stretch, swing, fast, keys, \
                      says)",
                 ));
+            }
+        };
+        // (a Short's character says every caption, and names the keys in its lines: no key pops — their lane, left of
+        // its box, would stand past the safe area's edge)
+        let mascot = match short {
+            false => mascot,
+            true => {
+                let given = |key: &str| top.get("mascot").and_then(|m| m.get(key));
+                if given("keys").is_some_and(|k| k.as_bool() != Some(false)) {
+                    return Err(src.at(
+                        src.key(src.header("mascot", None), "keys"),
+                        "mascot: a Short has no key pops (keys = false) — its lines name the keys",
+                    ));
+                }
+                let says = given("says").is_none() || mascot.says;
+                mascot::Switches { keys: mascot::Keys::Off, says, ..mascot }
             }
         };
         // (the list as read, but its `[mascot]`, its masks and its route: switching a motion or the pops, hiding a
@@ -1084,7 +1174,11 @@ impl Cut {
         }
         let map = Map::new(segs);
 
-        let opening = Self::opening(&top, &src, marks, dir)?;
+        let opening = Self::opening(&top, &src, marks, dir, short)?;
+        let short = match short {
+            true => Some(Self::short(&top, &src)?),
+            false => None,
+        };
 
         let mut chapters: Vec<Chapter> = Vec::new();
         for e in list("chapter")? {
@@ -1175,7 +1269,7 @@ impl Cut {
             let mut m = map.video(at);
             for (k, (text, len)) in texts.into_iter().zip(lens).enumerate() {
                 let c = Caption { at, m, len, text, line: e.line, row: (k, rows) };
-                Self::caption(&c, &e, (&banded, &carded), captions.last())?;
+                Self::caption(&c, &e, (&banded, &carded), captions.last(), short.is_some())?;
                 m = c.end();
                 captions.push(c);
             }
@@ -1323,6 +1417,20 @@ impl Cut {
         for e in list("music")? {
             e.keys(&["chapter", "file", "loop", "gain"])?;
             let n = match e.t.get("chapter") {
+                // (a Short's one bed, from the first frame)
+                Some(_) if short.is_some() => {
+                    return Err(
+                        e.err("chapter", "music: a Short's bed plays from its first frame — no chapter")
+                    );
+                }
+                None if short.is_some() => match beds.first() {
+                    Some(b) => {
+                        return Err(
+                            src.at(e.line, format!("music: a Short has one bed, the one at line {}", b.line))
+                        );
+                    }
+                    None => 1,
+                },
                 Some(toml::Value::Integer(n)) if *n >= 1 && (*n as usize) <= chapters.len() => *n as usize,
                 Some(_) if chapters.is_empty() => {
                     return Err(e.err("chapter", "music: the file has no chapter for it to start at"));
@@ -1422,6 +1530,7 @@ impl Cut {
         Ok(Cut {
             mix,
             file: file.to_string(),
+            short,
             bg,
             mascot,
             seed,
@@ -1440,15 +1549,33 @@ impl Cut {
 
     /// The file's `[opening]`: the card's words, each one line within its longest, and where it ends — refused, naming
     /// what's missing, where it isn't there.
-    fn opening(top: &toml::Table, src: &Src, marks: &Marks, dir: &Path) -> Result<Opening> {
+    /// A Short's (`short`) is where it ends alone — `at`, `for`, `zoom` and its hook line (`hook`, read by `short`) —,
+    /// the card's words and a picture refused by their line.
+    fn opening(top: &toml::Table, src: &Src, marks: &Marks, dir: &Path, short: bool) -> Result<Opening> {
         const WHAT: &str = "the card of what's built — name, line, code (up to two lines) — and where it ends, at and for (and zoom, label, label-line), or picture and for";
+        const SHORT_WHAT: &str = "where it ends — at and for (and zoom) — and its hook line, hook";
+        let what = if short { SHORT_WHAT } else { WHAT };
         let t = match top.get("opening") {
             Some(toml::Value::Table(t)) => t,
             Some(_) => return Err(src.at(src.key(0, "opening"), "opening: a table, as [opening]")),
-            None => return Err(src.at(1, format!("no [opening]: {WHAT}"))),
+            None => return Err(src.at(1, format!("no [opening]: {what}"))),
         };
         let e = Entry { t, line: src.header("opening", None), src, name: "opening" };
-        e.keys(&["name", "line", "code", "at", "for", "zoom", "label", "label-line", "picture"])?;
+        if short {
+            let wide = ["name", "line", "code", "label", "label-line", "picture"];
+            if let Some(k) = wide.into_iter().find(|k| t.contains_key(*k)) {
+                return Err(e.err(
+                    k,
+                    format!(
+                        "opening: {k} — a Short opens on where it ends alone (at, for, zoom), its hook line its \
+                         caption (hook): no intro, no card of what's built"
+                    ),
+                ));
+            }
+            e.keys(&["at", "for", "zoom", "hook"])?;
+        } else {
+            e.keys(&["name", "line", "code", "at", "for", "zoom", "label", "label-line", "picture"])?;
+        }
         let pictured = t.contains_key("picture");
         if let Some(k) = ["at", "zoom"].into_iter().find(|k| pictured && t.contains_key(*k)) {
             return Err(e.err(
@@ -1456,10 +1583,14 @@ impl Cut {
                 format!("opening: {k} and picture — where it ends is the take (at, for, zoom) or a picture (picture, for)"),
             ));
         }
-        let needs: &[&str] = if pictured { &["name", "line", "for"] } else { &["name", "line", "at", "for"] };
+        let needs: &[&str] = match (short, pictured) {
+            (true, _) => &["at", "for", "hook"],
+            (false, true) => &["name", "line", "for"],
+            (false, false) => &["name", "line", "at", "for"],
+        };
         let missing: Vec<&str> = needs.iter().copied().filter(|k| !t.contains_key(*k)).collect();
         if !missing.is_empty() {
-            return Err(src.at(e.line, format!("opening: no {} ({WHAT})", missing.join(", "))));
+            return Err(src.at(e.line, format!("opening: no {} ({what})", missing.join(", "))));
         }
         let one_line = |key: &str, s: &str, max: usize| -> Result<String> {
             let s = s.trim();
@@ -1471,8 +1602,13 @@ impl Cut {
                 false => Ok(s.to_string()),
             }
         };
-        let name = one_line("name", e.needed("name")?, NAME_MAX)?;
-        let line = one_line("line", e.needed("line")?, LINE_MAX)?;
+        let (name, line) = match short {
+            true => (String::new(), String::new()),
+            false => (
+                one_line("name", e.needed("name")?, NAME_MAX)?,
+                one_line("line", e.needed("line")?, LINE_MAX)?,
+            ),
+        };
         let shape = || e.err("code", format!("opening: code = [\"halil board\"], up to {CODE_LINES} lines"));
         let code = match t.get("code") {
             None => Vec::new(),
@@ -1517,6 +1653,47 @@ impl Cut {
             ));
         }
         Ok(Opening { name, line, code, label, label_line, from, len, zoom, line_at: e.line, picture })
+    }
+
+    /// A Short's words: its hook line (`[opening]`'s `hook`) and the end card's title (`title`: a line, or two), each
+    /// line of words — how many fit is the band's (`short::check`).
+    fn short(top: &toml::Table, src: &Src) -> Result<Short> {
+        let empty = |s: &str| s.trim().is_empty() || s.contains('\n');
+        let opening = top.get("opening").and_then(toml::Value::as_table);
+        let e = Entry {
+            t: opening.ok_or("no [opening]")?,
+            line: src.header("opening", None),
+            src,
+            name: "opening",
+        };
+        let hook = e.needed("hook")?;
+        if empty(hook) {
+            return Err(e.err("hook", "opening: hook = the Short's first line, its words on one line"));
+        }
+        let root = Entry { t: top, line: 0, src, name: "the file" };
+        let shape =
+            "title = \"halil 0.2.0\", or two lines: title = [\"halil 0.2.0\", \"cargo install halil\"]";
+        let title: Vec<String> = match top.get("title") {
+            None => {
+                return Err(
+                    src.at(1, format!("no title: the end card's caption, the Short's title — {shape}"))
+                );
+            }
+            Some(toml::Value::String(s)) => vec![s.clone()],
+            Some(toml::Value::Array(a)) if (1..=2).contains(&a.len()) => (a.iter())
+                .map(|v| v.as_str().map(str::to_string).ok_or_else(|| root.err("title", shape)))
+                .collect::<Result<_>>()?,
+            Some(_) => return Err(root.err("title", shape)),
+        };
+        if title.iter().any(|t| empty(t)) {
+            return Err(root.err("title", format!("title: a line empty — {shape}")));
+        }
+        Ok(Short {
+            hook: hook.trim().to_string(),
+            hook_at: e.line("hook"),
+            title: title.iter().map(|t| t.trim().to_string()).collect(),
+            title_at: root.line("title"),
+        })
     }
 }
 
@@ -1565,13 +1742,15 @@ pub(crate) struct Part {
     pub(crate) len: u64,
 }
 
-/// A card in place of the screen: the intro (its ms in), the card of what's built, a chapter's, the end card.
+/// A card in place of the screen: the intro (its ms in), the card of what's built, a chapter's, the end card — a Short's
+/// the brand's (its ms in, `video::brand_frame`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Card {
     Intro(u64),
     Built,
     Chapter(usize),
     End,
+    Brand(u64),
 }
 
 /// What one frame shows: the take's screen at its ms, or a card; and what the band says — the take's time, a sped
@@ -1595,6 +1774,8 @@ pub(crate) struct Frame {
     pub(crate) label: Option<label::Label>,
     pub(crate) picture: Option<picture::Shows>,
     pub(crate) route: Option<route::Shows>,
+    /// A Short's hook line over where it ends, how drawn (of 255): there from the first frame, gone with it.
+    pub(crate) hook: Option<u8>,
 }
 
 impl Frame {
@@ -1617,6 +1798,7 @@ impl Frame {
             label: None,
             picture: None,
             route: None,
+            hook: None,
         }
     }
 }
@@ -1660,8 +1842,12 @@ impl<'c> Program<'c> {
             parts.push(Part { what, at: *at, len });
             *at += len;
         };
-        push(&mut parts, &mut at, What::Intro, INTRO_MS * 1000);
-        push(&mut parts, &mut at, What::Built, BUILT_MS * 1000);
+        // (a Short: the hook first — no intro, no card of what's built)
+        let short = cut.short.is_some();
+        if !short {
+            push(&mut parts, &mut at, What::Intro, INTRO_MS * 1000);
+            push(&mut parts, &mut at, What::Built, BUILT_MS * 1000);
+        }
         push(&mut parts, &mut at, What::Ends { from: cut.opening.from }, cut.opening.len * 1000);
         // (where the take stops: each chapter's card, each picture — at one point, the card first; a picture at the
         // take's end after its last screen held)
@@ -1696,13 +1882,18 @@ impl<'c> Program<'c> {
         if map.len() > from {
             push(&mut parts, &mut at, What::Take { from }, map.len() - from);
         }
-        push(&mut parts, &mut at, What::Last, video::LAST_MS * 1000);
+        // (a Short's last screen only as long as its crossing, as a scene's; its end card the brand's)
+        let (last, end) = match short {
+            true => (camera::CROSS_MS, video::BRAND_MS),
+            false => (video::LAST_MS, video::END_MS),
+        };
+        push(&mut parts, &mut at, What::Last, last * 1000);
         for &(_, what) in stops.iter().filter(|s| s.0 >= map.len()) {
             if let What::Picture(n) = what {
                 push(&mut parts, &mut at, what, cut.pictures[n].len());
             }
         }
-        push(&mut parts, &mut at, What::End, video::END_MS * 1000);
+        push(&mut parts, &mut at, What::End, end * 1000);
         let mut jumps: Vec<(u64, u64)> = Vec::new();
         for (i, s) in map.segs().iter().enumerate().filter(|(_, s)| s.pace == Pace::Out) {
             match jumps.last_mut() {
@@ -1819,6 +2010,10 @@ impl<'c> Program<'c> {
                 let label = self.cut.opening.label.as_ref().map(|_| label::at(off, p.len));
                 let camera = ((from * 1000 + off).min(self.cut.end * 1000))
                     .saturating_sub(self.cut.opening.from * 1000);
+                // (standing from the first frame: faded out alone)
+                let fade = FADE_MS * 1000;
+                let hook =
+                    self.cut.short.as_ref().map(|_| envelope(off + fade, p.len + fade)).filter(|a| *a > 0);
                 Frame {
                     screen: Some(t),
                     card: None,
@@ -1826,10 +2021,12 @@ impl<'c> Program<'c> {
                     ends: true,
                     camera: Some(camera),
                     label,
+                    hook,
                     ..Frame::card(Card::Built)
                 }
             }
             What::Chapter(i) => Frame::card(Card::Chapter(i)),
+            What::End if self.cut.short.is_some() => Frame::card(Card::Brand(off / 1000)),
             What::End => Frame::card(Card::End),
             What::Take { from } => self.take_frame(from + off, true),
             // (the frame before it, still: the clock stands, no speed)
@@ -1871,6 +2068,7 @@ impl<'c> Program<'c> {
             label: None,
             picture: None,
             route: None,
+            hook: None,
         }
     }
 
