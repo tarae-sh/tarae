@@ -66,7 +66,6 @@ mod kubecard;
 mod landed;
 mod lookalike;
 mod masked;
-mod memo;
 mod motion;
 mod now;
 mod opening;

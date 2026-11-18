@@ -399,7 +399,6 @@ fn saved_then(ed: &mut Editor, id: u64, next: impl FnOnce(&mut Editor) + 'static
     let Some(r) = ed.restart.as_mut() else { return };
     r.stage = Stage::Saving;
     ed.auto_save(" · before restarting");
-    ed.memo_keep();
     // (`:restart` again meanwhile: canceled, or another one's)
     ed.after_saves(move |ed| {
         if at(ed, id, &Stage::Saving) && clear_to_go(ed) {

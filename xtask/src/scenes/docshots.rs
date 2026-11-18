@@ -298,29 +298,6 @@ const DOC_SCENES: &[DocScene] = &[
     .claude("askdone"),
     scene("palette", Fixture::Calc, LIB, &["@1", " ", "?", "@1", "chat", "@1"]),
     scene("whichkey", Fixture::Calc, LIB, &["@1", " ", "@2"]),
-    // (the memo: two lines about the code on screen typed, docked beside it by `C-w e`, the keys back to the code —
-    // there to be read)
-    scene(
-        "memo",
-        Fixture::Calc,
-        LIB,
-        &[
-            "@1",
-            " ",
-            "M",
-            "@1",
-            "Next: a test for div by zero",
-            "\r",
-            "then: the median of an empty list",
-            "\x1b",
-            "\x17",
-            "e",
-            "@1",
-            "\x17",
-            "w",
-            "@1",
-        ],
-    ),
     scene("tutor", Fixture::Calc, LIB, &["@1", ":", "tutor", "\r", "@1"]),
     // (the next theme previewed live on the code)
     scene("themes", Fixture::Calc, LIB, &["@1", " ", "t", "@1", "\x0e", "@1"]),
@@ -741,7 +718,6 @@ const DOCS: &[DocShot] = &[
     // docs/features.md
     row("ux-palette.png", Some("palette"), S),
     row("ux-which-key.png", Some("whichkey"), S),
-    row("ux-memo.png", Some("memo"), S),
     row("ux-tutor.png", Some("tutor"), S),
     row("ux-welcome.png", Some("welcome"), S),
     row("ux-welcome-continue.png", Some("continue"), S),

@@ -513,8 +513,6 @@ pub enum Drag {
     TerminalView,
     /// Claude's edit review (`Review.marked` — it has no cursor).
     Review,
-    /// The memo (`memo.rs`).
-    Memo,
 }
 
 /// A press on text (`Editor.mouse_presses`): where (whose text, its document, the pane, the character), when, and
@@ -1401,10 +1399,6 @@ pub struct Editor {
     pub layouts: serde_json::Map<String, serde_json::Value>,
     pub layouts_path: Option<PathBuf>,
     pub layouts_seq: u64,
-    /// Each checkout's memo's words as kept in `$state/memos.json` (`memo.rs`), read before the first frame; its path
-    /// None in tests (a test that keeps them gives its own).
-    pub memos: serde_json::Map<String, serde_json::Value>,
-    pub memos_path: Option<PathBuf>,
     /// What's counted of the features used and not saved yet (`features.rs`; its path None in tests).
     pub features: crate::features::Counts,
     /// The card record's folder (`cards.rs`, `$state/cards`) — None in tests: nothing written.
@@ -1816,13 +1810,6 @@ impl Editor {
             },
             layouts_path: if cfg!(test) { None } else { crate::layouts::path() },
             layouts_seq: 0,
-            // (each checkout's memo — a small file, read before the first frame, as the layouts)
-            memos: if cfg!(test) {
-                Default::default()
-            } else {
-                crate::memo::read(crate::memo::path().as_deref())
-            },
-            memos_path: if cfg!(test) { None } else { crate::memo::path() },
             cards_dir: if cfg!(test) {
                 None
             } else {
@@ -3003,11 +2990,6 @@ impl Editor {
             Shows::Detail(k) => self.detail_focus(k),
             // (a docked group's leaf: the member it had last — its output alone while it lists nothing)
             Shows::Group(k) if self.floating_in_sight(k) => self.float_focus(k),
-            // (the memo docked: its keys, as `space M` gives them)
-            Shows::Group(crate::pane::GroupKind::Memo) => self.memo_bring(),
-            // (up: its keys; put away since the frame that listed it, no hop lands in it — the code's)
-            Shows::Memo if self.memo_up() => self.memo_bring(),
-            Shows::Memo => self.workspace.viewer.keys_to_code(),
             Shows::Group(k) => {
                 if let Some(s) = k.slot() {
                     self.slot_show(s);
@@ -3369,9 +3351,6 @@ impl Editor {
         }
         if let Some((_, o)) = crate::rundoc::keyed(self).filter(|_| self.pending.is_empty()) {
             return o.keys.pending_display();
-        }
-        if let Some(k) = crate::memo::keyed(self).filter(|k| self.pending.is_empty() && !k.idle()) {
-            return k.pending_display();
         }
         // (the chat's input's — the `j` of an `[insert]` sequence, held until the next key)
         if let Some(c) = self.workspace.claude.chat.as_ref().filter(|c| {
@@ -4438,28 +4417,6 @@ impl Editor {
                     _ => {}
                 }
             }
-            // The memo's text: a press puts the cursor there (the keys its) — a double its word, a triple its line; a
-            // drag from there selects
-            (S::Float(crate::pane::GroupKind::Memo), Part::Text { line, col }) => {
-                took_mouse(u.surface);
-                let on = Drag::Memo;
-                match m.kind {
-                    K::Down => {
-                        if let Some(pos) = crate::memo::click(self, line, col) {
-                            crate::mouse::text_press(self, on, pos);
-                        }
-                    }
-                    K::Drag if self.mouse_anchor.is_some_and(|a| a.0 == on) => {
-                        if let Some(pos) = crate::memo::pos_at(self, line, col) {
-                            crate::mouse::text_drag(self, on, pos);
-                        }
-                    }
-                    K::Up => self.mouse_anchor = None,
-                    // (the wheel: its view, never the keys nor the cursor — `memo::wheel`)
-                    K::ScrollUp | K::ScrollDown => crate::memo::wheel(self, up),
-                    _ => {}
-                }
-            }
             // (the rest of a floating frame: the keys to it, nothing under it pressed)
             (S::Float(kind), _) => {
                 took_mouse(S::Float(kind));
@@ -4768,8 +4725,6 @@ impl Editor {
         self.workspace.leave(Here::Slot);
         self.workspace.leave(Here::Side);
         self.workspace.leave(Here::Rail);
-        // (the memo: put away — `memo_sync`)
-        self.workspace.leave(Here::Memo);
         if let Here::List(id) = self.workspace.docked() {
             self.workspace.leave(Here::List(id));
         }
@@ -6641,8 +6596,6 @@ impl Editor {
             crate::view::search_unshown(self);
         } else if key.code == Code::Esc && self.prompt.is_none() && crate::rundoc::has_keys(self).is_some() {
             crate::rundoc::search_unshown(self);
-        } else if key.code == Code::Esc && self.prompt.is_none() && self.memo_has_keys() {
-            crate::memo::search_unshown(self);
         } else if key.code == Code::Esc
             && self.mode == Mode::Normal
             && self.prompt.is_none()
@@ -6715,10 +6668,6 @@ impl Editor {
         }
         // A run panel's output: normal mode on its document, the panel's keys over it
         if let Some(h) = crate::rundoc::key(self, key) {
-            return took(h);
-        }
-        // The memo: its mode's keys on its document (`memo.rs`)
-        if let Some(h) = crate::memo::key(self, key) {
             return took(h);
         }
         if crate::chat::key(self, key) {

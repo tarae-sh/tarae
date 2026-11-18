@@ -287,8 +287,6 @@ fn event_loop(editor: &mut Editor, iface: &mut Option<Interface>) -> Result<()> 
         }
         draw = batch_done(editor, unchanged);
     }
-    // (the memo's words written as tarae ends — a worker's, the end waiting for it: `event::background`)
-    editor.memo_keep();
     // (quitting waited for them already — this covers any other way out)
     editor.flush_saves();
     editor.features_flush();
@@ -1045,7 +1043,6 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     crate::view::refresh_search(editor);
     crate::chatdoc::refresh_search(editor);
     crate::rundoc::refresh_search(editor);
-    crate::memo::refresh_search(editor);
     // Follow leading a code pane your keys aren't in (panes P3 step 8): that pane's view kept on Claude's place as the
     // focused one's is below — lent the focus for it (`Editor::in_pane`), the writing's rows placed first (a document
     // both panes show keeps the placing for the pane follow leads); the selection, yours, untouched
@@ -1537,10 +1534,6 @@ fn floats(
             out.insert(at, (kind, p.list, r));
         }
     }
-    // (the memo: up only while you're in it — over them all)
-    if let (Some(m), Some(r)) = (editor.workspace.memo.as_ref(), editor.memo_rect()) {
-        out.push((GroupKind::Memo, m.id, r));
-    }
     match editor.zoomed() {
         None => out,
         Some(z) => out
@@ -1770,8 +1763,7 @@ fn group_list_rows(editor: &Editor, g: &crate::pane::Group) -> usize {
         | GroupKind::Review
         | GroupKind::Sessions
         | GroupKind::Messages
-        | GroupKind::Folders
-        | GroupKind::Memo => 0,
+        | GroupKind::Folders => 0,
     }
 }
 
@@ -2054,12 +2046,6 @@ impl Layout {
             (shown.iter()).filter(|l| !column_kind(l.0) && l.1.w > 0).map(|l| l.1).collect();
         let code_x = code.iter().map(|r| r.x).min().zip(code.iter().map(|r| r.x + r.w).max());
         let work = work_cols(w as usize, rect(Shows::Chat), code_x);
-        // (the memo docked right of the code is read as the chat is: what floats over the code — toasts, pickers, the
-        // asks — stays off it, on the code's side of its edge)
-        let work = match rect(Shows::Group(crate::pane::GroupKind::Memo)) {
-            Some(m) if m.w > 0 && m.x > work.0 && m.x < work.1 => (work.0, m.x),
-            _ => work,
-        };
         let code_w = code_x.map_or(work.1.saturating_sub(work.0 + rail_w), |c| c.1 - c.0);
         let slot = rect(Shows::Slot);
         // (the slot's rows are the code's column's only stacked under it — beside it, it takes none of them)
@@ -5772,7 +5758,6 @@ impl Region {
             k if k.chat() => Some(Region::Chat),
             // (a floating list: its frame's own lines)
             Keys::List(k) if crate::floatlist::is_list(k) => Some(Region::Dock(k)),
-            Keys::Memo => Some(Region::Dock(crate::pane::GroupKind::Memo)),
             Keys::Slot(_) | Keys::List(_) | Keys::Program | Keys::View(_) | Keys::Output(_) => {
                 match editor.slot_in_hand().and(editor.workspace.viewer.hand) {
                     Some(kind) => Some(Region::Dock(kind)),
@@ -6207,7 +6192,7 @@ fn draw(
         let r = lay.slot;
         editor.screen.regions.add(crate::regions::Kind::Slot, (r.x, r.y, r.w, r.h));
     }
-    let docked_cursor = draw_docked(editor, ui, lay, out)?;
+    draw_docked(editor, ui, lay, out)?;
     for (_, f) in editor.screen.docked.borrow().iter() {
         drew(editor, Kind::Slot, Some((f.x, f.y, f.w, f.h)));
     }
@@ -6263,7 +6248,7 @@ fn draw(
         hand_under(out)?;
     }
     // The floating panes over all that's docked, under the cards (the chat's cursor under one is hidden with it)
-    let memo_cursor = draw_floating(editor, ui, lay, out)?.or(docked_cursor);
+    draw_floating(editor, ui, lay, out)?;
     for (_, f) in editor.screen.floating.borrow().iter() {
         drew(editor, Kind::Float, Some((f.x, f.y, f.w, f.h)));
     }
@@ -6403,8 +6388,7 @@ fn draw(
     drew(editor, Kind::Float, editor.screen.slash_card.get());
     // (a view mode's own sequence under way — `g`, `z`, `m` on the conversation — lists its keys too)
     let viewing = crate::view::viewing(editor).is_some_and(|(_, k)| !k.pending.is_empty());
-    let output = crate::rundoc::keyed(editor).is_some_and(|(_, o)| !o.keys.pending.is_empty())
-        || crate::memo::under_way(editor).is_some();
+    let output = crate::rundoc::keyed(editor).is_some_and(|(_, o)| !o.keys.pending.is_empty());
     if (!editor.pending.is_empty() || output || viewing) && editor.picker.is_none() {
         draw_which_key(editor, ui, lay, out)?;
         drew(editor, Kind::Float, editor.screen.which_key.get());
@@ -6489,11 +6473,6 @@ fn draw(
         Some(CursorIn::Program) => (terminal_cursor, CursorShape::Block),
         Some(CursorIn::Prompt) => (prompt_cursor, CursorShape::Bar),
         Some(CursorIn::Picker) => (picker_cursor, CursorShape::Bar),
-        // (the memo's in its mode's shape: a bar while you type, a block in normal mode)
-        Some(CursorIn::Memo) => {
-            let insert = editor.workspace.memo.as_ref().is_some_and(|m| m.mode() == Mode::Insert);
-            (memo_cursor, if insert { CursorShape::Bar } else { CursorShape::Block })
-        }
         Some(CursorIn::View) | None => (None, CursorShape::Bar),
     };
     // (a list whose letters are keys has nothing to type into: no cursor, there or under it — nor labels up)
@@ -6695,11 +6674,8 @@ fn drew(editor: &Editor, kind: crate::regions::Kind, rect: Option<Rect4>) {
 /// it (`Panel::docked` — its header in its top line, its members side by side or stacked), at full strength only
 /// with the keys, its lines lit then (its panel's own `Region::Slot` lines, in a `Ui` of its own); its edge the one
 /// line between it and the code (`dock_edge`).
-/// The memo docked is drawn as every docked pane without the keys (the chat, a code pane): its words at full ink, to be
-/// read — only its line goes unlit; its cursor returned while it has the keys.
-fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> io::Result<Option<(u16, u16)>> {
+fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
     use crate::sizes::Slot;
-    let mut memo_cursor = None;
     for g in &editor.workspace.groups {
         let crate::pane::Place::Docked(side) = g.place else { continue };
         if !editor.docked_in_sight(g.kind) {
@@ -6715,14 +6691,8 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> io:
         let over = ui.hover == Some(Region::Dock(g.kind));
         let own = Ui { lit: has.then_some(Region::Slot), hover: over.then_some(Region::Slot), ..ui.clone() };
         {
-            let _fade = (g.kind != crate::pane::GroupKind::Memo).then(|| Fade::unless(has, &own));
+            let _fade = Fade::unless(has, &own);
             match g.kind.slot() {
-                None if g.kind == crate::pane::GroupKind::Memo => {
-                    let card = panel_style(ui, editor);
-                    let line = edge_style(&own, card, Region::Slot);
-                    let rr = docked.rect;
-                    memo_cursor = draw_memo(editor, &own, lay, (card, line), (rr, has, false), out)?;
-                }
                 // (the session list docked — P3 step 7d: its rows under its top line, the leaf's whole)
                 None if g.kind == crate::pane::GroupKind::Sessions => {
                     let card = panel_style(ui, editor);
@@ -6749,7 +6719,7 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> io:
         }
         editor.screen.docked.borrow_mut().push((g.kind, r));
     }
-    Ok(memo_cursor)
+    Ok(())
 }
 
 /// The floating panes (P3 step 7), bottom first, over everything docked and under the cards: each in a D3 frame —
@@ -6757,15 +6727,9 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> io:
 /// has them), its sides and its bottom line round it, lit in the accent while it has the keys, the faint wash else;
 /// inside, a group's panel as the slot draws it, the session list's rows (`draw_sessions_pane`). What's under a frame
 /// isn't seen through it: its cells cleared first.
-fn draw_floating(
-    editor: &Editor,
-    ui: &Ui,
-    lay: &Layout,
-    out: &mut Vec<u8>,
-) -> io::Result<Option<(u16, u16)>> {
+fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> io::Result<()> {
     use crate::pane::GroupKind;
     use crate::sizes::Slot;
-    let mut memo_cursor = None;
     for &(kind, _, r) in &lay.floats {
         if r.w < crate::pane::FLOAT_MIN_W.min(lay.width) || r.h < 3 {
             continue;
@@ -6794,9 +6758,6 @@ fn draw_floating(
         } else if kind == GroupKind::Folders {
             let _fade = Fade::unless(has, &own);
             draw_folders_pane(editor, &own, card, line, r, out)?;
-        } else if kind == GroupKind::Memo {
-            let _fade = Fade::unless(has, &own);
-            memo_cursor = draw_memo(editor, &own, lay, (card, line), (r, has, true), out)?;
         } else {
             let at = (lay, &Panel::floated(kind, r));
             let _fade = Fade::unless(has, &own);
@@ -6821,136 +6782,25 @@ fn draw_floating(
             Style { fg: own.linenr.fg, ..card },
         );
         let pairs = match editor.float_moving == Some(kind) {
-            true => {
-                vec![("h j k l".to_string(), "move".to_string()), ("enter".to_string(), "done".to_string())]
-            }
+            true => vec![("h j k l", "move".to_string()), ("enter", "done".to_string())],
             false if has => list_keys(editor, kind),
             false => Vec::new(),
         };
-        let keys: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (k.as_str(), d.as_str())).collect();
+        let keys: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (*k, d.as_str())).collect();
         float_sides(out, line, hint, r, (middle, split), &keys)?;
         editor.screen.floating.borrow_mut().push((kind, r));
     }
-    Ok(memo_cursor)
-}
-
-/// The memo in its frame `r` (`memo.rs`): `╭─ memo ──…╮`, its text wrapped at its width a blank in from each side, its
-/// rows from where the cursor's is held in sight (`memo::sight`), drawn by the one drawer (`draw_text`, `CodeIn::Memo`) —
-/// its keys at its bottom line (`list_keys`, as its mode has them). Its body's rows — the air under its text too — on
-/// the toasts' slight ground (`slight_ground`, look B), the frame's lines on the pane's `card`; where the pane's ground
-/// isn't painted (a transparent theme) none: the frame alone. The same with the keys or without: only the lines light.
-/// Docked (`framed` false, its step (c) — `r` its panel's rect, past its edge): a docked pane's top line `─ memo ─`, no
-/// ground of its own, its text a blank in from each side, its keys at its foot while it has them (a side column's,
-/// as the chat's), that row blank without them so nothing moves. Returns where its cursor is while it has the keys.
-fn draw_memo(
-    editor: &Editor,
-    ui: &Ui,
-    lay: &Layout,
-    (card, line): (Style, Style),
-    (r, has, framed): (crate::split::Rect, bool, bool),
-    out: &mut Vec<u8>,
-) -> io::Result<Option<(u16, u16)>> {
-    use crate::codeview::{Part, Row};
-    let Some(m) = editor.workspace.memo.as_ref() else { return Ok(None) };
-    let Some(doc) = m.pane.doc_in() else { return Ok(None) };
-    let strong =
-        card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
-    let faint = Style { fg: ui.linenr.fg, ..card };
-    let names = [(Fit::from("memo"), strong)];
-    let head = TopLine { names: &names, faint, ..TopLine::default() };
-    let ends = if framed { ("╭", "╮", "┬") } else { ("", "", "┬") };
-    top_line(out, line, card, (r.x, r.y, r.w), ends, &[], true, &head)?;
-    let tab = editor.config.tab_width;
-    // (floating: its sides' lines and a blank each side; docked: a blank each side, its edge outside `r`)
-    let (cols, x0) = match framed {
-        true => (crate::memo::text_w(r.w), r.x + crate::memo::PAD),
-        false => (r.w.saturating_sub(2).max(1), r.x + 1),
-    };
-    // (under its top line, over its bottom line — docked, its foot)
-    let inner = crate::memo::memo_docked_rows(r.h);
-    let mut view = Vec::new();
-    for (line, rows) in crate::memo::rows(doc, cols, tab) {
-        let n = rows.len();
-        for (index, row) in rows.into_iter().enumerate() {
-            view.push(Row::Text { line, part: Some(Part { row, index, last: index + 1 == n }), edit: None });
-        }
-    }
-    let mode = m.mode();
-    let at = crate::memo::cursor_row(doc, cols, tab, mode);
-    // (the view follows the cursor while it has the keys; docked without them it stays where you left it, and where the
-    // wheel left it until the next key — `memo::wheel`)
-    let first = match has && !m.wheeled {
-        true => crate::memo::sight(m.scroll.get(), at, inner, view.len()),
-        false => m.scroll.get().min(view.len().saturating_sub(inner)),
-    };
-    m.scroll.set(first);
-    // (more rows than its room: the code pane's bar, in the blank column after its text — step (d))
-    let scrollbar = view.len() > inner;
-    let view: Vec<Row> = view.into_iter().skip(first).take(inner).collect();
-    let top = view.first().map_or(0, Row::line);
-    // (its measure and the cell soft wrap keeps after it: a line of the whole measure keeps the cursor on its row; the
-    // bar's column the blank after them)
-    let pl = Layout {
-        x0,
-        x1: x0 + cols + usize::from(scrollbar),
-        scrollbar,
-        text_top: (r.y + 1) as u16,
-        text_rows: inner,
-        gutter: 0,
-        text_cols: cols,
-        ..lay.clone()
-    };
-    // (its body inside the sides — the blank columns either side of the text, the rows under it — on its ground;
-    // docked, the pane's, its foot's row too)
-    let ground = match framed && card.bg.is_some() {
-        true => Style { bg: slight_ground(ui, editor).bg, ..card },
-        false => card,
-    };
-    apply(out, ground)?;
-    let (bx, bw, end) = match framed {
-        true => (r.x + 1, r.w.saturating_sub(2), r.y + r.h.saturating_sub(1)),
-        false => (r.x, r.w, r.y + r.h),
-    };
-    for y in r.y + 1..end {
-        queue!(out, MoveTo(bx as u16, y as u16), Spaces(bw))?;
-    }
-    if !framed && has && r.h > 2 {
-        let pairs = crate::memo::hints(editor);
-        let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, d)| (k.as_str(), *d)).collect();
-        let dim = Style { fg: ui.virt.fg.or(card.fg), ..card };
-        let w = r.w.saturating_sub(2);
-        let spans = hint_spans(ui, whole_pairs(&pairs, w), Style { bold: true, ..dim }, faint);
-        let y = r.y + r.h - 1;
-        queue!(out, MoveTo(x0 as u16, y as u16))?;
-        hinted_spans(out, &spans, card, w, (x0, y))?;
-    }
-    let shows = crate::codeview::Shows::memo(has, mode == Mode::Insert);
-    let src = Source { hits: m.pane.hits().filter(|_| has), ..Source::of(doc) };
-    let at = draw_text(editor, &src, top, &shows, &view, &ui.on(ground), &pl, out)?;
-    // (typing at a line's end: the blank under the bar in the text's colour — a terminal that draws its bar in its
-    // cell's colour shows it on paper as on ink, as the code's and the chat's input do; the drawer leaves that cell bare)
-    let head = doc.selection().primary().head;
-    let at_end = head >= doc.text.len_bytes() || doc.text.byte(head) == b'\n';
-    if let Some((x, y)) = at.filter(|_| has && mode == Mode::Insert && at_end) {
-        apply(out, Style { fg: ui.base.fg, ..ground })?;
-        queue!(out, MoveTo(x, y), Print(" "))?;
-    }
-    Ok(at.filter(|_| has))
+    Ok(())
 }
 
 /// A floating list's keys for its frame's bottom line (the one list L2: the three lists' keys there, as a card's — the
 /// top line keeps the name and the counts), as they apply to the row in hand.
-fn list_keys(editor: &Editor, kind: crate::pane::GroupKind) -> Vec<(String, String)> {
+fn list_keys(editor: &Editor, kind: crate::pane::GroupKind) -> Vec<(&'static str, String)> {
     use crate::pane::GroupKind;
-    let own = |v: Vec<(&str, String)>| v.into_iter().map(|(k, d)| (k.to_string(), d)).collect();
     match kind {
-        GroupKind::Sessions => own(crate::sessionpane::hints(editor)),
-        GroupKind::Messages => own(crate::messages::hints(editor)),
-        GroupKind::Folders => {
-            crate::folders::hints().into_iter().map(|(k, d)| (k.to_string(), d.to_string())).collect()
-        }
-        // (as its mode has them: `space` types a space in insert mode)
-        GroupKind::Memo => crate::memo::hints(editor).into_iter().map(|(k, d)| (k, d.to_string())).collect(),
+        GroupKind::Sessions => crate::sessionpane::hints(editor),
+        GroupKind::Messages => crate::messages::hints(editor),
+        GroupKind::Folders => crate::folders::hints().into_iter().map(|(k, d)| (k, d.to_string())).collect(),
         _ => Vec::new(),
     }
 }
@@ -10083,7 +9933,7 @@ fn draw_scrollbar(
 
 /// A scroll thumb's (or mark's) glyph: a quarter block against the text's side, clear of a line beside it (a half
 /// block there read as a lump on the line — friction 92).
-pub(crate) const THUMB: &str = "▎";
+const THUMB: &str = "▎";
 
 #[cfg(test)]
 thread_local! {
@@ -12872,20 +12722,11 @@ fn draw_statusline(
         (_, Some(Mode::Select)) => format!("{mode} · SELECT"),
         _ => mode.to_string(),
     };
-    // (a run panel's output: its own mode, then what it's of — `● normal · tests`; the memo's — `● insert · memo`)
+    // (a run panel's output: its own mode, then what it's of — `● normal · tests`)
     let output = crate::rundoc::keyed(editor);
-    let memo = editor.workspace.memo.as_ref().map(crate::memo::Memo::mode);
-    let mode = match (word, output, memo) {
-        (Keys::Output(_), Some((_, o)), _) => {
+    let mode = match (word, output) {
+        (Keys::Output(_), Some((_, o))) => {
             format!("{} · {mode}", if o.keys.mode == Mode::Select { "SELECT" } else { "NORMAL" })
-        }
-        (Keys::Memo, _, Some(m)) => {
-            let m = match m {
-                Mode::Insert => "INSERT",
-                Mode::Select => "SELECT",
-                Mode::Normal => "NORMAL",
-            };
-            format!("{m} · {mode}")
         }
         _ => mode,
     };
@@ -13154,13 +12995,6 @@ fn draw_statusline(
         left.push(Seg { cut: None, text: "  unsent ".into(), style: accent, keep: UNSENT });
         left.push(Seg::of(crate::whole::fit(&text, 24), dim, UNSENT));
     }
-    // The memo put away holding words (`Editor::memo_marked`, its step (b)): faint, beside the words of yours out of sight
-    // — a press brings it up, as `space M` does (`status_words`)
-    if editor.memo_marked() {
-        let faint = Style { fg: ui.linenr.fg, ..ui.status };
-        left.push(Seg { cut: None, text: "  ".into(), style: ui.status, keep: MEMO });
-        left.push(Seg { cut: None, text: MEMO_MARK.into(), style: faint, keep: MEMO });
-    }
     // (a session's branch is its name — the chip said it; a branch is a branch, faint ink, never a session's colour)
     if let Some(b) =
         editor.workspace.git_branch.as_ref().filter(|b| !chip || b.as_str() != editor.workspace.label())
@@ -13213,11 +13047,7 @@ fn draw_statusline(
         Some((_, k)) => editor.workspace.viewer.view.as_ref().map(|v| (v.doc(), k.mode)),
         None => None,
     };
-    // (the memo's own, while it has the keys)
-    let on_memo = (editor.workspace.memo.as_ref())
-        .filter(|_| keys == Keys::Memo)
-        .and_then(|m| Some((m.pane.doc_in()?, m.mode())));
-    let (at_doc, at_mode) = viewed.or(on_output).or(on_memo).unwrap_or((doc, editor.mode));
+    let (at_doc, at_mode) = viewed.or(on_output).unwrap_or((doc, editor.mode));
     let sel = at_doc.selection();
     let pos = cursor_idx(at_mode, sel.primary(), &at_doc.text);
     let line = mv::line_of(&at_doc.text, pos);
@@ -13559,7 +13389,7 @@ fn draw_statusline(
 /// Claude's change waiting (`C-q`, the review), what's abnormal among tarae's processes (`:procs`), the file's errors and
 /// warnings (its diagnostics), the inbox's `· C-q` after its count (the card), the drafts' count (`space v s`: its press
 /// sends, the user's call for this word, the key's hints elsewhere staying `wordspot::COSTS`' plain words), `◂ new`
-/// (`space L`, the reader), `¶ memo` (`space M`'s, the memo up). Each run of
+/// (`space L`, the reader). Each run of
 /// segments of one press one word, from its first mark to its last; `right_x` where the right side starts.
 fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usize, usize)) {
     use crate::wordspot::{Press, Spot};
@@ -13574,7 +13404,6 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
         INBOX_NEXT => Some(Press::Card),
         DRAFTS | DRAFTS_KEY => Some(Press::Command("review_send")),
         UNREAD | UNREAD_KEY => Some(Press::Command("chat_toggle")),
-        MEMO => Some(Press::Command("memo")),
         _ => None,
     };
     let laid = |segs: &[Seg], x0: usize| -> Vec<(usize, Option<Press>, (String, Style))> {
@@ -13665,15 +13494,6 @@ const DRAFTS_KEY: u8 = DRAFTS - 1;
 /// first, the word last.
 const UNREAD: u8 = 233;
 const UNREAD_KEY: u8 = UNREAD - 1;
-
-/// The status line's `¶ memo` (`Editor::memo_marked`, the memo's step (b)): the memo put away holding words. Six
-/// cells, the one trace of what's out of sight: below what asks or waits for you, the chip, the diagnostics, a routine
-/// message said there (`SAID`) and the selections' count; over the servers' progress, Claude's sentence (`NOW_SAID`), the
-/// plan's step and the branch — which fold before it.
-const MEMO: u8 = 140;
-
-/// The memo's mark as the status line draws it.
-pub(crate) const MEMO_MARK: &str = "¶ memo";
 
 /// The status line's `keep` for a floating list's keys (`key_hints`): only the mode, the position and an error
 /// or warning waiting there (`FOLDED`) outlast them — and they're cut to fit beside those and the inbox's count,
@@ -14613,7 +14433,8 @@ fn draw_toasts(
     }
     // (news, never a pane with the keys: no frame — a frame says "this has the keys" — but the waiting cards' peek's
     // slight ground, the two one-row looks one family, `OfferCard::draw`)
-    let card = slight_ground(ui, editor);
+    let card = card_style(ui, editor, "ui.popup");
+    let card = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
     let (fx, fr) = lay.float_area();
     let max_inner = ((fr - fx) / 2).clamp(24, 56).min((fr - fx).saturating_sub(8));
     let a = editor.toast_alpha();
@@ -16666,15 +16487,10 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
     let output = crate::rundoc::keyed(editor)
         .map(|(_, o)| &o.keys)
         .filter(|k| editor.pending.is_empty() && !k.pending.is_empty());
-    // (the memo's own: the editor's table in its mode)
-    let memo = crate::memo::under_way(editor);
-    let (entries, keys) = match (view, output, memo) {
-        (Some((s, k)), ..) => (editor.keymaps.view_children(s, k.mode, &k.pending), k.pending.as_slice()),
-        (None, Some(k), _) => (editor.keymaps.run_children(k.mode, &k.pending), k.pending.as_slice()),
-        (None, None, Some(k)) => (editor.keymaps.children(k.mode, &k.pending), k.pending.as_slice()),
-        (None, None, None) => {
-            (editor.keymaps.children(editor.mode, &editor.pending), editor.pending.as_slice())
-        }
+    let (entries, keys) = match (view, output) {
+        (Some((s, k)), _) => (editor.keymaps.view_children(s, k.mode, &k.pending), k.pending.as_slice()),
+        (None, Some(k)) => (editor.keymaps.run_children(k.mode, &k.pending), k.pending.as_slice()),
+        (None, None) => (editor.keymaps.children(editor.mode, &editor.pending), editor.pending.as_slice()),
     };
     // (a command's doc says the session's agent by its row — `llm::agent_doc`)
     let entries: Vec<_> =
@@ -24980,13 +24796,6 @@ fn card_style(ui: &Ui, editor: &Editor, key: &str) -> Style {
             .or_else(|| builtin().try_get(key))
             .unwrap_or_default(),
     )
-}
-
-/// The slight ground a toast and a waiting card's peek sit on, and the memo's body (look B, main's `.sb/decisions/ux.md`
-/// "The memo's look"): the cards' surface (`ui.popup`) a step toward the code's ground (`PEEK_STEP`).
-fn slight_ground(ui: &Ui, editor: &Editor) -> Style {
-    let card = card_style(ui, editor, "ui.popup");
-    Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card }
 }
 
 /// A docked panel's ground (the side panel, the review's rail, the chat, the bottom slot's panels): the code's own
@@ -35060,9 +34869,6 @@ mod tests {
             ("stop", 1),
             // pointing: the labels go, nothing opened or closes
             ("stop pointing", 2),
-            // the memo's typing (`memo::typed`'s refusal): esc is normal mode there, the memo stays up — the design's
-            // `esc normal` (main's `.sb/memo-plan.md` 8), as the chat's input says it by its binding
-            ("normal", 1),
         ];
         // The terminal's round: from the code into the program (`type`), from the program into its view mode (`view`)
         const TERMINAL: &[(&str, usize)] = &[("type", 1), ("view", 1)];

@@ -34,7 +34,6 @@ impl Editor {
             GroupKind::Sessions => self.sessions_pane.is_some(),
             GroupKind::Messages => self.messages_pane.is_some(),
             GroupKind::Folders => self.folders_pane.is_some(),
-            GroupKind::Memo => self.memo_up(),
             GroupKind::Git | GroupKind::Review => false,
         }
     }
@@ -114,10 +113,9 @@ impl Editor {
             let col = &mut column[usize::from(side == Side::Right)];
             // (the room with this side's column given back: one stacked in it is at least as wide)
             let room = left + *col;
-            // (the memo's own width before you size it: its measure whole, as it floats — `memo::DOCK_W`)
-            let memo = (kind == GroupKind::Memo).then_some(crate::memo::DOCK_W as u16);
-            let kept = self.sizes.docked[kind.dock_index()].or(memo);
-            if let Some(want) = crate::sizes::group_beside(total, room, kept, *col) {
+            if let Some(want) =
+                crate::sizes::group_beside(total, room, self.sizes.docked[kind.dock_index()], *col)
+            {
                 out[kind.dock_index()] = want;
                 left = room - want;
                 *col = want;
@@ -149,7 +147,6 @@ impl Editor {
     /// its place kept.
     pub fn dock_sync(&mut self) {
         self.list_dock_sync();
-        self.memo_dock_sync();
         for i in 0..self.workspace.groups.len() {
             let g = self.workspace.groups[i];
             let Place::Docked(side) = g.place else { continue };
@@ -167,22 +164,8 @@ impl Editor {
     /// front has its group there, the list's own pane its list (`At::List`, its search and selection one list's whichever
     /// session is in front) — its leaf then `dock_sync`'s as any group's; else none.
     fn list_dock_sync(&mut self) {
+        let kind = GroupKind::Sessions;
         let want = self.sizes.sessions_dock.zip(self.sessions_pane.as_ref().map(|p| p.list));
-        self.dock_own(GroupKind::Sessions, want);
-    }
-
-    /// The memo docked (its step (c)): while it's up and `memo_dock` names a side, the workspace has its group there for
-    /// its placement alone — its own pane (`Memo.id`) the group's list, no detail, no run panel — its leaf then
-    /// `dock_sync`'s as any group's; put away or floating, none (`.sb/memo-c-dev-note.md`: what each walk of
-    /// `Workspace.groups` does with it).
-    fn memo_dock_sync(&mut self) {
-        let up = self.workspace.memo.as_ref().filter(|m| m.up).map(|m| m.id);
-        self.dock_own(GroupKind::Memo, self.sizes.memo_dock.zip(up));
-    }
-
-    /// Kind `kind`'s group as a pane of its own docked on a side wants it (`want`: the side, its pane): there with that
-    /// pane its list, else none — its leaf and its pane gone with it.
-    fn dock_own(&mut self, kind: GroupKind, want: Option<(Side, PaneId)>) {
         let have = self.workspace.group(kind);
         if let (Some((side, list)), Some(g)) = (want, have)
             && g.list == list
@@ -277,16 +260,7 @@ impl Editor {
     /// The pane the keys are in (`Session::at_pane`): a docked group's own leaf only while it's in sight — folded into
     /// the slot, its detail is the slot's there (`slot_in_hand`, `focused_area`).
     pub fn at_pane(&self) -> Option<PaneId> {
-        self.workspace.at_pane(|k| self.in_own_leaf(k))
-    }
-
-    /// Kind `kind`'s keys are its own leaf's (`Workspace::at_pane`): a group's out of the slot — the memo's only while
-    /// it's docked in sight (floating, its own pane's, out of the tree).
-    pub fn in_own_leaf(&self, kind: GroupKind) -> bool {
-        match kind {
-            GroupKind::Memo => self.memo_docked_shown(),
-            k => self.out_of_slot(k),
-        }
+        self.workspace.at_pane(|k| self.out_of_slot(k))
     }
 
     /// `C-w t` from group `kind`'s member: its members turned as `C-w t` turns a split — side by side ↔ over and under,
@@ -466,8 +440,6 @@ impl Editor {
     /// the keys aren't in a docked group.
     pub fn size_dock(&mut self, dir: Dir, more: bool) -> bool {
         let list = self.float_list_in_hand().filter(|&k| self.docked_in_sight(k));
-        let memo = (self.memo_has_keys() && self.memo_docked_shown()).then_some(GroupKind::Memo);
-        let list = list.or(memo);
         let Some(kind) = list.or_else(|| self.slot_in_hand().and(self.workspace.viewer.hand)) else {
             return false;
         };

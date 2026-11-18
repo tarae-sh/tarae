@@ -120,13 +120,6 @@ const MOUSE_SCENES: &[Scene] = &[
         ed.workspace.viewer.keys_to_code();
     }),
     // (what the wheel has room to scroll on each surface: `SCROLLS`)
-    // (the memo docked, sixty lines kept from before, the code's keys: the memo being read — its view at its words' end)
-    ("a long memo docked, the keys in the code", |ed| {
-        let key = ed.workspace.root.to_string_lossy().into_owned();
-        let text: String = (1..=60).map(|i| format!("line {i} of a long memo\n")).collect();
-        ed.memos.insert(key, serde_json::json!({ "text": text }));
-        feed(ed, &[" ", "M", "<esc>", "<C-w>", "e", "<C-w>", "w"]);
-    }),
     ("a long conversation", |ed| {
         chat(ed, "");
         let c = ed.workspace.claude.chat.as_mut().unwrap();
@@ -621,7 +614,6 @@ const SCROLLS: &[(&str, &str)] = &[
     ("the tests' list, many results", "List"),
     ("a plugin's panel, many rows", "Plugin"),
     ("an edit review, a long file", "EditReview"),
-    ("a long memo docked, the keys in the code", "Memo"),
 ];
 
 /// What the wheel has to scroll on a surface (#413).
@@ -631,27 +623,6 @@ enum Room {
     Scene,
     /// Nothing the wheel could scroll there (why).
     None(&'static str),
-}
-
-/// The memo's words (`Float(Memo)`'s text, floating or docked): a surface the wheel scrolls (its step: `memo::wheel`) —
-/// named apart from the floating frames, whose lines and air stay excused (`room`).
-fn memo_words(u: Under) -> bool {
-    u.surface == Surface::Float(crate::pane::GroupKind::Memo) && matches!(u.part, Part::Text { .. })
-}
-
-/// A wheel's surface as the walk names it (`SCROLLS`, `Walk.wheeled`): its `Debug` name, the memo's words `Memo`.
-fn wheel_name(u: Under) -> String {
-    if memo_words(u) {
-        return "Memo".into();
-    }
-    let surface = format!("{:?}", u.surface);
-    surface.split('(').next().unwrap_or_default().to_string()
-}
-
-/// The room under a wheel: the memo's words have text taller than their room (a scene of `SCROLLS`), the rest their
-/// surface's (`room`).
-fn room_at(u: Under) -> Room {
-    if memo_words(u) { Room::Scene } else { room(u.surface) }
 }
 
 /// Every surface's room for the wheel — by the compiler's count: a new surface is classed here before it builds, and
@@ -682,7 +653,6 @@ fn room(s: Surface) -> Room {
         S::Overlay => Room::None("news: the wheel goes to what's under it"),
         S::Ask => Room::None("the answer streaming in, its newest rows — its review shows it whole"),
         S::Edge => Room::None("a line between sizes: a handle"),
-        // (the memo's words are its text, a surface with a wheel: `room_at`)
         S::Float(_) => Room::None("a floating pane's frame and air: what's in it is a surface of its own"),
         S::Status => Room::None("one row, its cut words whole on their card"),
         S::SlotLine => Room::None("one line of names, its cut ones whole on their card"),
@@ -775,7 +745,6 @@ fn snap(ed: &mut Editor) -> Snap {
         Drag::Output(Slot::Task),
         Drag::Output(Slot::Procs),
         Drag::TerminalView,
-        Drag::Memo,
     ] {
         if let Some(d) = crate::mouse::text_doc(ed, on) {
             sel += &format!(" {on:?} {:?}", d.selection());
@@ -916,8 +885,6 @@ fn holds(ed: &Editor, u: Under) -> bool {
         Surface::Output(_) | Surface::List(_) | Surface::Plugin => {
             matches!(r, R::Output(_) | R::Slot(_) | R::List(_))
         }
-        // (the memo: its own keys — `Region::Memo`)
-        Surface::Float(crate::pane::GroupKind::Memo) => r == R::Memo,
         Surface::Floatlist(k) | Surface::Float(k) => {
             r == R::List(k) || matches!(r, R::Output(_) | R::Slot(_))
         }
@@ -959,8 +926,6 @@ fn keyed_lights(ed: &Editor) -> Option<Lights> {
         R::Side(_) | R::Rail => Some(Lights::Side),
         R::Chat | R::View(crate::view::Surface::Chat) => Some(Lights::Chat),
         R::List(k) if crate::floatlist::is_list(k) => Some(Lights::Dock(k)),
-        // (the memo docked: its leaf's line, lit by its keys — floating, its own frame's)
-        R::Memo if ed.memo_docked_shown() => Some(Lights::Dock(crate::pane::GroupKind::Memo)),
         R::Slot(_) | R::List(_) | R::Program | R::View(_) | R::Output(_) => {
             match ed.slot_in_hand().and(ed.workspace.viewer.hand) {
                 Some(k) if ed.docked_in_sight(k) || ed.floating_in_sight(k) => Some(Lights::Dock(k)),
@@ -1259,9 +1224,6 @@ fn before(ed: &Editor, u: Under, (x, y): (usize, usize)) -> Before {
     let chat = ed.workspace.claude.chat.as_ref();
     let empty = match u.surface {
         Surface::Input => chat.is_some_and(|c| c.input.is_empty()),
-        Surface::Float(crate::pane::GroupKind::Memo) => {
-            ed.workspace.memo.as_ref().is_some_and(|m| m.is_empty())
-        }
         Surface::Transcript => chat.is_some_and(|c| c.msgs.is_empty()),
         Surface::Prompt => ed.prompt.as_ref().is_some_and(|p| p.input.is_empty()),
         Surface::Picker if matches!(u.part, Part::Text { .. }) => {
@@ -1557,9 +1519,10 @@ fn wheel_at(
     let (a, b) = (did(&s1, &s2, Act::Wheel, wheel), did(&s2, &s3, Act::Wheel, wheel));
     if pressed.is_none_or(|u| u.surface == wheel.surface) && still1 && still2 && still3 {
         let what = [a.what, b.what].join("; ");
-        let surface = wheel_name(wheel);
+        let surface = format!("{:?}", wheel.surface);
+        let surface = surface.split('(').next().unwrap_or_default();
         let room = SCROLLS.iter().any(|s| s.0 == scene && s.1 == surface);
-        walk.wheeled.push((surface.clone(), room_at(wheel)));
+        walk.wheeled.push((surface.to_string(), self::room(wheel.surface)));
         if room {
             walk.scrolled.push(format!("{scene} · {surface}"));
         }

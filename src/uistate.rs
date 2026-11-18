@@ -128,8 +128,6 @@ pub enum Region {
     Move,
     /// The follow card with the keys (`Editor::follow_key`, #267): the window's sizes are its, `esc` gives them back.
     Follow,
-    /// The memo with the keys (`memo::key`): its mode's on its document.
-    Memo,
 }
 
 impl Region {
@@ -157,7 +155,6 @@ impl Region {
             Region::Page => "page".into(),
             Region::Move => "move".into(),
             Region::Follow => "follow".into(),
-            Region::Memo => "memo".into(),
         }
     }
 
@@ -189,7 +186,6 @@ impl Region {
             Region::Page => Handler::Page,
             Region::Move => Handler::Move,
             Region::Follow => Handler::Follow,
-            Region::Memo => Handler::Memo,
         }
     }
 }
@@ -240,7 +236,6 @@ pub enum Handler {
     Page,
     Move,
     Follow,
-    Memo,
     Code,
 }
 
@@ -518,24 +513,6 @@ impl Editor {
                 v.push(layer(Region::Output(r), Filter::All));
             }
         }
-        // `memo::key`: the memo with the keys — a prompt it opened (`/`) takes them all; with nothing under way in normal
-        // mode `C-w`, `space` and `:` go on (the editor's, as from every pane), in insert mode `C-w` only while it's empty
-        // (with text it deletes a word, as the chat's input); a sequence of the editor's under way, not its
-        if let Some(m) = self.workspace.memo.as_ref().filter(|_| self.memo_has_keys() && !pending) {
-            if self.prompt.is_some() {
-                if m.pane.prompt {
-                    v.push(layer(Region::Prompt, Filter::All));
-                }
-            } else if m.pane.keys.idle() {
-                let passed = crate::memo::passed(m.mode(), m.is_empty());
-                v.push(match passed.is_empty() {
-                    true => layer(Region::Memo, Filter::All),
-                    false => layer(Region::Memo, Filter::Except(passed)),
-                });
-            } else {
-                v.push(layer(Region::Memo, Filter::All));
-            }
-        }
         // `chat::key` (a line open over the chat has them all, it none)
         let chat = self
             .workspace
@@ -606,9 +583,6 @@ impl Editor {
             Region::Point => Takes::Label,
             Region::Picker | Region::Prompt | Region::Chat => Takes::Text,
             Region::Code if self.mode == Mode::Insert => Takes::Text,
-            Region::Memo if self.workspace.memo.as_ref().is_some_and(|m| m.mode() == Mode::Insert) => {
-                Takes::Text
-            }
             _ => Takes::Commands,
         }
     }
@@ -670,11 +644,10 @@ impl Editor {
         if let Some(o) = output {
             pending = o.keys.pending_keys();
         }
-        // (a prompt's line's own — `C-r` waiting for a register's name —, a picker's query's; the memo's)
+        // (a prompt's line's own — `C-r` waiting for a register's name —, a picker's query's)
         let line = match region {
             Region::Prompt => self.prompt.as_ref().map(|p| &p.input.pane.keys),
             Region::Picker => self.picker.as_ref().map(|p| &p.input.pane.keys),
-            Region::Memo => self.workspace.memo.as_ref().map(|m| &m.pane.keys),
             _ => None,
         };
         if let Some(k) = line.filter(|k| !k.idle()) {
@@ -725,11 +698,6 @@ impl Editor {
             Region::List(k) => crate::grouplist::drawn(self, k),
             Region::Move => s.floating.borrow().iter().any(|f| Some(f.0) == self.float_moving),
             Region::Follow => s.thought_card.get().is_some(),
-            Region::Memo => {
-                let memo =
-                    |f: &(crate::pane::GroupKind, crate::split::Rect)| f.0 == crate::pane::GroupKind::Memo;
-                s.floating.borrow().iter().any(memo) || s.docked.borrow().iter().any(memo)
-            }
             Region::Slot(Slot::Task) => s.task_panel.get().is_some(),
             Region::Slot(Slot::Procs) => s.procs_panel.get().is_some(),
             Region::Slot(Slot::Plugin) => s.plugin_panel.get().is_some(),
@@ -766,7 +734,6 @@ impl Editor {
             Region::Rail => "review".into(),
             Region::View(crate::view::Surface::Chat) => "chat".into(),
             Region::Output(r) => slot_name(r.slot()).into(),
-            Region::Memo if let Some(m) = self.workspace.memo.as_ref() => format!("pane#{}", m.id),
             other => other.name(),
         }
     }
@@ -1276,7 +1243,7 @@ impl Editor {
         use crate::pane::Shows;
         let floats_keys = matches!(l.here(), Here::Float(_));
         // (a session behind: its docked group in hand as it was left)
-        let mut at = l.at_pane(|k| !is_front || self.in_own_leaf(k)).filter(|_| !floats_keys);
+        let mut at = l.at_pane(|k| !is_front || self.out_of_slot(k)).filter(|_| !floats_keys);
         // (a group on screen: its members after its host, the host's keys its detail's)
         let mut ids = l.split.leaves();
         // (the floating groups' own panes after the tree's, bottom first — the front's)
@@ -1285,11 +1252,8 @@ impl Editor {
         }
         // (a docked or floating group's members name their host)
         let mut docked: Vec<(crate::split::PaneId, String)> = Vec::new();
-        // (the session list docked is the viewer's list, listed once below with the floating lists — not a member here;
-        // the memo docked is its leaf alone, as floating it's listed nowhere: its own pane no member)
-        let members = |g: &&crate::pane::Group| {
-            !crate::floatlist::is_list(g.kind) && g.kind != crate::pane::GroupKind::Memo
-        };
+        // (the session list docked is the viewer's list, listed once below with the floating lists — not a member here)
+        let members = |g: &&crate::pane::Group| !crate::floatlist::is_list(g.kind);
         for g in l
             .groups
             .iter()

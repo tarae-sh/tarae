@@ -567,15 +567,6 @@ impl Editor {
             let row = s.list(kind).filter(|l| (l.0..l.0 + l.1).contains(&y)).map(|l| l.2 + y - l.0);
             return at(S::Floatlist(kind), row.map_or(Part::Blank, Part::Row));
         }
-        // (the memo's text: its row from the first in sight, the cell in its text — a press puts the cursor there)
-        if floated == Some(GroupKind::Memo)
-            && let Some(r) = self.float_rect(GroupKind::Memo)
-            && y > r.y
-            && y + 1 < r.y + r.h
-        {
-            let col = x.saturating_sub(r.x + crate::memo::PAD);
-            return at(S::Float(GroupKind::Memo), Part::Text { line: y - r.y - 1, col });
-        }
         // The lines' borders and words
         let free = self.picker.is_none() && floated.is_none();
         // (a line's words before the line: the slot's line drags off its tabs and its keys, as off its tabs; the last
@@ -594,21 +585,6 @@ impl Editor {
             && let Some(b) = self.border_at(x, y)
         {
             return at(S::Edge, Part::Border(b));
-        }
-        // (the memo docked, past its edge's line — its border's, above: its text's rows its text, as floating; its top
-        // line and its foot the rest of it)
-        if free
-            && self.memo_docked_shown()
-            && let Some((_, r)) = self.dock_rect(GroupKind::Memo)
-            && (r.x + 1..r.x + r.w).contains(&x)
-            && (r.y..r.y + r.h).contains(&y)
-        {
-            let rows = crate::memo::memo_docked_rows(r.h);
-            if y > r.y && y <= r.y + rows {
-                let col = x.saturating_sub(r.x + 2);
-                return at(S::Float(GroupKind::Memo), Part::Text { line: y - r.y - 1, col });
-            }
-            return at(S::Float(GroupKind::Memo), Part::Blank);
         }
         let status = s.height == Some(y);
         if down
@@ -1039,7 +1015,6 @@ pub(crate) fn text_doc(ed: &mut Editor, on: Drag) -> Option<&mut crate::document
         Drag::Input => ed.workspace.claude.chat.as_mut().map(|c| c.input.pane.doc_mut()),
         Drag::Output(slot) => ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()),
         Drag::TerminalView => crate::view::terminal_doc_mut(ed),
-        Drag::Memo => ed.workspace.memo.as_mut().and_then(|m| m.pane.doc_in_mut()),
         Drag::Prompt | Drag::Picker | Drag::Review => None,
     }
 }
@@ -1197,7 +1172,7 @@ fn text_rows(ed: &Editor, on: Drag) -> Option<(usize, usize)> {
             let rows = s.review_text.borrow();
             Some((rows.first()?.0, rows.last()?.0 + 1))
         }
-        Drag::Input | Drag::Prompt | Drag::Picker | Drag::Memo => None,
+        Drag::Input | Drag::Prompt | Drag::Picker => None,
     }
 }
 
@@ -1290,7 +1265,7 @@ pub fn edge_tick(ed: &mut Editor) -> bool {
             let rows = r.kept.as_ref().map_or(0, |k| k.rows.len());
             (r.scroll, r.follow) = (r.scroll.saturating_add_signed(by).min(rows.saturating_sub(1)), false);
         }
-        Drag::Input | Drag::Prompt | Drag::Picker | Drag::Memo => return false,
+        Drag::Input | Drag::Prompt | Drag::Picker => return false,
     }
     // (at its end already: nothing more to scroll, no more ticks — a drag back there arms it again)
     if edge_top(ed, on) == was {
@@ -1448,8 +1423,6 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             A::Double => AS_ONE,
             A::Wheel => NO_SCROLL,
         },
-        // (the memo's text: as the code's — a press the cursor there, a double its word, a drag selects)
-        Su::Float(GroupKind::Memo) if text && matches!(act, A::Press | A::Double | A::Drag) => Acts,
         Su::Float(_) => match (part, act) {
             // (a key hint on its lines: its key, lit under the pointer — never a drag of the frame: piece B)
             (Part::Word(Word::Does(_)), A::Hover) => Acts,
@@ -1766,7 +1739,6 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ),
         ("A floating pane", "its frame", Su::Float(GroupKind::Tests), Part::Frame(Grip::Move(0, 0))),
         ("A floating pane", "inside", Su::Float(GroupKind::Tests), Part::Blank),
-        ("The memo", "its text", Su::Float(GroupKind::Memo), text),
         (
             "A floating pane",
             "a key hint on its lines",
@@ -1801,12 +1773,6 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
             "a word (`▲N waiting · C-q`, the chip, what Claude does now, `◂ new · space L`, the branch, `▲ N`, `full screen`)",
             Su::Status,
             Part::Word(Word::Now),
-        ),
-        (
-            "The status line",
-            "the memo's mark (`¶ memo`: the memo put away holding words) — a press brings it up, as `space M`",
-            Su::Status,
-            Part::Word(Word::Does(0)),
         ),
         (
             "The status line",

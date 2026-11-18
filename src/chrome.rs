@@ -146,8 +146,6 @@ pub enum Keys {
     /// A linked group's list in the slot (`grouplist.rs`) — named as its header names it: a preflight's steps
     /// `preflight`, not the task panel's word.
     List(crate::pane::GroupKind),
-    /// The memo (`memo.rs`) — the status line says its mode and name.
-    Memo,
 }
 
 impl Keys {
@@ -189,9 +187,7 @@ impl Keys {
                 crate::pane::GroupKind::Sessions => "SESSIONS",
                 crate::pane::GroupKind::Messages => "MESSAGES",
                 crate::pane::GroupKind::Folders => "FOLDERS",
-                crate::pane::GroupKind::Memo => "MEMO",
             },
-            Keys::Memo => "MEMO",
         })
     }
 
@@ -233,8 +229,6 @@ pub enum CursorIn {
     Prompt,
     /// A picker's query caret.
     Picker,
-    /// The memo's cursor (its mode's shape).
-    Memo,
 }
 
 impl Editor {
@@ -255,7 +249,6 @@ impl Editor {
             R::Program => CursorIn::Program,
             R::Prompt => CursorIn::Prompt,
             R::Picker => CursorIn::Picker,
-            R::Memo => CursorIn::Memo,
             _ => return None,
         })
     }
@@ -304,7 +297,6 @@ impl Editor {
             R::Point => Keys::Point,
             R::View(s) => Keys::View(s),
             R::Output(r) => Keys::Output(r),
-            R::Memo => Keys::Memo,
             R::Prompt if !self.screen.prompt_on_status.get() => Keys::Prompt,
             R::Code | R::Prompt | R::NextCard | R::Popup | R::Weave | R::NoteCard | R::Page => Keys::Code,
         }

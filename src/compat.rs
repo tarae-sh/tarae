@@ -1186,8 +1186,6 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ),
     ("src/editor.rs", "in fn with_root: layouts", NOT_RUNS),
     ("src/editor.rs", "in fn with_root: layouts_path", NOT_RUNS),
-    ("src/editor.rs", "in fn with_root: memos", NOT_RUNS),
-    ("src/editor.rs", "in fn with_root: memos_path", NOT_RUNS),
     ("src/editor.rs", "in fn with_root: sent_dir", NOT_RUNS),
     ("src/editor.rs", "in fn with_root: sizes", NOT_RUNS),
     ("src/editor.rs", "in fn with_root: sizes_path", NOT_RUNS),

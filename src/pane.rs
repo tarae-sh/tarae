@@ -32,8 +32,6 @@ pub enum Shows {
     /// A docked group's host (§3.1, `Place::Docked`): a leaf of the tree beside the code, the group's two members laid
     /// out in it as the slot lays them.
     Group(GroupKind),
-    /// The workspace's memo (`memo.rs`): its own pane, out of the tree, floating while it's up.
-    Memo,
 }
 
 impl Shows {
@@ -48,7 +46,6 @@ impl Shows {
             Shows::List(k) => format!("list:{}", k.name()),
             Shows::Detail(k) => format!("detail:{}", k.name()),
             Shows::Group(k) => format!("group:{}", k.name()),
-            Shows::Memo => "memo".into(),
         }
     }
 
@@ -84,17 +81,13 @@ pub enum GroupKind {
     Messages,
     /// `:folders` (`folders.rs`): the front workspace's added folders, a floating list alone as `:messages`.
     Folders,
-    /// The workspace's memo (`memo.rs`): a document of yours, floating while you use it — a member of `Workspace.groups`
-    /// only while it's docked and up, for its placement alone (`Editor::memo_dock_sync`, as the session list's), never a
-    /// run panel; its kind names it in the float code (its frame, `C-w m`, its sizes) and where it's drawn.
-    Memo,
 }
 
 /// How many kinds dock (`GroupKind::dock_index`).
-pub const DOCKABLE: usize = 6;
+pub const DOCKABLE: usize = 5;
 
 impl GroupKind {
-    pub const ALL: [GroupKind; 10] = [
+    pub const ALL: [GroupKind; 9] = [
         GroupKind::Tests,
         GroupKind::Task,
         GroupKind::Preflight,
@@ -104,7 +97,6 @@ impl GroupKind {
         GroupKind::Sessions,
         GroupKind::Messages,
         GroupKind::Folders,
-        GroupKind::Memo,
     ];
 
     /// Its name in the state (`list:tests`, `keys.region`) and the restart's file (`groups: [{kind}]`).
@@ -119,7 +111,6 @@ impl GroupKind {
             GroupKind::Sessions => "sessions",
             GroupKind::Messages => "messages",
             GroupKind::Folders => "folders",
-            GroupKind::Memo => "memo",
         }
     }
 
@@ -135,8 +126,8 @@ impl GroupKind {
 
     /// It can leave the slot and dock beside the code (§3.1): the slot's groups. The git tab and the review's rail
     /// are the left column's (§3.7: how you move, not what you look at) — their detail is the code itself.
-    /// The session list docks too (P3 step 7d: the manager's overview kept in sight), and the memo (its step (c): beside
-    /// the code, to be read while you work); `:messages` and `:folders` only float.
+    /// The session list docks too (P3 step 7d: the manager's overview kept in sight); `:messages` and `:folders` only
+    /// float.
     pub fn dockable(self) -> bool {
         !self.detail_is_code() && !matches!(self, GroupKind::Messages | GroupKind::Folders)
     }
@@ -153,7 +144,6 @@ impl GroupKind {
             | GroupKind::Messages
             | GroupKind::Folders => 3,
             GroupKind::Sessions => 4,
-            GroupKind::Memo => 5,
         }
     }
 }
@@ -432,7 +422,7 @@ impl Group {
     /// code.
     pub fn new(kind: GroupKind, host: PaneId, first: PaneId) -> Self {
         let detail = match kind {
-            GroupKind::Sessions | GroupKind::Messages | GroupKind::Folders | GroupKind::Memo => Detail::None,
+            GroupKind::Sessions | GroupKind::Messages | GroupKind::Folders => Detail::None,
             k if k.detail_is_code() => Detail::Code,
             _ => Detail::Pane(first + 1),
         };
@@ -451,11 +441,7 @@ impl Group {
 
     /// The ids it takes from `first` (`new`).
     pub fn ids(kind: GroupKind) -> u64 {
-        if kind.detail_is_code() || crate::floatlist::is_list(kind) || kind == GroupKind::Memo {
-            1
-        } else {
-            2
-        }
+        if kind.detail_is_code() || crate::floatlist::is_list(kind) { 1 } else { 2 }
     }
 
     /// Its detail's pane, when it has one of its own.
@@ -567,8 +553,7 @@ impl crate::editor::Editor {
             out.push(Floating::Card(o.id));
         }
         let viewing = crate::view::viewing(self).is_some_and(|(_, k)| !k.pending.is_empty());
-        let output = crate::rundoc::keyed(self).is_some_and(|(_, o)| !o.keys.pending.is_empty())
-            || crate::memo::under_way(self).is_some();
+        let output = crate::rundoc::keyed(self).is_some_and(|(_, o)| !o.keys.pending.is_empty());
         if (!self.pending.is_empty() || output || viewing) && self.picker.is_none() {
             out.push(Floating::WhichKey);
         }
