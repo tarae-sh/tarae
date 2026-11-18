@@ -184,7 +184,8 @@ impl Editor {
         let viewing = self.workspace.viewer.view.as_ref().is_some_and(|v| v.prompt)
             || crate::floatlist::searching(self)
             || crate::chatdoc::transcript(self).is_some_and(|t| t.keyed && t.pane.prompt)
-            || crate::rundoc::keyed(self).is_some_and(|(_, o)| o.prompt);
+            || crate::rundoc::keyed(self).is_some_and(|(_, o)| o.prompt)
+            || self.workspace.memo.as_ref().is_some_and(|m| m.pane.prompt && self.memo_has_keys());
         self.prompt.as_ref().filter(|p| !viewing && matches!(p.kind, PromptKind::Search { .. }))
     }
 

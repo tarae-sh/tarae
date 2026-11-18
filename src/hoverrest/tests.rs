@@ -24,7 +24,8 @@ struct Scene {
 }
 
 /// Every place code is drawn (a pane's id stands for any pane's).
-const EVERY: [CodeIn; 4] = [CodeIn::Pane(0), CodeIn::EditReview, CodeIn::Preview, CodeIn::Output];
+const EVERY: [CodeIn; 5] =
+    [CodeIn::Pane(0), CodeIn::EditReview, CodeIn::Preview, CodeIn::Output, CodeIn::Memo];
 
 /// The scenes of the views drawn at `at` — a new place won't compile until it has its own.
 fn scenes(at: CodeIn) -> Vec<Scene> {
@@ -33,6 +34,7 @@ fn scenes(at: CodeIn) -> Vec<Scene> {
         CodeIn::EditReview => vec![edit_review()],
         CodeIn::Preview => vec![preview()],
         CodeIn::Output => vec![output()],
+        CodeIn::Memo => vec![memo()],
     }
 }
 
@@ -239,6 +241,15 @@ fn keys(s: &mut Scene, at: CodeIn, view: &View) {
             assert!(!asked, "{name}: space k asked at a cursor not in sight");
             assert!(ed.status.is_some(), "{name}: space k said nothing");
         }
+        // (the memo's insert mode: typed, never asked)
+        CodeIn::Memo => {
+            assert_eq!(ed.keys_to().region, crate::uistate::Region::Memo, "{name}: the memo's keys");
+            feed(ed, " k");
+            let asked = ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::Hover));
+            assert!(!asked, "{name}: space k asked");
+            let text = ed.workspace.memo.as_ref().map(crate::memo::Memo::text).unwrap_or_default();
+            assert!(text.ends_with(" k"), "{name}: typed — {text:?}");
+        }
         CodeIn::Preview => {
             assert_eq!(ed.keys_to().region, crate::uistate::Region::Picker, "{name}: the picker's keys");
             feed(ed, " k");
@@ -380,4 +391,11 @@ fn output() -> Scene {
     frame(&mut ed);
     feed(&mut ed, "<C-w>j");
     Scene { name: "a run's output", ed, _dir, rests: &[], silent: &[] }
+}
+
+/// The memo, its keys: your words, never a file's code.
+fn memo() -> Scene {
+    let (mut ed, _dir) = open("rest-memo", &[("a.txt", "fn code_word() {}\n")]);
+    feed(&mut ed, " Mmemo_word here");
+    Scene { name: "the memo", ed, _dir, rests: &[], silent: &[] }
 }

@@ -331,6 +331,10 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             editor.messages_open(None);
             Ok(())
         }
+        "memo" => {
+            editor.memo_toggle();
+            Ok(())
+        }
         "inbox" => {
             editor.inbox_open();
             Ok(())

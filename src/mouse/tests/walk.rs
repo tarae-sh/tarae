@@ -745,6 +745,7 @@ fn snap(ed: &mut Editor) -> Snap {
         Drag::Output(Slot::Task),
         Drag::Output(Slot::Procs),
         Drag::TerminalView,
+        Drag::Memo,
     ] {
         if let Some(d) = crate::mouse::text_doc(ed, on) {
             sel += &format!(" {on:?} {:?}", d.selection());
@@ -885,6 +886,8 @@ fn holds(ed: &Editor, u: Under) -> bool {
         Surface::Output(_) | Surface::List(_) | Surface::Plugin => {
             matches!(r, R::Output(_) | R::Slot(_) | R::List(_))
         }
+        // (the memo: its own keys — `Region::Memo`)
+        Surface::Float(crate::pane::GroupKind::Memo) => r == R::Memo,
         Surface::Floatlist(k) | Surface::Float(k) => {
             r == R::List(k) || matches!(r, R::Output(_) | R::Slot(_))
         }
@@ -1224,6 +1227,9 @@ fn before(ed: &Editor, u: Under, (x, y): (usize, usize)) -> Before {
     let chat = ed.workspace.claude.chat.as_ref();
     let empty = match u.surface {
         Surface::Input => chat.is_some_and(|c| c.input.is_empty()),
+        Surface::Float(crate::pane::GroupKind::Memo) => {
+            ed.workspace.memo.as_ref().is_some_and(|m| m.is_empty())
+        }
         Surface::Transcript => chat.is_some_and(|c| c.msgs.is_empty()),
         Surface::Prompt => ed.prompt.as_ref().is_some_and(|p| p.input.is_empty()),
         Surface::Picker if matches!(u.part, Part::Text { .. }) => {

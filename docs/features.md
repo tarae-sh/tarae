@@ -399,7 +399,15 @@ configs carry over as they are.
   `C-w < > - +` size it, `C-w =` puts it back in the middle, the mouse drags its top line and sizes it by its edges; the
   one with the keys on top; `C-w e` has that one meaning — from the chat it floats the conversation over the code and
   docks it back (the reader: [Chat panel](claude-integration.md#chat-panel)); where nothing in hand floats it says so
-  (the side panel has its own keys, `space e`, `space g`…) · `C-w t` turn the code's
+  (the side panel has its own keys, `space e`, `space g`…) · **the memo**, a floating pane of your own: `space M` (or
+  `:memo`) brings it up with the keys, typing at the end of its words — tarae's own editing in it (`esc` normal mode,
+  undo, `/` and `n` its own search, the mouse's selection; `:` is the editor's, so `:w` writes the code's file; while
+  you type `C-w` deletes a word, as in the chat's input, and is the window prefix only in an empty memo); leaving it
+  (`space M` again or `C-w w` from its normal mode, a press on the code) puts it away, not drawn, so nothing floats over the code you work
+  in; first as wide as a line of 40 characters (its measure, the cursor after it) and as tall as its lines, up to half the screen, centred with its top at 1/4, then moved and
+  sized as every floating pane; one a workspace, its words yours alone — it saves itself to tarae's state folder
+  (`memos.json`, never the project nor any agent's context) as you leave it, as auto-save saves and as tarae ends ·
+  `C-w t` turn the code's
   split (side by side ↔ stacked) — from a group, its members (side by side ↔ over and under) · `C-w q` close — the window, or the panel that has the keys (side panel, the
   review's rail, `:procs`, a test, task or terminal panel, as its own `q` does; the chat hides with `space L`, its
   conversation going on, and ends only by `:chat-close`, so a slip can't cut Claude's turn off) · `C-w o` only this one (`space w` works too); `:vsplit file`, `:hsplit file`.

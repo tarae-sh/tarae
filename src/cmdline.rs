@@ -115,6 +115,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["log-open"], Arg::None, "Open tarae's log (language servers, errors)"),
     c(&["procs"], Arg::None, "What tarae runs and what it costs"),
     c(&["messages"], Arg::None, "The messages since tarae started"),
+    c(&["memo"], Arg::None, "The memo: bring it up, or put it away"),
     c(&["inbox"], Arg::None, "What waits for your answer, every session's, oldest first"),
     c(&["usage"], Arg::None, "What Claude's turns cost here and today, and its cache"),
     c(&["features"], Arg::None, "Which features you use, and which never (features.count)"),

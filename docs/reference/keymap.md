@@ -285,6 +285,7 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `space l` | `chat_open` | Chat with Claude |
 | `space L` | `chat_toggle` | Show or hide chat |
 | `space m` | … | More keys — see `space m` below |
+| `space M` | `memo` | Memo: bring up / put away |
 | `space n` | `note_here` | Ask Claude here, or comment |
 | `space N` | `note_picker` | Notes and flags |
 | `space o` | `outline` | Outline panel: show / hide |
@@ -627,6 +628,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:log-open` |  | Open tarae's log (language servers, errors) |
 | `:procs` |  | What tarae runs and what it costs |
 | `:messages` |  | The messages since tarae started |
+| `:memo` |  | The memo: bring it up, or put it away |
 | `:inbox` |  | What waits for your answer, every session's, oldest first |
 | `:usage` |  | What Claude's turns cost here and today, and its cache |
 | `:features` |  | Which features you use, and which never (features.count) |

@@ -34,6 +34,7 @@ impl Editor {
             GroupKind::Sessions => self.sessions_pane.is_some(),
             GroupKind::Messages => self.messages_pane.is_some(),
             GroupKind::Folders => self.folders_pane.is_some(),
+            GroupKind::Memo => self.memo_up(),
             GroupKind::Git | GroupKind::Review => false,
         }
     }

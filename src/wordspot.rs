@@ -344,6 +344,9 @@ const BUTTONS: &[&str] = &[
     "C-w j",
     "C-w z",
     "C-w =",
+    // (the memo's bottom line: to the code, put away — `memo::hints`)
+    "C-w w",
+    "space M",
     // (the floating chat's bottom line: docked back, the keys staying in it — and the ask line's: grown into the reader)
     "C-w e",
     "pageup",

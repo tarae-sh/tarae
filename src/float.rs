@@ -40,6 +40,9 @@ impl Editor {
     /// layout choice that doesn't fit), so the keys never go to a list nobody sees; without them it draws nothing
     /// (`list_unshown`, #414).
     pub fn floating_in_sight(&self, kind: GroupKind) -> bool {
+        if kind == GroupKind::Memo {
+            return self.memo_up();
+        }
         if crate::floatlist::is_list(kind) {
             return self.float_list(kind).is_some()
                 && !self.docked_in_sight(kind)
@@ -98,6 +101,10 @@ impl Editor {
     /// said. One meaning (user, 2026-10-23): where nothing in hand can float — the code, the chat, the side panel —
     /// it says so (the side panel's keys are its own, `space e`, `space g`…).
     pub fn float_key(&mut self) {
+        // (the memo floats while you're in it; docking it is a later step — main's `.sb/memo-plan.md` (c))
+        if self.memo_has_keys() {
+            return self.set_status("the memo floats while you type in it — space M puts it away");
+        }
         // (the conversation is the docked column — the user, 2026-11-03: no floating reader; `space l` asks in one line)
         if self.workspace.is_at(crate::workspace::Here::Chat) && self.workspace.claude.chat.is_some() {
             return self.set_status("the chat docks beside the code — space l asks in one line");
@@ -184,6 +191,7 @@ impl Editor {
     pub fn float_rect(&self, kind: GroupKind) -> Option<Rect> {
         let (w, h) = self.float_screen();
         match kind {
+            GroupKind::Memo => self.memo_rect(),
             k if crate::floatlist::is_list(k) => self.float_list_rect(k, w, h),
             _ => Some(self.workspace.group(kind)?.place.frame()?.rect(w, h)),
         }
@@ -191,6 +199,9 @@ impl Editor {
 
     /// Kind `kind`'s floating frame set to the cells `r` — onto the screen, at least its least size (`Frame::rect`).
     pub(crate) fn float_set(&mut self, kind: GroupKind, r: Rect) {
+        if kind == GroupKind::Memo {
+            return self.memo_set(r);
+        }
         let (w, h) = self.float_screen();
         let f = Frame::of_rect(r, w, h);
         // (a floating list's is the viewer's, kept with the sizes — as tall as its rows still unless its height
@@ -216,6 +227,7 @@ impl Editor {
     /// detail.
     pub fn float_focus(&mut self, kind: GroupKind) {
         match kind {
+            GroupKind::Memo => self.memo_bring(),
             k if crate::floatlist::is_list(k) => self.float_list_focus(k),
             k if crate::grouplist::listed(self, k) => self.list_focus(k),
             k => self.detail_focus(k),
@@ -224,6 +236,9 @@ impl Editor {
 
     /// The floating group the keys are in, if they're in one.
     pub fn float_in_hand(&self) -> Option<GroupKind> {
+        if self.memo_has_keys() {
+            return Some(GroupKind::Memo);
+        }
         if let Some(k) = self.float_list_in_hand() {
             return Some(k);
         }
@@ -362,6 +377,7 @@ impl Editor {
     pub fn float_auto(&mut self) -> bool {
         let Some(kind) = self.float_in_hand() else { return false };
         match kind {
+            GroupKind::Memo => self.memo_auto(),
             k if crate::floatlist::is_list(k) => self.float_list_frame_set(k, None),
             _ => {
                 if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind) {

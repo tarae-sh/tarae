@@ -748,12 +748,17 @@ impl Editor {
             self.lsp_look_roots();
         } else if self.config.auto_save != "off" {
             self.auto_save("");
+            // (the memo's words too, as a buffer's — its own file, never asked)
+            self.memo_keep();
         }
     }
 
     /// When input stops (idle mode) — called on every event.
     pub fn auto_save_idle(&mut self) {
-        if self.config.auto_save != "idle" || !self.docs.iter().any(|d| d.is_modified() && d.path.is_some()) {
+        let memo = self.memo_unkept();
+        if self.config.auto_save != "idle"
+            || !memo && !self.docs.iter().any(|d| d.is_modified() && d.path.is_some())
+        {
             return;
         }
         self.idle_save_gen += 1;
@@ -763,6 +768,7 @@ impl Editor {
             move |ed: &mut Editor| {
                 if ed.idle_save_gen == generation {
                     ed.auto_save(" (idle)");
+                    ed.memo_keep();
                 }
             }
         });

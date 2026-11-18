@@ -720,6 +720,35 @@ impl Shows {
         }
     }
 
+    /// The memo (`memo.rs`): plain text on its frame's ground, wrapped at its width — its selections, search matches and
+    /// cursors where it has the keys (in normal mode its primary painted, as the code's block; in insert mode the
+    /// terminal's bar is its cursor); no numbers, signs, guides, hints or blame.
+    pub fn memo(keys: bool, insert: bool) -> Shows {
+        Shows {
+            focused: true,
+            cursor: true,
+            editing: insert,
+            left: 0,
+            changes: Changes::Index,
+            numbers: LineNumber::Absolute,
+            primary: keys && !insert,
+            cursors: keys,
+            search: keys,
+            cursorline: None,
+            messages: false,
+            inlay: false,
+            guides: false,
+            blame: false,
+            claude: None,
+            caret: true,
+            presence: Vec::new(),
+            map: Vec::new(),
+            words: Vec::new(),
+            at: CodeIn::Memo,
+            marked: Vec::new(),
+        }
+    }
+
     /// A picker's code preview: the file as the editor shows it — diagnostics, their line-end messages, signs,
     /// indent guides, its change marks as the index's are drawn (never removed lines as rows: the preview is
     /// laid out by lines from where the item opens). Kept apart from a pane: absolute numbers and no selection
@@ -774,6 +803,8 @@ pub enum CodeIn {
     Preview,
     /// A run panel's output.
     Output,
+    /// The memo (`memo.rs`).
+    Memo,
 }
 
 /// A row a code view drew that is its document's own text there (`Row::Text`): its line, the display column at its

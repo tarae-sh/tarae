@@ -85,6 +85,8 @@ pub enum Here {
     Side,
     /// The code review's rail.
     Rail,
+    /// The memo (`memo.rs`), up over the panes.
+    Memo,
 }
 
 use crate::session::COLOURS;
@@ -161,6 +163,8 @@ pub struct Workspace {
     pub terminal_run: u64,
     /// The run panels' output as documents (`rundoc.rs`): the task panel's and the tests' — following their runs.
     pub outputs: crate::rundoc::Outputs,
+    /// Its memo (`memo.rs`), once it has been up — one a workspace; its words kept in tarae's state folder.
+    pub memo: Option<crate::memo::Memo>,
     /// A terminal is being started (on a worker) · what it printed and its exit code, if they came before
     /// it was in place.
     pub terminal_starting: bool,
@@ -481,6 +485,7 @@ impl Workspace {
             reviewer: None,
             terminal: None,
             outputs: Default::default(),
+            memo: None,
             terminal_run: 0,
             terminal_starting: false,
             terminal_early: Default::default(),
@@ -572,6 +577,7 @@ impl Workspace {
                 Some(Shows::Chat) => Here::Chat,
                 Some(Shows::Side) => Here::Side,
                 Some(Shows::Rail) => Here::Rail,
+                Some(Shows::Memo) => Here::Memo,
                 Some(Shows::List(_)) => Here::List(id),
                 Some(Shows::Slot | Shows::Detail(_) | Shows::Group(_)) => Here::Slot,
             },
@@ -593,6 +599,7 @@ impl Workspace {
             Here::Side => leaf(Shows::Side),
             Here::Rail => leaf(Shows::Rail),
             Here::Slot => leaf(Shows::Slot),
+            Here::Memo => leaf(Shows::Memo),
         }
     }
 
@@ -753,6 +760,7 @@ impl Workspace {
             Here::Program | Here::Slot | Here::Plugin => Shows::Slot,
             Here::Side => Shows::Side,
             Here::Rail => Shows::Rail,
+            Here::Memo => Shows::Memo,
         })
     }
 
@@ -1696,6 +1704,10 @@ impl Editor {
         // kept)
         crate::view::leave(self);
         crate::chatdoc::leave(self);
+        // (the memo put away as its workspace goes behind — its words kept now: quit and `:restart` keep the front's only)
+        if self.memo_up() {
+            self.memo_away();
+        }
         // (a card focused here lets go: in the other session nothing has the keys until something focuses it there —
         // `C-q` focuses the card it switched for, after this)
         (self.card_focus, self.card_next) = (None, None);

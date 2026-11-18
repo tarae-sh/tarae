@@ -25,7 +25,8 @@ impl GroupKind {
             | GroupKind::Review
             | GroupKind::Sessions
             | GroupKind::Messages
-            | GroupKind::Folders => None,
+            | GroupKind::Folders
+            | GroupKind::Memo => None,
         }
     }
 
@@ -41,6 +42,7 @@ impl GroupKind {
             GroupKind::Sessions => "the session list",
             GroupKind::Messages => "the messages",
             GroupKind::Folders => "the folders",
+            GroupKind::Memo => "the memo",
         }
     }
 }

@@ -388,6 +388,20 @@ pub(crate) const SCENES: &[Scene] = &[
         ed.messages_open(None);
     }),
     ("hover text", |ed| ed.popup = Some(Vec::new())),
+    // (the memo, `memo.rs`: its insert mode — with text `C-w` deletes a word, the rest typed or `[insert]`'s; a space or
+    // a tab at its end is there, not in sight, as a draft's)
+    ("the memo, typing its draft", |ed| {
+        feed(ed, &[" ", "M", "o", "n", "e", "<ret>", "t", "w", "o", "<left>"])
+    }),
+    // (…empty, typing: `C-w` goes on as the window prefix, as from the chat's empty input)
+    ("the memo, typing into it empty", |ed| feed(ed, &[" ", "M"])),
+    // (…its normal mode: `space`, `:` and `C-w` go on, the rest its document's — on its first line, as the code's scene)
+    ("the memo, normal mode", |ed| {
+        feed(ed, &[" ", "M", "o", "n", "e", "<ret>", "t", "w", "o", "<esc>", "g", "g"])
+    }),
+    ("the memo, a prompt opened over it (its own `/`)", |ed| {
+        feed(ed, &[" ", "M", "o", "n", "e", "<esc>", "/"])
+    }),
     // (bgreview: the reviewer reads in the background, no review open — its segment on the status line takes no key)
     ("the reviewer reading, no review open", |ed| {
         let rv = crate::reviewer::Reviewer::for_test(
@@ -1328,6 +1342,8 @@ fn no_key_is_refused_in_silence() {
             "the note's card",
             // (`space i`'s line, the command line's keys: `C-d` at its end has nothing ahead to delete)
             "change card",
+            // (an empty memo's: nothing ahead to delete)
+            "typing into it empty",
         ]
         .iter()
         .any(|p| name.contains(p)),

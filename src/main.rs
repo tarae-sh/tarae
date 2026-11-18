@@ -135,6 +135,7 @@ mod mcp;
 mod relay;
 mod ssh;
 use tarae_web::media;
+mod memo;
 mod messages;
 mod models;
 mod motion;

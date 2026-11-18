@@ -77,6 +77,8 @@ pub struct Sizes {
     pub messages: Option<crate::pane::Frame>,
     /// `:folders`' frame, as the session list's.
     pub folders: Option<crate::pane::Frame>,
+    /// The memo's frame (`memo.rs`) — where you put it and how big (None: 40 cells, as tall as its text, centred).
+    pub memo: Option<crate::pane::Frame>,
     /// The side the session list is docked on (P3 step 7d, `C-w H/K/L`; `C-w e` floats it again) — the viewer's place
     /// for it, kept while it closes and opens and across `:restart`: the session in front holds its leaf
     /// (`list_dock_sync`). None: it floats.
@@ -128,6 +130,7 @@ impl Sizes {
             sessions,
             messages,
             folders: crate::pane::Frame::of_json(&v["folders"]),
+            memo: crate::pane::Frame::of_json(&v["memo"]),
             sessions_dock: v["sessions_dock"].as_str().and_then(crate::pane::Side::of_name),
             follow_w: n(&v["follow"]["w"]),
             follow_h: n(&v["follow"]["h"]),
@@ -143,9 +146,10 @@ impl Sizes {
             (self.sessions.map(crate::pane::Frame::json), self.messages.map(crate::pane::Frame::json));
         let dock = self.sessions_dock.map(crate::pane::Side::name);
         let folders = self.folders.map(crate::pane::Frame::json);
+        let memo = self.memo.map(crate::pane::Frame::json);
         let follow = json!({ "w": self.follow_w, "h": self.follow_h });
         json!({ "docked": docked, "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock,
-                "follow": follow })
+                "follow": follow, "memo": memo })
         .to_string()
     }
 }
@@ -1195,6 +1199,7 @@ impl crate::editor::Editor {
             sessions: s.sessions,
             messages: s.messages,
             folders: s.folders,
+            memo: s.memo,
             sessions_dock: s.sessions_dock,
             ..Sizes::default()
         };
@@ -1373,6 +1378,7 @@ impl crate::editor::Editor {
             Here::Plugin => self.plugins.as_ref().is_some_and(|p| p.panel.is_some()),
             Here::Side => s.viewer.sidebar.is_some(),
             Here::Rail => s.code_review.is_some(),
+            Here::Memo => s.memo.as_ref().is_some_and(|m| m.up),
         };
         if !there {
             self.workspace.leave(self.workspace.docked());
@@ -1385,6 +1391,8 @@ impl crate::editor::Editor {
         if let Some(c) = self.workspace.claude.chat.as_mut().filter(|c| c.asking && away) {
             c.hidden = true;
         }
+        // (the memo once the keys left it: put away, its words kept)
+        self.memo_sync();
         // (`C-w m` ends with its pane, or once the keys leave it — a hop, a click elsewhere)
         self.float_move_sync();
         self.groups_front();
@@ -1639,6 +1647,7 @@ mod tests {
             sessions: None,
             messages: None,
             folders: None,
+            memo: None,
             sessions_dock: Some(crate::pane::Side::Right),
             follow_w: Some(60),
             follow_h: None,

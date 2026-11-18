@@ -32,12 +32,20 @@ pub enum Which {
     Prompt,
     /// A picker's query (`Picker.input`) — a line as the prompt's is.
     Picker,
+    /// The workspace's memo (`Workspace.memo`, `memo.rs`) — the third shape: a document of yours, its edits, undo
+    /// history and mode kept as the code's are.
+    Memo,
 }
 
 impl Which {
     /// An input: its edits stay, its insert mode too (`swap`).
     pub fn takes_typing(self) -> bool {
         matches!(self, Which::Input | Which::Prompt | Which::Picker)
+    }
+
+    /// Its edits stay (an input's, the memo's) — the rest are read-only, an edit put back.
+    pub fn keeps_edits(self) -> bool {
+        self.takes_typing() || self == Which::Memo
     }
 }
 
@@ -275,6 +283,7 @@ pub fn pane_mut(ed: &mut Editor, which: Which) -> Option<&mut Pane> {
         Which::Input => ed.workspace.claude.chat.as_mut().map(|c| &mut c.input.pane),
         Which::Prompt => ed.prompt.as_mut().map(|p| &mut p.input.pane),
         Which::Picker => ed.picker.as_mut().map(|p| &mut p.input.pane),
+        Which::Memo => ed.workspace.memo.as_mut().map(|m| &mut m.pane),
     }
 }
 
@@ -328,8 +337,9 @@ impl Swapped {
 /// Runs `f` with `which`'s document as `current`, its mode, keys under way and `size` (rows, columns) as the
 /// editor's — all put back before it returns. What it did to the text is put back too, and insert mode ends there
 /// (the caller says so); a command that took the code to another buffer gives the code the keys (the code's jumps
-/// are its own then). An input takes typing: its edits stay, its insert mode too. Inside another's swap (the prompt's
-/// line while a pane's `/` is up) the outer one is swapped back as it was.
+/// are its own then). An input takes typing: its edits stay, its insert mode too. The memo keeps its edits, its undo
+/// history and the mode its key left. Inside another's swap (the prompt's line while a pane's `/` is up) the outer one
+/// is swapped back as it was.
 pub fn swap<R>(
     ed: &mut Editor,
     which: Which,
@@ -351,6 +361,7 @@ pub fn swap<R>(
     let jumps = ed.workspace.views.iter().find(|w| w.id == focus).map(|w| w.jumps.clone());
     let prompt = ed.prompt.is_some();
     let input = which.takes_typing();
+    let keeps = which.keeps_edits();
     let r = f(ed);
     ed.viewport = viewport;
     ed.workspace.viewer.swapped = outer;
@@ -366,12 +377,12 @@ pub fn swap<R>(
         w.jumps = jumps;
     }
     trade(ed, &mut keys);
-    // Read-only: an edit put back, insert mode left (the input: insert mode whatever its key did)
-    let edited = !input && doc.version() != version;
+    // Read-only: an edit put back, insert mode left (the input: insert mode whatever its key did; the memo: as it is)
+    let edited = !keeps && doc.version() != version;
     if edited {
         doc.put_back(before);
     }
-    let typing = !input && keys.mode == Mode::Insert;
+    let typing = !keeps && keys.mode == Mode::Insert;
     if typing {
         keys.mode = Mode::Normal;
         ed.insert_rec = None;

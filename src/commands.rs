@@ -254,6 +254,7 @@ commands! {
         task_picker => "Pick a task to run",
         task_close => "Stop the task, close its panel",
         task_sandbox => "What the sandbox blocked",
+        memo => "Memo: bring up / put away",
         hsplit => "Split the window top / bottom",
         rotate_view => "Next window",
         swap_view_left => "Move the pane left",
@@ -2202,6 +2203,10 @@ fn task_again(cx: &mut Context) {
 
 fn task_picker(cx: &mut Context) {
     cx.editor.task_picker();
+}
+
+fn memo(cx: &mut Context) {
+    cx.editor.memo_toggle();
 }
 
 fn task_close(cx: &mut Context) {
