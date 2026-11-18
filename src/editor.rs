@@ -12900,13 +12900,13 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("run-partial");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let made = dir.join("made");
-        let why = "this kernel's Landlock (ABI 2) can't control truncating files";
+        let why = "this kernel's Landlock, ABI 2, can't control truncating files";
         let start = || {
             std::fs::remove_file(&made).ok();
             std::fs::remove_file(dir.join("stdin.log")).ok();
             let mut ed = editor("");
             ed.workspace.root = dir.clone();
-            ed.sandbox = crate::sandbox::linux::availability(Ok(2), true);
+            ed.sandbox = crate::sandbox::linux::availability(Ok(2), true, Some((6, 1)));
             ed.config.llm.run_allow = vec!["touch".into()];
             let command = format!("touch {}", made.display());
             let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
@@ -12948,14 +12948,14 @@ mod tests {
         let dir = std::fs::canonicalize(&dir).unwrap();
         let made = dir.join("made");
         let mut ed = editor("");
-        ed.sandbox = crate::sandbox::linux::availability(Ok(1), true);
+        ed.sandbox = crate::sandbox::linux::availability(Ok(1), true, Some((6, 1)));
         ed.config.llm.run_allow = vec!["touch".into()];
         let log =
             claude_calls(&mut ed, &dir, "run", &json!({ "command": format!("touch {}", made.display()) }));
         feed(&mut ed, "<space>ltouch it<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let o = &ed.offers[0];
-        let why = "this kernel's Landlock (ABI 1) refuses every move across folders, so tarae doesn't use it";
+        let why = "this kernel's Landlock, ABI 1, refuses every move across folders, so tarae doesn't use it";
         assert!(matches!(o.what, crate::offer::What::NoSandbox { .. }), "{}", o.title);
         assert!(o.question.contains(why), "{}", o.question);
         ed.offer_accept();
@@ -12964,6 +12964,33 @@ mod tests {
         let answer = tool_answer(&log);
         assert!(answer.contains(&format!("Ran without a sandbox ({why})")), "{answer}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #644: a kernel built without Landlock — the first command's card says so by what the kernel is,
+    /// and `n` runs nothing. On any system: the availability stood in. With `TARAE_FRAMES_DIR` set, its frames at
+    /// 80×34 in both themes (`no-landlock-80-meok.bin` …; `cargo xtask shot` draws them: `TARAE_SHOT_REPLAY`).
+    #[test]
+    fn a_kernel_built_without_landlock_says_so_on_the_first_commands_card() {
+        use serde_json::json;
+        let scratch = crate::scratch::Scratch::new("run-no-landlock");
+        let dir = std::fs::canonicalize(&scratch).unwrap();
+        let made = dir.join("made");
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        ed.sandbox = crate::sandbox::Availability::Missing(crate::sandbox::LANDLOCK_NOT_BUILT.into());
+        ed.config.llm.run_allow = vec!["touch".into()];
+        // (in the project, by its name: the card's command short, as a person's would be)
+        let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": "touch made" }));
+        feed(&mut ed, "<space>ltouch it<ret>");
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
+        let o = &ed.offers[0];
+        assert!(matches!(o.what, crate::offer::What::NoSandbox { .. }), "{}", o.title);
+        let why = "this kernel was built without CONFIG_SECURITY_LANDLOCK";
+        assert!(o.question.contains(why), "{}", o.question);
+        crate::screen::frames_sized(&mut ed, "no-landlock", &[(80, 34)]);
+        ed.offer_dismiss();
+        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
+        assert!(!made.exists(), "ran: {}", tool_answer(&log));
     }
 
     /// Linux, tarae serving this machine's ports: a Gradle run of Claude's goes in the sandbox like any other

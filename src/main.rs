@@ -408,6 +408,8 @@ fn main() -> Result<()> {
     // tarae's binary pinned for the shim — said once the log is. A subcommand that ends at once — `state`, `grammar`,
     // `plugin`, `--version` — raises nothing and pins nothing: it would leave a pin no prune of its sees)
     let raised = nofile::raise();
+    // (tarae's own state and cache folders, before anything makes them: 0700 — #642; said once the log is)
+    let own_folders = config::own_folders();
     // (before any thread starts — SIGTERM and SIGHUP quit as `:q!` does, ending what tarae started; a host's SIGHUP
     // is dropped, its SIGINT quits)
     term::catch_signals(host);
@@ -422,6 +424,9 @@ fn main() -> Result<()> {
     restart::wait_for(old_children);
     if let Some(said) = raised {
         log::line("tarae", "info", &said);
+    }
+    for (level, said) in &own_folders {
+        log::line("tarae", level, said);
     }
     // The interface tarae draws for — the terminal it runs in — and what it says of itself (`interface::Facts`).
     // Theme "default" (meok/hanji) follows its background — before reading config (config reads it). A restart

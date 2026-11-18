@@ -61,8 +61,9 @@ fn sender() -> Option<&'static Sender<Entry>> {
 /// once past `cap`, the file written again whole with what `Kept` keeps (through `.log.new` and a rename: a
 /// reader never sees half of it). Returns when every sender is gone.
 fn keep(path: &Path, rx: Receiver<Entry>, cap: usize) {
+    // (the state folder: tarae's own — #642; any process's log makes it, an attached client's too)
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = crate::config::own_folder(dir);
     }
     let _ = std::fs::rename(path, path.with_extension("log.old"));
     let Ok(mut file) = std::fs::File::create(path) else { return };

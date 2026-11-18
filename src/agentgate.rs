@@ -82,8 +82,12 @@ pub fn prepare(row: &Row, state: Option<&Path>, root: &Path) -> Result<Made, Str
     let Some(recipe) = row.own_tools else { return Err(off("its row has no recipe for it".into())) };
     let state = state.ok_or_else(|| off("no state folder (neither XDG_STATE_HOME nor HOME)".into()))?;
     let say = |what: &str, p: &Path, e: std::io::Error| off(format!("{what} {}: {e}", p.display()));
-    std::fs::create_dir_all(state).map_err(|e| say("can't make", state, e))?;
-    alone(name, state, 0o022)?;
+    // (`$state` only for others' writes: one only readable by others is made 0700 — #642)
+    match crate::config::own_folder(state) {
+        Ok(_) => {}
+        Err(crate::config::NotOwn::Io(e)) => return Err(say("can't make", state, e)),
+        Err(e) => return Err(format!("{name}: {}", e.said(state, " — not started"))),
+    }
     let folder = state.join(HOMES).join(name).join(home_key(root));
     let hook_file = folder.join(recipe.hook_file);
     let config = hook_file.parent().unwrap_or(&folder).to_path_buf();

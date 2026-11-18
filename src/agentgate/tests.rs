@@ -32,14 +32,22 @@ fn a_folder_not_yours_alone_isnt_started_in() {
     for (dir, mode) in [(&state, 0o775), (&homes, 0o750), (&row, 0o755), (&folder, 0o705), (&config, 0o770)] {
         let was = std::fs::metadata(dir).unwrap().permissions().mode() & 0o7777;
         chmod(dir, mode);
-        let said = format!("stand-in: {} isn't yours alone — not started", dir.display());
+        // ($state: its mode and the fix — #642)
+        let d = dir.display();
+        let said = match *dir == state {
+            true => format!(
+                "stand-in: {d} is writable by others (mode {mode:o}) — not started. If only you use it: chmod 700 {d}"
+            ),
+            false => format!("stand-in: {d} isn't yours alone — not started"),
+        };
         assert_eq!(refused(&state), said, "{mode:o}");
         assert_eq!(std::fs::metadata(dir).unwrap().permissions().mode() & 0o7777, mode, "left as it was");
         chmod(dir, was);
     }
-    // ($state only for others' writes: its read is its own business)
+    // ($state only for others' writes: one only readable by others is made 0700 — #642)
     chmod(&state, 0o755);
     assert!(prepare(&STAND_IN, Some(&state), &dir).is_ok());
+    assert_eq!(std::fs::metadata(&state).unwrap().permissions().mode() & 0o7777, 0o700, "made 0700");
     // (the project's folder a link, to a folder of this user's: refused, nothing made through it)
     let away = dir.join("away");
     std::fs::create_dir(&away).unwrap();

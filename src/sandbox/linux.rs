@@ -64,26 +64,59 @@ pub(super) const DEVICES: [(&str, u64); 7] = [
 
 /// Whether this system can sandbox Claude's runs, from the kernel's Landlock ABI (`landlock::abi`) and
 /// whether seccomp has a filter for this architecture: full from `FULL`, partial (every run asks, saying
-/// why) at 2, none at 1 (saying why) or without Landlock.
-pub fn availability(abi: io::Result<u32>, seccomp: bool) -> Availability {
+/// why) at 2, none at 1 (saying why) or without Landlock — said by what the kernel is (`release`, its major and
+/// minor, `release`'s; #644): one from 5.13 on with none was built without it, an older one came before it.
+pub fn availability(abi: io::Result<u32>, seccomp: bool, release: Option<(u32, u32)>) -> Availability {
     if !seccomp {
         return Availability::Missing("tarae has no seccomp filter for this architecture".into());
     }
     match abi {
         Ok(n) if n >= FULL => Availability::Ready,
+        // (a why holds no parentheses of its own: the card says each inside its own pair)
         Ok(n) if n < 2 => Availability::Missing(format!(
-            "this kernel's Landlock (ABI {n}) refuses every move across folders, so tarae doesn't use it"
+            "this kernel's Landlock, ABI {n}, refuses every move across folders, so tarae doesn't use it"
         )),
         Ok(n) => Availability::Partial(format!(
-            "this kernel's Landlock (ABI {n}) can't control truncating files — a command could empty any \
+            "this kernel's Landlock, ABI {n}, can't control truncating files — a command could empty any \
              file of yours"
         )),
         Err(e) => Availability::Missing(match e.raw_os_error() {
-            Some(libc::ENOSYS) => "this kernel has no Landlock (it came with Linux 5.13)".into(),
-            Some(libc::EOPNOTSUPP) => "Landlock is turned off on this system (its boot's lsm= list)".into(),
-            _ => format!("Landlock: {e}"),
+            Some(libc::ENOSYS) if release.is_some_and(|r| r >= (5, 13)) => super::LANDLOCK_NOT_BUILT.into(),
+            Some(libc::ENOSYS) => super::LANDLOCK_TOO_OLD.into(),
+            Some(libc::EOPNOTSUPP) => super::LANDLOCK_OFF.into(),
+            // (the system's words without std's "(os error N)": the number said plainly)
+            n => {
+                let said = e.to_string();
+                let words = said.split(" (os error").next().unwrap_or(&said);
+                match n {
+                    Some(n) => format!("Landlock can't be asked: {words}, errno {n}"),
+                    None => format!("Landlock can't be asked: {words}"),
+                }
+            }
         }),
     }
+}
+
+/// This kernel's release, major and minor (`uname -r`'s `6.18.34+vendor-2712` is 6.18) — None where it can't be
+/// read. Only for `availability`'s words.
+pub fn release() -> Option<(u32, u32)> {
+    // SAFETY: a plain C struct, all zeros a valid one.
+    let mut u: libc::utsname = unsafe { std::mem::zeroed() };
+    // SAFETY: uname fills the struct it's given; nothing else is written.
+    if unsafe { libc::uname(&mut u) } != 0 {
+        return None;
+    }
+    // SAFETY: the kernel's release is a NUL-ended string inside the struct.
+    let r = unsafe { std::ffi::CStr::from_ptr(u.release.as_ptr()) };
+    release_of(&r.to_string_lossy())
+}
+
+/// A release's major and minor from its text: `6.18.34+vendor-2712` → (6, 18), `5.4.0-150-generic` → (5, 4).
+fn release_of(text: &str) -> Option<(u32, u32)> {
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor: String = parts.next()?.chars().take_while(char::is_ascii_digit).collect();
+    Some((major, minor.parse().ok()?))
 }
 
 /// A policy made into Landlock's rules for this kernel's ABI — applied, with the seccomp filter, by the
@@ -2824,31 +2857,88 @@ mod tests {
     }
 
     /// The tiers (the user's, 2026-10-05): full from ABI 3; partial (saying why) at 2; none at 1 — saying why
-    /// — as without Landlock or a seccomp filter.
+    /// — as without Landlock or a seccomp filter. Without Landlock, said by what the kernel is (#644).
     #[test]
     fn availability_follows_the_kernels_abi() {
         let err = |n| Err(io::Error::from_raw_os_error(n));
-        assert_eq!(availability(Ok(3), true), Availability::Ready);
-        assert_eq!(availability(Ok(8), true), Availability::Ready);
-        match availability(Ok(2), true) {
-            Availability::Partial(why) => assert!(why.contains("can't control truncating files"), "{why}"),
-            other => panic!("ABI 2: {other:?}"),
-        }
-        let missing = |a: io::Result<u32>, seccomp| match availability(a, seccomp) {
+        let pi = Some((6, 18));
+        assert_eq!(availability(Ok(3), true, pi), Availability::Ready);
+        assert_eq!(availability(Ok(8), true, pi), Availability::Ready);
+        assert_eq!(
+            availability(Ok(2), true, pi),
+            Availability::Partial(
+                "this kernel's Landlock, ABI 2, can't control truncating files — a command could empty any file \
+                 of yours"
+                    .into()
+            )
+        );
+        let missing = |a: io::Result<u32>, seccomp, release| match availability(a, seccomp, release) {
             Availability::Missing(why) => why,
             other => panic!("{other:?}"),
         };
         assert_eq!(
-            missing(Ok(1), true),
-            "this kernel's Landlock (ABI 1) refuses every move across folders, so tarae doesn't use it"
+            missing(Ok(1), true, pi),
+            "this kernel's Landlock, ABI 1, refuses every move across folders, so tarae doesn't use it"
         );
-        assert!(missing(err(libc::ENOSYS), true).contains("no Landlock (it came with Linux 5.13)"));
-        assert!(missing(err(libc::EOPNOTSUPP), true).contains("turned off"));
-        assert!(missing(Ok(8), false).contains("seccomp"));
+        // (no Landlock: a kernel from 5.13 on was built without it — #644's 6.18 —; an older one
+        // came before it, as one whose release can't be read is said; one that has it turned off at boot, its way)
+        let built = "this kernel was built without CONFIG_SECURITY_LANDLOCK";
+        assert_eq!(missing(err(libc::ENOSYS), true, pi), built);
+        assert_eq!(missing(err(libc::ENOSYS), true, Some((5, 13))), built);
+        let old = "this kernel has no Landlock, which came with Linux 5.13";
+        assert_eq!(missing(err(libc::ENOSYS), true, Some((5, 12))), old);
+        assert_eq!(missing(err(libc::ENOSYS), true, Some((4, 19))), old);
+        assert_eq!(missing(err(libc::ENOSYS), true, None), old);
+        assert_eq!(
+            missing(err(libc::EOPNOTSUPP), true, pi),
+            "Landlock is turned off at boot: add landlock to the kernel's lsm= list"
+        );
+        assert_eq!(
+            missing(err(libc::EINVAL), true, pi),
+            "Landlock can't be asked: Invalid argument, errno 22"
+        );
+        assert!(missing(Ok(8), false, pi).contains("seccomp"));
         // (this kernel, asked as the probe asks)
         if let Ok(n) = landlock::abi() {
             assert_eq!(crate::sandbox::probe_now() == Availability::Ready, n >= FULL);
         }
+    }
+
+    /// The design session, #644: a why holds no parentheses of its own — the card says each inside its own pair,
+    /// so one of its own read `(… (CONFIG_SECURITY_LANDLOCK)) —`. Every why `availability` gives: each ABI, each
+    /// errno the ABI's question can answer and one it shouldn't, each kind of release, no seccomp filter.
+    #[test]
+    fn no_why_holds_parentheses_of_its_own() {
+        let errnos = [libc::ENOSYS, libc::EOPNOTSUPP, libc::EINVAL, libc::EPERM, libc::E2BIG];
+        let releases = [None, Some((4, 19)), Some((5, 12)), Some((5, 13)), Some((6, 18))];
+        let mut whys = Vec::new();
+        for release in releases {
+            for seccomp in [true, false] {
+                let abis =
+                    (0..=10).map(Ok).chain(errnos.iter().map(|&n| Err(io::Error::from_raw_os_error(n))));
+                for abi in abis {
+                    match availability(abi, seccomp, release) {
+                        Availability::Missing(why) | Availability::Partial(why) => whys.push(why),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(whys.len() > 20, "{whys:?}");
+        let with: Vec<&String> = whys.iter().filter(|w| w.contains('(')).collect();
+        assert!(with.is_empty(), "whys with parentheses of their own: {with:?}");
+    }
+
+    /// A release's major and minor, from `uname -r`'s text as distributions write it (#644).
+    #[test]
+    fn a_release_is_read_as_major_and_minor() {
+        assert_eq!(release_of("6.18.34+vendor-2712"), Some((6, 18)));
+        assert_eq!(release_of("5.4.0-150-generic"), Some((5, 4)));
+        assert_eq!(release_of("5.13"), Some((5, 13)));
+        assert_eq!(release_of("6.1-rc3"), Some((6, 1)));
+        assert_eq!(release_of("6"), None);
+        assert_eq!(release_of("x.y"), None);
+        assert!(release().is_some(), "this kernel's");
     }
 
     /// The protected names that are there, each where it starts — not below one, nor in tools' output — and

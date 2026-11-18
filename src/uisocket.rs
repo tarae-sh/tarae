@@ -48,6 +48,11 @@ pub fn bound() -> Option<&'static Path> {
 pub fn bind() -> Result<UnixListener, String> {
     let pid = std::process::id();
     let path = path_for(pid).ok_or("no state folder (neither XDG_STATE_HOME nor HOME)")?;
+    // (the state folder made tarae's own — one left as it is, `NotOwn`, is the log's: `ui/` has its own guards)
+    let ui = path.parent().expect("in ui/");
+    if let Some(Err(crate::config::NotOwn::Io(e))) = ui.parent().map(crate::config::own_folder) {
+        return Err(format!("can't make {}: {e}", ui.display()));
+    }
     let listener = bind_in(path.parent().expect("in ui/"), pid)?;
     let _ = BOUND.set(path);
     Ok(listener)

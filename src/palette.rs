@@ -72,7 +72,7 @@ pub fn save(ran: &[String]) {
 }
 
 fn save_in(state: &Path, ran: &[String]) {
-    let _ = std::fs::create_dir_all(state);
+    let _ = crate::config::own_folder(state);
     let body: String = ran.iter().map(|r| format!("{r}\n")).collect();
     let _ = crate::disk::write_atomic(&file(state), |w| w.write_all(body.as_bytes()));
 }

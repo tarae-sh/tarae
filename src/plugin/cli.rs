@@ -698,8 +698,10 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
     let out = plugins_dir()?;
     std::fs::create_dir_all(&out)?;
     // (where its dev marks go, and the folder they name — #458)
-    let marks =
-        crate::config::state_dir().ok_or_else(|| anyhow!("no state folder (set HOME)"))?.join("plugin-dev");
+    let state = crate::config::state_dir().ok_or_else(|| anyhow!("no state folder (set HOME)"))?;
+    // (tarae's own folder, made 0700 — #642: this process may be the first to make it)
+    let _ = crate::config::own_folder(&state);
+    let marks = state.join("plugin-dev");
     let source = std::fs::canonicalize(dir)?;
     let stamps = || -> Vec<SystemTime> {
         fn walk(p: &Path, out: &mut Vec<SystemTime>) {

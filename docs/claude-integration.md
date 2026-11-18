@@ -1821,7 +1821,7 @@ macOS (Seatbelt). A test keeps this table equal to the code:
 
   | Landlock ABI (Linux) | Claude's commands |
   |---|---|
-  | none (before 5.13, or left out of the boot's `lsm=`) | no sandbox: the session's card first (the card above) |
+  | none (before 5.13, built without it, or left out of the boot's `lsm=`) | no sandbox: the session's card first (the card above), saying which: a kernel from 5.13 on with none was built without `CONFIG_SECURITY_LANDLOCK` — some distributions' kernels are, Raspberry Pi OS's among them (measured on 6.18.34+rpt-rpi-2712); a kernel built with it gives the sandbox. One left out at boot: add `landlock` to the kernel's `lsm=` list |
   | 1 (5.13) | no sandbox, as with none, the card saying why: this version refuses every move or link across folders, which builds do all the time, so tarae doesn't use it |
   | 2 (5.19) | a partial sandbox: truncating a file isn't controlled. The same card once a session, saying why — `y` ask each time, `s` unasked until the session ends (still in the sandbox), `n` none |
   | 3–4 (6.2) | the full sandbox, unasked, as on macOS. Device `ioctl`s aren't controlled |

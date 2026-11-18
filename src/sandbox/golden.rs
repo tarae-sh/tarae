@@ -19,6 +19,7 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        crate::config::stand_in_state(None);
         std::fs::remove_dir_all(&self.base).ok();
     }
 }
@@ -67,6 +68,10 @@ impl Fixture {
         let base = crate::scratch::Scratch::in_dir(&tmp, &format!("golden-{name}")).into_path();
         std::fs::create_dir_all(base.join("tmp")).unwrap();
         let base = std::fs::canonicalize(&base).unwrap();
+        // (tarae's own state, which every policy keeps from runs wherever it is: the fixture's, beside its home —
+        // the machine's moved where its runs write (`XDG_STATE_HOME` in `/tmp`) would split their rules — #644)
+        std::fs::create_dir_all(base.join("state/tarae")).unwrap();
+        crate::config::stand_in_state(Some(base.join("state/tarae")));
         let home = base.join("home");
         let root = home.join("work/proj");
         for (rel, text) in FILES {
@@ -91,7 +96,21 @@ impl Fixture {
         }
         // (served: the pinned words are a served run's on any machine — tier unserved's own, #417, aren't pinned here)
         let served = Some((|| Ok(())) as fn() -> Result<(), String>);
-        let here = Here { env: vars, tmp: Some(base.join("tmp")), uid: 501, os, served, ..Here::default() };
+        // (#644: nothing of the machine the test runs on — its kernel's tier, its disks and filesystems, the folders
+        // above the fixture — reaches what's pinned: each the stand-in's own)
+        let here = Here {
+            env: vars,
+            tmp: Some(base.join("tmp")),
+            uid: 501,
+            os,
+            served,
+            bridged: Some(|| Ok(())),
+            hides_keys: Some(|| false),
+            devices: Some(|_| Some(1)),
+            filesystems: Some(|_| Some(Filesystem { name: "ext4".into(), ignores_ownership: false })),
+            stand_in: Some(base.clone()),
+            ..Here::default()
+        };
         // What the toolchain would have said (no cargo or go is run): Go's module cache, the user's Go build
         // cache moved into home (kept from runs), cargo's target dir in the checkout, a folder in home it names
         // (kept closed — #20), and this checkout's own build dir
@@ -1163,6 +1182,42 @@ fn the_packs_say_what_the_core_said() {
         ("$(rustc --print sysroot)", &["rustup", "show", "active-toolchain"].map(String::from)[..])
     );
     // (the settings that can hold a token: the policy pinned above, `tokens.rs`'s tests)
+}
+
+/// #644: what's pinned is the stand-in's alone — the goldens again in a process of their own on another "host": a
+/// home of the test's whose cargo home holds a git cache, tarae's state and cache there, a umask of 002, and on
+/// Linux no `TMPDIR` (the fixture then in `/var/tmp`) — the same text, or they fail there as here.
+#[test]
+fn the_goldens_are_the_stand_ins_whatever_the_host_holds() {
+    use std::os::unix::process::CommandExt as _;
+    let s = crate::scratch::Scratch::new("golden-host");
+    let home = s.join("home");
+    for d in [".cargo/git/checkouts/x", ".cargo/registry/index", ".local/state/tarae", ".cache/tarae"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    let pinned = ["sandbox::golden::the_policy_is_pinned", "sandbox::golden::landlocks_rules_are_pinned"];
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["--exact", "--test-threads=1"])
+        .args(pinned)
+        .env("HOME", &home)
+        .env("CARGO_HOME", home.join(".cargo"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env_remove("TARAE_BLESS");
+    if cfg!(target_os = "linux") {
+        cmd.env_remove("TMPDIR");
+    }
+    // SAFETY: the child's own mask, set between its fork and its exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::umask(0o002);
+            Ok(())
+        });
+    }
+    let out = cmd.output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    let n = if cfg!(target_os = "linux") { 2 } else { 1 };
+    assert!(out.status.success() && said.contains(&format!("{n} passed")), "another host's: {said}");
 }
 
 /// Landlock's rules for the stand-in home's policy, in the fixture's folder and `/dev` (outside them they're

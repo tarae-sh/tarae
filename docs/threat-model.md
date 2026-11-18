@@ -1077,6 +1077,13 @@ every chat of the session (what would ask anyway still asks), `n` none (Claude t
 (Landlock ABI 2, G11) asks the same, in its own words, its commands still in it as far as it goes.
 test: `editor::tests::without_a_sandbox_the_session_asks_once` · `editor::tests::a_partial_sandbox_asks_once_a_session` · `sandbox::tests::a_run_outside_the_sandbox_says_it_had_no_user_namespace_where_refused`
 
+The card says why by what the kernel is: older than 5.13, it has no Landlock, which came with 5.13; from 5.13 on
+with none, it was built without `CONFIG_SECURITY_LANDLOCK` — some distributions' kernels are, Raspberry Pi OS's
+among them (measured on 6.18.34+rpt-rpi-2712, 2026-11-19), and a kernel built with it gives the sandbox; turned off
+at boot, add `landlock` to the kernel's `lsm=` list. A why holds no parentheses of its own: the card puts it in its
+own pair.
+test: `sandbox::linux::tests::availability_follows_the_kernels_abi` · `sandbox::linux::tests::no_why_holds_parentheses_of_its_own` · `editor::tests::a_kernel_built_without_landlock_says_so_on_the_first_commands_card`
+
 The exception is yours to make: **`llm.sandbox = false` turns the sandbox off without a card** — every command of
 Claude's then runs as you, unconfined, and only the chat's title (`› no sandbox`) and Claude's own report say so.
 A project can set it only once you trust it (§1.11).

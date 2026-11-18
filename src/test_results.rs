@@ -258,7 +258,7 @@ fn skip_said_in_its_own_process() {
 const SKIP_WRITERS_LEFT: &[(&str, usize)] = &[
     ("landlock.rs", 5),
     ("sandbox.rs", 6),
-    ("sandbox/keeper.rs", 7),
+    ("sandbox/keeper.rs", 6),
     ("sandbox/linux.rs", 1),
     ("sandbox/owners/tests.rs", 1),
     ("sandbox/supervisor.rs", 4),

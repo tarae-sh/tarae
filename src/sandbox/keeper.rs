@@ -3143,11 +3143,7 @@ mod tests {
         let abi = match crate::landlock::abi() {
             Ok(n) if n >= 2 => n,
             _ => {
-                let line = format!(
-                    "{}sandbox::keeper::tests::{test} — no Landlock here\n",
-                    crate::test_results::SELF_SKIP
-                );
-                let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+                crate::test_results::said_skip(&format!("sandbox::keeper::tests::{test} — no Landlock here"));
                 return None;
             }
         };
@@ -3253,7 +3249,9 @@ mod tests {
             ));
             return;
         }
-        let said = scene("served_scene", &[]);
+        let Some(said) = scene("tarae_takes_the_listener_of_a_keeper_child", "served_scene", &[]) else {
+            return;
+        };
         assert_eq!(said, "served refused · told network-outbound remote:192.0.2.1:9");
     }
 
@@ -3797,7 +3795,11 @@ mod tests {
     /// seccomp filter of its own on the thread that makes the keeper), the keeper still says it's there.
     #[test]
     fn a_keeper_is_born_where_clone3_is_refused() {
-        assert_eq!(scene("clone3_refused_scene", &[]), "clone3=38 born=yes");
+        let Some(said) = scene("a_keeper_is_born_where_clone3_is_refused", "clone3_refused_scene", &[])
+        else {
+            return;
+        };
+        assert_eq!(said, "clone3=38 born=yes");
     }
 
     /// `a_keeper_is_born_where_clone3_is_refused`'s scene: this thread's `clone3` answered `ENOSYS` (a filter of
@@ -4313,7 +4315,7 @@ mod tests {
     /// run). As an ordinary user (`dumpable_scene`): as root, capabilities decide first.
     #[test]
     fn the_keeper_is_not_dumpable() {
-        let said = scene("dumpable_scene", &[]);
+        let Some(said) = scene("the_keeper_is_not_dumpable", "dumpable_scene", &[]) else { return };
         let eacces = libc::EACCES;
         assert_eq!(said, format!("keeper environ={eacces} fd={eacces} · dumpable environ=ok fd=ok"));
     }
@@ -4364,7 +4366,8 @@ mod tests {
                 Ok(())
             });
         }
-        let said = said_by("keeper_limit_scene", cmd);
+        let test = "a_keepers_runs_get_the_descriptor_limit_tarae_started_with";
+        let Some(said) = said_by(test, "keeper_limit_scene", cmd) else { return };
         if said == "nothing to raise" {
             eprintln!(
                 "a_keepers_runs_get_the_descriptor_limit_tarae_started_with: the hard limit is 256 here"
@@ -4400,9 +4403,10 @@ mod tests {
     /// What tells a scene it was started by its test.
     const SCENE: &str = "TARAE_KEEPER_SCENE";
 
-    /// The test binary run on the ignored scene `name` (`env` set besides): what it printed after `scene: `.
-    fn scene(name: &str, env: &[(&str, &str)]) -> String {
-        said_by(name, scene_cmd(name, env))
+    /// The test binary run on the ignored scene `name` (`env` set besides) for `test`: what it printed after
+    /// `scene: ` — None where it skipped itself, its skip said as `test`'s own (`said_by`).
+    fn scene(test: &str, name: &str, env: &[(&str, &str)]) -> Option<String> {
+        said_by(test, name, scene_cmd(name, env))
     }
 
     /// The command `scene` runs.
@@ -4415,14 +4419,46 @@ mod tests {
         cmd
     }
 
-    /// What `cmd` — scene `name`'s — printed after `scene: `.
-    fn said_by(name: &str, mut cmd: std::process::Command) -> String {
+    /// What `cmd` — scene `name`'s, for `test` — printed after `scene: `. None where the scene skipped itself (no
+    /// Landlock there — #644: a kernel built without it): its why said as `test`'s own skip, the same way
+    /// (`skip_passed_on`).
+    fn said_by(test: &str, name: &str, mut cmd: std::process::Command) -> Option<String> {
         let out = cmd.output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
         let err = String::from_utf8_lossy(&out.stderr);
-        text.lines()
-            .find_map(|l| l.split_once("scene: ").map(|(_, s)| s.to_string()))
-            .unwrap_or_else(|| panic!("{name} said nothing:\n{text}\n{err}"))
+        if let Some(said) = text.lines().find_map(|l| l.split_once("scene: ").map(|(_, s)| s.to_string())) {
+            return Some(said);
+        }
+        match skip_passed_on(test, name, &format!("{text}\n{err}")) {
+            Some(skip) => crate::test_results::said_skip(&skip),
+            None => panic!("{name} said nothing:\n{text}\n{err}"),
+        }
+        None
+    }
+
+    /// A scene `name`'s own skip in its output, as `test`'s (`sandbox::keeper::tests::<test> — <why>`) — None
+    /// where it didn't skip.
+    fn skip_passed_on(test: &str, name: &str, output: &str) -> Option<String> {
+        let own = crate::test_results::skip_line(&format!("sandbox::keeper::tests::{name} — "));
+        let why = output.lines().find_map(|l| l.strip_prefix(own.as_str()))?;
+        Some(format!("sandbox::keeper::tests::{test} — {why}"))
+    }
+
+    /// #644: a scene that skipped itself (no Landlock there) is its test's skip, said the same way — never read as
+    /// a scene that said nothing.
+    #[test]
+    fn a_scenes_skip_is_its_tests() {
+        let line = |rest: &str| crate::test_results::skip_line(rest);
+        let out = format!(
+            "running 1 test\n{}\ntest sandbox::keeper::tests::ids_scene ... ok\n",
+            line("sandbox::keeper::tests::ids_scene — no Landlock here")
+        );
+        assert_eq!(
+            skip_passed_on("a_run_keeps_the_users_own_ids", "ids_scene", &out).as_deref(),
+            Some("sandbox::keeper::tests::a_run_keeps_the_users_own_ids — no Landlock here")
+        );
+        assert_eq!(skip_passed_on("x", "masked_proc_scene", &out), None, "another scene's");
+        assert_eq!(skip_passed_on("x", "ids_scene", "running 1 test\n"), None, "no skip");
     }
 
     /// As root (a container's tests), this process becomes `nobody` — every thread (glibc's `setresuid`), every
@@ -7367,7 +7403,7 @@ mod tests {
         if !namespaced("a_run_keeps_the_users_own_ids") {
             return;
         }
-        let said = scene("ids_scene", &[]);
+        let Some(said) = scene("a_run_keeps_the_users_own_ids", "ids_scene", &[]) else { return };
         let (me, run) = said.split_once(" run=").expect("its two halves");
         let id = me.strip_prefix("me=").unwrap().split_once('/').unwrap();
         let (u, g) = (id.0, id.1);
@@ -7443,7 +7479,9 @@ mod tests {
                 Ok(())
             });
         }
-        let said = said_by("masked_proc_scene", cmd);
+        let Some(said) = said_by("no_pid_namespace_without_its_own_proc", "masked_proc_scene", cmd) else {
+            return;
+        };
         // (its network namespace as this system gives it: what's checked is the PID one)
         let without_pid = Ns::session(ns().net, false).said();
         assert!(said.contains(&format!("({without_pid}) nspid=1 — ")), "{said}");
@@ -9388,7 +9426,9 @@ mod tests {
     #[test]
     fn an_opened_policys_keeper_has_its_netns() {
         use super::super::tier;
-        if !own_network("an_opened_policys_keeper_has_its_netns") {
+        let test = "an_opened_policys_keeper_has_its_netns";
+        // (its policies' rules are Landlock's: none to make without it — #644)
+        if !own_network(test) || open_rules(test).is_none() {
             return;
         }
         let (closed, _, r1) = project_in("netns-closed", Vec::new(), None, &[]);
@@ -9547,10 +9587,10 @@ mod tests {
 
     // ── step 4: the run's own sockets in the session, routed; the swap ─────────────────────────────────────
 
-    /// Whether this system's runs are routed — served, in the session's network namespace — else says the test
-    /// skips itself, and why.
+    /// Whether this system's runs are routed — served, in the session's network namespace, with Landlock to make
+    /// their rules (#644: a kernel built without it) — else says the test skips itself, and why.
     fn routed_here(test: &str) -> bool {
-        if !own_network(test) {
+        if !own_network(test) || open_rules(test).is_none() {
             return false;
         }
         match super::super::supervisor::unavailable() {

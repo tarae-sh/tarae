@@ -813,9 +813,10 @@ struct Laid(Vec<u64>);
 
 impl Laid {
     fn out(mem: &std::fs::File, m: &Fake) -> Laid {
+        let size = page();
         let mut pages = std::collections::BTreeSet::new();
         for (at, b) in m.pieces.iter().filter(|p| !p.1.is_empty()) {
-            pages.extend((at & !0xfff..at + b.len() as u64).step_by(0x1000));
+            pages.extend((at & !(size - 1)..at + b.len() as u64).step_by(size as usize));
         }
         let laid = Laid(pages.into_iter().collect());
         for &p in &laid.0 {
@@ -825,7 +826,7 @@ impl Laid {
             let got = unsafe {
                 libc::mmap(
                     p as *mut libc::c_void,
-                    0x1000,
+                    size as usize,
                     libc::PROT_READ | libc::PROT_WRITE,
                     libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
                     -1,
@@ -846,7 +847,16 @@ impl Drop for Laid {
     fn drop(&mut self) {
         for &p in &self.0 {
             // SAFETY: a page `out` mapped, nothing of it borrowed.
-            unsafe { libc::munmap(p as *mut libc::c_void, 0x1000) };
+            unsafe { libc::munmap(p as *mut libc::c_void, page() as usize) };
         }
     }
+}
+
+/// This kernel's page: 4 KiB on most, 16 KiB on some arm64 kernels (#644's: a page laid at a 4 KiB boundary there
+/// is refused, `EINVAL`).
+fn page() -> u64 {
+    // SAFETY: sysconf only reads.
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    assert!(n > 0 && (n as u64).is_power_of_two(), "a page of {n}");
+    n as u64
 }

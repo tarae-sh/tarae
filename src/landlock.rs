@@ -118,6 +118,12 @@ struct PathBeneathAttr {
 /// The Landlock ABI version this kernel speaks (1 for 5.13's …). Err when it has none: `ENOSYS` (not built
 /// in) or `EOPNOTSUPP` (built in, not enabled at boot — `lsm=` leaves it out).
 pub fn abi() -> io::Result<u32> {
+    // (tests: a kernel built without Landlock stood in — #644's — by `cargo xtask linux --env
+    // TARAE_TEST_NO_LANDLOCK=1 test …`: every test asks here first, so the suite meets no Landlock as it would there)
+    #[cfg(test)]
+    if std::env::var_os(NO_LANDLOCK).is_some() {
+        return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+    }
     // SAFETY: no attribute (NULL, size 0) with the version flag only asks; nothing is written.
     let n = unsafe {
         libc::syscall(
@@ -132,6 +138,10 @@ pub fn abi() -> io::Result<u32> {
     }
     Ok(n as u32)
 }
+
+/// Tests: the variable that has `abi` answer as a kernel built without Landlock does (`ENOSYS`).
+#[cfg(test)]
+pub const NO_LANDLOCK: &str = "TARAE_TEST_NO_LANDLOCK";
 
 /// What a test's skip says of this kernel's Landlock: its ABI as a number, or why there's none.
 #[cfg(test)]

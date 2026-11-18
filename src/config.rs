@@ -228,10 +228,134 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// `$XDG_STATE_HOME/tarae` (default `~/.local/state/tarae`) — files to restore, recent files, undo history.
 pub fn state_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(d) = STATE_STAND_IN.with(|s| s.borrow().clone()) {
+        return Some(d);
+    }
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
     Some(state.join("tarae"))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: tarae's state folder as this thread's test stands it in (`stand_in_state`) — what a policy keeps as
+    /// tarae's own, never the machine's (#644: the goldens took the host's).
+    static STATE_STAND_IN: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Tests: `state_dir` on this thread is `dir` (None: as the environment says again).
+#[cfg(test)]
+pub fn stand_in_state(dir: Option<PathBuf>) {
+    STATE_STAND_IN.with(|s| *s.borrow_mut() = dir);
+}
+
+/// What `own_folder` found tarae's own folder as, or made it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Own {
+    /// Not there: made now, 0700 from its making.
+    Made,
+    /// There, this user's, a real folder nobody else reads.
+    Kept,
+    /// There, this user's, readable by others but not writable (`was`: 755, 750 …): their bits taken away (0700).
+    Tightened { was: u32 },
+}
+
+/// Why `own_folder` left tarae's own folder as it is.
+#[derive(Debug)]
+pub enum NotOwn {
+    /// Others can write in it (its mode).
+    Writable(u32),
+    /// Not this user's, or not a real folder (a link, a file).
+    NotYours,
+    /// It couldn't be made or read.
+    Io(std::io::Error),
+}
+
+impl NotOwn {
+    /// What's wrong with `dir`, then a full stop and the fix where there is one: `…/state/tarae is writable by others
+    /// (mode 775)` — `rest` between (`— not started`).
+    pub fn said(&self, dir: &Path, rest: &str) -> String {
+        let d = dir.display();
+        match self {
+            NotOwn::Writable(mode) => {
+                format!("{d} is writable by others (mode {mode:o}){rest}. If only you use it: chmod 700 {d}")
+            }
+            NotOwn::NotYours => format!("{d} isn't yours alone{rest}"),
+            NotOwn::Io(e) => format!("{d}: {e}{rest}"),
+        }
+    }
+}
+
+/// tarae's own folder `dir` — its state folder (`state_dir`) or its cache (`runtime::cache_dir`), which hold
+/// conversations, turns, trust, runs — made 0700 at its making (what's above it as the umask says: not tarae's),
+/// never by a chmod after (#642: a umask of 002 made it 0775, and every agent's start was refused for it). One there
+/// already: this user's and only readable by others, made 0700; writable by others, or not this user's, left as it
+/// is (`NotOwn`) — an agent isn't started in it (`agentgate::prepare`). Every place that makes either folder calls
+/// this; what's made inside finds it there.
+pub fn own_folder(dir: &Path) -> Result<Own, NotOwn> {
+    // SAFETY: geteuid only reads.
+    own_folder_as(dir, unsafe { libc::geteuid() })
+}
+
+/// `own_folder` as user `me`.
+fn own_folder_as(dir: &Path, me: u32) -> Result<Own, NotOwn> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent).map_err(NotOwn::Io)?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(Own::Made),
+        Err(e) if e.kind() != ErrorKind::AlreadyExists => return Err(NotOwn::Io(e)),
+        Err(_) => {}
+    }
+    // (judged and changed through one descriptor of the folder itself, never through a link)
+    let opened = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(dir);
+    let f = match opened {
+        Ok(f) => f,
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
+            return Err(NotOwn::NotYours);
+        }
+        Err(e) => return Err(NotOwn::Io(e)),
+    };
+    let m = f.metadata().map_err(NotOwn::Io)?;
+    let mode = m.mode() & 0o7777;
+    if m.uid() != me {
+        return Err(NotOwn::NotYours);
+    }
+    if mode & 0o022 != 0 {
+        return Err(NotOwn::Writable(mode));
+    }
+    if mode & 0o077 == 0 {
+        return Ok(Own::Kept);
+    }
+    // (only taken away: others' bits — a 555 the user set stays unwritable, 500)
+    f.set_permissions(fs::Permissions::from_mode(mode & !0o077)).map_err(NotOwn::Io)?;
+    Ok(Own::Tightened { was: mode })
+}
+
+/// At start (`main`, before anything makes them): tarae's state and cache folders through `own_folder`, and what
+/// the log says of them — a folder made 0700 from 755, or one left as it is, with its fix.
+pub fn own_folders() -> Vec<(&'static str, String)> {
+    let dirs = [state_dir(), crate::runtime::cache_dir()];
+    dirs.into_iter()
+        .flatten()
+        .filter_map(|d| match own_folder(&d) {
+            Ok(Own::Tightened { was }) => {
+                let now = was & !0o077;
+                Some((
+                    "info",
+                    format!("{} was readable by others (mode {was:o}) — made {now:o}", d.display()),
+                ))
+            }
+            Ok(_) => None,
+            Err(e) => Some(("warning", e.said(&d, " — left as it is"))),
+        })
+        .collect()
 }
 
 /// The file in state folder `dir` kept for `key` — a project's root (`project.rs`: conversations, turns), a
@@ -910,6 +1034,122 @@ fn set_path(doc: &mut DocumentMut, path: &str, v: &Value) -> Result<(), String> 
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn mode(p: &std::path::Path) -> u32 {
+        std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn chmod(p: &std::path::Path, mode: u32) {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// #642: tarae's own folder made 0700 from its making; one found is judged by its mode — only readable by others
+    /// (755, 750, 705): made 0700; writable by them (775, 770, 757, 722): left as it is, said with its mode and the
+    /// fix; not this user's, a link or a file: left as it is.
+    #[test]
+    fn taraes_own_folder_is_made_700_and_one_found_is_judged_by_its_mode() {
+        use super::{NotOwn, Own, own_folder, own_folder_as};
+        let s = crate::scratch::Scratch::new("own-folder");
+        let dir = s.join("state/tarae");
+        assert_eq!(own_folder(&dir).unwrap(), Own::Made);
+        assert_eq!(mode(&dir), 0o700, "made 0700");
+        assert_eq!(own_folder(&dir).unwrap(), Own::Kept);
+        for was in [0o755, 0o750, 0o705] {
+            chmod(&dir, was);
+            assert_eq!(own_folder(&dir).unwrap(), Own::Tightened { was }, "{was:o}");
+            assert_eq!(mode(&dir), 0o700, "{was:o}: made 0700");
+        }
+        // (only taken away: one the user made unwritable stays so)
+        chmod(&dir, 0o555);
+        assert_eq!(own_folder(&dir).unwrap(), Own::Tightened { was: 0o555 });
+        assert_eq!(mode(&dir), 0o500, "others' bits only");
+        chmod(&dir, 0o700);
+        for was in [0o775, 0o770, 0o757, 0o722] {
+            chmod(&dir, was);
+            match own_folder(&dir) {
+                Err(NotOwn::Writable(m)) => assert_eq!(m, was),
+                other => panic!("{was:o}: {other:?}"),
+            }
+            assert_eq!(mode(&dir), was, "{was:o}: left as it was");
+        }
+        chmod(&dir, 0o775);
+        let d = dir.display();
+        assert_eq!(
+            own_folder(&dir).unwrap_err().said(&dir, " — not started"),
+            format!("{d} is writable by others (mode 775) — not started. If only you use it: chmod 700 {d}")
+        );
+        chmod(&dir, 0o755);
+        // (another user's: as uid `me + 1` sees it — left as it is)
+        // SAFETY: geteuid only reads.
+        let me = unsafe { libc::geteuid() };
+        assert!(matches!(own_folder_as(&dir, me + 1), Err(NotOwn::NotYours)));
+        assert_eq!(mode(&dir), 0o755, "another's left as it was");
+        // (a link to a folder of this user's, and a file: refused, nothing changed through the link)
+        let away = s.join("away");
+        std::fs::create_dir(&away).unwrap();
+        chmod(&away, 0o755);
+        let link = s.join("state/linked");
+        std::os::unix::fs::symlink(&away, &link).unwrap();
+        assert!(matches!(own_folder(&link), Err(NotOwn::NotYours)));
+        assert_eq!(mode(&away), 0o755, "changed through the link");
+        let file = s.join("state/file");
+        std::fs::write(&file, "").unwrap();
+        assert!(matches!(own_folder(&file), Err(NotOwn::NotYours)));
+        assert_eq!(
+            own_folder_as(&link, me).unwrap_err().said(&link, " — not started"),
+            format!("{} isn't yours alone — not started", link.display())
+        );
+    }
+
+    /// The variable that has `umask_002_in_its_own_process` run (else it returns at once).
+    const UMASK_CHILD: &str = "TARAE_TEST_UMASK_CHILD";
+
+    /// #642: under a umask of 002 (a system that gives each user a group of their own) tarae's state and cache folders are made 0700
+    /// and an agent's start goes through — the umask is the process's, so in a process of its own
+    /// (`umask_002_in_its_own_process`), its state and cache the test's own.
+    #[test]
+    fn under_umask_002_taraes_folders_are_700_and_an_agent_starts() {
+        let s = crate::scratch::Scratch::new("own-umask");
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "config::tests::umask_002_in_its_own_process", "--ignored", "--nocapture"])
+            .env(UMASK_CHILD, "1")
+            .env("XDG_STATE_HOME", s.join("state"))
+            .env("XDG_CACHE_HOME", s.join("cache"))
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.contains("1 passed"), "the child ran it: {said}");
+        assert_eq!(mode(&s.join("state/tarae")), 0o700);
+        assert_eq!(mode(&s.join("cache/tarae")), 0o700);
+    }
+
+    /// `under_umask_002_taraes_folders_are_700_and_an_agent_starts`'s child: umask 002, the start's folders
+    /// (`own_folders`), then an agent's (`agentgate::prepare`, the stand-in's row) in its project.
+    #[test]
+    #[ignore = "run by under_umask_002_taraes_folders_are_700_and_an_agent_starts in a process of its own"]
+    fn umask_002_in_its_own_process() {
+        if std::env::var_os(UMASK_CHILD).is_none() {
+            return;
+        }
+        // SAFETY: the mask of this process of its own.
+        unsafe { libc::umask(0o002) };
+        let state = super::state_dir().unwrap();
+        let cache = crate::runtime::cache_dir().unwrap();
+        assert!(state.starts_with(std::env::var_os("XDG_STATE_HOME").unwrap()), "the test's own");
+        assert!(cache.starts_with(std::env::var_os("XDG_CACHE_HOME").unwrap()), "the test's own");
+        // (what a folder gets under this mask without `own_folder`: the umask's 0775)
+        let plain = state.parent().unwrap().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(mode(&plain), 0o775, "umask 002 in force");
+        assert!(super::own_folders().is_empty(), "made, nothing to say");
+        assert_eq!((mode(&state), mode(&cache)), (0o700, 0o700));
+        let project = state.parent().unwrap().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let made = crate::agentgate::prepare(&crate::agent::STAND_IN, Some(&state), &project);
+        assert!(made.is_ok(), "{:?}", made.err());
+    }
+
     /// #252's review: a store's file is by the path's bytes — text as it always was (FNV-1a's vector for "a"), and two
     /// paths that aren't text never one store, nor one with the replacement character a lossy form would give them.
     #[test]

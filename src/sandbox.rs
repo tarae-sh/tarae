@@ -5234,11 +5234,25 @@ pub fn probe() -> Availability {
     FOUND.get_or_init(probe_now).clone()
 }
 
-/// Linux: from the kernel's Landlock ABI, asked (backports count — never the version string).
+/// Linux: from the kernel's Landlock ABI, asked (backports count — never the version string decides whether it's
+/// there), and its release only for the words when it isn't (#644: built without it, or older than it).
 #[cfg(target_os = "linux")]
 fn probe_now() -> Availability {
-    linux::availability(crate::landlock::abi(), crate::seccomp::available())
+    linux::availability(crate::landlock::abi(), crate::seccomp::available(), linux::release())
 }
+
+/// Linux, no Landlock (`ENOSYS`) on a kernel from 5.13 on: left out when it was built (#644 — some distributions'
+/// kernels are). Here, not in `linux`: a test on any system shows the card that says it.
+#[cfg(any(target_os = "linux", test))]
+pub const LANDLOCK_NOT_BUILT: &str = "this kernel was built without CONFIG_SECURITY_LANDLOCK";
+
+/// Linux, no Landlock (`ENOSYS`) on a kernel older than 5.13, or one whose release couldn't be read.
+#[cfg(target_os = "linux")]
+pub const LANDLOCK_TOO_OLD: &str = "this kernel has no Landlock, which came with Linux 5.13";
+
+/// Linux, Landlock built in but not started at boot (`EOPNOTSUPP`): its way back.
+#[cfg(target_os = "linux")]
+pub const LANDLOCK_OFF: &str = "Landlock is turned off at boot: add landlock to the kernel's lsm= list";
 
 #[cfg(not(target_os = "linux"))]
 fn probe_now() -> Availability {
@@ -19779,7 +19793,7 @@ mod tests {
             crate::test_results::said_skip(&format!("{test} — needs Landlock ABI 1, {kernel}"));
             return;
         }
-        let why = "this kernel's Landlock (ABI 1) refuses every move across folders, so tarae doesn't use it";
+        let why = "this kernel's Landlock, ABI 1, refuses every move across folders, so tarae doesn't use it";
         assert!(probe() == Availability::Missing(why.into()), "the probe: no sandbox, saying why");
         let s = crate::scratch::Scratch::new("sb-abi1");
         let c = confined(Policy { run: RunDir::new().ok(), ..key_policy(&profile_path(&s)) });
