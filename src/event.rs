@@ -811,10 +811,23 @@ fn run(site: &'static Location<'static>, job: Box<dyn FnOnce() + Send>) {
     // it says which test it ran for
     #[cfg(test)]
     if let Some(job) = crate::sim::spawn_job(site, job) {
+        // (what the test asks for of the sandbox ends with it, its workers' asks too — #643)
+        #[cfg(target_os = "linux")]
+        crate::sandbox::keeper::arm_test_end();
         let name = thread::current().name().map(str::to_string);
         let worker = name.map_or_else(thread::Builder::new, |n| thread::Builder::new().name(n));
+        let job = move || {
+            WORKER.set(true);
+            job()
+        };
         worker.spawn(job).expect("failed to spawn thread");
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: this thread is a job's worker (`run`) — named after its test, as the test's own thread is.
+    pub static WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]

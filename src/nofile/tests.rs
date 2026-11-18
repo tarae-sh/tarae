@@ -262,8 +262,10 @@ const SCENE: &str = "TARAE_NOFILE_SCENE";
 fn a_raised_limit_goes_back_to_what_tarae_starts_but_git() {
     use std::os::unix::process::CommandExt as _;
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    // (`NO_RAISE`: the test binary's own raise at start leaves the 256 for `raise` to see)
     cmd.args(["--exact", "nofile::tests::raised_scene", "--ignored", "--nocapture", "--test-threads=1"])
-        .env(SCENE, "1");
+        .env(SCENE, "1")
+        .env(crate::testlimit::NO_RAISE, "1");
     // SAFETY: getrlimit/setrlimit only, between fork and exec.
     unsafe {
         cmd.pre_exec(|| {

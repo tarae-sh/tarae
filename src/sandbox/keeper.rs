@@ -178,6 +178,85 @@ pub fn ready_held(root: &Path, key: &str, ns: Ns) -> Result<Arc<Hold>, String> {
 }
 
 fn ready_in(root: &Path, key: Option<&str>, ns: Ns, held: bool) -> Result<Arc<Keeper>, String> {
+    let k = there_or_born(root, key, ns, held)?;
+    #[cfg(test)]
+    used_by_this_test(&k);
+    Ok(k)
+}
+
+/// Tests: the tests using each keeper (by `serial`), by name (`used_by_this_test`).
+#[cfg(test)]
+static TEST_USERS: Mutex<Vec<(u64, Vec<String>)>> = Mutex::new(Vec::new());
+
+/// Tests: the test's name, where this thread is its own or its job's worker — libtest runs each test on a thread
+/// named after it (`a::tests::b`), and a job's worker carries that name (`event::run`); tarae's own are `tarae-…`.
+#[cfg(test)]
+fn test_name() -> Option<String> {
+    std::thread::current().name().filter(|n| n.contains("::")).map(str::to_string)
+}
+
+/// Tests: `k` is used by the test this thread runs for, and ends as the last test using it ends — its own thread's
+/// end, passed or panicked (`arm_test_end`) — as tarae ends a session's keeper with its session
+/// (`end_leftovers`). Before, each keeper a test asked for lived until the test binary ended: 91 at the end of the
+/// bin's tests in Docker, ~7 descriptors and a process each, past a soft limit of 1024 on a Raspberry Pi (#643).
+/// One a test makes itself (`Keeper::born`) is the test's to end.
+#[cfg(test)]
+fn used_by_this_test(k: &Arc<Keeper>) {
+    let Some(test) = test_name() else { return };
+    arm_test_end();
+    let mut users = lock(&TEST_USERS);
+    match users.iter_mut().find(|(s, _)| *s == k.serial) {
+        Some((_, tests)) if tests.contains(&test) => {}
+        Some((_, tests)) => tests.push(test),
+        None => users.push((k.serial, vec![test])),
+    }
+}
+
+/// Tests: on a test's own thread (not a job's worker, which may end first), its end ends the keepers only it
+/// still uses — armed once, by a keeper asked for there or a job started from there (`event::run`).
+#[cfg(test)]
+pub fn arm_test_end() {
+    /// The test's name, and the process that armed it.
+    struct TestEnd(String, u32);
+    impl Drop for TestEnd {
+        // (as the thread's locals go: no thread started here, no thread-local read)
+        fn drop(&mut self) {
+            // (a fork's child that calls `exit` runs its copy of this thread's locals' ends — glibc's `exit` does
+            // — and holds the keepers' channels: never there)
+            if std::process::id() != self.1 {
+                return;
+            }
+            let last: Vec<u64> = {
+                let mut users = lock(&TEST_USERS);
+                for (_, tests) in users.iter_mut() {
+                    tests.retain(|t| *t != self.0);
+                }
+                let last = users.iter().filter(|(_, t)| t.is_empty()).map(|(s, _)| *s).collect();
+                users.retain(|(_, t)| !t.is_empty());
+                last
+            };
+            let going: Vec<Arc<Keeper>> =
+                of(None).into_iter().filter(|k| last.contains(&k.serial) && !k.is_gone()).collect();
+            end_together(&going);
+            // (their descriptors go with the last of their `Arc`s)
+            lock(&KEEPERS).retain(|k| !k.is_gone());
+        }
+    }
+    thread_local! {
+        static TEST_END: std::cell::RefCell<Option<TestEnd>> = const { std::cell::RefCell::new(None) };
+    }
+    if crate::event::WORKER.get() {
+        return;
+    }
+    let Some(test) = test_name() else { return };
+    TEST_END.with_borrow_mut(|end| {
+        // (made only when there's none: a second one would end the test's keepers as it's dropped)
+        end.get_or_insert_with(|| TestEnd(test, std::process::id()));
+    });
+}
+
+/// `ready_in`: the keeper there, else a new one.
+fn there_or_born(root: &Path, key: Option<&str>, ns: Ns, held: bool) -> Result<Arc<Keeper>, String> {
     let _births = lock(&BIRTHS);
     let current = {
         let mut keepers = lock(&KEEPERS);
@@ -3848,6 +3927,67 @@ mod tests {
         k.end();
     }
 
+    /// A keeper a test asked for (`ready`) and never ended ends with the test (`used_by_this_test`): its process
+    /// gone and its descriptors let go before the next test, not at the test binary's end (#643: 91 of them, ~640
+    /// descriptors, past a Raspberry Pi's 1024). In a process of its own, one test after the other, each asking and
+    /// returning — the first only to open what's opened once for the process (the proxy, the log) — then a third
+    /// finds no keeper there and every descriptor the second had back.
+    #[test]
+    fn a_keeper_a_test_asked_for_ends_with_the_test() {
+        let scenes = ["left_scene_1_asks", "left_scene_2_asks", "left_scene_3_looks"];
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .args(scenes.map(|s| format!("sandbox::keeper::tests::{s}")))
+            .env(SCENE, "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let said: Vec<&str> = text.lines().filter_map(|l| l.split_once("scene: ").map(|(_, s)| s)).collect();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(said.len(), 3, "the scenes ran, in their order:\n{text}\n{err}");
+        let fds = |s: &str| s.split("fds=").nth(1).and_then(|n| n.parse::<usize>().ok()).unwrap();
+        assert!(said[1].starts_with("asked "), "{text}");
+        assert!(said[2].starts_with("keepers=0 "), "the keepers ended with their tests: {text}\n{err}");
+        let (before, after) = (fds(said[1]), fds(said[2]));
+        assert!(after <= before, "its descriptors let go: {before} before it was asked for, {after} after");
+    }
+
+    /// `a_keeper_a_test_asked_for_ends_with_the_test`'s tests: a session's keeper asked for, never ended — and
+    /// the descriptors there were before.
+    fn left_scene_asks(n: u32) {
+        if std::env::var_os(SCENE).is_none() {
+            return;
+        }
+        let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
+        let root = std::env::temp_dir().join(format!("tarae-keeper-left-{}-{n}", std::process::id()));
+        let k = ready(&root, Some("a key"), ns()).unwrap();
+        println!("scene: asked pid={} fds={fds}", k.pid);
+    }
+
+    #[test]
+    #[ignore = "run by a_keeper_a_test_asked_for_ends_with_the_test, in a process of its own"]
+    fn left_scene_1_asks() {
+        left_scene_asks(1);
+    }
+
+    #[test]
+    #[ignore = "run by a_keeper_a_test_asked_for_ends_with_the_test, in a process of its own"]
+    fn left_scene_2_asks() {
+        left_scene_asks(2);
+    }
+
+    /// The last: what's left of theirs.
+    #[test]
+    #[ignore = "run by a_keeper_a_test_asked_for_ends_with_the_test, in a process of its own"]
+    fn left_scene_3_looks() {
+        if std::env::var_os(SCENE).is_none() {
+            return;
+        }
+        let there = of(None).iter().filter(|k| !k.is_gone()).count();
+        let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
+        println!("scene: keepers={there} fds={fds}");
+    }
+
     /// `:procs` names each session's keeper (CLAUDE.md: a new kind of child process gets a line there).
     #[test]
     fn the_sessions_keeper_is_known() {
@@ -4187,7 +4327,7 @@ mod tests {
         if std::env::var_os(SCENE).is_none() {
             return;
         }
-        if std::env::var_os("TARAE_TEST_NO_RAISE").is_none()
+        if std::env::var_os(crate::testlimit::NO_RAISE).is_none()
             && let Some(said) = crate::nofile::raise()
         {
             println!("{said}");
@@ -4355,7 +4495,8 @@ mod tests {
         if open_rules("a_keepers_runs_get_the_descriptor_limit_tarae_started_with").is_none() {
             return;
         }
-        let mut cmd = scene_cmd("keeper_limit_scene", &[]);
+        // (`NO_RAISE`: the test binary's own raise at start leaves the 256 for `raise` to see)
+        let mut cmd = scene_cmd("keeper_limit_scene", &[(crate::testlimit::NO_RAISE, "1")]);
         // SAFETY: getrlimit/setrlimit only, between fork and exec.
         unsafe {
             cmd.pre_exec(|| {

@@ -238,6 +238,9 @@ mod terminal;
 mod test_results;
 mod testcode;
 mod testing;
+/// The test binary's descriptor limit, raised before any test as tarae's `main` raises its own (#643).
+#[cfg(test)]
+mod testlimit;
 mod textobject;
 mod theme;
 mod toast;

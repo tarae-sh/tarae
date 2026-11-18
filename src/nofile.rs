@@ -52,7 +52,7 @@ pub fn target(cur: u64, max: u64, cap: Option<u64>) -> Option<u64> {
 
 /// The most descriptors this system lets a process have: macOS's `kern.maxfilesperproc`, Linux's
 /// `fs.nr_open` (the hard limit is no higher, but read: a hard limit of `RLIM_INFINITY` isn't a number to set).
-fn cap() -> Option<u64> {
+pub(crate) fn cap() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
         let mut n: libc::c_int = 0;
@@ -75,7 +75,7 @@ fn cap() -> Option<u64> {
     }
 }
 
-fn limit() -> libc::rlimit {
+pub(crate) fn limit() -> libc::rlimit {
     let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: reads this process's limit into a struct of ours.
     unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) };
