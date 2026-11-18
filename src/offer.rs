@@ -757,6 +757,7 @@ impl Offer {
                     | What::NotesClose { .. }
                     | What::BillingSwitch { .. }
                     | What::FeaturesReset
+                    | What::ReviewAtEnd
                     | What::SafeBare { typed: true }
                     | What::ChangeSet { whose: crate::refactor::Whose::Yours, .. }
             ),

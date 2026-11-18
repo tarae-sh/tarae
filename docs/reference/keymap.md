@@ -317,7 +317,7 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 
 | Key | Command | Description |
 |---|---|---|
-| `space v a` | `review_at_end` | Claude's edits: review at end |
+| `space v a` | `review_at_end` | Agents' edits: review at end |
 | `space v b` | `review_branch` | Review against a branch… |
 | `space v c` | `review_claude` | Second Claude reviews changes |
 | `space v C` | `review_board` | A board reviews the changes |

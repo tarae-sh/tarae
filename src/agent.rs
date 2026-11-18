@@ -1888,7 +1888,7 @@ mod tests {
     /// `llm::agent_doc` (the session in front's agent, but `CLAUDE_ONLY_COMMANDS`' and `CLAUDE_ONLY_SETTINGS`'): each
     /// must be a doc of `cmdline::COMMANDS`, `commands::COMMANDS`, `commands::TYPED_IN_PALETTE` or `settings::SETTINGS`
     /// (read from the tables, so a status line can't hide as a doc), and as many as listed.
-    const AGENT_DOC_FILES: &[(&str, usize)] = &[("cmdline.rs", 18), ("commands.rs", 18), ("settings.rs", 25)];
+    const AGENT_DOC_FILES: &[(&str, usize)] = &[("cmdline.rs", 18), ("commands.rs", 17), ("settings.rs", 25)];
 
     /// What the sandbox writer's landing moves to the row (its files, after #616 and #624): counted as they stand, a
     /// list that only shrinks — lower a file's count as you move one, the list empty at its end.

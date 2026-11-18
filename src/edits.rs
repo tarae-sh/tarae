@@ -41,8 +41,8 @@ pub struct Edits {
 const AT_END_TITLE: &str = "Review agents' edits at the end?";
 
 /// What the card asks — what turning it on means.
-const AT_END_ASK: &str = "For every chat — each session's, and new ones: an agent's edits go into your files as it \
-makes them — before you see them — and the checks it runs (cargo test, cargo build) run that code.\n\nWhen its \
+const AT_END_ASK: &str = "For every chat, each session's and new ones: an agent's edits go into your files as it \
+makes them, before you see them, and the checks it runs (cargo test, cargo build) run that code.\n\nWhen its \
 turn ends you review all of it; space u takes the turn back. Build scripts, settings and files outside the \
 project still ask first.";
 

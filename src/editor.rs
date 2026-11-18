@@ -14793,6 +14793,29 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// frictions29 #626: review at the end's card is only ever your own key's (`space v a`, `:review-at-end`), so it
+    /// takes the keys at once — `y` turns it on with no `C-q` first, and its bottom line has no way in to say.
+    #[test]
+    fn review_at_the_ends_card_takes_the_keys_at_once() {
+        let scratch = crate::scratch::Scratch::new("at-end-keys");
+        let config = scratch.to_path_buf().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let mut ed = editor("");
+        ed.config_file = Some(config);
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        feed(&mut ed, "<space>va");
+        let o = ed.offers.first().expect("its card");
+        assert!(matches!(o.what, crate::offer::What::ReviewAtEnd) && o.yours, "your own key's");
+        assert!(ed.card_has_keys(), "your own key opened it: its keys at once");
+        // (drawn: a weighty card's `y` counts once it's in sight)
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
+        let line = crate::term::card_line(&ed).expect("the card drawn");
+        assert!(!line.contains("C-q answer"), "no way in to say: {line}");
+        feed(&mut ed, "y");
+        assert!(crate::edits::at_end(&ed) && ed.offers.is_empty(), "y answered it");
+    }
+
     /// frictions #134 A: review at the end is every chat's. `y` in one session turns another session's idle chat on
     /// at once, said in it; a chat mid-turn is told now and takes it at its turn's end — never mid-turn —, Claude
     /// hearing it then. Off reaches them the same way, without a card; so does the setting changed another way

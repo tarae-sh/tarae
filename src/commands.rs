@@ -229,7 +229,7 @@ commands! {
         review_hunk_seen => "Looked at this risky change",
         review_file_seen => "Looked at all drawn in file",
         review_close => "End the review",
-        review_at_end => "Claude's edits: review at end",
+        review_at_end => "Agents' edits: review at end",
         review_turn => "Review Claude's last turn",
         review_undo_change => "Take this change back",
         review_wide => "Read wide: hide rail and chat",
