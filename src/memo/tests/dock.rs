@@ -226,6 +226,83 @@ fn floating_or_docked_its_words_reach_no_agent() {
     assert!(shot.is_some_and(|s| heard(&s)), "the screen sent shows what's in sight");
 }
 
+/// Step (d): a memo longer than its room shows that it scrolls as the code's pane does, its bar in the blank column after
+/// its text — floating once it's grown to half the screen, docked once its lines pass its height; none while it fits.
+/// The view follows the cursor while it has the keys; docked without them it stays where it was left, a screen's height
+/// changing under it too.
+#[test]
+fn a_memo_longer_than_its_room_shows_the_code_panes_bar() {
+    let dir = crate::scratch::Scratch::new("memo-long");
+    let mut ed = editor(&dir);
+    let thumb = |rows: &[String], x: usize, ys: std::ops::Range<usize>| {
+        ys.filter(|&y| rows[y].chars().nth(x).is_some_and(|c| c.to_string() == crate::term::THUMB)).count()
+    };
+    // Floating: three lines fit, no bar; forty grow it to half the screen, then it scrolls — the bar, the cursor's row
+    feed(&mut ed, " Mone<ret>two<ret>three");
+    let r = drawn(&ed).unwrap();
+    let bar_x = r.x + PAD + text_w(r.w);
+    assert_eq!(thumb(&frame(&mut ed), bar_x, r.y + 1..r.y + r.h - 1), 0, "it fits: no bar");
+    let many: String = (4..=40).map(|i| format!("<ret>line {i}")).collect();
+    feed(&mut ed, &many);
+    let r = drawn(&ed).unwrap();
+    let rows = frame(&mut ed);
+    assert!(thumb(&rows, bar_x, r.y + 1..r.y + r.h - 1) > 0, "floating, longer than its room: the bar");
+    assert!(rows[r.y + r.h - 2].contains("line 40"), "the cursor's row in sight: {}", rows[r.y + r.h - 2]);
+    // Docked: its leaf's height passed — the bar in its last column; at its words' end, in sight
+    let more: String = (41..=60).map(|i| format!("<ret>line {i}")).collect();
+    feed(&mut ed, &format!("{more}<esc><C-w>e"));
+    let d = docked(&ed).expect("docked");
+    let rows = frame(&mut ed);
+    let last = d.y + crate::memo::memo_docked_rows(d.h);
+    assert!(thumb(&rows, d.x + d.w - 1, d.y + 1..last + 1) > 0, "docked, the bar");
+    assert!(from(&rows, last, d.x).contains("line 60"), "{}", rows[last]);
+    // Without the keys it stays where it was left — the screen shorter under it too
+    feed(&mut ed, "<C-w>w");
+    let was = ed.workspace.memo.as_ref().unwrap().scroll.get();
+    let rows = frame_at(&mut ed, W, 30);
+    assert_eq!(ed.workspace.memo.as_ref().unwrap().scroll.get(), was, "its view where it was");
+    let d = docked(&ed).expect("docked");
+    assert!(!rows.iter().any(|l| l.contains("line 60")), "the cursor's row not followed without the keys");
+    // With them again (`space M`: at the end of its words), it follows
+    feed_at(&mut ed, " M", W, 30);
+    let rows = frame_at(&mut ed, W, 30);
+    assert!(from(&rows, d.y + crate::memo::memo_docked_rows(d.h), d.x).contains("line 60"));
+}
+
+/// Step (d), the mouse on the memo, each as its kind's: a drag on its floating frame's top line moves it; a drag on its
+/// docked line sizes it (kept as a docked group's size); a drag in its docked words selects them, the keys its.
+#[test]
+fn the_mouse_moves_its_frame_sizes_its_dock_and_selects_its_words() {
+    let dir = crate::scratch::Scratch::new("memo-mouse");
+    let mut ed = editor(&dir);
+    let drag = |ed: &mut Editor, (x, y): (usize, usize), (x2, y2): (usize, usize)| {
+        press(ed, MouseKind::Down, x, y);
+        press(ed, MouseKind::Drag, x2, y2);
+        press(ed, MouseKind::Up, x2, y2);
+    };
+    // Floating: its top line, past its name, moves it by the drag
+    feed(&mut ed, " Mone<ret>two<esc>");
+    let r = drawn(&ed).unwrap();
+    drag(&mut ed, (r.x + 20, r.y), (r.x + 10, r.y + 3));
+    let moved = drawn(&ed).expect("floating still");
+    assert_eq!((moved.x, moved.y, moved.w, moved.h), (r.x - 10, r.y + 3, r.w, r.h), "moved, its size kept");
+    assert!(ed.memo_has_keys(), "the keys stay its");
+    // Docked: a drag on its line toward the code widens it
+    feed(&mut ed, "<C-w>e");
+    let d = docked(&ed).expect("docked");
+    drag(&mut ed, (d.x, d.y + 10), (d.x - 6, d.y + 10));
+    let wider = docked(&ed).expect("docked still");
+    assert_eq!((wider.x, wider.w), (d.x - 6, d.w + 6), "its line dragged six cells toward the code");
+    assert_eq!(ed.sizes.docked[GroupKind::Memo.dock_index()], Some((d.w + 6) as u16), "kept as its size");
+    // A drag in its words: selected
+    feed(&mut ed, "<C-w>w");
+    let d = wider;
+    drag(&mut ed, (d.x + 2, d.y + 2), (d.x + 4, d.y + 2));
+    assert!(ed.memo_has_keys(), "the keys its");
+    let sel = ed.workspace.memo.as_ref().unwrap().pane.doc().selection().primary();
+    assert_eq!((sel.from(), sel.to()), (4, 7), "`two` selected");
+}
+
 /// Every walk of `Workspace.groups` in the code, each with what the memo's group does there (`.sb/memo-c-dev-note.md`'s
 /// table): its membership is for its placement alone — never a tab, a list, a run panel, a frame of the groups', nor
 /// counted. A walk added without a line here fails, so it can't skip saying what the memo does in it.

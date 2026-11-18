@@ -6877,15 +6877,22 @@ fn draw_memo(
     }
     let mode = m.mode();
     let at = crate::memo::cursor_row(doc, cols, tab, mode);
-    let first = crate::memo::sight(m.scroll.get(), at, inner, view.len());
+    // (the view follows the cursor while it has the keys; docked without them it stays where you left it)
+    let first = match has {
+        true => crate::memo::sight(m.scroll.get(), at, inner, view.len()),
+        false => m.scroll.get().min(view.len().saturating_sub(inner)),
+    };
     m.scroll.set(first);
+    // (more rows than its room: the code pane's bar, in the blank column after its text — step (d))
+    let scrollbar = view.len() > inner;
     let view: Vec<Row> = view.into_iter().skip(first).take(inner).collect();
     let top = view.first().map_or(0, Row::line);
-    // (its measure and the cell soft wrap keeps after it: a line of the whole measure keeps the cursor on its row)
+    // (its measure and the cell soft wrap keeps after it: a line of the whole measure keeps the cursor on its row; the
+    // bar's column the blank after them)
     let pl = Layout {
         x0,
-        x1: x0 + cols,
-        scrollbar: false,
+        x1: x0 + cols + usize::from(scrollbar),
+        scrollbar,
         text_top: (r.y + 1) as u16,
         text_rows: inner,
         gutter: 0,
@@ -10075,7 +10082,7 @@ fn draw_scrollbar(
 
 /// A scroll thumb's (or mark's) glyph: a quarter block against the text's side, clear of a line beside it (a half
 /// block there read as a lump on the line — friction 92).
-const THUMB: &str = "▎";
+pub(crate) const THUMB: &str = "▎";
 
 #[cfg(test)]
 thread_local! {
