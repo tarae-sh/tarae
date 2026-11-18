@@ -274,7 +274,19 @@ fn policy_said(f: &Fixture, p: &Policy) -> String {
         ("reads.allow", r.allow.iter().map(|w| shown(w)).collect()),
         ("reads.kept", r.kept.iter().map(|w| shown(w)).collect()),
         ("copies.env", r.copies.env.iter().map(|(v, c)| format!("{v}={}", shown(c))).collect()),
-        ("copies.hidden", r.copies.hidden.iter().map(|(h, v)| format!("{} (${v})", shown(h))).collect()),
+        (
+            "copies.hidden",
+            r.copies
+                .hidden
+                .iter()
+                .map(|(h, v, why)| match why {
+                    crate::tokens::Why::Copy => format!("{} (${v})", shown(h)),
+                    crate::tokens::Why::Unread { tool, reads } => {
+                        format!("{} (unread: {tool} reads {reads})", shown(h))
+                    }
+                })
+                .collect(),
+        ),
         ("copies.left_out", r.copies.left_out.iter().map(|(h, v)| format!("{} (${v})", shown(h))).collect()),
         ("copies.told", r.copies.told.iter().map(|(w, _)| shown(w)).collect()),
         ("run env", p.env.iter().map(|(k, v)| format!("{k}={v}")).collect()),

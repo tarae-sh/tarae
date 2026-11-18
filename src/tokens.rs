@@ -350,39 +350,94 @@ fn git() -> Tool {
     Tool { name, var, form: Form::Git, file, out_keys: Vec::new() }
 }
 
-/// Where each tool reads its user settings, in the order it reads them (the later wins), as it finds them
-/// from `home` and the environment (`var`) on `os` — a variable naming its file wins (git's, a pack's `var`
-/// or `var-also`; its `off` value: none; with `var-if-there`, only when that file is there), else its
-/// `files` (`{ first, file }`: in the first folder that's there, else the last).
-pub fn sources_on(home: &Path, var: &dyn Fn(&str) -> Option<String>, os: Os) -> Vec<(Tool, Vec<PathBuf>)> {
+/// Where one tool's user settings are: what it reads, and every other place they may be.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sources {
+    /// What the tool reads now, in its order (the later wins) — what its copy is made of.
+    pub reads: Vec<PathBuf>,
+    /// Every other place its settings may be — without its variable, with `XDG_CONFIG_HOME` at its default, a
+    /// `first`'s folders it didn't pick — each with what the tool reads instead, as said (`$GIT_CONFIG_GLOBAL`,
+    /// `~/.pip/pip.conf`): one holding a token-like line gets no copy, and no run reads it (#624).
+    pub defaults: Vec<(PathBuf, String)>,
+}
+
+/// Where each tool reads its user settings (`Sources.reads`), in the order it reads them (the later wins), as
+/// it finds them from `home` and the environment (`var`) on `os` — a variable naming its file wins (git's, a
+/// pack's `var` or `var-also`; its `off` value: none; with `var-if-there`, only when that file is there), else
+/// its `files` (`{ first, file }`: in the first folder that's there, else the last) — and every other place
+/// they may be (`Sources.defaults`).
+pub fn sources_on(home: &Path, var: &dyn Fn(&str) -> Option<String>, os: Os) -> Vec<(Tool, Sources)> {
+    use crate::sandboxpack::SettingFile;
     let set = |name: &str| var(name).filter(|v| !v.is_empty()).map(PathBuf::from);
     let t = crate::sandboxpack::get();
     let vars = crate::sandboxpack::Vars::new(t, home, &set, os);
-    let git_files = match set("GIT_CONFIG_GLOBAL") {
-        Some(f) => vec![f],
-        None => vec![vars.xdg_config.join("git/config"), home.join(".gitconfig")],
+    // (the places with `XDG_CONFIG_HOME` at its default, `~/.config`: one there is unread once it moves the tool)
+    let unset = |name: &str| if name == "XDG_CONFIG_HOME" { None } else { set(name) };
+    let unmoved = crate::sandboxpack::Vars::new(t, home, &unset, os);
+    // (`named`: the variable that names the file read — None in it: `off`)
+    let sources = |files: &[SettingFile], named: Option<(&str, Option<PathBuf>)>| {
+        let (mut reads, mut defaults) = (Vec::new(), Vec::new());
+        for f in files {
+            let picked = setting_file(f, &vars);
+            let instead = match (&named, &picked) {
+                (Some((v, _)), _) => format!("${v}"),
+                (None, Some(p)) => shown_from(p, home),
+                (None, None) => continue,
+            };
+            let all: Vec<PathBuf> = match f {
+                SettingFile::Place(p) => [vars.place(p), unmoved.place(p)].into_iter().flatten().collect(),
+                SettingFile::First { dirs, file } => [&vars, &unmoved]
+                    .iter()
+                    .flat_map(|v| dirs.iter().filter_map(|d| v.place(d)))
+                    .map(|d| d.join(file))
+                    .collect(),
+            };
+            defaults.extend(all.into_iter().map(|c| (c, instead.clone())));
+            if named.is_none() {
+                reads.extend(picked);
+            }
+        }
+        if let Some((_, Some(f))) = named {
+            reads.push(f);
+        }
+        let mut seen: Vec<PathBuf> = Vec::new();
+        defaults.retain(|(c, _)| {
+            let new = !reads.contains(c) && !seen.contains(c);
+            seen.push(c.clone());
+            new
+        });
+        Sources { reads, defaults }
     };
-    let mut out = vec![(git(), git_files)];
+    let git_files = ["{xdg-config}/git/config", "~/.gitconfig"].map(|p| SettingFile::Place(p.into()));
+    let git_named = set("GIT_CONFIG_GLOBAL").map(|f| ("GIT_CONFIG_GLOBAL", Some(f)));
+    let mut out = vec![(git(), sources(&git_files, git_named))];
     for s in &t.settings {
         let (Some(name), Some(file)) = (&s.var, &s.copy) else { continue };
         let form = if s.form == "ini" { Form::Ini } else { Form::Lines };
         let (out_keys, file) = (s.out_keys.clone(), file.clone());
         let tool = Tool { name: s.tool.clone(), var: name.clone(), form, file, out_keys };
-        let named = std::iter::once(name).chain(&s.var_also).find_map(|v| set(v));
-        let named = named.filter(|f| !s.var_if_there || f.exists());
-        let files = match named {
-            Some(f) if s.off.as_deref().is_some_and(|off| f == Path::new(off)) => vec![],
-            Some(f) => vec![f],
-            None => s.files.iter().filter_map(|f| setting_file(f, &vars)).collect(),
-        };
-        out.push((tool, files));
+        let named = std::iter::once(name).chain(&s.var_also).find_map(|v| Some((v.as_str(), set(v)?)));
+        let named = named.filter(|(_, f)| !s.var_if_there || f.exists());
+        let named = named.map(|(v, f)| match s.off.as_deref().is_some_and(|off| f == Path::new(off)) {
+            true => (v, None),
+            false => (v, Some(f)),
+        });
+        out.push((tool, sources(&s.files, named)));
     }
     out
 }
 
+/// `p` with `home` spelled `~`.
+fn shown_from(p: &Path, home: &Path) -> String {
+    match p.strip_prefix(home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
 /// `sources_on` this system.
 #[cfg(test)]
-pub fn sources(home: &Path, var: &dyn Fn(&str) -> Option<String>) -> Vec<(Tool, Vec<PathBuf>)> {
+pub fn sources(home: &Path, var: &dyn Fn(&str) -> Option<String>) -> Vec<(Tool, Sources)> {
     sources_on(home, var, Os::HOST)
 }
 
@@ -403,9 +458,9 @@ fn setting_file(f: &crate::sandboxpack::SettingFile, vars: &crate::sandboxpack::
 pub struct Copies {
     /// Each tool's variable and its copy, for the run's environment.
     pub env: Vec<(String, PathBuf)>,
-    /// The files that hold a token-like line (real paths) and the variable whose copy stands in: runs don't
-    /// read them — but one the user let Claude read (`copies`' `granted`).
-    pub hidden: Vec<(PathBuf, String)>,
+    /// The files that hold a token-like line (real paths), their tool's variable and why they're kept: runs
+    /// don't read them — but one the user let Claude read (`copies`' `granted`).
+    pub hidden: Vec<(PathBuf, String, Why)>,
     /// The files whose token-like lines a copy left out (hidden or not: npm's is kept anyway, one the user
     /// let Claude read isn't), and the copy's variable.
     pub left_out: Vec<(PathBuf, String)>,
@@ -429,10 +484,33 @@ impl Copies {
         Some((files.join(", "), vars.join(", ")))
     }
 
-    /// The variable whose copy stands in for `real`, when it's a file kept for its token.
-    pub fn instead_of(&self, real: &Path) -> Option<&str> {
-        self.hidden.iter().find(|(f, _)| f == real).map(|(_, v)| v.as_str())
+    /// The files holding a token their tool doesn't read here (`Why::Unread`), as said, by tool: (tool, files).
+    pub fn unread_said(&self) -> Vec<(&str, Vec<String>)> {
+        let mut out: Vec<(&str, Vec<String>)> = Vec::new();
+        for (f, _, why) in &self.hidden {
+            let Why::Unread { tool, .. } = why else { continue };
+            match out.iter_mut().find(|(t, _)| t == tool) {
+                Some((_, files)) => files.push(crate::allow::tilde(f)),
+                None => out.push((tool, vec![crate::allow::tilde(f)])),
+            }
+        }
+        out
     }
+
+    /// `real`'s tool's variable and why it's kept, when it's a file kept for its token.
+    pub fn kept_for_token(&self, real: &Path) -> Option<(&str, &Why)> {
+        self.hidden.iter().find(|(f, ..)| f == real).map(|(_, v, why)| (v.as_str(), why))
+    }
+}
+
+/// Why a file holding a token is kept from runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// Its tool reads it: runs read a copy without its token lines, at the variable.
+    Copy,
+    /// Its tool doesn't read it here (its variable names another file, `XDG_CONFIG_HOME` moved it, a `first`
+    /// picked another folder): no copy (#624). `reads`: what the tool reads instead, as said.
+    Unread { tool: String, reads: String },
 }
 
 /// Making one tool's copy: where the copies go, which files held a token, how many copies were made, the keys
@@ -592,12 +670,13 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// The copies for a run whose own folder is `dir` (None: none could be made — the files that hold a token
-/// stay closed all the same), from each tool's `sources`: a tool whose files hold a token-like line — or one
-/// of which is kept from every run (`kept`: npm's) — gets one copy of them all, in the order it reads them,
-/// without those lines. A file that holds one is hidden from the run — unless the user let Claude read it
-/// (`granted`; their card said what it holds), or it's kept already. Real paths in.
+/// stay closed all the same), from each tool's `sources`: a tool whose files it reads hold a token-like line —
+/// or one of which is kept from every run (`kept`: npm's) — gets one copy of them all, in the order it reads
+/// them, without those lines. A file that holds one is hidden from the run — and one of its other places that
+/// holds one (`Sources.defaults`), with no copy — unless the user let Claude read it (`granted`; their card said
+/// what it holds), or it's kept already. Real paths in.
 pub fn copies(
-    sources: &[(Tool, Vec<PathBuf>)],
+    sources: &[(Tool, Sources)],
     dir: Option<&Path>,
     home: &Path,
     granted: &[PathBuf],
@@ -605,9 +684,9 @@ pub fn copies(
 ) -> Copies {
     let mut out = Copies::default();
     let folder = dir.map(|d| d.join("settings"));
-    for (tool, files) in sources {
+    for (tool, src) in sources {
         let real: Vec<PathBuf> =
-            files.iter().filter(|f| f.is_file()).map(|f| crate::sandbox::profile_path(f)).collect();
+            src.reads.iter().filter(|f| f.is_file()).map(|f| crate::sandbox::profile_path(f)).collect();
         let mut m = Making {
             dir: folder.as_deref(),
             home,
@@ -619,6 +698,20 @@ pub fn copies(
         let texts: Vec<(PathBuf, String)> =
             real.iter().filter_map(|f| Some((f.clone(), m.file(f, tool.form, 0)?))).collect();
         let is_kept = |f: &Path| kept.iter().any(|k| f.starts_with(k));
+        let opened = |f: &Path| is_kept(f) || granted.iter().any(|g| f.starts_with(g));
+        // Every other place its settings may be (#624): one holding a token-like line (its own lines — the tool
+        // reads none of it, includes neither) is hidden, with no copy
+        for (d, instead) in &src.defaults {
+            let d = crate::sandbox::profile_path(d);
+            if !d.is_file() || real.contains(&d) || m.held.contains(&d) || opened(&d) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&d) else { continue };
+            if String::from_utf8_lossy(&bytes).lines().any(token_like) {
+                let why = Why::Unread { tool: tool.name.clone(), reads: instead.clone() };
+                out.hidden.push((d, tool.var.clone(), why));
+            }
+        }
         if m.held.is_empty() && m.keys_gone == 0 && !real.iter().any(|f| is_kept(f)) {
             continue;
         }
@@ -641,8 +734,8 @@ pub fn copies(
             }
         }
         for h in m.held {
-            if !is_kept(&h) && !granted.iter().any(|g| h.starts_with(g)) {
-                out.hidden.push((h, tool.var.clone()));
+            if !opened(&h) {
+                out.hidden.push((h, tool.var.clone(), Why::Copy));
             }
         }
     }
@@ -1100,22 +1193,33 @@ mod tests {
     }
 
     /// Every tool's file as it's found: the variable naming it wins, `GOENV=off` is none, pip's folder on
-    /// macOS only when it's there.
+    /// macOS only when it's there — and every other place its settings may be, with what it reads instead
+    /// (#624): all of them while a variable names another file, `~/.config`'s while `XDG_CONFIG_HOME` moves the
+    /// tool, the folder a `first` didn't pick; never the file it reads.
     #[test]
     fn where_each_tool_reads_its_settings() {
         let home = scratch("sources");
         let none = |_: &str| None;
         let all = sources(&home, &none);
-        let get =
-            |all: &[(Tool, Vec<PathBuf>)], t: &str| all.iter().find(|(x, _)| x.name == t).unwrap().1.clone();
+        let find =
+            |all: &[(Tool, Sources)], t: &str| all.iter().find(|(x, _)| x.name == t).unwrap().1.clone();
+        let get = |all: &[(Tool, Sources)], t: &str| find(all, t).reads;
+        let defaults = |all: &[(Tool, Sources)], t: &str| -> Vec<PathBuf> {
+            find(all, t).defaults.into_iter().map(|(p, _)| p).collect()
+        };
         assert_eq!(get(&all, "git"), [home.join(".config/git/config"), home.join(".gitconfig")]);
         assert_eq!(get(&all, "npm"), [home.join(".npmrc")]);
         assert_eq!(get(&all, "pip"), [home.join(".pip/pip.conf"), home.join(".config/pip/pip.conf")]);
+        // (no variable, nothing moved: git and npm read every place theirs may be)
+        assert!(defaults(&all, "git").is_empty() && defaults(&all, "npm").is_empty(), "{all:?}");
         if cfg!(target_os = "macos") {
             assert_eq!(get(&all, "go"), [home.join("Library/Application Support/go/env")]);
             std::fs::create_dir_all(home.join("Library/Application Support/pip")).unwrap();
-            let pip = get(&sources(&home, &none), "pip");
-            assert_eq!(pip[1], home.join("Library/Application Support/pip/pip.conf"));
+            let pip = find(&sources(&home, &none), "pip");
+            assert_eq!(pip.reads[1], home.join("Library/Application Support/pip/pip.conf"));
+            // (the folder `first` didn't pick, said as what pip reads in its place)
+            let instead = "~/Library/Application Support/pip/pip.conf".to_string();
+            assert_eq!(pip.defaults, [(home.join(".config/pip/pip.conf"), instead)]);
         }
         let given = home.join("given.conf");
         write(&given, "[global]\n");
@@ -1128,11 +1232,30 @@ mod tests {
         };
         let all = sources(&home, &set);
         assert_eq!(get(&all, "git"), [PathBuf::from("/x/gitconfig")]);
+        // (git's every own place, the variable naming another — `~/.config`'s too, `XDG_CONFIG_HOME` moving it)
+        let named = |p: PathBuf| (p, "$GIT_CONFIG_GLOBAL".to_string());
+        assert_eq!(
+            find(&all, "git").defaults,
+            [
+                named("/xdg/git/config".into()),
+                named(home.join(".config/git/config")),
+                named(home.join(".gitconfig"))
+            ]
+        );
+        // (`GOENV=off`: Go reads none — its file one of the others)
         assert!(get(&all, "go").is_empty());
+        let go =
+            if cfg!(target_os = "macos") { "Library/Application Support/go/env" } else { ".config/go/env" };
+        assert!(defaults(&all, "go").contains(&home.join(go)), "{:?}", find(&all, "go"));
+        assert!(find(&all, "go").defaults.iter().all(|(_, w)| w == "$GOENV"));
         assert_eq!(get(&all, "pip"), std::slice::from_ref(&given));
+        let pip = defaults(&all, "pip");
+        for p in [home.join(".pip/pip.conf"), "/xdg/pip/pip.conf".into(), home.join(".config/pip/pip.conf")] {
+            assert!(pip.contains(&p), "{}: {pip:?}", p.display());
+        }
         // (npm's `userconfig`, read in any case — `Here::var` folds it: compat8)
         let by_var =
-            |all: &[(Tool, Vec<PathBuf>)], v: &str| all.iter().find(|(x, _)| x.var == v).unwrap().1.clone();
+            |all: &[(Tool, Sources)], v: &str| all.iter().find(|(x, _)| x.var == v).unwrap().1.reads.clone();
         for user in ["npm_config_userconfig", "NPM_CONFIG_USERCONFIG", "Npm_Config_UserConfig"] {
             let here = crate::sandbox::Here {
                 env: [(user.to_string(), "/x/npmrc".into())].into(),
@@ -1141,9 +1264,18 @@ mod tests {
             let all = sources(&home, &|n| here.var(n));
             assert_eq!(by_var(&all, "NPM_CONFIG_USERCONFIG"), [PathBuf::from("/x/npmrc")], "{user}");
         }
-        // (`PIP_CONFIG_FILE` naming no file: pip reads its own, as without it)
+        // (`PIP_CONFIG_FILE` naming no file: pip reads its own, as without it — its others, what it doesn't pick)
         let gone = |n: &str| (n == "PIP_CONFIG_FILE").then(|| "/x/none.conf".to_string());
-        assert_eq!(get(&sources(&home, &gone), "pip")[0], home.join(".pip/pip.conf"));
+        let pip = find(&sources(&home, &gone), "pip");
+        assert_eq!(pip.reads[0], home.join(".pip/pip.conf"));
+        assert!(pip.defaults.iter().all(|(_, w)| !w.starts_with('$')), "{pip:?}");
+        // (the variable naming one of its own places: that one read, never among the others)
+        let own = home.join(".pip/pip.conf");
+        write(&own, "[global]\n");
+        let at_own = |n: &str| (n == "PIP_CONFIG_FILE").then(|| own.display().to_string());
+        let pip = find(&sources(&home, &at_own), "pip");
+        assert_eq!(pip.reads, std::slice::from_ref(&own));
+        assert!(!pip.defaults.is_empty() && !pip.defaults.iter().any(|(p, _)| *p == own), "{pip:?}");
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -1178,7 +1310,7 @@ mod tests {
         );
         let home = std::fs::canonicalize(&home).unwrap();
         let mut src = sources(&home, &|_| None);
-        src[1].1 = vec![home.join("go.env")];
+        src[1].1.reads = vec![home.join("go.env")];
         let kept = [home.join(".npmrc")];
         let c = copies(&src, Some(&dir), &home, &[], &kept);
         let vars: Vec<&str> = c.env.iter().map(|(v, _)| v.as_str()).collect();
@@ -1205,7 +1337,7 @@ mod tests {
             assert_eq!(std::fs::metadata(f).unwrap().permissions().mode() & 0o777, 0o600);
         }
         assert!(!std::fs::read_to_string(&inc).unwrap().contains(FAKE));
-        let hidden: Vec<(PathBuf, &str)> = c.hidden.iter().map(|(h, v)| (h.clone(), v.as_str())).collect();
+        let hidden: Vec<(PathBuf, &str)> = c.hidden.iter().map(|(h, v, _)| (h.clone(), v.as_str())).collect();
         assert_eq!(
             hidden,
             [
@@ -1215,20 +1347,123 @@ mod tests {
                 (home.join(".config/pip/pip.conf"), "PIP_CONFIG_FILE"),
             ]
         );
-        assert_eq!(c.instead_of(&home.join(".gitconfig")), Some("GIT_CONFIG_GLOBAL"));
-        assert_eq!(c.left_out, c.hidden, "what's left out is what's hidden here");
+        assert!(c.hidden.iter().all(|(.., why)| *why == Why::Copy), "{:?}", c.hidden);
+        assert_eq!(c.kept_for_token(&home.join(".gitconfig")), Some(("GIT_CONFIG_GLOBAL", &Why::Copy)));
+        let hidden: Vec<(PathBuf, String)> =
+            c.hidden.iter().map(|(h, v, _)| (h.clone(), v.clone())).collect();
+        assert_eq!(c.left_out, hidden, "what's left out is what's hidden here");
         let (files, vars) = c.said().unwrap();
         assert!(files.contains("go.env") && vars == "GIT_CONFIG_GLOBAL, GOENV, PIP_CONFIG_FILE", "{vars}");
         // A file the user let Claude read: copied all the same, not hidden
         let dir2 = t.join("run2");
         std::fs::create_dir_all(&dir2).unwrap();
         let granted = copies(&src, Some(&dir2), &home, &[home.join(".config/pip")], &kept);
-        assert!(!granted.hidden.iter().any(|(h, _)| h.starts_with(home.join(".config/pip"))));
+        assert!(!granted.hidden.iter().any(|(h, ..)| h.starts_with(home.join(".config/pip"))));
         assert!(granted.env.iter().any(|(v, _)| v == "PIP_CONFIG_FILE"));
         assert!(granted.left_out.iter().any(|(h, _)| h.starts_with(home.join(".config/pip"))));
         // No run folder: nothing copied, the files still hidden
         let none = copies(&src, None, &home, &[], &kept);
         assert!(none.env.is_empty() && none.left_out.is_empty() && none.hidden == c.hidden);
+        std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// `GIT_CONFIG_GLOBAL` naming another file (#624): the home's `.gitconfig` holding a token is hidden, with no
+    /// copy and its own reason; the named file's copy is made as ever, without the old one's lines. One that holds
+    /// none, one the user let Claude read and one kept already aren't hidden.
+    #[test]
+    fn a_default_the_tool_doesnt_read_is_hidden_without_a_copy() {
+        let t = scratch("unread");
+        let (home, dir) = (t.join("home"), t.join("run"));
+        std::fs::create_dir_all(&dir).unwrap();
+        write(
+            &home.join(".gitconfig"),
+            &format!(
+                "[alias]\n\told = log\n[url \"https://u:{FAKE}@example.com/\"]\n\tinsteadOf = https://example.com/\n"
+            ),
+        );
+        write(
+            &home.join("named"),
+            &format!("[alias]\n\tco = checkout\n[http]\n\textraHeader = Bearer {FAKE}\n"),
+        );
+        let home = std::fs::canonicalize(&home).unwrap();
+        let named = home.join("named");
+        let var = |n: &str| (n == "GIT_CONFIG_GLOBAL").then(|| named.display().to_string());
+        let src = sources(&home, &var);
+        let c = copies(&src, Some(&dir), &home, &[], &[]);
+        let unread = Why::Unread { tool: "git".into(), reads: "$GIT_CONFIG_GLOBAL".into() };
+        let g = "GIT_CONFIG_GLOBAL".to_string();
+        assert_eq!(
+            c.hidden,
+            [(home.join(".gitconfig"), g.clone(), unread.clone()), (named.clone(), g.clone(), Why::Copy)]
+        );
+        assert_eq!(c.kept_for_token(&home.join(".gitconfig")), Some((g.as_str(), &unread)));
+        assert_eq!(c.left_out, [(named.clone(), g.clone())], "no copy of what git doesn't read");
+        let copy = std::fs::read_to_string(&c.env[0].1).unwrap();
+        assert!(
+            copy.contains("co = checkout") && !copy.contains("old = log") && !copy.contains(FAKE),
+            "{copy}"
+        );
+        assert_eq!(c.unread_said().len(), 1);
+        // Granted, kept, or holding none: not hidden
+        for (granted, kept) in
+            [(vec![home.join(".gitconfig")], vec![]), (vec![], vec![home.join(".gitconfig")])]
+        {
+            let c = copies(&src, None, &home, &granted, &kept);
+            assert_eq!(c.hidden, [(named.clone(), g.clone(), Why::Copy)], "{granted:?} {kept:?}");
+        }
+        write(&home.join(".gitconfig"), "[alias]\n\told = log\n");
+        let c = copies(&src, None, &home, &[], &[]);
+        assert_eq!(c.hidden, [(named.clone(), g.clone(), Why::Copy)]);
+        std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// pip's `first` folder it didn't pick holding a token, no variable set (#624): hidden, said as what pip reads
+    /// in its place — on macOS's folders, whatever this system is.
+    #[test]
+    fn a_first_folder_not_picked_holding_a_token_is_hidden() {
+        let t = scratch("first");
+        let home = t.join("home");
+        write(&home.join("Library/Application Support/pip/pip.conf"), "[global]\ntimeout = 7\n");
+        write(
+            &home.join(".config/pip/pip.conf"),
+            &format!("[global]\nindex-url = https://u:{FAKE}@p.example.com/\n"),
+        );
+        let home = std::fs::canonicalize(&home).unwrap();
+        let src = sources_on(&home, &|_| None, Os::Mac);
+        let c = copies(&src, Some(&t.join("run")), &home, &[], &[]);
+        let reads = "~/Library/Application Support/pip/pip.conf".to_string();
+        let unread = Why::Unread { tool: "pip".into(), reads };
+        assert_eq!(c.hidden, [(home.join(".config/pip/pip.conf"), "PIP_CONFIG_FILE".into(), unread)]);
+        assert!(c.env.is_empty() && c.left_out.is_empty(), "what pip reads holds none: no copy {c:?}");
+        std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// `XDG_CONFIG_HOME` moving git's folder, no `GIT_CONFIG_GLOBAL` (#624): `~/.config/git/config` holding a
+    /// token is hidden, said as the file git reads in its place; the home's `.gitconfig` it reads is copied.
+    #[test]
+    fn a_place_xdg_moved_away_from_holding_a_token_is_hidden() {
+        let t = scratch("xdg");
+        let (home, xdg) = (t.join("home"), t.join("xdg"));
+        write(&home.join(".config/git/config"), &format!("[http]\n\textraHeader = Bearer {FAKE}\n"));
+        write(
+            &home.join(".gitconfig"),
+            &format!("[alias]\n\tco = checkout\n[http]\n\textraHeader = Bearer {FAKE}\n"),
+        );
+        std::fs::create_dir_all(&xdg).unwrap();
+        let (home, xdg) = (std::fs::canonicalize(&home).unwrap(), std::fs::canonicalize(&xdg).unwrap());
+        let var = |n: &str| (n == "XDG_CONFIG_HOME").then(|| xdg.display().to_string());
+        let src = sources(&home, &var);
+        let c = copies(&src, Some(&t.join("run")), &home, &[], &[]);
+        let unread = Why::Unread { tool: "git".into(), reads: xdg.join("git/config").display().to_string() };
+        let g = "GIT_CONFIG_GLOBAL".to_string();
+        assert_eq!(
+            c.hidden,
+            [
+                (home.join(".config/git/config"), g.clone(), unread),
+                (home.join(".gitconfig"), g.clone(), Why::Copy)
+            ]
+        );
+        assert_eq!(c.left_out, [(home.join(".gitconfig"), g)]);
         std::fs::remove_dir_all(&t).ok();
     }
 

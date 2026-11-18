@@ -250,7 +250,7 @@ impl KeyRules {
             && !self.supervised
             && (self.places.iter().any(|k| k.starts_with(at) || at.starts_with(k))
                 || (in_home && !v.reads_place(at))
-                || self.reads.copies.hidden.iter().any(|(f, _)| f.starts_with(at)))
+                || self.reads.copies.hidden.iter().any(|(f, ..)| f.starts_with(at)))
     }
 
     /// Whether only the user's opening of that file (`Grant::Key`) lets a run read `real`.
@@ -275,10 +275,11 @@ impl KeyRules {
         self.view().writes_place(real, false)
     }
 
-    /// Whether runs read a copy of `real` in its place (a setting holding a token, `tokens::Copies`): the file
-    /// itself never — Claude's Read asks for it as for a key (`reads::key_closed`).
+    /// Whether `real` is a setting kept for its token (`tokens::Copies` — runs read a copy in its place, or its
+    /// tool doesn't read it here): the file itself never — Claude's Read asks for it as for a key
+    /// (`reads::key_closed`).
     pub fn copied(&self, real: &Path) -> bool {
-        self.reads.copies.instead_of(real).is_some()
+        self.reads.copies.kept_for_token(real).is_some()
     }
 
     /// The rule as designed, whatever the system enforces: macOS's profile's (Linux's Landlock only grants, so it
@@ -324,7 +325,7 @@ impl KeyView<'_> {
         // its report says so, and no key grant opens it)
         if opened.iter().any(|f| f == real)
             || self.reads.kept_holds(&self.own(), real)
-            || self.reads.copies.instead_of(real).is_some()
+            || self.reads.copies.kept_for_token(real).is_some()
         {
             return None;
         }
@@ -1212,7 +1213,7 @@ impl Policy {
     pub(super) fn clone_held(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
         let r = &self.reads;
         let home = r.home.iter().chain(r.profiles.iter().filter(|_| r.home.is_some()));
-        let closed = home.chain(&r.kept).chain(r.copies.hidden.iter().map(|(p, _)| p));
+        let closed = home.chain(&r.kept).chain(r.copies.hidden.iter().map(|(p, ..)| p));
         let mut free: Vec<&Path> = vec![&self.root];
         free.extend(self.run.iter().map(|d| d.path()));
         if self.keys.is_some() && !self.supervised {
@@ -1253,7 +1254,7 @@ impl Policy {
     /// Whether the profile lets a run read `real` — its rules, in Rust.
     pub fn reads_allow(&self, real: &Path) -> bool {
         let r = &self.reads;
-        if r.kept_holds(&self.own_places(), real) || r.copies.instead_of(real).is_some() {
+        if r.kept_holds(&self.own_places(), real) || r.copies.kept_for_token(real).is_some() {
             return false;
         }
         if is_terminal(real) {
@@ -1696,7 +1697,7 @@ impl Policy {
             r.home.iter().flat_map(|_| r.allow.iter().enumerate().map(|(i, p)| (format!("R{i}"), s(p)))),
         );
         v.extend(r.kept.iter().enumerate().map(|(i, p)| (format!("X{i}"), s(p))));
-        v.extend(r.copies.hidden.iter().enumerate().map(|(i, (p, _))| (format!("T{i}"), s(p))));
+        v.extend(r.copies.hidden.iter().enumerate().map(|(i, (p, ..))| (format!("T{i}"), s(p))));
         let (above, held) = self.clone_held();
         v.extend(above.iter().enumerate().map(|(i, p)| (format!("CA{i}"), s(p))));
         v.extend(held.iter().enumerate().map(|(i, p)| (format!("CH{i}"), s(p))));

@@ -1787,7 +1787,7 @@ pub(super) fn confine_in(
 ) -> io::Result<Confine> {
     let ptys = own.ptys;
     let abi = r.abi();
-    let hidden: Vec<PathBuf> = p.reads.copies.hidden.iter().map(|(f, _)| f.clone()).collect();
+    let hidden: Vec<PathBuf> = p.reads.copies.hidden.iter().map(|(f, ..)| f.clone()).collect();
     // (every pty is a file the reads would reach — reading one takes what's typed in another terminal)
     let pts = Path::new("/dev/pts");
     let pts_hole: Vec<PathBuf> = ptys.map(|_| pts.to_path_buf()).into_iter().collect();
@@ -3006,7 +3006,7 @@ mod tests {
         // A file read from a copy (no home here): its path through a bind of its folder is a hole too
         let netrc = dir.join("cfg/.netrc");
         p.reads.home = None;
-        p.reads.copies.hidden = vec![(netrc.clone(), "NETRC".into())];
+        p.reads.copies.hidden = vec![(netrc.clone(), "NETRC".into(), crate::tokens::Why::Copy)];
         let c = confine(
             &p,
             format!("1 0 0:50 / / rw - overlay o rw\n{}", line(2, &dir.join("cfg"), &host.join("cfg"))),

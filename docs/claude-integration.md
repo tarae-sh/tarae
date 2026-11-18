@@ -1346,7 +1346,10 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   When one does, tarae writes a copy without those lines in the run's own folder and points the tool at it
   (`GIT_CONFIG_GLOBAL` — git's two files merged, an include's path made whole, an included file holding a
   token copied too —, `GOENV`, `PIP_CONFIG_FILE`, `NPM_CONFIG_USERCONFIG`). The run doesn't read the file
-  itself, and Claude is told the tool reads a copy. Where there's no token nothing changes. `~/.npmrc` is
+  itself, and Claude is told the tool reads a copy. A place the tool's settings could be but it doesn't read
+  now — its variable naming another file, `XDG_CONFIG_HOME` moving it, pip's other folder — is closed too when
+  it holds a token, with no copy, and Claude is told the tool reads another file there. Where there's no token
+  nothing changes. `~/.npmrc` is
   never read, so npm always gets its copy (before, a run's npm lost its registry without a word).
   Cargo reads its config without a way to take a copy, and every cargo command fails without it. So a token
   in `~/.cargo/config.toml` stays readable, and tarae tells you once: cargo keeps tokens in

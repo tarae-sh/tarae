@@ -553,6 +553,7 @@ impl Guard {
         let Guard::In(p) = self else { return (String::new(), false) };
         let (mut names, mut git, mut caches, mut all) = (Vec::new(), false, Vec::new(), true);
         let (mut secret, mut services, mut copied) = (Vec::new(), Vec::new(), Vec::new());
+        let mut unread: Vec<String> = Vec::new();
         let (mut homes, mut ports, mut keys) = (Vec::new(), Vec::new(), Vec::new());
         let (mut beyond, mut temp_keys, mut locked) = (Vec::new(), Vec::new(), Vec::new());
         let (mut cloned, mut gits, mut repo) = (Vec::new(), Vec::new(), false);
@@ -667,9 +668,16 @@ impl Guard {
                     homes.extend(of.filter(|i| !homes.contains(i)));
                 }
                 _ if p.reads.kept_holds(&p.own_places(), path) => secret.push(crate::allow::tilde(path)),
-                _ if p.reads.copies.instead_of(path).is_some() => {
-                    let var = p.reads.copies.instead_of(path).unwrap_or_default();
-                    copied.push(format!("{} (${var})", crate::allow::tilde(path)))
+                _ if p.reads.copies.kept_for_token(path).is_some() => {
+                    let shown = crate::allow::tilde(path);
+                    match p.reads.copies.kept_for_token(path) {
+                        Some((_, crate::tokens::Why::Unread { tool, reads })) => unread.push(format!(
+                            "{shown}: it holds a token, so your commands don't read it — {tool} reads {reads} here, \
+                             not this file.\n"
+                        )),
+                        Some((var, _)) => copied.push(format!("{shown} (${var})")),
+                        None => {}
+                    }
                 }
                 _ if d.op.starts_with("file-write")
                     && p.run_homes.iter().any(|h| path.starts_with(&h.user)) =>
@@ -702,6 +710,8 @@ impl Guard {
         services.dedup();
         crate::sorting::sort(&mut copied);
         copied.dedup();
+        crate::sorting::sort(&mut unread);
+        unread.dedup();
         let mut s = String::new();
         if !copied.is_empty() {
             s.push_str(&format!(
@@ -711,6 +721,8 @@ impl Guard {
                 copied.join(", ")
             ));
         }
+        // (a setting holding a token its tool doesn't read here: nothing to copy, nothing a command needs — #624)
+        s.extend(unread);
         if !secret.is_empty() || !services.is_empty() {
             let what: Vec<String> =
                 secret.into_iter().chain(services.into_iter().map(String::from)).collect();
@@ -1070,12 +1082,23 @@ impl Guard {
                 // (said only where a token was there: nothing more to read on a machine without one)
                 // (a tool's store on the project's filesystem: told, or passed over and why — compat B12)
                 let stores: String = p.disk_stores.said().iter().map(|s| format!(" {s}")).collect();
-                let copies = match p.reads.copies.said() {
+                let mut copies = match p.reads.copies.said() {
                     Some((files, vars)) => {
                         format!(" The tools read copies of {files} without their token lines ({vars}).")
                     }
                     None => String::new(),
                 };
+                // (#624: a setting holding a token its tool doesn't read here — closed, no copy)
+                for (tool, files) in p.reads.copies.unread_said() {
+                    let (holds, it) = match files.len() {
+                        1 => ("holds a token", "it"),
+                        _ => ("hold tokens", "them"),
+                    };
+                    copies.push_str(&format!(
+                        " {} {holds} and {tool} doesn't read {it} here: no run reads {it}.",
+                        files.join(", ")
+                    ));
+                }
                 // (7a, 7b — names from the data, `secretnames`; what a file made beside one does on Linux is
                 // `linux::unread_said`'s, in the notes)
                 // (macOS: in the places outside a grant or a default opened too — Landlock only grants, so Linux
@@ -10531,7 +10554,7 @@ mod tests {
         let mut e = env(Path::new("/Users/u/p"));
         e.reads.copies = crate::tokens::Copies {
             env: vec![("GIT_CONFIG_GLOBAL".into(), copy.clone())],
-            hidden: vec![(gitconfig.clone(), "GIT_CONFIG_GLOBAL".into())],
+            hidden: vec![(gitconfig.clone(), "GIT_CONFIG_GLOBAL".into(), crate::tokens::Why::Copy)],
             left_out: vec![(gitconfig.clone(), "GIT_CONFIG_GLOBAL".into())],
             told: vec![],
             for_vars: vec!["GIT_CONFIG_GLOBAL".into()],
@@ -10560,6 +10583,51 @@ mod tests {
         assert!(!r.contains("If the command needs one of these"), "nothing left to open: {r}");
         let none = Guard::In(Box::new(Policy::for_project(&env(Path::new("/Users/u/p"))))).report(&[]);
         assert!(!none.contains("copies of") && !none.contains("T0"), "{none}");
+    }
+
+    /// A pack's variable naming another file (#624): pip's own `pip.conf` holding a token while `PIP_CONFIG_FILE`
+    /// names another — closed, no copy made of it, its refused read said as a file pip doesn't read here (not a
+    /// copy's), the rules saying no run reads it. No Seatbelt: on every system.
+    #[test]
+    fn a_setting_its_tool_doesnt_read_is_closed_without_a_copy() {
+        let t = crate::scratch::Scratch::new("sb-unread");
+        let (home, run) = (t.path().join("home"), t.path().join("run"));
+        let own = home.join(".pip/pip.conf");
+        let given = home.join("given.conf");
+        for (f, text) in [
+            (&own, "[global]\nindex-url = https://u:tarae-fake-token@p.example.com/s\nold = 1\n"),
+            (&given, "[global]\ntimeout = 7\n"),
+        ] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, text).unwrap();
+        }
+        std::fs::create_dir_all(&run).unwrap();
+        let var = |n: &str| (n == "PIP_CONFIG_FILE").then(|| given.display().to_string());
+        let sources = crate::tokens::sources_on(&home, &var, Os::Mac);
+        let mut e = env(Path::new("/Users/u/p"));
+        e.reads.copies = crate::tokens::copies(&sources, Some(&run), &home, &[], &[]);
+        let p = Policy::for_project(&e);
+        assert!(!p.reads_allow(&own), "pip's own file closed");
+        assert!(p.params().contains(&("T0".into(), own.display().to_string())), "{:?}", p.params());
+        assert!(e.reads.copies.env.is_empty() && e.reads.copies.left_out.is_empty(), "no copy of it");
+        let made = std::fs::read_dir(&run).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(made, 0, "nothing written for what pip doesn't read");
+        // Its report: the refused read said as unread, never as a copy
+        let refused = format!("fatal: unable to access '{}': Operation not permitted", own.display());
+        let r = Guard::In(Box::new(p.clone())).report(&[(true, refused)]);
+        let shown = crate::allow::tilde(&own);
+        assert!(
+            r.contains(&format!(
+                "{shown}: it holds a token, so your commands don't read it — pip reads $PIP_CONFIG_FILE here, \
+                 not this file."
+            )),
+            "{r}"
+        );
+        assert!(!r.contains(&format!("{shown} ($PIP_CONFIG_FILE)")) && !r.contains("copies of"), "{r}");
+        assert!(
+            r.contains(&format!(" {shown} holds a token and pip doesn't read it here: no run reads it.")),
+            "{r}"
+        );
     }
 
     /// A quiet run's report leaves out the rules Claude was told (`known`: their digest); one that says
@@ -11080,7 +11148,7 @@ mod tests {
         // rule's `ClosedOnceRead` took it first)
         let npmrc = f("/Users/u/.npmrc");
         let mut c = p.clone();
-        c.reads.copies.hidden.push((npmrc.clone(), "NPM_CONFIG_USERCONFIG".into()));
+        c.reads.copies.hidden.push((npmrc.clone(), "NPM_CONFIG_USERCONFIG".into(), crate::tokens::Why::Copy));
         assert_eq!(c.key_rule(&npmrc), None);
         assert!(!c.reads_allow(&npmrc));
         let d = Denial {

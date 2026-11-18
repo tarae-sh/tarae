@@ -33,6 +33,9 @@ use super::proxy::{FromProxy, Scope, ToProxy};
 use super::*;
 
 const FAKE_TOKEN: &str = "tarae-fake-token";
+/// #624's own case: the token in the file `GIT_CONFIG_GLOBAL` names (in two parts; `FAKE_TOKEN` in it, so every
+/// leak check sees it too).
+const NAMED_TOKEN: &str = concat!("tarae-fake-", "token-named");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Verdict {
@@ -226,6 +229,12 @@ fn in_stand_in_home() {
     write_file(
         &home.join(".gitconfig"),
         &format!("[user]\n\tname = t\n[http]\n\textraHeader = Authorization: Bearer {FAKE_TOKEN}\n"),
+    );
+    // (#624's own case: `GIT_CONFIG_GLOBAL` naming this one, the `.gitconfig` above git's own place it doesn't read)
+    let named_git = home.join("named.gitconfig");
+    write_file(
+        &named_git,
+        &format!("[user]\n\tname = named\n[http]\n\textraHeader = Authorization: Bearer {NAMED_TOKEN}\n"),
     );
 
     // Project files in `root` (a temporary git repository, hooks and signing disabled)
@@ -477,6 +486,18 @@ fn in_stand_in_home() {
     drop(_policy_cleanup);
     drop(_other_cleanup);
 
+    // Row 9, #624's own case: a policy whose `GIT_CONFIG_GLOBAL` names `named.gitconfig` — the home's `.gitconfig`,
+    // holding a token git doesn't read here, refused; the named one read only as its copy
+    let mut unread_here = here.clone();
+    unread_here.env.insert("GIT_CONFIG_GLOBAL".into(), named_git.clone().into_os_string());
+    let unread_policy = confined_policy_in(&root, &llm, &unread_here);
+    let unread_cleanup = RunCleanupGuard { policy: unread_policy.clone() };
+    let unread_cfg = unread_policy.run.as_ref().unwrap().path().join("refused.cfg");
+    write_file(&unread_cfg, &format!("HOME_DIR={}\nNAMED={}\n", home.display(), named_git.display()));
+    let (unread_out, unread_leaked) = run_helper(&exe, &unread_policy, "unread", &unread_cfg);
+    let unread_got = parse_kv(&unread_out);
+    drop(unread_cleanup);
+
     // Row 14: proxy unlisted host (`refused.invalid:443`), other session's proxy port, other session's token
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     let (proxy_got, proxy_leaked, has_proxy) =
@@ -722,7 +743,19 @@ fn in_stand_in_home() {
     let r9_home = got["r9_home"] == "refused";
     let r9_git = got["r9_gitconfig"] == "scrubbed";
     let r9_vars = got["r9_vars"] == "scrubbed";
-    let r9_ok = r9_ssh && r9_aws && r9_xdg && r9_env && r9_sb && r9_home && r9_git && r9_vars;
+    // (#624's: said in the detail, the table's witness as before — every tier's snapshot holds it)
+    let r9_unread = unread_got.get("r9_unread").is_some_and(|v| v == "refused") && !unread_leaked;
+    let r9_named = unread_got.get("r9_named").is_some_and(|v| v == "scrubbed");
+    let r9_ok = r9_ssh
+        && r9_aws
+        && r9_xdg
+        && r9_env
+        && r9_sb
+        && r9_home
+        && r9_git
+        && r9_vars
+        && r9_unread
+        && r9_named;
     rows.push(Row {
         claim: "1.3, 1.4",
         id: "read-kept",
@@ -739,7 +772,12 @@ fn in_stand_in_home() {
             got["r9_gitconfig"],
             got["r9_vars"]
         ),
-        detail: got.get("r9_err").cloned().unwrap_or_default(),
+        detail: format!(
+            "{} unread-gitconfig={} named-gitconfig={} unread-leaked={unread_leaked}",
+            got.get("r9_err").cloned().unwrap_or_default(),
+            unread_got.get("r9_unread").map_or("none", String::as_str),
+            unread_got.get("r9_named").map_or("none", String::as_str),
+        ),
         part: None,
         shared_phrase: None,
     });
@@ -2293,6 +2331,7 @@ fn in_sandbox() {
     match mode.as_str() {
         "main" => sandbox_main(&cfg),
         "move-in" => sandbox_move_in(&cfg),
+        "unread" => sandbox_unread(&cfg),
         "proxy" => sandbox_proxy(&cfg),
         "listen-b" => sandbox_listen_b(),
         #[cfg(target_os = "linux")]
@@ -2587,6 +2626,22 @@ fn sandbox_main(cfg: &HashMap<&str, &str>) {
             nested.map(|o| format!("code={:?}", o.status.code())).unwrap_or_else(|e| format!("err={e}")),
         );
     }
+}
+
+/// Row 9, #624's own case: `GIT_CONFIG_GLOBAL` named another file — the home's `.gitconfig` (a token git doesn't
+/// read here) refused; the named one refused raw, its copy at the variable there without its token.
+fn sandbox_unread(cfg: &HashMap<&str, &str>) {
+    let home = Path::new(cfg["HOME_DIR"]);
+    let named = Path::new(cfg["NAMED"]);
+    let unread = fs::read_to_string(home.join(".gitconfig"));
+    emit("r9_unread", if unread.is_err() { "refused" } else { "read" });
+    let copy =
+        std::env::var_os("GIT_CONFIG_GLOBAL").and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
+    let scrubbed = fs::read_to_string(named).is_err()
+        && copy.contains("name = named")
+        && !copy.contains(FAKE_TOKEN)
+        && !copy.contains("name = t\n");
+    emit("r9_named", if scrubbed { "scrubbed" } else { "leaked" });
 }
 
 fn sandbox_move_in(cfg: &HashMap<&str, &str>) {
