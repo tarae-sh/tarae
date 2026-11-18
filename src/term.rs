@@ -13106,6 +13106,13 @@ fn draw_statusline(
         left.push(Seg { cut: None, text: "  unsent ".into(), style: accent, keep: UNSENT });
         left.push(Seg::of(crate::whole::fit(&text, 24), dim, UNSENT));
     }
+    // The memo put away holding words (`Editor::memo_marked`, its step (b)): faint, beside the words of yours out of sight
+    // — a press brings it up, as `space M` does (`status_words`)
+    if editor.memo_marked() {
+        let faint = Style { fg: ui.linenr.fg, ..ui.status };
+        left.push(Seg { cut: None, text: "  ".into(), style: ui.status, keep: MEMO });
+        left.push(Seg { cut: None, text: MEMO_MARK.into(), style: faint, keep: MEMO });
+    }
     // (a session's branch is its name — the chip said it; a branch is a branch, faint ink, never a session's colour)
     if let Some(b) =
         editor.workspace.git_branch.as_ref().filter(|b| !chip || b.as_str() != editor.workspace.label())
@@ -13504,7 +13511,7 @@ fn draw_statusline(
 /// Claude's change waiting (`C-q`, the review), what's abnormal among tarae's processes (`:procs`), the file's errors and
 /// warnings (its diagnostics), the inbox's `· C-q` after its count (the card), the drafts' count (`space v s`: its press
 /// sends, the user's call for this word, the key's hints elsewhere staying `wordspot::COSTS`' plain words), `◂ new`
-/// (`space L`, the reader). Each run of
+/// (`space L`, the reader), `¶ memo` (`space M`'s, the memo up). Each run of
 /// segments of one press one word, from its first mark to its last; `right_x` where the right side starts.
 fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usize, usize)) {
     use crate::wordspot::{Press, Spot};
@@ -13519,6 +13526,7 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
         INBOX_NEXT => Some(Press::Card),
         DRAFTS | DRAFTS_KEY => Some(Press::Command("review_send")),
         UNREAD | UNREAD_KEY => Some(Press::Command("chat_toggle")),
+        MEMO => Some(Press::Command("memo")),
         _ => None,
     };
     let laid = |segs: &[Seg], x0: usize| -> Vec<(usize, Option<Press>, (String, Style))> {
@@ -13609,6 +13617,15 @@ const DRAFTS_KEY: u8 = DRAFTS - 1;
 /// first, the word last.
 const UNREAD: u8 = 233;
 const UNREAD_KEY: u8 = UNREAD - 1;
+
+/// The status line's `¶ memo` (`Editor::memo_marked`, the memo's step (b)): the memo put away holding words. Six
+/// cells, the one trace of what's out of sight: below what asks or waits for you, the chip, the diagnostics, a routine
+/// message said there (`SAID`) and the selections' count; over the servers' progress, Claude's sentence (`NOW_SAID`), the
+/// plan's step and the branch — which fold before it.
+const MEMO: u8 = 140;
+
+/// The memo's mark as the status line draws it.
+pub(crate) const MEMO_MARK: &str = "¶ memo";
 
 /// The status line's `keep` for a floating list's keys (`key_hints`): only the mode, the position and an error
 /// or warning waiting there (`FOLDED`) outlast them — and they're cut to fit beside those and the inbox's count,

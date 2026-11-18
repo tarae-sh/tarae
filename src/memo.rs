@@ -255,6 +255,17 @@ impl Editor {
         self.workspace.memo.as_ref().is_some_and(|m| m.up)
     }
 
+    /// The status line's `¶ memo` (step (b)): the memo put away holding words — kept from before too, not brought up
+    /// since tarae started. None while it's up (in sight), nor for one empty or never typed into.
+    pub fn memo_marked(&self) -> bool {
+        match self.workspace.memo.as_ref() {
+            Some(m) => !m.up && !m.is_empty(),
+            None => (self.memos.get(&self.memo_key()))
+                .and_then(|v| v["text"].as_str())
+                .is_some_and(|t| !t.is_empty()),
+        }
+    }
+
     /// `space M`, `:memo`: the memo up with the keys, insert mode at the end of its text — made the first time, with
     /// what was kept for this checkout; up already, put away.
     pub fn memo_toggle(&mut self) {

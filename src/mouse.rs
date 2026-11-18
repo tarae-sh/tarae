@@ -1789,6 +1789,12 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ),
         (
             "The status line",
+            "the memo's mark (`¶ memo`: the memo put away holding words) — a press brings it up, as `space M`",
+            Su::Status,
+            Part::Word(Word::Does(0)),
+        ),
+        (
+            "The status line",
             "a key hint (a list's, a picker's, a prompt's)",
             Su::Status,
             Part::Word(Word::Does(0)),

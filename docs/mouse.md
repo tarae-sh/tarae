@@ -76,6 +76,7 @@ that fills it (S selection).
 | The note card |  | — its words are text — a drag selects them | — nothing to answer — a drag selects its words | ✓ | as one press | ✓ | — nothing on hover |
 | The note card | a key on its bottom line | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | ✓ |
 | The status line | a word (`▲N waiting · C-q`, the chip, what Claude does now, `◂ new · space L`, the branch, `▲ N`, `full screen`) | ✓ | — the press did it | — a line of state, no text to select | as one press | — nothing to scroll | ✓ |
+| The status line | the memo's mark (`¶ memo`: the memo put away holding words) — a press brings it up, as `space M` | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | — nothing to scroll | ✓ |
 | The status line | a key hint (a list's, a picker's, a prompt's) | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | — nothing to scroll | ✓ |
 | The status line | the rest | — no word there: the mode and the position say where the keys are | — the press did it | — a line of state, no text to select | as one press | — nothing to scroll | — nothing on hover |
 | The start screen | a row with keys | ✓ | — the press did it | says: the start screen has nothing to select — a press on a row presses its keys | as one press | — nothing to scroll | — nothing on hover |

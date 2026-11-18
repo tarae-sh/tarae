@@ -402,6 +402,8 @@ pub(crate) const SCENES: &[Scene] = &[
     ("the memo, a prompt opened over it (its own `/`)", |ed| {
         feed(ed, &[" ", "M", "o", "n", "e", "<esc>", "/"])
     }),
+    // (…put away holding words: the keys the code's, the status line's `¶ memo` a press that brings it up — step (b))
+    ("the memo put away holding words", |ed| feed(ed, &[" ", "M", "o", "n", "e", "<esc>", " ", "M"])),
     // (bgreview: the reviewer reads in the background, no review open — its segment on the status line takes no key)
     ("the reviewer reading, no review open", |ed| {
         let rv = crate::reviewer::Reviewer::for_test(

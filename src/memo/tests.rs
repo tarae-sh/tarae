@@ -219,6 +219,81 @@ fn the_memos_body_is_on_the_toasts_slight_ground_and_its_frame_on_the_panes() {
     }
 }
 
+/// The status line's `¶ memo` as drawn: its word (a press that runs `memo`), and the status line's row.
+fn mark(ed: &mut Editor) -> (Option<crate::wordspot::Spot>, String) {
+    let rows = frame(ed);
+    let spots = ed.screen.word_spots.borrow().clone();
+    let word = spots.into_iter().find(|s| s.press == crate::wordspot::Press::Command("memo"));
+    (word, rows[H as usize - 1].clone())
+}
+
+/// Step (b): while the memo holds words and is put away, the status line says `¶ memo`, faint — none while it's empty,
+/// none while it's up (it's in sight); a press on it brings it up as `space M` does, the keys its, insert mode at the end
+/// of its words; emptied and put away, the mark is gone.
+#[test]
+fn the_status_line_marks_a_memo_put_away_with_words_and_a_press_brings_it_up() {
+    let dir = crate::scratch::Scratch::new("memo-mark");
+    let mut ed = editor(&dir);
+    let said = |line: &str| line.contains(crate::term::MEMO_MARK);
+    let (word, line) = mark(&mut ed);
+    assert!(word.is_none() && !said(&line), "no memo: no mark — {line}");
+    feed(&mut ed, " M");
+    let (word, line) = mark(&mut ed);
+    assert!(word.is_none() && !said(&line), "up, empty: {line}");
+    feed(&mut ed, "<esc> M");
+    assert!(!ed.memo_up());
+    let (word, line) = mark(&mut ed);
+    assert!(word.is_none() && !said(&line), "put away empty: {line}");
+    feed(&mut ed, " Mone<ret>two");
+    let (word, line) = mark(&mut ed);
+    assert!(word.is_none() && !said(&line), "up with words: in sight — {line}");
+    feed(&mut ed, "<esc> M");
+    let (word, line) = mark(&mut ed);
+    assert!(said(&line), "put away with words: {line}");
+    let s = word.expect("its word");
+    let text: String = s.spans.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(text, crate::term::MEMO_MARK, "the whole mark one button, the blanks the line's");
+    assert_eq!((s.on, s.y), (crate::mouse::Surface::Status, H as usize - 1));
+    // (the code's keys, moved off the end of the memo's words: the press puts its cursor back there)
+    ed.workspace.memo.as_mut().unwrap().pane.doc_mut().set_selection(crate::selection::Selection::point(0));
+    press(&mut ed, MouseKind::Down, s.from + 2, s.y);
+    press(&mut ed, MouseKind::Up, s.from + 2, s.y);
+    assert!(ed.memo_has_keys(), "the press brought it up with the keys");
+    assert_eq!(ed.keys_to().region, Region::Memo);
+    let m = ed.workspace.memo.as_ref().unwrap();
+    assert_eq!(m.mode(), Mode::Insert, "typing");
+    assert_eq!(
+        m.pane.doc_in().unwrap().selection().primary().head,
+        "one\ntwo".len(),
+        "at the end of its words"
+    );
+    let (word, line) = mark(&mut ed);
+    assert!(word.is_none() && !said(&line), "up again: {line}");
+    // Emptied and put away (a take's hands: `esc % d space M`): no mark
+    feed(&mut ed, "<esc>%d M");
+    assert!(
+        !ed.memo_up() && ed.workspace.memo.as_ref().unwrap().is_empty(),
+        "{:?}",
+        ed.workspace.memo.as_ref().map(Memo::text)
+    );
+    let (word, line) = mark(&mut ed);
+    assert!(word.is_none() && !said(&line), "emptied: {line}");
+}
+
+/// The mark for words kept from before: a memo not brought up since tarae started, its checkout's words in the state's
+/// `memos.json` — said as one put away is; an empty one kept, not.
+#[test]
+fn the_mark_says_words_kept_from_before() {
+    let dir = crate::scratch::Scratch::new("memo-mark-kept");
+    let mut ed = editor(&dir);
+    let key = ed.workspace.root.to_string_lossy().into_owned();
+    ed.memos.insert(key.clone(), serde_json::json!({ "text": "from yesterday" }));
+    assert!(ed.workspace.memo.is_none());
+    assert!(mark(&mut ed).1.contains(crate::term::MEMO_MARK), "{}", mark(&mut ed).1);
+    ed.memos.insert(key, serde_json::json!({ "text": "" }));
+    assert!(!mark(&mut ed).1.contains(crate::term::MEMO_MARK), "{}", mark(&mut ed).1);
+}
+
 /// Its measure is 40 characters: a line of 40 stays whole with the cursor after it on its row, the 41st wraps.
 #[test]
 fn a_line_of_the_measure_stays_whole_with_the_cursor_after_it() {
