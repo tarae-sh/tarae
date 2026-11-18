@@ -307,8 +307,9 @@ side git · 4 rows · in hand git:src/term.rs
   - `held` (frictions25 R8): why its yes isn't among its answers (`Offer.held` — high-risk changes no one has
     looked at), `null` when it isn't held; the text form says it on the card's line, `y held: …`. `aside`: it
     stepped aside for what its `h` went to (`Offer.aside`) — `aside, C-q answers it` on the line. `waits` (V 13):
-    `focus` while the front card waits to be focused (`keys.waiting` names it), else `null` — `waits, C-q focuses
-    it` on the line.
+    `focus` while the front card waits to be focused (`keys.waiting` names it), `room` while no frame has room to draw
+    it (it can't be focused until one has: `C-q` says what the screen lacks, #637), else `null` — `waits, C-q focuses
+    it` on the line (`waits for room on screen, C-q says what it needs`).
   - `text` (cardburden 5, full level only): the card's text whole, `[{ line, role }]` — `role` as the card draws
     the line: `warning` (what yes risks, the warning colour: `Offer.warning` and the data's `warnings`) over
     `diff` (what changed since a `y`, `sinceyes`) over `decided` (`decided_lines`, full strength) — the rest

@@ -612,8 +612,8 @@ impl Editor {
         let review_unseen =
             self.workspace.claude.review.as_ref().is_some_and(|r| r.handed || r.focused && !r.seen);
         let answers = match region {
-            // (none for a card no presented frame had room for: `card_key` refuses every key, said — nor for one drawn,
-            // weighty or handed the keys, in a frame not presented yet: its answers refused)
+            // (none for a card no presented frame had room for: it has no keys, `C-q` saying why — #637 —; nor for one
+            // drawn, weighty or handed the keys, in a frame not presented yet: its answers refused)
             Region::Card(id)
                 if self.offer_unshown_now().is_some_and(|u| u.0 == id)
                     || (self.card_unpresented() && self.offers.first().is_some_and(|o| o.id == id)) =>
@@ -1702,7 +1702,8 @@ pub struct CardState {
     /// It stepped aside for what its `h` went to (`Offer.aside`): its letters are the code's, `C-q` answers it.
     pub aside: bool,
     /// What it waits for before it takes the keys: `focus` — the front card not focused (`card_waits`, the keys'
-    /// `waiting` names it): every key is where the keys are meanwhile; `C-q`, a click on it or `C-w w` focuses it.
+    /// `waiting` names it): every key is where the keys are meanwhile; `C-q`, a click on it or `C-w w` focuses it ·
+    /// `room` — no frame had room to draw it (#637): it can't be focused, `C-q` says what the screen lacks.
     pub waits: Option<&'static str>,
     /// The front card's last key it didn't take, and why — what it says on itself (`offer_refused`; a `y` before
     /// it was seen whole: `y — see it whole first (v)`) — until it changes (frictions29 #69: a driver's two `y`s
@@ -2021,7 +2022,13 @@ impl Editor {
                 held: o.held.clone(),
                 withheld,
                 aside: o.aside,
-                waits: (is_front && self.card_waits()).then_some("focus"),
+                waits: (is_front && self.card_waits()).then(|| {
+                    // (#637: no frame had room for it — it can't take the keys until one does)
+                    match self.offer_unshown_now() == Some((o.id, o.rev)) {
+                        true => "room",
+                        false => "focus",
+                    }
+                }),
             }
         };
         let mut cards: Vec<CardState> = self
@@ -2416,7 +2423,12 @@ impl UiState {
             keys += &format!(" · under it: {}", u.name());
         }
         if let Some(card) = &k.waiting {
-            keys += &format!(" · {card} waits — C-q focuses it");
+            // (#637: one no frame has room for can't be focused — `C-q` says what it needs)
+            let room = self.cards.iter().any(|c| &c.id == card && c.waits == Some("room"));
+            keys += &match room {
+                true => format!(" · {card} waits for room on screen — C-q says what it needs"),
+                false => format!(" · {card} waits — C-q focuses it"),
+            };
         }
         Some(keys)
     }
@@ -2455,8 +2467,10 @@ impl UiState {
             if c.aside {
                 line += " · aside, C-q answers it";
             }
-            if c.waits.is_some() {
-                line += " · waits, C-q focuses it";
+            match c.waits {
+                Some("room") => line += " · waits for room on screen, C-q says what it needs",
+                Some(_) => line += " · waits, C-q focuses it",
+                None => {}
             }
             if c.state != "asking" {
                 line += &format!(" · {}", c.state);

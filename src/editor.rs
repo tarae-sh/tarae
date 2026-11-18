@@ -624,6 +624,9 @@ pub struct Screen {
     /// The peeks this frame draws with their count (`C-q ×3`, #544): (its card's id, its row, its first column, past its
     /// last) — a way in in sight, as the front card's `offer_way`.
     pub asks_ways: Vec<(u64, usize, usize, usize)>,
+    /// What the screen lacks for the front card this frame couldn't draw (`term::card_short`: `card needs 62 cols`,
+    /// `card needs more rows`) — the status line says it, and `C-q` on it (#637).
+    pub card_short: Option<String>,
     /// The sessions' strip drawn on the screen's top row this frame (`term::draw_header`): the home of a bring's
     /// progress — the status line's chip says it only on a frame with none (#319).
     pub top_strip: std::cell::Cell<bool>,
@@ -1515,8 +1518,9 @@ pub struct Editor {
     /// answers count only for it, once that frame was presented (`Stands.drawn`, `Editor::saw`).
     pub offer_drawn: std::cell::Cell<Option<(u64, u64, u64)>>,
     /// The front card a frame had no room to draw (id, `rev`, that frame — the status line said the size it needs):
-    /// `C-q` gives it the keys as ever, but no key of yours is its answer while nothing on screen shows it (`card_key`)
-    /// — kept, once a frame draws it again, until that frame was presented (`Editor::offer_unshown_now`).
+    /// it has no keys while nothing on screen shows it (`card_has_keys`, #637) — the frame lets go of its focus, `C-q`
+    /// says why it can't be drawn — kept, once a frame draws it again, until that frame was presented
+    /// (`Editor::offer_unshown_now`).
     pub offer_unshown: std::cell::Cell<Option<(u64, u64, u64)>>,
     /// The floating pane a window prefix just took the keys from (a card's `card_key`): `C-w w` from it goes on round
     /// the panes, not back to it.
@@ -1572,8 +1576,8 @@ pub struct Editor {
     next_id: DocId,
 }
 
-/// Said for a key meant for a card the last frame had no room to draw (`Editor::offer_unshown`).
-const CARD_UNSHOWN: &str = "no room on screen for the card, the window needs to be wider";
+/// Said for `C-q` on a card no frame has room for (#637) — the status line beside it says what the screen lacks.
+pub(crate) const CARD_NO_ROOM: &str = "no room to draw the card";
 
 impl Editor {
     /// An editor whose root is the folder the tests run in (`main` gives its own: `with_root`).
@@ -6273,9 +6277,11 @@ impl Editor {
     /// Whether the front card has the keys: focused (`card_focus` — P3 §3.8) as it says now, asking. One that came
     /// on its own waits in its faint frame until `C-q`, a click or `C-w w` focuses it, so no key meant for anything
     /// else is ever its answer — nothing guesses at what a key meant (the settle and the typing quiet went with it).
+    /// One no presented frame had room for never has them (#637: it held every key and refused its own answers): it
+    /// waits, the status line saying what it needs, `C-q` saying why it can't be drawn.
     pub fn card_has_keys(&self) -> bool {
-        self.card_focus.is_some()
-            && self.offers.first().filter(|o| !o.installing()).map(|o| (o.id, o.rev)) == self.card_focus
+        let up = self.offers.first().filter(|o| !o.installing()).map(|o| (o.id, o.rev));
+        self.card_focus.is_some() && up == self.card_focus && self.offer_unshown_now() != up
     }
 
     /// The front card waits to be focused: up, asking, without the keys — the status line's `▲1 waiting · C-q`, the
@@ -6349,6 +6355,13 @@ impl Editor {
             {
                 return false;
             }
+            // No frame has room for it: it can't take the keys (#637) — why, where you look, the keys staying (short:
+            // beside the status line's `▲3 waiting · card needs 38 rows` at 80 columns, which says what it needs)
+            if self.offer_unshown_now() == up {
+                self.card_focus = None;
+                self.set_status(CARD_NO_ROOM);
+                return true;
+            }
             self.card_focus_front();
             return true;
         }
@@ -6378,13 +6391,7 @@ impl Editor {
         }
         let reads = card_reads(key, &self.pending);
         self.pending.clear();
-        // Nothing on screen shows it (the last frame had no room, or the one with room isn't presented yet —
-        // `offer_unshown_now`): no key answers it, every card as a weighty one answers only once drawn (`Stands.drawn`)
-        // — said on the status line, as the card isn't there
-        if self.offer_unshown_now() == up {
-            self.set_status(format!("{key} not taken — {CARD_UNSHOWN}"));
-            return true;
-        }
+        // (one nothing on screen shows never has the keys — `card_has_keys`, #637: no key reaches it here)
         let front = self.offers.first().map(|o| (o.id, o.yours));
         if !self.offer_key(key) {
             // (its answers are beside what it says — on the card, or its bar)
@@ -21157,6 +21164,75 @@ mod tests {
         // Drawn, then renewed: its keys go, as any card's that changes
         renew(&mut ed);
         assert!(!ed.card_has_keys(), "drawn with its old words: the keys go");
+    }
+
+    /// #637: a card no frame has room for never holds the keys — your own neither (the halil Short's take: `space v q`'s
+    /// end card at 80×34, not drawn, took every key and refused its own `h` and `n`). It waits, the status line saying
+    /// what the screen lacks; `C-q` says why it can't be drawn, the keys staying; the keys typed meanwhile are the code's.
+    /// Once room comes it's drawn waiting — never taking the keys from where you went —, `C-q` focuses it and its
+    /// answers answer it. Drawn as it comes, yours has the keys at once.
+    #[test]
+    fn a_card_with_no_room_on_screen_holds_no_keys() {
+        use crate::offer::{Offer, What};
+        let mut ed = editor("one two\n");
+        let frame = |ed: &mut Editor, rows: u16| crate::term::render(ed, &mut Vec::new(), 80, rows).unwrap();
+        let yours = |ed: &mut Editor| {
+            let was = ed.events.set_asked(Some(ed.input_seq));
+            let end = What::ReviewEnd {
+                session: crate::event::WorkspaceId::HOME,
+                started: std::time::Instant::now(),
+            };
+            ed.push_offer(Offer::new(
+                "End the review?".into(),
+                "2 files not viewed.",
+                "",
+                String::new(),
+                end,
+            ));
+            ed.events.set_asked(was);
+        };
+        let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        // Drawn as it comes: yours, the keys at once
+        yours(&mut ed);
+        frame(&mut ed, 34);
+        assert!(ed.screen.offer_card.is_some() && ed.card_has_keys(), "drawn, yours: the keys at once");
+        feed(&mut ed, "n");
+        assert!(ed.offers.is_empty(), "its n answered it");
+        // No room for it: yours as it comes, then the frame that can't draw it lets go
+        yours(&mut ed);
+        assert!(ed.card_has_keys(), "yours, as it comes");
+        frame(&mut ed, 8);
+        assert!(ed.screen.offer_card.is_none(), "no room at 80×8");
+        let short = ed.screen.card_short.clone().expect("what the screen lacks, said");
+        assert!(short.starts_with("card needs "), "{short}");
+        assert!(!ed.card_has_keys() && ed.card_waits(), "not drawn: it waits");
+        assert!(!matches!(ed.keys_to().region, crate::uistate::Region::Card(_)), "{:?}", ed.keys_to().region);
+        // Its letters are the code's: `w` moves the cursor, `n` is no answer
+        let at = ed.doc().selection().primary().head;
+        feed(&mut ed, "w");
+        assert_ne!(ed.doc().selection().primary().head, at, "w moved the code's cursor");
+        feed(&mut ed, "n");
+        assert_eq!(ed.offers.len(), 1, "n didn't answer it");
+        // Room: drawn waiting — the keys stay where you went
+        frame(&mut ed, 34);
+        assert!(ed.screen.offer_card.is_some(), "drawn at 80×34");
+        assert!(!ed.card_has_keys(), "drawn later, it waits: the keys stay where you went");
+        // No room again: nothing focuses it (a press, `C-w w`: `card_focus_front`), `C-q` says why it can't be drawn,
+        // the keys staying
+        frame(&mut ed, 8);
+        ed.card_focus_front();
+        assert!(!ed.card_has_keys(), "focused with no frame to show it: no keys");
+        ed.card_focus = None;
+        feed(&mut ed, "<C-q>");
+        assert!(!ed.card_has_keys(), "C-q gives no keys to a card it can't draw");
+        assert_eq!(status(&ed), CARD_NO_ROOM);
+        // Room: `C-q` focuses it, its `n` answers it
+        frame(&mut ed, 34);
+        feed(&mut ed, "<C-q>");
+        assert!(ed.card_has_keys(), "C-q focuses it once it's drawn");
+        frame(&mut ed, 34);
+        feed(&mut ed, "n");
+        assert!(ed.offers.is_empty(), "its n answered it");
     }
 
     /// A focused card whose text changes (`Offer.rev` — asked again, joined, its group grown) lets go of the keys: a

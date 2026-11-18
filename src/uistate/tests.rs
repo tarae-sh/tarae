@@ -47,6 +47,20 @@ pub(crate) fn frame(ed: &mut Editor) {
     crate::term::render(ed, &mut Vec::new(), 120, 40).unwrap();
 }
 
+/// No room for a card (#637: the review-end card at 80×34 was nowhere): the code pane sized down over a task panel by
+/// `C-w -`, as the shots did over the terminal — a card's area under its 8 rows, a card not drawn, the status line saying
+/// `card needs N rows` (`term::card_short`). Before the card comes: `C-w` gives a focused card's keys back.
+fn no_room(ed: &mut Editor) {
+    task_panel(ed);
+    ed.workspace.viewer.slot_front = Some(Slot::Task);
+    frame(ed);
+    for _ in 0..15 {
+        feed(ed, &["<C-w>", "-"]);
+    }
+    frame(ed);
+    assert!(ed.viewport.0 < 8, "the code pane sized down: {:?}", ed.viewport);
+}
+
 /// A light card: `y` ends the code review (none here — nothing happens).
 pub(crate) fn light_card(ed: &mut Editor) {
     let o = Offer::new(
@@ -494,11 +508,26 @@ pub(crate) const SCENES: &[Scene] = &[
         light_card(ed);
         feed(ed, &["<C-q>"]);
     }),
-    // (the review of cardkeys: a card nothing shows — `C-q` gives it the keys as ever, no key answers it, said)
-    ("a card with no room on screen", light_card),
+    // (#637: a card no frame has room for holds no keys — every key is where they were, `C-q` says why it can't be
+    // drawn; focused before its frame, or your own as it comes, the frame with no room lets go)
+    ("a card with no room on screen", |ed| {
+        no_room(ed);
+        light_card(ed);
+    }),
     ("a card focused, then no room on screen", |ed| {
+        no_room(ed);
         light_card(ed);
         feed(ed, &["<C-q>"]);
+    }),
+    // (focused after the frame that had no room — as a press or `C-w w` would: still no keys, `card_has_keys`)
+    ("a card with no room on screen, settled", |ed| {
+        no_room(ed);
+        light_card(ed);
+    }),
+    ("your own card with no room on screen", |ed| {
+        no_room(ed);
+        yours_card(ed);
+        assert!(ed.card_has_keys(), "yours, as it comes");
     }),
     ("a card given the keys over the chat", |ed| {
         chat(ed, "hello");
@@ -1082,13 +1111,17 @@ fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String
             if name.contains("settled") {
                 focus(&mut ed);
             }
-            // (a scene with no room for its card: as a frame too small for it leaves it — `Editor::offer_unshown`)
+            // (a scene with no room for its card: its frame didn't draw it — `Editor::offer_unshown` —, and it says no
+            // key answers it: none reaches it)
             if name.contains("no room") {
-                ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
-                // (and it says no key answers it — every one is refused)
+                if ed.screen.offer_card.is_some() || ed.offer_unshown_now().is_none() {
+                    off.push(format!("{name}: its frame drew the card"));
+                }
                 let answers = ed.keys_to().answers;
                 if !answers.is_empty() {
-                    off.push(format!("{name}: keys_to says {answers:?} answer it, card_key refuses them"));
+                    off.push(format!(
+                        "{name}: keys_to says {answers:?} answer it, nothing it hasn't drawn answers"
+                    ));
                 }
             }
             // (a review focused but no frame has drawn since: as between `C-q` on its peek and the frame after —
@@ -1191,10 +1224,6 @@ fn the_routing_test_sees_each_case_broken() {
         let mut ed = editor();
         setup(&mut ed);
         frame(&mut ed);
-        // (as `mismatches` leaves a scene with no room for its card)
-        if name.contains("no room") {
-            ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
-        }
         if name.contains("no frame since") {
             ed.workspace.claude.review.as_mut().expect("a review").seen = false;
         }

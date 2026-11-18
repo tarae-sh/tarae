@@ -718,25 +718,16 @@ fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
         .unwrap_or_else(|| panic!("the width it needs: {said}"));
     status(&mut ed, cols - 1);
     assert!(ed.screen.offer_card.is_none(), "{cols}: not a column less");
-    // Nothing shows it, so nothing of yours answers it (the review of cardkeys): `C-q` gives it the keys as ever, its
-    // `y` (and `a`, `n`) refused and said on the status line — the proxy told nothing
+    // Nothing shows it, so nothing of yours reaches it (#637): `C-q` says why it can't be drawn, the keys staying in
+    // the chat — the proxy told nothing
     let _ = sent();
     ed.handle_key("C-q".parse().unwrap());
-    assert!(ed.card_has_keys(), "C-q focuses it");
+    assert!(!ed.card_has_keys(), "C-q gives no keys to a card it can't draw");
+    let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+    assert_eq!(said, crate::editor::CARD_NO_ROOM);
     assert!(ed.keys_to().answers.is_empty(), "the state names no answer for it");
-    for k in ['y', 'a', 'n'] {
-        ed.handle_key(Key::plain(Code::Char(k)));
-        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-        assert_eq!(
-            said,
-            format!("{k} not taken — no room on screen for the card, the window needs to be wider")
-        );
-    }
     assert_eq!(hosts_cards(&ed.offers).len(), 1, "not answered");
     assert!(sent().is_empty(), "nothing answered");
-    // (`esc` gives the keys back to the chat)
-    ed.handle_key(Key::plain(Code::Esc));
-    assert!(!ed.card_has_keys());
     let said = status(&mut ed, cols);
     let line = crate::term::card_line(&ed).unwrap_or_else(|| panic!("drawn at {cols}: {said}"));
     assert!(line.contains(" · a chat · s session · "), "its lasting answers in words: {line}");

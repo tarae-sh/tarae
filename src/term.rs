@@ -908,6 +908,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         offer_top: offer.as_ref().and_then(|c| c.top),
         asks_drawn: offer.as_ref().map(OfferCard::drawn_ids).unwrap_or_default(),
         asks_ways: offer.as_ref().map(OfferCard::peek_ways).unwrap_or_default(),
+        // (said once the frame knows whether the card stands: below, beside `offer_unshown`)
+        card_short: None,
         top_strip: Default::default(),
         news: Default::default(),
         offer_held: offer.is_none()
@@ -1256,11 +1258,23 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         editor.screen.asks_ways = offer.as_ref().map(OfferCard::peek_ways).unwrap_or_default();
         editor.screen.offer_cut = offer.as_ref().filter(|c| !c.bar).map(|c| c.cut);
     }
-    // (the front card this frame had no room for — the status line says the size it needs: nothing of yours answers a
-    // card nothing shows, `Editor::card_key`)
+    // (the front card this frame had no room for — the status line says the size it needs, `C-q` too: a card nothing
+    // shows has no keys, `Editor::card_has_keys`)
+    editor.screen.card_short =
+        editor.offers.first().filter(|_| offer.is_none()).and(card_short(editor, &lay));
     let unshown = (editor.offers.first())
-        .filter(|_| offer.is_none() && card_short(editor, &lay).is_some())
+        .filter(|_| editor.screen.card_short.is_some())
         .map(|o| (o.id, o.rev, editor.frames));
+    // (and it lets go of them: focused, or handed them by an answer, it waits as one that came on its own — once room
+    // comes it never takes the keys from where you went meanwhile, #637; `C-q` the way in)
+    if let Some(u) = unshown {
+        if editor.card_focus == Some((u.0, u.1)) {
+            editor.card_focus = None;
+        }
+        if editor.card_next == Some((u.0, u.1)) {
+            editor.card_next = None;
+        }
+    }
     // (one drawn again: kept until this frame is presented — `Editor::offer_unshown_now`)
     let again = editor.offer_unshown.get().filter(|u| front == Some((u.0, u.1)));
     editor.offer_unshown.set(unshown.or(again));
