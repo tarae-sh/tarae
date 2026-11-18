@@ -4455,6 +4455,8 @@ impl Editor {
                         }
                     }
                     K::Up => self.mouse_anchor = None,
+                    // (the wheel: its view, never the keys nor the cursor — `memo::wheel`)
+                    K::ScrollUp | K::ScrollDown => crate::memo::wheel(self, up),
                     _ => {}
                 }
             }

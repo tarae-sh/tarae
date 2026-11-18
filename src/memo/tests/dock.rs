@@ -303,6 +303,73 @@ fn the_mouse_moves_its_frame_sizes_its_dock_and_selects_its_words() {
     assert_eq!((sel.from(), sel.to()), (4, 7), "`two` selected");
 }
 
+/// The wheel over the memo's words scrolls its view (the user's rule: the wheel scrolls what's under the pointer) —
+/// docked without the keys, the memo being read; with them; floating — three rows a notch, one where its room is the
+/// chat's input's at most; never the keys nor the cursor. With the keys the next key brings the view back to the cursor;
+/// without them it stays. Nothing to scroll: nothing happens, nothing said.
+#[test]
+fn the_wheel_scrolls_the_memos_words_never_its_keys_nor_its_cursor() {
+    let dir = crate::scratch::Scratch::new("memo-wheel");
+    let mut ed = editor(&dir);
+    let wheel = |ed: &mut Editor, up: bool, (x, y): (usize, usize)| {
+        let kind = if up { MouseKind::ScrollUp } else { MouseKind::ScrollDown };
+        press(ed, kind, x, y);
+    };
+    let scroll = |ed: &Editor| ed.workspace.memo.as_ref().unwrap().scroll.get();
+    let head =
+        |ed: &Editor| ed.workspace.memo.as_ref().unwrap().pane.doc_in().unwrap().selection().primary().head;
+    // Short: nothing to scroll — nothing happens, nothing said
+    feed(&mut ed, " Mone<ret>two");
+    let r = drawn(&ed).unwrap();
+    let said = ed.toasts.len();
+    wheel(&mut ed, true, (r.x + 3, r.y + 1));
+    wheel(&mut ed, false, (r.x + 3, r.y + 1));
+    assert_eq!((scroll(&ed), ed.toasts.len()), (0, said), "it fits: nothing");
+    // Docked, sixty lines, the code's keys: three rows a notch, the keys and the cursor where they were
+    let many: String = (3..=60).map(|i| format!("<ret>line {i}")).collect();
+    feed(&mut ed, &format!("{many}<esc><C-w>e<C-w>w"));
+    let d = docked(&ed).expect("docked");
+    let at = (d.x + 3, d.y + 5);
+    let (bottom, cursor) = (scroll(&ed), head(&ed));
+    assert!(bottom > 0, "its view at its words' end");
+    wheel(&mut ed, false, at);
+    assert_eq!(scroll(&ed), bottom, "that end in sight: nothing");
+    wheel(&mut ed, true, at);
+    assert_eq!(scroll(&ed), bottom - 3, "three rows up");
+    let rows = frame(&mut ed);
+    let first = from(&rows, d.y + 1, d.x + 2);
+    assert!(first.starts_with(&format!("line {}", bottom - 3 + 1)), "drawn from there: {first}");
+    assert_eq!(ed.keys_to().region, Region::Code, "the keys stay the code's");
+    assert_eq!(head(&ed), cursor, "the cursor where it was");
+    // … without the keys it stays: a key in the code moves nothing there
+    feed(&mut ed, "j");
+    assert_eq!(scroll(&ed), bottom - 3, "stays where the wheel left it");
+    // With the keys: the wheel scrolls it, held; the next key brings it back to the cursor
+    feed(&mut ed, " M<esc>");
+    assert_eq!(scroll(&ed), bottom, "the keys given: at the cursor");
+    wheel(&mut ed, true, at);
+    wheel(&mut ed, true, at);
+    assert_eq!(scroll(&ed), bottom - 6, "two notches up");
+    assert!(ed.memo_has_keys(), "the keys stay its");
+    frame(&mut ed);
+    assert_eq!(scroll(&ed), bottom - 6, "held, the cursor out of sight");
+    feed(&mut ed, "l");
+    assert_eq!(scroll(&ed), bottom, "the next key: back to the cursor");
+    // Floating in a few rows (a short screen): one row a notch
+    feed(&mut ed, "<C-w>e");
+    frame_at(&mut ed, W, 12);
+    let r = drawn(&ed).expect("floating");
+    assert!(r.h - 2 <= crate::chatinput::ROWS, "a few rows: {r:?}");
+    let was = scroll(&ed);
+    press_at(&mut ed, MouseKind::ScrollUp, (r.x + 3, r.y + 1), (W, 12));
+    assert_eq!(scroll(&ed), was - 1, "one row a notch");
+}
+
+fn press_at(ed: &mut Editor, kind: MouseKind, (x, y): (usize, usize), (w, h): (u16, u16)) {
+    ed.handle_event(Event::Mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false }));
+    frame_at(ed, w, h);
+}
+
 /// Every walk of `Workspace.groups` in the code, each with what the memo's group does there (`.sb/memo-c-dev-note.md`'s
 /// table): its membership is for its placement alone — never a tab, a list, a run panel, a frame of the groups', nor
 /// counted. A walk added without a line here fails, so it can't skip saying what the memo does in it.

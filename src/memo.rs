@@ -73,6 +73,9 @@ pub struct Memo {
     pub up: bool,
     /// Its first row in sight, as last drawn — kept so the cursor's row stays in sight (`sight`).
     pub scroll: std::cell::Cell<usize>,
+    /// The wheel moved its view off the cursor (`wheel`): held there, with the keys too, until the next key or the keys
+    /// given to it again (`key`, `memo_bring`) bring it back to the cursor.
+    pub wheeled: bool,
 }
 
 impl Memo {
@@ -82,7 +85,7 @@ impl Memo {
         doc.throwaway = true;
         // (prose: its lines wrap at its width, `j`/`k` by rows)
         doc.wrap = Some(true);
-        Memo { pane: Pane::new(doc), id, up: false, scroll: Default::default() }
+        Memo { pane: Pane::new(doc), id, up: false, scroll: Default::default(), wheeled: false }
     }
 
     #[cfg(test)]
@@ -330,6 +333,8 @@ impl Editor {
         let keys = self.workspace.is_at(Here::Memo);
         let Some(m) = self.workspace.memo.as_mut() else { return };
         let id = m.id;
+        // (the keys given: its view back to the cursor, wherever the wheel left it)
+        m.wheeled = false;
         // (up, docked without the keys: given them as `space M` gives them, at the end of its words)
         if !m.up || !keys {
             m.up = true;
@@ -511,6 +516,29 @@ pub fn search_unshown(ed: &mut Editor) {
     }
 }
 
+/// The wheel over its words (the user's rule, 2026-10-26 and 2026-10-28: the wheel scrolls what's under the pointer):
+/// its view `up` or down, floating or docked, with the keys or without — three rows a notch, one where its room is the
+/// chat's input's at most (`chatinput::ROWS`: three a notch would carry a line past before it's read). It never takes the
+/// keys nor moves the cursor; with the keys, the next key brings the view back to the cursor (`Memo.wheeled`); without
+/// them it stays where the wheel left it. Nothing to scroll (it fits, or that end is in sight): nothing done, nothing drawn
+/// again.
+pub fn wheel(ed: &mut Editor, up: bool) {
+    let (rows, cols) = ed.memo_size();
+    let tab = ed.config.tab_width;
+    let Some(m) = ed.workspace.memo.as_mut() else { return };
+    let n = m.pane.doc_in().map_or(0, |d| rows_n(d, cols, tab));
+    let most = n.saturating_sub(rows);
+    let step = if rows <= crate::chatinput::ROWS { 1 } else { 3 };
+    let from = m.scroll.get().min(most);
+    let to = if up { from.saturating_sub(step) } else { (from + step).min(most) };
+    if to == from {
+        ed.unchanged = true;
+        return;
+    }
+    m.scroll.set(to);
+    m.wheeled = true;
+}
+
 /// Runs `f` with the memo's document swapped in (`docpane::swap`): its edits, history and mode kept.
 fn swap<R>(ed: &mut Editor, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     let size = ed.memo_size();
@@ -524,6 +552,10 @@ pub fn key(ed: &mut Editor, key: Key) -> Option<crate::uistate::Handler> {
     use crate::uistate::Handler;
     if !ed.memo_has_keys() || !ed.pending.is_empty() {
         return None;
+    }
+    // (the next key brings its view back to the cursor, from where the wheel left it)
+    if let Some(m) = ed.workspace.memo.as_mut() {
+        m.wheeled = false;
     }
     let m = ed.workspace.memo.as_ref()?;
     if ed.prompt.is_some() {

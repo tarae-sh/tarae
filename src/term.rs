@@ -6877,8 +6877,9 @@ fn draw_memo(
     }
     let mode = m.mode();
     let at = crate::memo::cursor_row(doc, cols, tab, mode);
-    // (the view follows the cursor while it has the keys; docked without them it stays where you left it)
-    let first = match has {
+    // (the view follows the cursor while it has the keys; docked without them it stays where you left it, and where the
+    // wheel left it until the next key — `memo::wheel`)
+    let first = match has && !m.wheeled {
         true => crate::memo::sight(m.scroll.get(), at, inner, view.len()),
         false => m.scroll.get().min(view.len().saturating_sub(inner)),
     };
