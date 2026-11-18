@@ -244,7 +244,8 @@ impl Queue {
     /// The start's count for a watch's first look (`git::watch`, `config::watch` — a thread, not a job: `Jobs::spawn`
     /// counts those by itself): what it finds is sent unasked, so it's out until that result is applied (the count
     /// dropped with it) or the look found nothing to send (#210: the git watch's first round, its repository resolved
-    /// first, landed in a settled tarae's rest on a loaded Mac). None once the start is over.
+    /// first, landed in a settled tarae's rest on a loaded Mac; again, the trust scan after it — its `git ls-files`
+    /// polled). None once the start is over.
     #[track_caller]
     pub fn start_out(&self) -> Option<StartOut> {
         let site = Location::caller();

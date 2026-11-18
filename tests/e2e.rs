@@ -2657,7 +2657,7 @@ fn a_job_of_the_start_s_is_waited_out_before_a_rest() {
     let s = t.wait_state("the flash gone", flashed);
     let out: Vec<&str> = s["starting"].as_array().into_iter().flatten().filter_map(|j| j.as_str()).collect();
     // (beside it maybe others of the start's not landed yet on a loaded machine — the gutter's read of the repository,
-    // the git watch's first round: #210, once in the rest)
+    // the git watch's first round, its trust scan after it: #210, each once in the rest)
     assert!(
         out.iter().any(|j| j.starts_with("job src/worktree.rs:")),
         "the restore held, among the start's jobs out: {out:?}"

@@ -63,9 +63,13 @@ fn head_ref(head: &Path) -> Option<PathBuf> {
 /// and, once it's gone, has the buffers read the index again (`index_settled`, #348: a round between the two read
 /// the old one, and nothing watched moved again) — only then, so an index written by anyone else (a prompt's
 /// `git status`) wakes nothing. Its results are `events`' workspace in front now; made in the start, its first
-/// round is the start's until applied (`Queue::start_out`).
+/// round is the start's until applied, and so is the trust scan after it until it's done or what it found is
+/// (`Queue::start_out`).
 pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
     let (tx, mut start) = (events.sender(), events.start_out());
+    // (#210: the scan's `git ls-files`, polled every `SCAN_POLL`, ran into a settled tarae's rest on a loaded Mac —
+    // 25 wakes of this thread, no event: nothing found)
+    let mut scanning = events.start_out();
     crate::event::thread("tarae-git-watch", move || {
         let Some(head) = find_head(&dir) else { return };
         // (its own commands held until answered: the card, once — `gittrust.rs`; a submodule's its own)
@@ -134,9 +138,9 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
                     break;
                 }
             }
-            // (#610: once, after the first round went — the start doesn't wait for it: what the checkout holds that git
+            // (#610: once, after the first round went — the round doesn't wait for it: what the checkout holds that git
             // takes for a repository, before trust is answered; nothing found and nothing cut, nothing sent)
-            if !std::mem::replace(&mut looked, true) && !look_alikes_sent(&tx, &dir) {
+            if !std::mem::replace(&mut looked, true) && !look_alikes_sent(&tx, &dir, scanning.take()) {
                 break;
             }
             watcher.wait();
@@ -145,8 +149,8 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
 }
 
 /// The trust scan of `dir`'s checkout (`snapshot::scan`, #610), its result sent when it says anything (`lookalike.rs`) —
-/// false: the loop is gone.
-fn look_alikes_sent(tx: &crate::event::Tx, dir: &Path) -> bool {
+/// false: the loop is gone. `start`: the start's count, held until the scan's done or its result is applied.
+fn look_alikes_sent(tx: &crate::event::Tx, dir: &Path, start: Option<crate::event::StartOut>) -> bool {
     let scan = match crate::snapshot::scan(dir, None) {
         Ok(s) => s,
         Err(e) => {
@@ -162,7 +166,11 @@ fn look_alikes_sent(tx: &crate::event::Tx, dir: &Path) -> bool {
         return true;
     }
     let dir = dir.to_path_buf();
-    tx.send(Event::Job(Box::new(move |ed: &mut Editor| ed.look_alikes_found(&dir, scan)))).is_ok()
+    let found = move |ed: &mut Editor| {
+        ed.look_alikes_found(&dir, scan);
+        drop(start);
+    };
+    tx.send(Event::Job(Box::new(found))).is_ok()
 }
 
 /// A watch round sent (`send`; None: it couldn't be) — and, for a move (`moved`), whether git held the index then, so

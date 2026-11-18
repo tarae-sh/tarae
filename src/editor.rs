@@ -10433,8 +10433,9 @@ mod tests {
 
     /// #210: a watch made in the start is the start's until its first look lands — the git watch's first round (its
     /// repository resolved first: on a loaded Mac it landed in a settled tarae's rest), sent and not yet applied, then
-    /// gone with it; the config watch's look at the plugins folder (none here: nothing sent) let go on its thread,
-    /// whenever that is (so only its going is waited for); one made after the start never counted.
+    /// gone with it; the trust scan after it (nothing found here: nothing sent) and the config watch's look at the
+    /// plugins folder (none here) let go on their threads, whenever that is (so only their going is waited for); one
+    /// made after the start never counted.
     #[test]
     fn a_watchs_first_look_is_the_starts() {
         let dir = git_repo("start-watch", &[("a.txt", "one\n")]);
@@ -10445,13 +10446,40 @@ mod tests {
         crate::config::watch(&q, dir.clone(), ed.config_sources(), None);
         q.started();
         let round = q.recv_timeout(crate::test_results::PATIENCE).expect("the git watch's first round");
-        assert_eq!(starts_from(&q, "src/git.rs").len(), 1, "sent, not applied: {:?}", q.starts_out());
+        // (the round's, and the scan's until it's done)
+        let out = starts_from(&q, "src/git.rs").len();
+        assert!((1..=2).contains(&out), "sent, not applied: {:?}", q.starts_out());
         ed.handle_event(round);
         assert!(ed.workspace.git_branch.is_some(), "the round applied");
-        assert!(starts_from(&q, "src/git.rs").is_empty(), "its count with it: {:?}", q.starts_out());
+        assert!(starts_from(&q, "src/git.rs").len() < out, "its count with it: {:?}", q.starts_out());
         settle_until(&mut ed, |_| q.starts_out().is_empty());
         crate::git::watch(&q, dir.clone());
         assert!(q.starts_out().is_empty(), "made after the start");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #210: the git watch's trust scan after its first round (#610) is the start's until it's done — its `git ls-files`
+    /// polled on the watch's thread ran into a settled tarae's rest on a loaded Mac. The untracked half a stand-in that
+    /// never ends (`snapshot::SLOW`), cut at `SCAN_LIMIT`: the cut is said, and what says it holds the count, sent and
+    /// not applied — no sooner than the cut (a bound below: a slow machine only lengthens it); gone with it.
+    #[test]
+    fn the_git_watchs_trust_scan_is_the_starts() {
+        let dir = git_repo("start-scan", &[("a.txt", "one\n")]);
+        crate::snapshot::SLOW.lock().unwrap_or_else(|e| e.into_inner()).push(dir.clone());
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        let q = watches_queue(&ed);
+        let since = std::time::Instant::now();
+        crate::git::watch(&q, dir.clone());
+        q.started();
+        let round = q.recv_timeout(crate::test_results::PATIENCE).expect("the git watch's first round");
+        ed.handle_event(round);
+        let cut = q.recv_timeout(crate::test_results::PATIENCE).expect("the scan's cut said");
+        crate::snapshot::SLOW.lock().unwrap_or_else(|e| e.into_inner()).retain(|s| *s != dir);
+        assert!(since.elapsed() >= crate::snapshot::SCAN_LIMIT, "the cut came early: {:?}", since.elapsed());
+        assert_eq!(starts_from(&q, "src/git.rs").len(), 1, "sent, not applied: {:?}", q.starts_out());
+        drop(cut);
+        assert!(q.starts_out().is_empty(), "gone with it: {:?}", q.starts_out());
         std::fs::remove_dir_all(&dir).ok();
     }
 
