@@ -165,6 +165,60 @@ fn the_memos_insert_cursor_shows_in_both_themes() {
     }
 }
 
+/// Look B (main's `.sb/decisions/ux.md` "The memo's look"): every cell of its body inside the sides — its text's rows,
+/// the blanks either side, the air row under the text — is on the toasts' slight ground (the cards' surface `ui.popup`
+/// 70 % over the code's ground), its frame's lines on the pane's ground; a transparent theme paints neither.
+#[test]
+fn the_memos_body_is_on_the_toasts_slight_ground_and_its_frame_on_the_panes() {
+    use crossterm::style::Color as C;
+    let dir = crate::scratch::Scratch::new("memo-ground");
+    crossterm::style::force_color_output(true);
+    let rgb = |c: Option<C>| match c {
+        Some(C::Rgb { r, g, b }) => vt100::Color::Rgb(r, g, b),
+        c => panic!("a built-in theme's colour is a true colour: {c:?}"),
+    };
+    for theme in ["meok", "hanji", "meok-transparent", "hanji-transparent"] {
+        let mut ed = editor(&dir);
+        ed.theme = crate::theme::load(theme).unwrap();
+        let bg = |k: &str| ed.theme.try_get(k).and_then(|s| s.bg);
+        let (pane, ground) = match bg("ui.background") {
+            None => (vt100::Color::Default, vt100::Color::Default),
+            Some(code) => {
+                let (Some(C::Rgb { r, g, b }), C::Rgb { r: r0, g: g0, b: b0 }) = (bg("ui.popup"), code)
+                else {
+                    panic!("{theme}: true colours")
+                };
+                let m = |s: u8, c: u8| (c as f32 + (s as f32 - c as f32) * 0.7).round() as u8;
+                (rgb(Some(code)), vt100::Color::Rgb(m(r, r0), m(g, g0), m(b, b0)))
+            }
+        };
+        feed(&mut ed, " MNext: the memo docks<ret>then the clip");
+        let mut buf = Vec::new();
+        crate::term::render(&mut ed, &mut buf, W, H).unwrap();
+        let mut p = vt100::Parser::new(H, W, 0);
+        p.process(&buf);
+        let s = p.screen();
+        let r = drawn(&ed).unwrap();
+        // (two lines, three rows at least: an air row under the text)
+        assert_eq!(r.h, ROWS_MIN + 2, "{theme}: {r:?}");
+        let at = |x: usize, y: usize| s.cell(y as u16, x as u16).unwrap().bgcolor();
+        for y in r.y + 1..r.y + r.h - 1 {
+            for x in r.x + 1..r.x + r.w - 1 {
+                assert_eq!(at(x, y), ground, "{theme}: its body's cell at {x},{y}");
+            }
+            assert_eq!(at(r.x, y), pane, "{theme}: its left side at {y}");
+            assert_eq!(at(r.x + r.w - 1, y), pane, "{theme}: its right side at {y}");
+        }
+        for x in r.x..r.x + r.w {
+            assert_eq!(at(x, r.y), pane, "{theme}: its top line at {x}");
+            assert_eq!(at(x, r.y + r.h - 1), pane, "{theme}: its bottom line at {x}");
+        }
+        if pane != vt100::Color::Default {
+            assert_ne!(ground, pane, "{theme}: a ground of its own");
+        }
+    }
+}
+
 /// Its measure is 40 characters: a line of 40 stays whole with the cursor after it on its row, the 41st wraps.
 #[test]
 fn a_line_of_the_measure_stays_whole_with_the_cursor_after_it() {

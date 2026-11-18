@@ -6821,7 +6821,11 @@ fn draw_floating(
 
 /// The memo in its frame `r` (`memo.rs`): `╭─ memo ──…╮`, its text wrapped at its width a blank in from each side, its
 /// rows from where the cursor's is held in sight (`memo::sight`), drawn by the one drawer (`draw_text`, `CodeIn::Memo`) —
-/// its keys at its bottom line (`list_keys`, as its mode has them). Returns where its cursor is while it has the keys.
+/// its keys at its bottom line (`list_keys`, as its mode has them). Its body's rows — the air under its text too — on
+/// the toasts' slight ground (`slight_ground`, look B), the frame's lines on the pane's `card`; where the pane's ground
+/// isn't painted (a transparent theme) none: the frame alone. (Docked, step (c), it has no ground of its own: that
+/// caller says so, as `draw_sessions_pane`'s `framed`.) The same with the keys or without: only the lines light.
+/// Returns where its cursor is while it has the keys.
 fn draw_memo(
     editor: &Editor,
     ui: &Ui,
@@ -6866,20 +6870,21 @@ fn draw_memo(
         text_cols: cols,
         ..lay.clone()
     };
-    // (its blank columns either side of the text, on its ground)
-    apply(out, card)?;
+    // (its body inside the sides — the blank columns either side of the text, the rows under it — on its ground)
+    let ground = if card.bg.is_some() { Style { bg: slight_ground(ui, editor).bg, ..card } } else { card };
+    apply(out, ground)?;
     for y in r.y + 1..r.y + r.h.saturating_sub(1) {
         queue!(out, MoveTo((r.x + 1) as u16, y as u16), Spaces(r.w.saturating_sub(2)))?;
     }
     let shows = crate::codeview::Shows::memo(has, mode == Mode::Insert);
     let src = Source { hits: m.pane.hits().filter(|_| has), ..Source::of(doc) };
-    let at = draw_text(editor, &src, top, &shows, &view, &ui.on(card), &pl, out)?;
+    let at = draw_text(editor, &src, top, &shows, &view, &ui.on(ground), &pl, out)?;
     // (typing at a line's end: the blank under the bar in the text's colour — a terminal that draws its bar in its
     // cell's colour shows it on paper as on ink, as the code's and the chat's input do; the drawer leaves that cell bare)
     let head = doc.selection().primary().head;
     let at_end = head >= doc.text.len_bytes() || doc.text.byte(head) == b'\n';
     if let Some((x, y)) = at.filter(|_| has && mode == Mode::Insert && at_end) {
-        apply(out, Style { fg: ui.base.fg, ..card })?;
+        apply(out, Style { fg: ui.base.fg, ..ground })?;
         queue!(out, MoveTo(x, y), Print(" "))?;
     }
     Ok(at.filter(|_| has))
@@ -14543,8 +14548,7 @@ fn draw_toasts(
     }
     // (news, never a pane with the keys: no frame — a frame says "this has the keys" — but the waiting cards' peek's
     // slight ground, the two one-row looks one family, `OfferCard::draw`)
-    let card = card_style(ui, editor, "ui.popup");
-    let card = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
+    let card = slight_ground(ui, editor);
     let (fx, fr) = lay.float_area();
     let max_inner = ((fr - fx) / 2).clamp(24, 56).min((fr - fx).saturating_sub(8));
     let a = editor.toast_alpha();
@@ -24911,6 +24915,13 @@ fn card_style(ui: &Ui, editor: &Editor, key: &str) -> Style {
             .or_else(|| builtin().try_get(key))
             .unwrap_or_default(),
     )
+}
+
+/// The slight ground a toast and a waiting card's peek sit on, and the memo's body (look B, main's `.sb/decisions/ux.md`
+/// "The memo's look"): the cards' surface (`ui.popup`) a step toward the code's ground (`PEEK_STEP`).
+fn slight_ground(ui: &Ui, editor: &Editor) -> Style {
+    let card = card_style(ui, editor, "ui.popup");
+    Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card }
 }
 
 /// A docked panel's ground (the side panel, the review's rail, the chat, the bottom slot's panels): the code's own
