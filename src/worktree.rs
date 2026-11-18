@@ -896,7 +896,14 @@ impl Ending {
         self.changed.iter().filter(|r| r.starts_with("??")).count()
     }
 
+    /// `card_by` on Claude's row: the tests'.
+    #[cfg(test)]
     pub fn card(&self) -> crate::offer::Offer {
+        self.card_by(crate::agent::CLAUDE.shown)
+    }
+
+    /// `a`: the agent of the session it ends, which drafts a commit first (its row's `Row.shown`).
+    pub fn card_by(&self, a: &str) -> crate::offer::Offer {
         let mut lines: Vec<String> = Vec::new();
         let mut decided = 0..0;
         let n = self.changed.len();
@@ -941,7 +948,7 @@ impl Ending {
         // files past what a save takes, what `workspace.keep` loses): a save keeps the rest
         let mut tail: Vec<(String, bool)> = Vec::new();
         if let (true, Some(b)) = (self.commits_first(), &self.branch) {
-            tail.push((format!("Committing first: Claude drafts it, :w commits on {b}."), false));
+            tail.push((format!("Committing first: {a} drafts it, :w commits on {b}."), false));
         }
         if self.dirty() {
             tail.push(("Removing takes them out of the checkout.".into(), false));
@@ -2500,6 +2507,7 @@ impl Editor {
         let session =
             std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == id).expect("named");
         let root = session.root.clone();
+        let a = crate::llm::workspace_row(self, session).shown;
         let (base, start) = (session.base.clone(), self.start_root());
         let entries = crate::workspacekeep::entries(&self.config.workspace_keep);
         let said = format!("Looking at {name} before it ends…");
@@ -2509,7 +2517,7 @@ impl Editor {
             Ok(e) if e.quiet() && !always => ed.session_remove(e, false, None),
             Ok(e) => {
                 let e = Ending { brought, days: ed.config.workspace_restore_days, ..e };
-                ed.push_offer(crate::orchestra::carry(e.card(), proposed))
+                ed.push_offer(crate::orchestra::carry(e.card_by(a), proposed))
             }
             Err(e) => {
                 if let Some(p) = proposed {
@@ -3375,7 +3383,10 @@ impl Editor {
                     }
                 }
                 Bringing::Untested { m, tested, head } => ed.bring_untested_card(id, m, &tested, &head),
-                Bringing::Held(h) => ed.push_offer(crate::orchestra::carry(h.card(), proposed)),
+                Bringing::Held(h) => {
+                    let a = crate::rebase::drafter(ed, &h.moved.root);
+                    ed.push_offer(crate::orchestra::carry(h.card_by(a), proposed))
+                }
                 Bringing::Refused(e) => {
                     if let Some(p) = proposed.filter(|_| !proposed_up(ed, &checkout)) {
                         crate::orchestra::no_card(ed, p, e.clone());

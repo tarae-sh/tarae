@@ -84,7 +84,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
     // (never under a run of Claude's, sandboxed or not, nor its relay: an interface's keys are the person's — S-E)
     if std::env::var_os(crate::attach::RUN).is_some() {
         anyhow::bail!(
-            "tarae attach doesn't run under a run of Claude's ({} is set) — an interface is yours: run it in a \
+            "tarae attach doesn't run inside a command an agent ran ({} is set) — an interface is yours: run it in a \
              terminal of your own",
             crate::attach::RUN
         );

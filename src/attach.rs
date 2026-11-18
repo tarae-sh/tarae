@@ -296,7 +296,7 @@ fn arrive(ed: &mut Editor, stream: UnixStream, hello: Hello, line: Vec<u32>, dec
         .filter_map(|w| w.terminal.as_ref().and_then(|t| t.pid()))
         .collect();
     let why = if let Some(p) = line.iter().find(|p| claude.contains(p)) {
-        Some(format!("under a process of Claude's (pid {p}) — Claude has a view of its own"))
+        Some(format!("under an agent's process (pid {p}) — it has a view of its own"))
     } else if let Some(p) = line.iter().find(|p| shells.contains(p)) {
         Some(format!(
             "from inside this host's own terminal panel (pid {p}) — it would draw the host inside itself; \

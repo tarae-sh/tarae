@@ -264,7 +264,8 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "set!" => set(editor, rest, true),
         "toggle" => toggle(editor, rest),
         "config-show" => {
-            let mut text = settings::show(&editor.config);
+            let mut text =
+                settings::show(&editor.config, &|path, doc| crate::llm::agent_doc(editor, path, doc));
             if editor.twins_said() {
                 text.push_str(&crate::zellij::config_lines(editor));
             }

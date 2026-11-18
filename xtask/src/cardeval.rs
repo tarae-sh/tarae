@@ -42,6 +42,8 @@ use crate::cardreview::{
 };
 use crate::claudeenv::{self, ClaudeEnv};
 
+/// The agent the policy names: the eval runs Claude Code (`claude -p`), as auto cards do on Claude's row.
+const EVAL_AGENT: &str = "Claude";
 /// How long one call may take before it's an ask.
 const CALL_LIMIT: Duration = Duration::from_secs(90);
 /// claude's own backstop per call (`--max-budget-usd`).
@@ -465,7 +467,8 @@ fn report(outs: &[Outcome], run: &Run) -> String {
     );
     if let Some(o) = outs.first() {
         let (first, stage) = o.one.as_ref().map_or((&o.two, Stage::Two), |one| (one, Stage::One));
-        let size = run.policy.text().len() + cardreview::prompt(&o.case.input, stage, "000000000000").len();
+        let size = run.policy.text_as(EVAL_AGENT).len()
+            + cardreview::prompt(&o.case.input, stage, "000000000000").len();
         r += &format!(
             "- **First call:** {} prompt tokens for a prompt of {size} bytes (≈ {} tokens at 4 bytes a token) — far \
              more is something else loaded (a stray `~/.claude`).\n",
@@ -726,7 +729,7 @@ fn count(usual: &Case, model: &str, policy: Policy, spend: &mut Spend, r: &mut d
             continue;
         }
         let nonce = cardreview::nonce(input, cardreview::random_pick);
-        let size = policy.text().len() + cardreview::prompt(input, Stage::Two, &nonce).len();
+        let size = policy.text_as(EVAL_AGENT).len() + cardreview::prompt(input, Stage::Two, &nonce).len();
         let v = cardreview::review(input, Stage::Two, model, &nonce, r);
         spend.add(&v);
         out += &match &v.failed {
@@ -823,7 +826,8 @@ pub fn run(args: &[String]) -> Result<()> {
         let usual = all.iter().find(|c| c.set == Set::Safe).ok_or("no safe case")?;
         let dir = scratch()?;
         let mut spend = Spend { budget, spent: 0.0, dearest: 0.0 };
-        let mut claude = Claude { dir: dir.clone(), removed: env.removed, policy: policy.text() };
+        let mut claude =
+            Claude { dir: dir.clone(), removed: env.removed, policy: policy.text_as(EVAL_AGENT) };
         print!("{}", count(usual, &model, policy, &mut spend, &mut claude));
         let _ = std::fs::remove_dir(&dir);
         return Ok(());
@@ -844,7 +848,7 @@ pub fn run(args: &[String]) -> Result<()> {
         all,
         models,
         &mut spend,
-        &mut Claude { dir: dir.clone(), removed: env.removed, policy: policy.text() },
+        &mut Claude { dir: dir.clone(), removed: env.removed, policy: policy.text_as(EVAL_AGENT) },
         cardreview::random_pick,
     );
     if std::fs::remove_dir(&dir).is_err() {
@@ -1036,7 +1040,7 @@ mod tests {
         has("both on every case, the policy `past-sandbox`. Billed to b.");
         has(&format!(
             "for a prompt of {} bytes",
-            Policy::PastSandbox.text().len() + {
+            Policy::PastSandbox.text_as(EVAL_AGENT).len() + {
                 cardreview::prompt(&outs[0].case.input, Stage::One, "000000000000").len()
             }
         ));
@@ -1119,7 +1123,7 @@ mod tests {
         has("- **The call:** 0 of 2 (0 %) failed");
         has(&format!(
             "for a prompt of {} bytes",
-            Policy::Base.text().len()
+            Policy::Base.text_as(EVAL_AGENT).len()
                 + cardreview::prompt(&outs[0].case.input, Stage::Two, "000000000000").len()
         ));
         has("| reasons alone ");
@@ -1249,10 +1253,16 @@ mod tests {
         assert_eq!(policy(&["--policy", "past-sandbox"]), Ok(Policy::PastSandbox));
         assert_eq!(policy(&["--policy", "x"]), Err("--policy x: base or past-sandbox".into()));
         // (the system prompt is the run's policy, on the command line as `--system-prompt`)
-        let c =
-            Claude { dir: PathBuf::from("/nowhere"), removed: vec![], policy: Policy::PastSandbox.text() };
+        let c = Claude {
+            dir: PathBuf::from("/nowhere"),
+            removed: vec![],
+            policy: Policy::PastSandbox.text_as(EVAL_AGENT),
+        };
         let a: Vec<String> = c.command("haiku").get_args().map(|a| a.to_string_lossy().into()).collect();
-        assert_eq!(a[a.iter().position(|x| x == "--system-prompt").unwrap() + 1], Policy::PastSandbox.text());
+        assert_eq!(
+            a[a.iter().position(|x| x == "--system-prompt").unwrap() + 1],
+            Policy::PastSandbox.text_as(EVAL_AGENT)
+        );
         let kept = claudeenv::claude_env(["ANTHROPIC_API_KEY", "PATH"], true);
         assert!(kept.removed.is_empty(), "{:?}", kept.removed);
         assert_eq!(billed(&kept, key), "the key in `ANTHROPIC_API_KEY` (it outranks claude's login)");

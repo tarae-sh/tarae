@@ -614,7 +614,7 @@ impl Report {
             );
             out += &format!(
                 "Keys are one count — a person's typing and a driver's keys (zellij, a script) reach tarae alike, so \
-                 they aren't told apart. Claude's tool calls are its own; clicks aren't counted.\n\nKept in {file}, \
+                 they aren't told apart. An agent's tool calls are its own; clicks aren't counted.\n\nKept in {file}, \
                  on this machine only · `:features-reset` empties it.\n"
             );
         }
@@ -644,7 +644,7 @@ impl Report {
         section(&["Cards", "asked", "last", "answered"], rows.collect());
         section(&["Side panel", "shown", "last"], plain(Area::Panel));
         section(&["Pickers", "opened", "last"], plain(Area::Picker));
-        section(&["Claude's tools", "calls", "last"], plain(Area::Claude));
+        section(&["Agent tools", "calls", "last"], plain(Area::Claude));
         if !self.on {
             return out;
         }
@@ -657,7 +657,7 @@ impl Report {
                 ("Cards", Area::Card),
                 ("Side panel tabs", Area::Panel),
                 ("Pickers", Area::Picker),
-                ("Claude's tools", Area::Claude),
+                ("Agent tools", Area::Claude),
             ] {
                 let rows: Vec<Vec<String>> = self.unused(area).map(|r| vec![name(r), bound(r)]).collect();
                 if !rows.is_empty() {

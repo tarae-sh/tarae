@@ -288,22 +288,22 @@ fn a_folder_where_runs_write_is_refused() {
     let real = |p: &str| s.join(p).canonicalize().unwrap();
     let roots = Roots::new(real("project"), Vec::new());
     let caps = crate::caps::Caps::default();
-    let why = judge(&real("tmp/infra"), &roots, &caps, &[real("tmp")]).unwrap_or_default();
-    assert!(why.contains("where Claude's runs write — a run could put a link in its place"), "{why}");
-    let why = judge(&real("work"), &roots, &caps, &[real("work/runs")]).unwrap_or_default();
-    assert!(why.starts_with("it holds") && why.contains("where Claude's runs write"), "{why}");
-    assert_eq!(judge(&real("tmp/infra"), &roots, &caps, &[]), None, "runs not sandboxed");
+    let why = judge(&real("tmp/infra"), &roots, &caps, &[real("tmp")], "Claude").unwrap_or_default();
+    assert!(why.contains("where agents' runs write — a run could put a link in its place"), "{why}");
+    let why = judge(&real("work"), &roots, &caps, &[real("work/runs")], "Claude").unwrap_or_default();
+    assert!(why.starts_with("it holds") && why.contains("where agents' runs write"), "{why}");
+    assert_eq!(judge(&real("tmp/infra"), &roots, &caps, &[], "Claude"), None, "runs not sandboxed");
     // (a folder is one of its own workspace's write places once added, so its callers leave those out —
     // `Editor::writes_beside`; one passed here is a place runs write for some other reason: refused, as it's added
     // and as it comes back or a turn starts)
     let infra = real("tmp/infra");
-    let why = judge(&infra, &roots, &caps, std::slice::from_ref(&infra)).unwrap_or_default();
-    assert!(why.starts_with("Claude's runs write there ("), "{why}");
+    let why = judge(&infra, &roots, &caps, std::slice::from_ref(&infra), "Claude").unwrap_or_default();
+    assert!(why.starts_with("Agents' runs write there ("), "{why}");
     let folder = Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
     let (kept, dropped) =
-        rejudge(vec![folder.clone()], &real("project"), &caps, std::slice::from_ref(&infra));
-    assert!(kept.is_empty() && dropped[0].1.contains("Claude's runs write there"), "{dropped:?}");
-    let (kept, dropped) = rejudge(vec![folder], &real("project"), &caps, &[real("work/runs")]);
+        rejudge(vec![folder.clone()], &real("project"), &caps, std::slice::from_ref(&infra), "Claude");
+    assert!(kept.is_empty() && dropped[0].1.contains("Agents' runs write there"), "{dropped:?}");
+    let (kept, dropped) = rejudge(vec![folder], &real("project"), &caps, &[real("work/runs")], "Claude");
     assert!(kept.len() == 1 && dropped.is_empty(), "{dropped:?}");
 }
 
@@ -348,15 +348,15 @@ fn a_folders_own_place_is_left_out_of_what_its_judged_against_a_grant_isnt() {
     ed.folders_look();
     settle_until(&mut ed, |ed| ed.said > before);
     assert!(
-        said(&ed).contains("Claude's runs write there") && ed.workspace.folders.is_empty(),
+        said(&ed).contains("Agents' runs write there") && ed.workspace.folders.is_empty(),
         "{}",
         said(&ed)
     );
     let caps = crate::caps::Caps::default();
     let tmp = crate::scratch::Scratch::new("folders-beside-tmp");
     let temp = Folder { at: tmp.canonicalize().unwrap(), name: "tmp".into(), instructions: Vec::new() };
-    let (kept, dropped) = rejudge(vec![temp], &project, &caps, &beside);
-    assert!(kept.is_empty() && dropped[0].1.contains("where Claude's runs write"), "{dropped:?}");
+    let (kept, dropped) = rejudge(vec![temp], &project, &caps, &beside, "Claude");
+    assert!(kept.is_empty() && dropped[0].1.contains("where agents' runs write"), "{dropped:?}");
 }
 
 /// A folder is in a workspace once, whichever way it came: `:folder-add` of one kept and still being judged as the

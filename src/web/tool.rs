@@ -191,7 +191,7 @@ pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Opt
         let how = match () {
             _ if t.loopback && runs_reach_here(ed, t.port) => How::Fetch(at.0, at.1),
             _ if t.loopback => How::No(format!(
-                "this machine's port {} isn't one Claude's runs reach (llm.sandbox-ports, llm.sandbox-localhost)",
+                "this machine's port {} isn't one agents' runs reach (llm.sandbox-ports, llm.sandbox-localhost)",
                 t.port
             )),
             _ if refused(ed, &at) => How::No(format!(
@@ -313,33 +313,37 @@ fn way_of(ed: &Editor) -> MakeWay {
     })
 }
 
-pub const TITLE: &str = "Let Claude read a page at";
+/// The card's title's start, `who` the asking session's agent (its row's `Row.shown`).
+pub fn title(who: &str) -> String {
+    format!("Let {who} read a page at")
+}
 
 /// The card for `a` — one a host; a call asking while one is up waits on its own.
 fn ask(ed: &mut Editor, a: Ask) {
     use crate::cards::{Asked, Request, Why};
+    let who = crate::llm::session_row(ed).shown;
     let at = format!("{}:{}", a.host, a.port);
     let lines = match a.signed {
         // (W3: the token said, and what follows from it — the chat's searches ask each time after it)
         true => [
             crate::nav::clip(&a.url, 300),
             format!(
-                "Claude's read · port {} · through tarae's proxy · GET with your token, nothing else of yours",
+                "{who}'s read · port {} · through tarae's proxy · GET with your token, nothing else of yours",
                 a.port
             ),
             "After it, this chat's web searches ask each time.".to_string(),
-            "What it reads goes to Claude — your wiki's pages as your account sees them.".to_string(),
+            format!("What it reads goes to {who} — your wiki's pages as your account sees them."),
         ],
         false => [
             crate::nav::clip(&a.url, 300),
-            format!("Claude's read · port {} · through tarae's proxy · GET, nothing of yours sent", a.port),
-            "Reads of pages there only — a yes lets none of Claude's commands reach it.".to_string(),
-            "What Claude has read can go there in the addresses it asks for.".to_string(),
+            format!("{who}'s read · port {} · through tarae's proxy · GET, nothing of yours sent", a.port),
+            format!("Reads of pages there only — a yes lets none of {who}'s commands reach it."),
+            format!("What {who} has read can go there in the addresses it asks for."),
         ],
     };
     let title = match a.signed {
-        true => format!("{TITLE} {} with your token?", a.host),
-        false => format!("{TITLE} {}?", a.host),
+        true => format!("{} {} with your token?", title(who), a.host),
+        false => format!("{} {}?", title(who), a.host),
     };
     let asked = Asked::new(Why::Web, Request::Host(at));
     let o = crate::offer::Offer::new(
@@ -369,6 +373,7 @@ pub fn answer(ed: &mut Editor, id: u64, a: Ask, scope: Option<crate::allow::Scop
     };
     // (a token card's answer is a plain one's too; a plain card's never lets a token read through)
     let with = if a.signed { " with your token" } else { "" };
+    let who = crate::llm::session_row(ed).shown;
     match scope {
         Some(Scope::Once) => ed.workspace.claude.web_once.push((call.clone(), at.clone(), a.signed)),
         Some(Scope::ThisChat) => {
@@ -378,14 +383,14 @@ pub fn answer(ed: &mut Editor, id: u64, a: Ask, scope: Option<crate::allow::Scop
                     add(&mut c.web_signed);
                 }
             }
-            ed.set_success(format!("Claude may read pages at {}{with} in this conversation", a.host));
+            ed.set_success(format!("{who} may read pages at {}{with} in this conversation", a.host));
         }
         Some(Scope::Session | Scope::Always) => {
             add(&mut ed.workspace.claude.web_hosts);
             if a.signed {
                 add(&mut ed.workspace.claude.web_signed);
             }
-            ed.set_success(format!("Claude may read pages at {}{with} in this session", a.host));
+            ed.set_success(format!("{who} may read pages at {}{with} in this session", a.host));
         }
         None => {
             if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.web_refused.contains(&at)) {

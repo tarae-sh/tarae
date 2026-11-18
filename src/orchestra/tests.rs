@@ -320,7 +320,7 @@ fn children_total_is_asked_before_any_card() {
     }
     let r = call(&mut p.ed, 26, "sessions_start", json!({ "sessions": { "one": "Brief." } }));
     let r = r.expect("answered at once");
-    assert!(r.contains("llm.children-total is 2") && r.contains("2 sessions Claude started open"), "{r}");
+    assert!(r.contains("llm.children-total is 2") && r.contains("2 agent-started sessions open"), "{r}");
     assert!(p.ed.offers.is_empty() && p.ed.workspaces.len() == 3);
 }
 

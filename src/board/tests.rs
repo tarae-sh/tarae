@@ -22,12 +22,15 @@ fn the_boards_card_asks_then_says_the_cost() {
     assert_eq!(first(&card(ask(None), true)), "its cost isn't known yet — no board has ended whole here");
     // (a child's card: one its parent's Claude proposes asks, a yes here or not)
     assert!(o.question.ends_with("starts without asking."));
-    let child = card(Ask { parent: Some("main".into()), ..ask(None) }, true);
+    let child = card(Ask { parent: Some(("main".into(), "Claude")), ..ask(None) }, true);
     assert!(child.question.ends_with("starts without asking (not one main's Claude proposes)."));
+    // (the parent's agent by its row: one on agy proposes as agy)
+    let child = card(Ask { parent: Some(("main".into(), "agy")), ..ask(None) }, true);
+    assert!(child.question.ends_with("(not one main's agy proposes)."), "{}", child.question);
     // `llm.cost` off: no cost line, nor the blank after it — what it reads first, the same lines folding
     let off = card(ask(Some((4.1, 5))), false);
     assert!(
-        first(&off).contains("Claudes read the changes") && !off.question.contains('$'),
+        first(&off).contains("reviewers read the changes") && !off.question.contains('$'),
         "{}",
         off.question
     );

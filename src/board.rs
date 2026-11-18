@@ -291,8 +291,9 @@ pub struct Ask {
     pub angles: Vec<Angle>,
     /// What the last boards cost (`estimate`), read before the card.
     pub estimate: Option<(f64, usize)>,
-    /// The session's parent's name, if it has one: its Claude may propose a board here, and that one always asks.
-    pub parent: Option<String>,
+    /// The session's parent's name and its agent's (`Row.shown`), if it has one: its agent may propose a board here,
+    /// and that one always asks.
+    pub parent: Option<(String, &'static str)>,
     /// The parent's ask, when its Claude proposed this board (`orchestra::Asked`, carried by the act): `y` gives it to
     /// the board; the card gone otherwise, it goes with it.
     pub for_parent: Option<crate::orchestra::ForParent>,
@@ -326,7 +327,7 @@ fn ask(
             taken: Box::new(t),
             angles,
             estimate,
-            parent: crate::orchestra::parent_label(ed),
+            parent: crate::orchestra::parent_named(ed),
             for_parent,
         },
         ed.config.llm.cost,
@@ -348,8 +349,8 @@ pub fn card(a: Ask, money: bool) -> crate::offer::Offer {
     let at = if money { 2 } else { 0 };
     let names: Vec<&str> = a.angles.iter().map(|x| x.name.as_str()).collect();
     let (n, them) = match names.len() {
-        1 => ("One Claude reads".to_string(), "from its angle"),
-        k => (format!("{k} Claudes read"), "each from its angle"),
+        1 => ("One reviewer reads".to_string(), "from its angle"),
+        k => (format!("{k} reviewers read"), "each from its angle"),
     };
     // (what it reads: the snapshot taken as `space v C` was pressed — in the background, no review needed)
     let what = format!("{} · {}", a.taken.label, crate::nav::count(a.taken.files.len(), "file"));
@@ -357,11 +358,11 @@ pub fn card(a: Ask, money: bool) -> crate::offer::Offer {
     // user's decision 2026-10-20; then, still cut (a refused key's reason under it), how long a yes holds, with the
     // blank before it — back as soon as there's room; the cost and what it reads stay)
     let them = crate::cut::capitalized(them);
-    // (a child's: one its parent's Claude proposes always asks — `start`'s `asked`)
+    // (a child's: one its parent's agent proposes always asks — `start`'s `asked`)
     let not = a
         .parent
         .as_ref()
-        .map(|p| format!(" (not one {} Claude proposes)", crate::workspace::possessive(p)))
+        .map(|(p, agent)| format!(" (not one {} {agent} proposes)", crate::workspace::possessive(p)))
         .unwrap_or_default();
     let q = format!(
         "{cost}{n} the changes ({what}) in the background.\n{them} — {} — then a skeptic checks each group \

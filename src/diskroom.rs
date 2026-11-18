@@ -221,7 +221,7 @@ impl Room {
                 let (word, did) = match v.space {
                     Level::Fine => ("fast", "nothing — said"),
                     Level::Low => (v.space.word(), "nothing — said"),
-                    s => (s.word(), "Claude's runs and overlap rounds wait for room"),
+                    s => (s.word(), "Agents' runs and overlap rounds wait for room"),
                 };
                 Finding {
                     key: format!("disk-{word}:{}", at.display()),
@@ -265,13 +265,11 @@ impl Editor {
                 // (a time left alone: a warning, holding nothing)
                 Some("disk-fast") => self.set_warning(format!("Disk filling fast: {}", f.what)),
                 Some("disk-reserve") => self.set_warning(format!(
-                    "Disk at its reserve: {}. Claude's runs and overlap rounds wait for room",
+                    "Disk at its reserve: {}. Agents' runs and overlap rounds wait for room",
                     f.what
                 )),
-                _ => self.set_error(format!(
-                    "Disk almost full: {}. Claude's runs and overlap rounds wait",
-                    f.what
-                )),
+                _ => self
+                    .set_error(format!("Disk almost full: {}. Agents' runs and overlap rounds wait", f.what)),
             }
         }
         self.procs.free = vols;
@@ -288,7 +286,7 @@ impl Editor {
             self.with_workspace(id, crate::queued::run_next);
         }
         crate::overlap::resume(self);
-        self.set_status("Disk: room again — Claude's runs and overlap rounds go on");
+        self.set_status("Disk: room again — agents' runs and overlap rounds go on");
     }
 }
 

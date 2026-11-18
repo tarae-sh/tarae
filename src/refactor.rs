@@ -238,7 +238,7 @@ pub fn land_told(
         stage: Stage::Fresh,
         whose,
         call: Some(call),
-        by: "Claude".into(),
+        by: crate::llm::session_row(ed).shown.into(),
         step: None,
         read: String::new(),
         what,
@@ -708,10 +708,8 @@ fn card(l: &Landing) -> crate::offer::Offer {
             .extend(lines.split('\n').enumerate().filter(|(_, t)| t.starts_with("▲ ")).map(|(i, _)| at + i));
         q.push_str(&lines);
     }
-    let failed = match l.whose {
-        Whose::Claude(_) | Whose::Ask(_) => "Claude's change".into(),
-        Whose::Yours => format!("{}'s change", l.by),
-    };
+    // (`by`: the session's agent by its row for its own change and an ask's, the patch's author for yours)
+    let failed = format!("{}'s change", l.by);
     let mut o = crate::offer::Offer::new(
         format!("{} changes {}", l.by, nav::count(files.len(), "file")),
         &q,
@@ -1062,7 +1060,10 @@ fn reviewed(ed: &mut Editor, f: FileChange, whose: Whose, doc_id: DocId, dirty: 
                 // (beneath the project, or the folder holding it, through no link, as a change set's writes)
                 let roots = ed.workspace.roots();
                 let root = roots.of(&f.path).unwrap_or(roots.project()).to_path_buf();
-                let why = if whose == Whose::Yours { " · the patch" } else { " · Claude's change" };
+                let why = match whose == Whose::Yours {
+                    true => " · the patch",
+                    false => crate::llm::kept(format!(" · {}'s change", crate::llm::session_row(ed).shown)),
+                };
                 match ed.save_beneath(doc_id, root, crate::saver::Then::Auto(why)) {
                     Err(e) => Outcome::Failed(format!("not saved: {e}")),
                     Ok(()) if now == f.after => Outcome::Accepted,

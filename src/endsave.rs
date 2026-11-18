@@ -336,7 +336,7 @@ pub fn ask(ed: &mut Editor, which: &str) {
     ed.step(ed.events.shared_jobs(), "session", said, work, |ed, found| match found {
         Ok(mut r) => ed.api_check(ed.events.shared_jobs(), move |ed, _| {
             (r.making.billing, r.making.billing_ask, r.making.billing_note) = ed.new_session_ask();
-            let card = card(&r, ed.weakness_due());
+            let card = card(&r, crate::agent::row_of(&ed.config.llm).shown, ed.weakness_due());
             ed.push_offer(card);
         }),
         Err(e) => ed.set_error(format!("restore: {e}")),
@@ -393,7 +393,8 @@ fn files_said(f: &Files) -> String {
 }
 
 /// Its card — `weakness`: it says `billing::WEAKNESS` when it bills the key (not said yet).
-pub fn card(r: &Restoring, weakness: bool) -> Offer {
+/// `a`: the agent its fresh conversation starts on — the config's (`llm.agent`), as a session with no chat yet.
+pub fn card(r: &Restoring, a: &str, weakness: bool) -> Offer {
     let (s, m) = (&r.saved, &r.making);
     let (folder, under) = match (m.path.file_name(), m.path.parent()) {
         (Some(f), Some(p)) => (f.to_string_lossy().into_owned(), crate::allow::tilde(p)),
@@ -420,7 +421,7 @@ pub fn card(r: &Restoring, weakness: bool) -> Offer {
     };
     let mut q = format!(
         "{files}\n{on}{ahead}.{gone}\nIts checkout, {folder}/, goes in\n  {under}\n\nIts conversation isn't brought back — \
-         its Claude starts fresh."
+         its {a} starts fresh."
     );
     let warn = m.billing_said(&mut q, weakness);
     let o = Offer::new(

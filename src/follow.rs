@@ -1006,7 +1006,7 @@ fn play(ed: &mut Editor) {
     let Some((msg, k, stop, step)) = f.queue.pop_front() else {
         f.playing = None;
         // The tour is over: now the list it left says how to walk it again
-        if std::mem::take(&mut f.announce) && ed.workspace.qlist.as_ref().is_some_and(|l| l.title == TOUR) {
+        if std::mem::take(&mut f.announce) && ed.workspace.qlist.as_ref().is_some_and(|l| is_tour(&l.title)) {
             ed.qlist_announce();
         }
         return;
@@ -1048,7 +1048,7 @@ fn play(ed: &mut Editor) {
         f.playing = Some((crate::clock::now() + dwell, generation));
     }
     // The list (a finished turn's) marks where the tour is
-    if let Some(l) = ed.workspace.qlist.as_mut().filter(|l| l.title == TOUR) {
+    if let Some(l) = ed.workspace.qlist.as_mut().filter(|l| is_tour(&l.title)) {
         l.current = l.items.iter().position(|it| it.path == stop.path && it.line == lines.start);
     }
     go_range(ed, &stop.path, lines);
@@ -1294,7 +1294,7 @@ pub fn on_done(ed: &mut Editor) {
         }
         answer_place(ed);
     }
-    let free = ed.workspace.qlist.as_ref().is_none_or(|l| l.items.is_empty() || l.title == TOUR);
+    let free = ed.workspace.qlist.as_ref().is_none_or(|l| l.items.is_empty() || is_tour(&l.title));
     if stops.len() < 2 || !free {
         return;
     }
@@ -1319,10 +1319,11 @@ pub fn on_done(ed: &mut Editor) {
     let at = showing.and_then(|(p, l)| items.iter().position(|it| it.path == p && it.line == l));
     // While the tour plays, its card has the screen — the list says itself when the tour is over
     let touring = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.touring());
+    let title = tour(crate::llm::session_row(ed).shown);
     if touring {
-        ed.qlist_put(TOUR, items);
+        ed.qlist_put(title, items);
     } else {
-        ed.qlist_set(TOUR, items);
+        ed.qlist_set(title, items);
     }
     if let Some(f) = follow(ed) {
         f.announce = touring;
@@ -1414,8 +1415,18 @@ pub fn reading(ed: &mut Editor) -> bool {
     })
 }
 
-/// The list a walk-through leaves.
-const TOUR: &str = "Claude's walk-through";
+/// The list a walk-through leaves: its title's end.
+const TOUR: &str = "'s walk-through";
+
+/// The list a walk-through of `a`'s leaves (the session's row's `Row.shown`): its title.
+pub(crate) fn tour(a: &str) -> String {
+    format!("{a}{TOUR}")
+}
+
+/// Whether a list is a walk-through's, whichever row's agent it names.
+fn is_tour(title: &str) -> bool {
+    title.strip_suffix(TOUR).is_some_and(crate::agent::is_shown)
+}
 
 /// Whether `path` is in the project (`Editor::root` — the folder tarae started in, links resolved):
 /// follow goes nowhere else — a file Claude reads elsewhere (its memory under `~/.claude`, a temp file)
@@ -1669,6 +1680,7 @@ fn resume_due(ed: &mut Editor) {
 /// changes shown as the review shows them, the card saying which stop of how many. While Claude works it
 /// holds follow (you're looking back); past the newest stop it follows again.
 pub fn replay_step(ed: &mut Editor, forward: bool) {
+    let a = crate::llm::session_row(ed).shown;
     let Some(c) = ed.workspace.claude.chat.as_mut() else {
         // (the chat closed: the stops it left, to their places — the turn's map stays)
         let Some(r) = ed.workspace.claude.stops_left.as_mut() else {
@@ -1682,7 +1694,7 @@ pub fn replay_step(ed: &mut Editor, forward: bool) {
                 ed.set_status("that was the newest stop");
             }
             None => {
-                let said = no_step(r);
+                let said = no_step(r, a);
                 ed.set_status(said);
             }
         };
@@ -1699,7 +1711,7 @@ pub fn replay_step(ed: &mut Editor, forward: bool) {
                 f.paused = false;
                 let target =
                     f.gaze.as_ref().and_then(|g| Some((g.path.clone()?, g.lines.clone().unwrap_or(0..1))));
-                ed.set_status("the newest stop — following Claude again");
+                ed.set_status(format!("the newest stop — following {a} again"));
                 if let Some((path, lines)) = target {
                     go_range(ed, &path, lines);
                 }
@@ -1709,17 +1721,18 @@ pub fn replay_step(ed: &mut Editor, forward: bool) {
             sync_shown(ed);
         }
         None => {
-            let said = no_step(&f.replay);
+            let said = no_step(&f.replay, a);
             ed.set_status(said);
         }
     }
 }
 
-/// What a step that goes nowhere says: nothing kept, or the oldest stop reached.
-fn no_step(r: &crate::replay::Replay) -> &'static str {
+/// What a step that goes nowhere says: nothing kept (of `a`'s, the session's row's `Row.shown`), or the oldest stop
+/// reached.
+pub(crate) fn no_step(r: &crate::replay::Replay, a: &str) -> String {
     match r.latest() {
-        0 => "nothing to replay yet — Claude's reads, edits and searches show here",
-        _ => "that was the first stop kept",
+        0 => format!("nothing to replay yet — {a}'s reads, edits and searches show here"),
+        _ => "that was the first stop kept".into(),
     }
 }
 
@@ -1910,7 +1923,10 @@ fn show_stop(ed: &mut Editor, at: (usize, usize)) {
         sync_shown(ed);
         match &p.copy {
             Some((url, fetched)) => show_page(ed, url, *fetched, stop.lines.clone().unwrap_or(0..1)),
-            None => ed.set_status(format!("no copy of {} — Claude's read of it didn't get the page", p.url)),
+            None => {
+                let a = crate::llm::session_row(ed).shown;
+                ed.set_status(format!("no copy of {} — {a}'s read of it didn't get the page", p.url))
+            }
         }
     } else {
         sync_shown(ed);
@@ -1988,7 +2004,8 @@ fn show_page(ed: &mut Editor, url: &str, at: std::time::Instant, lines: Range<us
     match ed.workspace.pages.kept(url, at) {
         Some(f) => crate::web::page::open_copy(ed, f, at, lines),
         None => ed.set_status(format!(
-            "the page Claude read {} isn't kept — :web! {url} fetches it now",
+            "the page {} read {} isn't kept — :web! {url} fetches it now",
+            crate::llm::session_row(ed).shown,
             crate::term::ago(crate::clock::since(at), true)
         )),
     }
@@ -2071,7 +2088,7 @@ pub fn follow_session(ed: &mut Editor, id: crate::event::WorkspaceId) {
     }
     let name = ed.workspace.label().to_string();
     if ed.workspace.claude.chat.is_none() {
-        return ed.set_status(format!("{name} has no Claude to follow"));
+        return ed.set_status(format!("{name} has no {} to follow", crate::llm::session_row(ed).shown));
     }
     // (no toast: the status line's `● follow` and the chip after it say whom — #308; following already, nothing moves:
     // said, as `space F`'s no-op is)

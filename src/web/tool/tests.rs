@@ -277,7 +277,7 @@ fn a_read_asks_by_host_and_its_answers_are_reads_alone() {
     read(&mut ed, generation, 9, &["http://localhost:9/"]);
     settle(&mut ed, &|_| answered(9).is_some());
     let t = answered(9).unwrap().unwrap();
-    assert!(t.contains("this machine's port 9 isn't one Claude's runs reach"), "{t}");
+    assert!(t.contains("this machine's port 9 isn't one agents' runs reach"), "{t}");
 }
 
 /// W3: a read under your wiki's base asks on a card saying the token — whatever a run's grant or `llm.sandbox-hosts`

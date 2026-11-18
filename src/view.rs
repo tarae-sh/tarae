@@ -703,7 +703,10 @@ pub fn swapped(ed: &Editor) -> bool {
 /// the keys — only where its rows go to Claude (`llm.screen-terminal`), else said, nothing done.
 fn take(ed: &mut Editor) {
     if !ed.config.llm.screen_terminal {
-        return ed.set_status("the terminal's rows don't go to Claude (llm.screen-terminal) — y copies them");
+        let a = crate::llm::session_row(ed).shown;
+        return ed.set_status(format!(
+            "the terminal's rows don't go to {a} (llm.screen-terminal) — y copies them"
+        ));
     }
     let Some(v) = ed.workspace.viewer.view.as_ref() else { return };
     let taken = taken(ed, v);

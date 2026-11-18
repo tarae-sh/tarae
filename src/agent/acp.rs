@@ -1622,6 +1622,8 @@ fn stopped(name: &str, reason: &str, text: &str) -> Result<String, String> {
         "max_tokens" => Err(format!("{name} stopped: the answer reached its length limit")),
         "max_turn_requests" => Err(format!("{name} stopped: the turn reached its limit of requests")),
         "refusal" => Err(format!("{name} refused to go on")),
+        // (none given — the protocol asks for one: still a stop that says why)
+        "" => Err(format!("{name} ended its turn without saying why")),
         other => Err(format!("{name} stopped: {other}")),
     }
 }

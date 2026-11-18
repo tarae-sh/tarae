@@ -261,7 +261,14 @@ impl Moves {
     /// The card: the base's move, a row a workspace — in words, what would conflict and where; what each answer does
     /// behind its `v` (polish landing 4: four rows of prose on every move, read by its answers' words already), with the
     /// instruction files the main checkout changed. One title a base, so a newer tip's card takes its place.
+    /// `a`: their agent's name (`Row.shown`), the one each of them runs — `shown`'s.
+    /// `card_by` on Claude's row: the tests'.
+    #[cfg(test)]
     pub fn card(&self) -> Offer {
+        self.card_by(crate::agent::CLAUDE.shown)
+    }
+
+    pub fn card_by(&self, a: &str) -> Offer {
         let base = &self.base.1;
         let whose = crate::workspace::possessive(base);
         let n = self.ws.len();
@@ -287,7 +294,7 @@ impl Moves {
         let one = |n: usize, a: &'static str, b: &'static str| if n == 1 { a } else { b };
         let idle = |n: usize| {
             format!(
-                "once {} idle — its Claude between turns, no review, rebase or run under way",
+                "once {} idle — its {a} between turns, no review, rebase or run under way",
                 one(n, "it's", "each is")
             )
         };
@@ -300,7 +307,7 @@ impl Moves {
                 one(n, "its", "their"),
             ),
             (0, c) => format!(
-                "y rebases {} onto {whose} tip {}. A conflict goes to {} own Claude to resolve, and you review \
+                "y rebases {} onto {whose} tip {}. A conflict goes to {} own {a} to resolve, and you review \
                  that before the rebase goes on.",
                 one(c, "it", "them"),
                 idle(c),
@@ -308,7 +315,7 @@ impl Moves {
             ),
             (k, c) => format!(
                 "y moves the clean {} onto {whose} tip {}, changes in no commit taken along. c \
-                 rebases the conflicting {} too, {} own Claude resolving it, while it's small.",
+                 rebases the conflicting {} too, {} own {a} resolving it, while it's small.",
                 one(k, "one", "ones"),
                 idle(k),
                 one(c, "one", "ones"),
@@ -607,7 +614,16 @@ fn looked(ed: &mut Editor, mut moves: Moves) {
 
 /// `moves`' card, its workspaces named in their colours, as the strip and the list name them.
 fn shown(ed: &Editor, moves: &Moves) -> Offer {
-    let mut card = moves.card();
+    // (their agent by each one's row: its name when they share one, else the word)
+    let agents: Vec<&str> = (moves.ws.iter())
+        .filter_map(|w| sessions(ed).find(|l| l.id == w.id))
+        .map(|l| crate::llm::workspace_row(ed, l).shown)
+        .collect();
+    let a = match agents.first() {
+        Some(&f) if agents.iter().all(|&x| x == f) => f,
+        _ => "agent",
+    };
+    let mut card = moves.card_by(a);
     card.paint = (moves.ws.iter())
         .filter_map(|w| {
             let l = sessions(ed).find(|l| l.id == w.id)?;
@@ -1036,6 +1052,10 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
     let (id, base) = (w.ws.id, w.base.1.clone());
     let mut name = w.ws.name.clone();
     let open = sessions(ed).any(|l| l.id == id);
+    let a = sessions(ed)
+        .find(|l| l.id == id)
+        .map_or_else(|| crate::llm::session_row(ed), |l| crate::llm::workspace_row(ed, l))
+        .shown;
     if open {
         ed.with_workspace(id, |ed| {
             ed.workspace.moving = None;
@@ -1075,7 +1095,7 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
             ToastKind::Warning,
             format!(
                 "{name} · would conflict on {base} after all — left as it was; :workspace-bring {name} rebases it, \
-                 its Claude resolving"
+                 its {a} resolving"
             ),
         ),
         Landed::InTheWay(p) => (

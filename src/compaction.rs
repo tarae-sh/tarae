@@ -67,18 +67,18 @@ impl Compaction {
         }
     }
 
-    /// The chat's note where it happened.
-    pub fn note(&self) -> String {
-        format!("{NOTE} ({}) — what it worked out before may be only in its summary now", self.how())
+    /// The chat's note where it happened, `a` the agent that compacted (its row's `Row.shown`).
+    pub fn note(&self, a: &str) -> String {
+        format!("{a}{NOTE} ({}) — what it worked out before may be only in its summary now", self.how())
     }
 }
 
-const NOTE: &str = "Claude compacted this conversation";
+const NOTE: &str = " compacted this conversation";
 
-/// A chat note that's a compaction's — told by its words, so a conversation kept and continued draws it the
-/// same.
+/// A chat note that's a compaction's — told by its words, whichever row's agent it names (`agent::is_shown`), so a
+/// conversation kept and continued draws it the same.
 pub fn is_note(text: &str) -> bool {
-    text.starts_with(NOTE)
+    text.split_once(NOTE).is_some_and(|(who, _)| crate::agent::is_shown(who))
 }
 
 /// What a stream line says of compacting: it began (`status: "compacting"`), it's over (`status: null` with
@@ -168,8 +168,9 @@ pub fn on_compacted(ed: &mut Editor, mut k: Compaction) {
     if crate::idlecompact::of_turn(ed) {
         k.trigger = "idle".into();
     }
+    let a = crate::llm::session_row(ed).shown;
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
-        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, k.note(), ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, k.note(a), ""));
         // (the sandbox's rules and guarantees a run told may be gone from what it kept: the next run says them)
         c.rules_said = (None, Default::default());
     }
@@ -186,8 +187,8 @@ pub fn on_compacted(ed: &mut Editor, mut k: Compaction) {
     // Behind (`said_by_session` puts its name first), or in front with the chat out of sight past what it says now
     // (`chat::out_of_sight`: a zoom, a review read wide). Came by itself, what it worked out may be gone: a warning
     let msg = match (behind, crate::chat::out_of_sight(ed)) {
-        (true, _) => Some(format!("Claude compacted its conversation ({how})")),
-        (false, true) => Some(format!("Claude compacted its conversation ({how}) — space L shows it")),
+        (true, _) => Some(format!("{a} compacted its conversation ({how})")),
+        (false, true) => Some(format!("{a} compacted its conversation ({how}) — space L shows it")),
         (false, false) => None,
     };
     match (msg, automatic) {

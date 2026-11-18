@@ -552,7 +552,7 @@ pub(crate) fn place_in(
 fn path_op_allowed(k: &Known, given: &str, real: &Path, rel: &str, protected: bool) -> Result<(), String> {
     if protected {
         return Err(format!(
-            "{rel} is a build script, manifest or setting Claude's runs can't write — this tool doesn't move or \
+            "{rel} is a build script, manifest or setting your runs can't write — this tool doesn't move or \
              delete it; ask the user"
         ));
     }

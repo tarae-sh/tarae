@@ -2631,7 +2631,7 @@ fn the_socket_answers_snapshots_and_refuses_claudes_processes() {
     pump_until(&mut ed, n(5));
     t.join().unwrap();
     let refused = asked.lock().unwrap()[4].clone();
-    assert!(refused.contains("refused: under a process of Claude's"), "{refused}");
+    assert!(refused.contains("refused: under an agent's process"), "{refused}");
     std::fs::remove_dir_all(&dir).ok();
 }
 

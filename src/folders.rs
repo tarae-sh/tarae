@@ -162,7 +162,7 @@ fn given_path(start: &Path, given: &str, home: Option<&Path>) -> PathBuf {
 /// Why folder `at` (real) can't be added beside `roots` — None: it can. `writes`: where sandboxed runs may write but
 /// the asking workspace's own folders (`Editor::writes_beside`; none when runs aren't sandboxed) — a folder that's one
 /// of them for any other reason (a grant, `$TMPDIR`, another workspace's) is refused. A worker's (it reads the disk).
-pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf]) -> Option<String> {
+pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf], a: &str) -> Option<String> {
     let (project, holds, within) =
         (roots.project(), |p: &Path| p.starts_with(at), |p: &Path| at.starts_with(p));
     let name =
@@ -174,7 +174,7 @@ pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf]) -> Optio
         return Some("that's the project itself".into());
     }
     if within(project) {
-        return Some("it's in the project — Claude works there already".into());
+        return Some(format!("it's in the project — {a} works there already"));
     }
     if holds(project) {
         return Some("it holds the project — add a folder beside it".into());
@@ -189,11 +189,11 @@ pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf]) -> Optio
         return Some(format!("it holds folder {}", name(f)));
     }
     if at.parent().is_none() || caps.home.as_deref().is_some_and(holds) {
-        return Some("it's your home or holds it — everything would be Claude's".into());
+        return Some(format!("it's your home or holds it — everything would be {a}'s"));
     }
     if caps.kept.iter().any(|k| within(k) || holds(k)) {
         return Some(
-            "it's in or holds what runs never read (keys, tokens, Claude's and tarae's state)".into(),
+            "it's in or holds what runs never read (keys, tokens, agents' and tarae's state)".into(),
         );
     }
     if let Some(why) = caps.later.refuses(at) {
@@ -203,15 +203,15 @@ pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf]) -> Optio
     // be read as the folder's)
     if let Some(w) = writes.iter().find(|w| at == w.as_path()) {
         let w = crate::allow::tilde(w);
-        return Some(format!("Claude's runs write there ({w}) — a run could put a link in its place"));
+        return Some(format!("Agents' runs write there ({w}) — a run could put a link in its place"));
     }
     if let Some(w) = writes.iter().find(|w| within(w)) {
         let w = crate::allow::tilde(w);
-        return Some(format!("it's in {w}, where Claude's runs write — a run could put a link in its place"));
+        return Some(format!("it's in {w}, where agents' runs write — a run could put a link in its place"));
     }
     if let Some(w) = writes.iter().find(|w| holds(w)) {
         let w = crate::allow::tilde(w);
-        return Some(format!("it holds {w}, where Claude's runs write — a run could put a link there"));
+        return Some(format!("it holds {w}, where agents' runs write — a run could put a link there"));
     }
     if caps.defaults(Why::OtherCheckout).any(|c| within(c) || holds(c)) {
         return Some(
@@ -251,13 +251,14 @@ fn rejudge(
     project: &Path,
     caps: &Caps,
     writes: &[PathBuf],
+    a: &str,
 ) -> (Vec<Folder>, Vec<(PathBuf, String)>) {
     let (mut kept, mut dropped) = (Vec::new(), Vec::new());
     for mut f in folders {
         let roots = Roots::new(project.to_path_buf(), kept.iter().map(|f: &Folder| f.at.clone()).collect());
         let why = match std::fs::canonicalize(&f.at) {
             Err(e) => Some(e.to_string()),
-            Ok(real) => judge(&real, &roots, caps, writes)
+            Ok(real) => judge(&real, &roots, caps, writes, a)
                 .or_else(|| (real != f.at).then(|| format!("it leads elsewhere now ({})", real.display()))),
         };
         match why {
@@ -288,10 +289,10 @@ impl Editor {
         #[cfg(not(test))]
         let home = crate::allow::home();
         let path = given_path(&self.workspace.start(), &given, home.as_deref());
-        let id = self.workspace.id;
+        let (id, a) = (self.workspace.id, crate::llm::session_row(self).shown);
         self.events.jobs().spawn(move || {
             let r = std::fs::canonicalize(&path).map_err(|e| e.to_string()).and_then(|at| {
-                match judge(&at, &roots, &basis.build(), &writes().unwrap_or_default()) {
+                match judge(&at, &roots, &basis.build(), &writes().unwrap_or_default(), a) {
                     Some(why) => Err(why),
                     None => Ok((instructions_in(&at), at)),
                 }
@@ -323,8 +324,9 @@ impl Editor {
         ws.folders.push(Folder { at: at.clone(), name: name.clone(), instructions });
         self.folders_changed();
         self.set_success(format!(
-            "folder {name} added ({}) — Claude reads and edits there as in the project",
-            crate::allow::tilde(&at)
+            "folder {name} added ({}) — {} reads and edits there as in the project",
+            crate::allow::tilde(&at),
+            crate::llm::session_row(self).shown
         ));
     }
 
@@ -352,7 +354,8 @@ impl Editor {
         }
         let f = self.workspace.folders.remove(i);
         self.folders_changed();
-        self.set_success(format!("folder {} removed — outside the project again for Claude", f.name));
+        let a = crate::llm::session_row(self).shown;
+        self.set_success(format!("folder {} removed — outside the project again for {a}", f.name));
     }
 
     /// The front workspace's folders changed: kept, and what its Claude may do made again.
@@ -371,10 +374,11 @@ impl Editor {
             return;
         };
         let (basis, project, kept) = (self.caps_basis_in(ws), ws.root.clone(), ws.folders_judging.clone());
+        let a = crate::llm::workspace_row(self, ws).shown;
         let (front, writes) = (self.workspace.id, self.writes_beside(id));
         self.events_for(id);
         self.events.jobs().spawn(move || {
-            let (back, dropped) = rejudge(kept, &project, &basis.build(), &writes().unwrap_or_default());
+            let (back, dropped) = rejudge(kept, &project, &basis.build(), &writes().unwrap_or_default(), a);
             move |ed: &mut Editor| {
                 if ed.workspace.id != id {
                     return;
@@ -406,8 +410,9 @@ impl Editor {
         }
         let (basis, writes) = (self.caps_basis(), self.writes_beside(self.workspace.id));
         let (project, now) = (self.workspace.root.clone(), self.workspace.folders.clone());
+        let a = crate::llm::session_row(self).shown;
         self.events.jobs().spawn(move || {
-            let (kept, dropped) = rejudge(now, &project, &basis.build(), &writes().unwrap_or_default());
+            let (kept, dropped) = rejudge(now, &project, &basis.build(), &writes().unwrap_or_default(), a);
             move |ed: &mut Editor| {
                 // (their instruction files as they are now)
                 for f in ed.workspace.folders.iter_mut() {

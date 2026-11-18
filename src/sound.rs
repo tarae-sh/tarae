@@ -335,7 +335,7 @@ pub fn toggled(on: bool) -> (String, bool) {
     }
     match on {
         // (short: the status line's, beside the mode — `:set! editor.sound true` keeps it, as any `:set`)
-        true => ("sound on · Claude's writing heard until you quit".into(), true),
+        true => ("sound on · agents' writing heard until you quit".into(), true),
         false => ("sound off".into(), true),
     }
 }

@@ -278,15 +278,61 @@ pub fn session_row(ed: &Editor) -> &'static crate::agent::Row {
 /// kept as written on any row (`agent_doc`).
 pub const CLAUDE_ONLY_COMMANDS: &[&str] = &["claude-settings", "usage", "session-billing"];
 
-/// A command's doc as which-key, the palette and `:`'s completion draw it for the session in front (step 4's C.3,
-/// §4's command docs): its `Claude` the session's agent's name by its row (`Row.shown`) — as written on Claude's row
-/// and for `CLAUDE_ONLY_COMMANDS` (`name`: a typed command's first name, else empty).
+/// The settings whose docs name Claude Code itself or a row by name, kept as written on any row (`agent_doc`): the
+/// agent choice (it names the rows), Claude Code's settings and login, billing (only Claude's row bills), and the web
+/// search while it's a Claude-row helper (`Caps.helpers`; L4 looks at them again).
+pub const CLAUDE_ONLY_SETTINGS: &[&str] = &[
+    "llm.agent",
+    "llm.chat-settings",
+    "llm.environment-key",
+    "llm.billing",
+    "llm.reviewer-billing",
+    "llm.web-search",
+    "llm.web-search-model",
+];
+
+/// A command's or setting's doc as which-key, the palette, `:`'s completion and `:config-show` draw it for the session
+/// in front (step 4's C.3, §4's command docs; the naming landing's settings): its `Claude` the session's agent's name by
+/// its row (`Row.shown`) — as written on Claude's row and for `CLAUDE_ONLY_COMMANDS` and `CLAUDE_ONLY_SETTINGS` (`name`:
+/// a typed command's first name or a setting's path, else empty). A setting is every session's, yet its doc names the
+/// one in front, as the commands' do: the doc is read where you are, about what you'd change for the agent at work
+/// there — a knowing difference from the naming landing's rule 2.
 pub fn agent_doc(ed: &Editor, name: &str, doc: &str) -> String {
-    let shown = session_row(ed).shown;
-    match shown == crate::agent::CLAUDE.shown || CLAUDE_ONLY_COMMANDS.contains(&name) {
+    match CLAUDE_ONLY_COMMANDS.contains(&name) || CLAUDE_ONLY_SETTINGS.contains(&name) {
         true => doc.to_string(),
-        false => doc.replace(crate::agent::CLAUDE.shown, shown),
+        false => doc_as(session_row(ed).shown, doc),
     }
+}
+
+/// `doc`'s `Claude` as `shown` — never the one in `Claude Code`, the program's own name (`your Claude Code login`
+/// stays, never `your agy Code login`).
+pub fn doc_as(shown: &str, doc: &str) -> String {
+    let claude = crate::agent::CLAUDE.shown;
+    if shown == claude {
+        return doc.to_string();
+    }
+    let (mut out, mut rest) = (String::with_capacity(doc.len()), doc);
+    while let Some(i) = rest.find(claude) {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + claude.len()..];
+        out.push_str(if rest.starts_with(" Code") { claude } else { shown });
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `text` made once and kept for the rest of the run: a row's words where a `&'static str` is asked (a save's toast, a
+/// start's system prompt). Only for texts a row's name makes (`Row.shown` in a fixed template), so they're as few as
+/// the rows times the templates.
+pub fn kept(text: String) -> &'static str {
+    static KEPT: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = kept.iter().find(|s| **s == text) {
+        return s;
+    }
+    let s: &'static str = Box::leak(text.into_boxed_str());
+    kept.push(s);
+    s
 }
 
 /// `session_row` for workspace `w`'s session, in front or not: a start for a session other than the one in place

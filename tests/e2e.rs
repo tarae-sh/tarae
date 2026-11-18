@@ -1840,7 +1840,10 @@ fn tarae_attach_refuses_under_a_run_of_claudes() {
             .unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");
-        assert!(err.contains("doesn't run under a run of Claude's (TARAE_RUN is set)"), "{args:?}: {err}");
+        assert!(
+            err.contains("doesn't run inside a command an agent ran (TARAE_RUN is set)"),
+            "{args:?}: {err}"
+        );
         assert!(out.stdout.is_empty(), "{args:?}: nothing relayed");
     }
     assert_eq!(h.state_json()["interface"], serde_json::Value::Null);

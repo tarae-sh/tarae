@@ -644,21 +644,21 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "llm.children-max",
         kind: Kind::Int { min: 0, max: 16 },
-        doc: "Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",
+        doc: "Chat: how many sessions one agent may have started and open at once (each its own checkout, build and agent). Only your own config sets it",
         get: |c| Value::from(c.llm.children_max as i64),
         set: |c, v| c.llm.children_max = n(v),
     },
     Setting {
         path: "llm.children-total",
         kind: Kind::Int { min: 0, max: 32 },
-        doc: "Chat: how many sessions all Claudes together may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",
+        doc: "Chat: how many sessions all agents together may have started and open at once (each its own checkout, build and agent). Only your own config sets it",
         get: |c| Value::from(c.llm.children_total as i64),
         set: |c, v| c.llm.children_total = n(v),
     },
     Setting {
         path: "llm.parent-wakes",
         kind: Kind::Int { min: 0, max: 60 },
-        doc: "Chat: how many turns of its own a Claude that started sessions may be woken for in an hour, each as a turn it asked to be woken for ends there (0 = never). Only your own config sets it",
+        doc: "Chat: how many turns of its own an agent that started sessions may be woken for in an hour, each as a turn it asked to be woken for ends there (0 = never). Only your own config sets it",
         get: |c| Value::from(c.llm.parent_wakes as i64),
         set: |c, v| c.llm.parent_wakes = n(v),
     },
@@ -949,7 +949,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "review.board-at-once",
         kind: Kind::Int { min: 1, max: 8 },
-        doc: "The board's Claudes reading at once, every session's together (one under memory pressure, none while it's critical). Only your own config sets it",
+        doc: "The board's reviewers at once, every session's together (one under memory pressure, none while it's critical). Only your own config sets it",
         get: |c| Value::Integer(c.review_board_at_once as i64),
         set: |c, v| c.review_board_at_once = n(v),
     },
@@ -963,7 +963,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "web.signed-in",
         kind: Kind::Wikis,
-        doc: "Your work wiki (only your own config): [{ base = \"https://corp.example/confluence\", kind = \"confluence-dc\", token-env = \"CONFLUENCE_PAT\" }] — tarae's own GET under the base carries the token in that variable of tarae's environment (https only), and reads its pages through the wiki's API; Claude's reads there ask on their own card. The variable never reaches Claude's commands or any claude tarae starts",
+        doc: "Your work wiki (only your own config): [{ base = \"https://corp.example/confluence\", kind = \"confluence-dc\", token-env = \"CONFLUENCE_PAT\" }] — tarae's own GET under the base carries the token in that variable of tarae's environment (https only), and reads its pages through the wiki's API; an agent's reads there ask on their own card. The variable never reaches any agent tarae starts or its commands",
         get: |c| {
             let row = |w: &crate::web::signed::Wiki| {
                 let mut t = toml::Table::new();
@@ -1097,8 +1097,9 @@ pub fn locate(src: &str, path: &str) -> Option<usize> {
     None
 }
 
-/// The whole effective config as TOML (with description comments) — `:config-show`.
-pub fn show(cfg: &EditorConfig) -> String {
+/// The whole effective config as TOML (with description comments) — `:config-show`, each doc as `doc` draws it
+/// (`llm::agent_doc`: the session in front's agent).
+pub fn show(cfg: &EditorConfig, doc: &dyn Fn(&str, &str) -> String) -> String {
     let mut out = String::from(
         "# tarae — effective settings\n# :set <path> <value> changes it until you quit, :set! also saves it\n",
     );
@@ -1109,7 +1110,12 @@ pub fn show(cfg: &EditorConfig) -> String {
             out.push_str(&format!("\n[{sec}]\n"));
             section = sec;
         }
-        out.push_str(&format!("# {} ({})\n{key} = {}\n", s.doc, s.kind.describe(), (s.get)(cfg)));
+        out.push_str(&format!(
+            "# {} ({})\n{key} = {}\n",
+            doc(s.path, s.doc),
+            s.kind.describe(),
+            (s.get)(cfg)
+        ));
     }
     out.push_str(KEY_TABLES);
     out
@@ -1350,7 +1356,7 @@ mod tests {
 
     #[test]
     fn show_is_loadable_config() {
-        let text = show(&EditorConfig::default());
+        let text = show(&EditorConfig::default(), &|_, d| d.to_string());
         let table: toml::Table = toml::from_str(&text).unwrap();
         let mut w = Vec::new();
         apply_table(&mut EditorConfig::default(), &table, &text, "x", &mut w);

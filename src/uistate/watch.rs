@@ -320,18 +320,38 @@ impl Editor {
     }
 }
 
-/// A turn of session `ed.workspace`'s Claude began or ended — for watchers.
+/// A watch line of a turn of `a`'s (the session's row's `Row.shown`), `who` the session's id and name.
+pub(crate) fn turn_said(
+    who: &str,
+    a: &str,
+    what: &str,
+    calls: usize,
+    took: Option<std::time::Duration>,
+) -> String {
+    match (what, took) {
+        ("ended", Some(t)) => {
+            format!("{who}: {a}'s turn ended — {calls} calls, {}", crate::term::run_duration(t))
+        }
+        _ => format!("{who}: {a}'s turn {what}"),
+    }
+}
+
+/// A watch line of `a`'s cache gone cold (`"cold"`) or its conversation compacted (`how`), else None.
+pub(crate) fn usage_said(who: &str, a: &str, what: &str, how: Option<&str>) -> Option<String> {
+    match (what, how) {
+        ("cold", _) => Some(format!("{who}: {a}'s cache went cold")),
+        ("compacted", Some(how)) => Some(format!("{who}: {a} compacted its conversation ({how})")),
+        _ => None,
+    }
+}
+
+/// A turn of session `ed.workspace`'s agent began or ended — for watchers.
 pub fn turn(ed: &mut Editor, what: &str, calls: usize, took: Option<std::time::Duration>) {
     if !ed.ui_watch.watching() {
         return;
     }
     let (id, name) = (super::session_id(ed.workspace.claude.id), ed.workspace.label().to_string());
-    let said = match (what, took) {
-        ("ended", Some(t)) => {
-            format!("{id} {name}: Claude's turn ended — {calls} calls, {}", crate::term::run_duration(t))
-        }
-        _ => format!("{id} {name}: Claude's turn {what}"),
-    };
+    let said = turn_said(&format!("{id} {name}"), crate::llm::session_row(ed).shown, what, calls, took);
     let took = took.map(|t| t.as_millis() as u64);
     ed.ui_said(json!({ "event": "turn", "session": id, "what": what, "calls": calls, "took_ms": took,
                        "said": said }));
@@ -351,11 +371,9 @@ pub fn usage(ed: &mut Editor, what: &str) {
         return;
     };
     let (id, name) = (super::session_id(ed.workspace.claude.id), ed.workspace.label().to_string());
-    let said = match (what, &ed.workspace.claude.compacted.last) {
-        ("cold", _) => format!("{id} {name}: Claude's cache went cold"),
-        ("compacted", Some(k)) => format!("{id} {name}: Claude compacted its conversation ({})", k.how()),
-        _ => format!("{id} {name}: {}", u.text()),
-    };
+    let how = ed.workspace.claude.compacted.last.as_ref().map(|k| k.how());
+    let (who, a) = (format!("{id} {name}"), crate::llm::session_row(ed).shown);
+    let said = usage_said(&who, a, what, how.as_deref()).unwrap_or_else(|| format!("{who}: {}", u.text()));
     let mut ev = u.json();
     ev["event"] = json!("usage");
     ev["session"] = json!(id);

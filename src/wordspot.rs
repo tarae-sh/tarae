@@ -284,7 +284,8 @@ const COSTS: &[(Option<&str>, &str)] = &[
     (Some("space v u"), "undo"),
     (None, "discard"),
     (None, "screen"),
-    (None, "Claude drafts"),
+    // (`C`'s draft: `Claude drafts`, `agy drafts` — whichever row's agent, `costs`)
+    (None, "{agent} drafts"),
     // (`C-l` by the chat's words — a new conversation; the notes list's `C-l close them` is a button, the user's)
     (Some("C-l"), "new"),
     (Some("C-l"), crate::chat::CLEAR_AGAIN),
@@ -412,8 +413,14 @@ pub fn listed(key: &str) -> bool {
 
 /// Whether a pair's key costs on a stray press (`COSTS`), past its way out (`way_out`).
 pub fn costs(key: &str, what: &str) -> bool {
-    let key = way_out(key).1;
-    COSTS.iter().any(|&(k, w)| (w == "*" || w == what.trim()) && k.is_none_or(|k| k == key))
+    let (key, what) = (way_out(key).1, what.trim());
+    // (`{agent} …`: any row's agent by its name on screen, `agent::is_shown`)
+    let agents = |w: &str| {
+        w.strip_prefix("{agent} ").is_some_and(|rest| {
+            what.strip_suffix(rest).and_then(|who| who.strip_suffix(' ')).is_some_and(crate::agent::is_shown)
+        })
+    };
+    COSTS.iter().any(|&(k, w)| (w == "*" || w == what || agents(w)) && k.is_none_or(|k| k == key))
 }
 
 /// Whether every key a hint writes is a button's (`listed`): its one sequence (`keys`) — a way out before it

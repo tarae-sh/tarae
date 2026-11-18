@@ -38,10 +38,10 @@ pub struct Edits {
 
 // ── Review at the end ───────────────────────────────────────────────────────
 
-const AT_END_TITLE: &str = "Review Claude's edits at the end?";
+const AT_END_TITLE: &str = "Review agents' edits at the end?";
 
 /// What the card asks — what turning it on means.
-const AT_END_ASK: &str = "For every chat — each session's, and new ones: Claude's edits go into your files as it \
+const AT_END_ASK: &str = "For every chat — each session's, and new ones: an agent's edits go into your files as it \
 makes them — before you see them — and the checks it runs (cargo test, cargo build) run that code.\n\nWhen its \
 turn ends you review all of it; space u takes the turn back. Build scripts, settings and files outside the \
 project still ask first.";
@@ -66,7 +66,7 @@ pub fn at_end_toggle(ed: &mut Editor, want: Option<bool>) {
     if want == on {
         return ed.set_status(match on {
             true => "review at the end is on — space v a turns it off",
-            false => "Claude's edits come one at a time",
+            false => "Agents' edits come one at a time",
         });
     }
     if at_end_held(ed, want) {
@@ -138,10 +138,10 @@ pub fn at_end_follow_config(ed: &mut Editor) {
             let row = match (differs, on) {
                 (true, true) => "review at the end, every chat's · from this turn's end",
                 (true, false) => {
-                    "Claude's edits come one at a time again, every chat's · from this turn's end"
+                    "Agents' edits come one at a time again, every chat's · from this turn's end"
                 }
                 (false, true) => "review at the end stays on — the change was taken back",
-                (false, false) => "Claude's edits stay one at a time — the change was taken back",
+                (false, false) => "Agents' edits stay one at a time — the change was taken back",
             };
             c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
         });
@@ -183,7 +183,7 @@ pub fn at_end_follow_here(ed: &mut Editor) {
     c.edits.at_end = on.then_some(root);
     let row = match on {
         true => "review at the end, every chat's · space v a turns it off",
-        false => "Claude's edits come one at a time again, every chat's",
+        false => "Agents' edits come one at a time again, every chat's",
     };
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
     at_end_told(ed, on);
@@ -221,7 +221,7 @@ pub fn at_end_set(ed: &mut Editor, on: bool) {
     match (kept, on) {
         (Some(Err(e)), _) => ed.set_error(at_end_not_saved(on, &e)),
         (_, true) => {
-            ed.set_success("Every chat's edits go in as Claude works — each turn reviewed when it ends")
+            ed.set_success("Every chat's edits go in as its agent works — each turn reviewed when it ends")
         }
         (_, false) => ed.set_status("Every chat's edits come one at a time again"),
     }
@@ -367,9 +367,10 @@ pub fn lost_review(ed: &mut Editor) {
         .is_some_and(|r| r.ready && !ed.docs.iter().any(|d| d.id == r.doc_id))
     {
         crate::llm::close_review(ed);
-        ed.set_error(
-            "a change under review lost its buffer and can't be shown — it was declined, Claude was told",
-        );
+        let a = crate::llm::session_row(ed).shown;
+        ed.set_error(format!(
+            "a change under review lost its buffer and can't be shown — it was declined, {a} was told"
+        ));
     }
 }
 

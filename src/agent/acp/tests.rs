@@ -291,6 +291,7 @@ fn a_turns_answer_is_its_usage_and_its_end() {
         ("max_tokens", "agy stopped: the answer reached its length limit"),
         ("max_turn_requests", "agy stopped: the turn reached its limit of requests"),
         ("refusal", "agy refused to go on"),
+        ("", "agy ended its turn without saying why"),
     ] {
         assert_eq!(stopped("agy", reason, ""), Err(words.into()));
     }
@@ -888,6 +889,7 @@ fn a_test_never_starts_a_real_agent() {
     let cfg = LlmConfig::default();
     for program in ["agy", "/opt/homebrew/bin/gemini", "/nonexistent/claude"] {
         let row: &'static crate::agent::Row = Box::leak(Box::new(crate::agent::Row {
+            instructions: &[],
             name: "real",
             shown: "real",
             wire: crate::agent::Wire::Acp,

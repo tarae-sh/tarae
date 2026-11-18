@@ -278,7 +278,8 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     }
     let name = label(ed).or_else(|| m.map(|m| m.name.clone())).unwrap_or(value);
     let cost = ed.switched_said();
-    said(ed, format!("Claude: {name}{}{cost}", alone(ed)), unsaved);
+    let a = crate::llm::session_row(ed).shown;
+    said(ed, format!("{a}: {name}{}{cost}", alone(ed)), unsaved);
     Ok(())
 }
 

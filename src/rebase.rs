@@ -281,6 +281,15 @@ pub struct Held {
     pub review: bool,
 }
 
+/// The agent that drafts a commit in checkout `root`: its session's row's name (`Row.shown`; one with no chat yet, the
+/// config's), else the session in front's.
+pub(crate) fn drafter(ed: &Editor, root: &Path) -> &'static str {
+    let mut all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    all.find(|w| w.root == root)
+        .map_or_else(|| crate::llm::session_row(ed), |w| crate::llm::workspace_row(ed, w))
+        .shown
+}
+
 impl Held {
     /// A bring's held card for `changed` in `moved`'s checkout, with what a commit first would leave out (reads the
     /// files: a worker's).
@@ -299,7 +308,14 @@ impl Held {
         self.bring && self.changed.len() > self.left_out.len()
     }
 
+    /// `a`: the agent whose draft a commit first is (its checkout's session's row's `Row.shown` — `drafter`).
+    /// `card_by` on Claude's row: the tests'.
+    #[cfg(test)]
     pub fn card(&self) -> Offer {
+        self.card_by(crate::agent::CLAUDE.shown)
+    }
+
+    pub fn card_by(&self, a: &str) -> Offer {
         let m = &self.moved;
         let it = |files: &[String]| files.len() == 1;
         let them = |files: &[String]| if it(files) { "it" } else { "them" };
@@ -345,11 +361,11 @@ impl Held {
                     // (#535: a review open there is ended first — its own card, its holds kept)
                     q.push_str(&match self.review {
                         true => format!(
-                            "\n\nc ends {} review first (its card asks), commits {} (Claude's draft, :w), then {again}.",
+                            "\n\nc ends {} review first (its card asks), commits {} ({a}'s draft, :w), then {again}.",
                             crate::workspace::possessive(&m.name),
                             them(c)
                         ),
-                        false => format!("\n\nc commits {} first (Claude's draft, :w), then {again}.", them(c)),
+                        false => format!("\n\nc commits {} first ({a}'s draft, :w), then {again}.", them(c)),
                     });
                     if let Some(l) = left {
                         q.push_str(&format!("\n{l}"));
@@ -1444,7 +1460,7 @@ impl Editor {
                 }
                 (Err(changed), None) if !unsaved.is_empty() || (!stash && !changed.is_empty()) => {
                     let h = Held { moved: m, changed, unsaved, bring: false, left_out: Vec::new(), review: false };
-                    ed.push_offer(h.card());
+                    ed.push_offer(h.card_by(drafter(ed, &h.moved.root)));
                     // (the queue never stashes for you: its card asks, a single bring after)
                     ed.bring_queue_rebased(Err(
                         "changes not in a commit in its checkout — its card asks".into()
@@ -1533,13 +1549,19 @@ impl Editor {
             return;
         }
         let mut renewed = Vec::new();
+        // (each checkout's drafter, read before the cards are taken to change)
+        let drafters: Vec<(PathBuf, &str)> = (std::iter::once(&self.workspace).chain(&self.workspaces))
+            .map(|w| (w.root.clone(), drafter(self, &w.root)))
+            .collect();
+        let front = crate::llm::session_row(self).shown;
         let parked =
             std::iter::once(&mut self.workspace).chain(&mut self.workspaces).flat_map(|l| &mut l.parked);
         for o in parked.chain(&mut self.offers) {
             let Some(&(_, review)) = stale.iter().find(|(id, _)| *id == o.id) else { continue };
             let What::RebaseHeld(h) = &mut o.what else { continue };
             h.review = review;
-            let card = h.card();
+            let a = drafters.iter().find(|(r, _)| *r == h.moved.root).map_or(front, |(_, a)| a);
+            let card = h.card_by(a);
             (o.question, o.decided) = (card.question, card.decided);
             renewed.push((o.id, o.rev));
             o.rev += 1;
@@ -2837,7 +2859,7 @@ impl Editor {
                         left_out,
                         review: false,
                     };
-                    return ed.push_offer(h.card());
+                    return ed.push_offer(h.card_by(drafter(ed, &h.moved.root)));
                 }
                 ed.with_workspace(id, |ed| {
                     (ed.workspace.bring_after_preflight, ed.workspace.bring_rebased) = (true, rebased);

@@ -7030,11 +7030,12 @@ impl Editor {
         let base = p.cycle.as_ref().map_or_else(|| p.split().0, |(b, _)| b.clone());
         // (from where you started, as the path you type — `typed::typed_path`)
         let mut c = crate::cmdline::complete(&base, &self.workspace.start(), &self.cmd_lists);
-        // (a command's doc says the session's agent by its row — `llm::agent_doc`)
-        if c.command {
-            for cand in &mut c.cands {
-                cand.hint = crate::llm::agent_doc(self, &cand.insert, &cand.hint);
-            }
+        // (a command's doc says the session's agent by its row — `llm::agent_doc` —, and a setting's, `:set`'s)
+        let setting =
+            |c: &crate::cmdline::Cand| crate::settings::find(&c.insert).is_some_and(|s| s.doc == c.hint);
+        let command = c.command;
+        for cand in c.cands.iter_mut().filter(|cand| command || setting(cand)) {
+            cand.hint = crate::llm::agent_doc(self, &cand.insert, &cand.hint);
         }
         Some(c)
     }
@@ -7409,6 +7410,78 @@ mod tests {
         ed.workspace.claude.chat = None;
         feed(&mut ed, "<esc>:ask-cancel");
         assert_eq!(hint(&ed).as_deref(), Some("Cancel the Claude request"));
+    }
+
+    /// `agent_doc`'s guard: a doc's `Claude` is the row's name, never the one in `Claude Code` — the program's name
+    /// (`your Claude Code login` never reads `your agy Code login`); as written on Claude's row.
+    #[test]
+    fn a_docs_claude_code_is_never_the_rows() {
+        let doc =
+            "Ask Claude: your Claude Code login, Claude's edits, Claude Code's cleanupPeriodDays, Claude";
+        assert_eq!(
+            crate::llm::doc_as("agy", doc),
+            "Ask agy: your Claude Code login, agy's edits, Claude Code's cleanupPeriodDays, agy"
+        );
+        assert_eq!(crate::llm::doc_as(crate::agent::CLAUDE.shown, doc), doc);
+        assert_eq!(
+            crate::llm::doc_as("agy", "Claude Coder"),
+            "Claude Coder",
+            "a word starting Code is the program's too"
+        );
+    }
+
+    /// The naming landing: a setting's doc names the session's agent as a command's does — `:set`'s completion and
+    /// `:config-show`, the stand-in standing for agy — but `llm::CLAUDE_ONLY_SETTINGS`' stay, and the Claude in
+    /// `Claude Code` is never the row's.
+    #[test]
+    fn the_setting_docs_name_the_sessions_agent() {
+        let mut ed = editor("");
+        let mut c = crate::chat::Chat::new();
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+        ed.workspace.claude.chat = Some(c);
+        for s in crate::settings::SETTINGS {
+            let d = crate::llm::agent_doc(&ed, s.path, s.doc);
+            assert!(!d.contains("stand-in Code"), "{}: {d}", s.path);
+            if crate::llm::CLAUDE_ONLY_SETTINGS.contains(&s.path) {
+                assert_eq!(d, s.doc, "{}: kept", s.path);
+            } else if s.doc.replace("Claude Code", "").contains("Claude") {
+                assert!(
+                    d.contains("stand-in") && !d.replace("Claude Code", "").contains("Claude"),
+                    "{}: {d}",
+                    s.path
+                );
+            }
+        }
+        let turns = crate::llm::agent_doc(
+            &ed,
+            "llm.turns-max-mb",
+            crate::settings::find("llm.turns-max-mb").unwrap().doc,
+        );
+        assert!(
+            turns.contains("stand-in's turns") && turns.contains("Claude Code's cleanupPeriodDays"),
+            "{turns}"
+        );
+        let hint = |ed: &Editor, path: &str| {
+            let c = ed.cmdline_completion().unwrap();
+            c.cands.iter().find(|c| c.insert == path).map(|c| c.hint.clone()).unwrap_or_default()
+        };
+        feed(&mut ed, ":set llm.sandbox");
+        assert!(
+            hint(&ed, "llm.sandbox").starts_with("Chat: stand-in's commands run in a sandbox"),
+            "{}",
+            hint(&ed, "llm.sandbox")
+        );
+        feed(&mut ed, "<esc>:set llm.billing");
+        assert!(
+            hint(&ed, "llm.billing").starts_with("Who pays for a new session's Claude"),
+            "kept: {}",
+            hint(&ed, "llm.billing")
+        );
+        let shown = crate::settings::show(&ed.config, &|p, d| crate::llm::agent_doc(&ed, p, d));
+        assert!(
+            shown.contains("# Chat: stand-in's commands run in a sandbox")
+                && shown.contains("Who pays for a new session's Claude")
+        );
     }
 
     #[test]

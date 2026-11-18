@@ -95,7 +95,7 @@ pub(crate) fn tool_call(ed: &mut Editor, call: Call, args: &Value) -> Result<(),
         move |ed: &mut Editor| match r.and_then(|i| one_at_a_time(ed, i)) {
             Ok(mut i) => {
                 i.call = Some(call);
-                let o = install_card(&i);
+                let o = card_by(&i, crate::llm::session_row(ed).shown);
                 ed.push_offer(o);
             }
             Err(e) => crate::tools::answer(ed, call, Err(e)),
@@ -192,11 +192,23 @@ fn at_most(r: impl std::io::Read, max: u64) -> std::io::Result<Option<Vec<u8>>> 
     Ok((bytes.len() as u64 <= max).then_some(bytes))
 }
 
+/// The title of an install an agent asked for: `a` its session's row's `Row.shown`.
+pub(crate) fn asks_title(a: &str, name: &str) -> String {
+    format!("{a} asks to install plugin {name}")
+}
+
 /// The install's card: where it was found, what it registers, what it may do in the load card's words, what it
 /// replaces, and what the yes binds — never its hash (#458: nobody compares hex).
+/// `card_by` on Claude's row: the cards' walk's (`cards::claudes_card`).
+#[cfg(test)]
 pub(crate) fn install_card(i: &Install) -> Offer {
+    card_by(i, crate::agent::CLAUDE.shown)
+}
+
+/// `a`: the agent that asked (its session's row's `Row.shown`) — said only when one did (`call`).
+pub(crate) fn card_by(i: &Install, a: &str) -> Offer {
     let title = match i.call {
-        Some(_) => format!("Claude asks to install plugin {}", i.name),
+        Some(_) => asks_title(a, &i.name),
         None => format!("Install plugin {}", i.name),
     };
     let mut lines = vec![match &i.crate_dir {
@@ -262,7 +274,7 @@ impl Editor {
         self.events.jobs().spawn(move || {
             let r = look(&root, &wasm, &dir);
             move |ed: &mut Editor| match r.and_then(|i| one_at_a_time(ed, i)) {
-                Ok(i) => ed.push_offer(install_card(&i)),
+                Ok(i) => ed.push_offer(card_by(&i, crate::llm::session_row(ed).shown)),
                 Err(e) => ed.set_error(e),
             }
         });

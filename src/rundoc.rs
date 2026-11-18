@@ -1049,9 +1049,13 @@ pub fn run_where(ed: &mut Editor) {
     match ran {
         Some((cmd, ran)) => crate::chat::say_ran(ed, &cmd, &ran),
         None if has_keys(ed).is_none() => {
-            ed.set_status("K says where Claude's command ran — on the task panel, C-w j")
+            let a = crate::llm::session_row(ed).shown;
+            ed.set_status(format!("K says where {a}'s command ran — on the task panel, C-w j"))
         }
-        None => ed.set_status("K says where a command of Claude's ran — this run isn't one"),
+        None => {
+            let a = crate::llm::session_row(ed).shown;
+            ed.set_status(format!("K says where a command of {a}'s ran — this run isn't one"))
+        }
     }
 }
 

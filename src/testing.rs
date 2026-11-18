@@ -841,7 +841,7 @@ impl Editor {
             let _ = tx.send(crate::event::Event::Job(Box::new(done)));
         });
         let parser = parser_of(&target.how);
-        let label = format!("Claude's tests {}", target.label);
+        let label = format!("{}'s tests {}", crate::llm::session_row(self).shown, target.label);
         let containers =
             containers.map(|(p, reach)| crate::containers::Run::new(p, label, self.events.sender(), reach));
         self.workspace.test_run = Some(TestRun {

@@ -725,18 +725,21 @@ impl Editor {
 
     /// `?` in the git tab — every key it takes, as a card.
     pub fn git_help(&mut self) {
-        let md = "**git tab**\n\n\
+        let a = crate::llm::session_row(self).shown;
+        let md = format!(
+            "**git tab**\n\n\
             `enter` a changed file: its hunks and conflicts · a hunk: there in the code\n\
             `s` `u` stage · unstage (a file, folder, section — or the hunk)\n\
             `S` `U` stage · unstage everything, from any row\n\
             `d` discard (twice for a file; a hunk: its index lines back)\n\
             `o` `t` `a` a conflict: keep ours · theirs · both\n\
             `e` open in the editor · `D` diff against HEAD\n\
-            `c` commit · `C` commit, Claude drafting the message · `A` amend (`:git-amend`) — each opens the message: `:w` does it\n\
+            `c` commit · `C` commit, {a} drafting the message · `A` amend (`:git-amend`) — each opens the message: `:w` does it\n\
             `p` pull · `P` push · `f` fetch\n\
             `B` branches · `L` log · `z` stash · `Z` take it back\n\
-            `b` blame on/off · `r` read again · `esc` the code";
-        self.popup = Some(crate::markdown::render(md, &self.theme, None));
+            `b` blame on/off · `r` read again · `esc` the code"
+        );
+        self.popup = Some(crate::markdown::render(&md, &self.theme, None));
         self.popup_name = "git".into();
     }
 
@@ -1096,6 +1099,7 @@ impl Editor {
         }
         // Queued behind a stage still running, and what's staged read then — not the status shown, which
         // may be from before it
+        let a = crate::llm::session_row(self).shown;
         self.git_do(
             Box::new(move |top| {
                 let staged = git(top, &["diff", "--cached", "--name-status"], None)?;
@@ -1113,7 +1117,7 @@ impl Editor {
                 // line, it and what's below it left out: `git_saved`)
                 let mut text = format!("{}\n\n{SCISSORS}\n{SCISSORS_SAID}", last.trim_end());
                 text += &format!(
-                    "# :w {} · :q cancels · :commit-draft asks Claude\n",
+                    "# :w {} · :q cancels · :commit-draft asks {a}\n",
                     if amend { "amends the last commit" } else { "commits" }
                 );
                 text += &format!(
@@ -1275,7 +1279,8 @@ impl Editor {
             return Err(format!("nothing committed — {first}{more} not viewed (]u goes to them)"));
         }
         if self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) {
-            return Err("nothing committed — Claude is working; :commit once its turn is over".into());
+            let a = crate::llm::session_row(self).shown;
+            return Err(format!("nothing committed — {a} is working; :commit once its turn is over"));
         }
         let (path, root) = (self.workspace.root.join(file), r.root.clone());
         // (the message's file, in the checkout — its `..` taken: `../m.txt` is beside it — never staged with the rest)
@@ -1408,15 +1413,16 @@ impl Editor {
     /// commit), in the style of the repository's recent messages. Read on a worker; the draft streams in and
     /// lands as the in-buffer review of the message part (above the scissors line).
     pub fn commit_draft(&mut self) {
+        let a = crate::llm::session_row(self).shown;
         let Some(c) = self.workspace.committing.as_ref().filter(|c| c.doc == self.doc().id) else {
             return self
-                .set_status("open a commit message first — c in the git tab (or C: Claude drafts it)");
+                .set_status(format!("open a commit message first — c in the git tab (or C: {a} drafts it)"));
         };
         let (top, amend, id) = (c.top.clone(), c.amend, c.doc);
         if self.workspace.code_review.is_some() {
             return self.set_warning("a code review is open — end it first (space v q), then :commit-draft");
         }
-        let said = "Claude is drafting the commit message…";
+        let said = &format!("{a} is drafting the commit message…");
         // (once it's read, the draft streams into its review)
         let work = move || commit_prompt(&top, amend);
         self.step(self.events.jobs(), "commit-draft", said, work, move |ed, prompt| {

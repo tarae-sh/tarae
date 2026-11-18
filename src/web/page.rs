@@ -404,7 +404,7 @@ fn filled(ed: &mut Editor, id: DocId, g: Got) {
         super::serve::kept(ed, split_fragment(&f.url).0, now);
     }
     let claudes = ed.docs.iter().find(|d| d.id == id).and_then(of).is_some_and(|p| p.claudes);
-    let said = how(&g, claudes);
+    let said = how(&g, claudes.then_some(crate::llm::session_row(ed).shown));
     let Got { page, text, facts, copy, saved, .. } = g;
     let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
     // (a saved page's own address has no host: its file's name)
@@ -468,7 +468,8 @@ fn go_to(ed: &mut Editor, want: Option<Want>) {
 
 /// How it read: the part, its size, links and anchors, its charset, a refresh; then where it isn't 2xx, how long it
 /// took or how old the copy is, the hosts it came through, an upgrade to https; a fetch's own words.
-fn how(g: &Got, claudes: bool) -> String {
+/// `claudes`: the copy is the one the agent read — by its name (the session's row's `Row.shown`).
+fn how(g: &Got, claudes: Option<&str>) -> String {
     let page = &g.page;
     let mut s = format!(
         "{} · {}k chars · {} links · {} anchors · {}",
@@ -489,8 +490,8 @@ fn how(g: &Got, claudes: bool) -> String {
     let ago = crate::term::ago(crate::clock::since(*at), true);
     match (g.fresh, claudes) {
         (true, _) => s.push_str(&format!(" · {}", crate::term::run_duration(f.took))),
-        (false, true) => s.push_str(&format!(" · the copy Claude read {ago}")),
-        (false, false) => s.push_str(&format!(" · read {ago}")),
+        (false, Some(a)) => s.push_str(&format!(" · the copy {a} read {ago}")),
+        (false, None) => s.push_str(&format!(" · read {ago}")),
     }
     if !f.from.is_empty() {
         s.push_str(&format!(" · from {}", f.from.join(" › ")));

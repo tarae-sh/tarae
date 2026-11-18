@@ -979,7 +979,21 @@ fn limits_section(u: &Usage, limits: &crate::limits::Limits, now_ms: u64, zone: 
 
 /// `:usage`'s text for session `name` (Markdown): the conversation now, the plan's limits and the credential, a
 /// row per turn, the session's total, what each request starts with, and today's total across `all` sessions.
+#[cfg(test)]
 pub fn report(
+    name: &str,
+    u: &Usage,
+    limits: &crate::limits::Limits,
+    all: &[(&str, &Usage)],
+    now_ms: u64,
+    zone: crate::log::Zone,
+) -> String {
+    report_as(crate::agent::CLAUDE.shown, name, u, limits, all, now_ms, zone)
+}
+
+/// `report` with its heading naming the session's agent (`a`: its row's `Row.shown`).
+pub fn report_as(
+    a: &str,
     name: &str,
     u: &Usage,
     limits: &crate::limits::Limits,
@@ -990,7 +1004,7 @@ pub fn report(
     let until = |at| until(zone, at);
     let clock = |ms: u64| zone.clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
     let pct = |n: u64, w: u64| n * 100 / w.max(1);
-    let mut out = format!("# Claude usage — {name}\n\n");
+    let mut out = format!("# {a} usage — {name}\n\n");
     let cache = match u.cache(now_ms) {
         Cache::Warm { left_ms, ttl } => {
             format!("cache warm until {} ({} writes)", until(now_ms + left_ms), ttl.name())
@@ -1233,7 +1247,8 @@ fn report_now(ed: &Editor, sid: crate::event::WorkspaceId) -> Option<String> {
     let sessions = ed.sessions_in_order();
     let all: Vec<(&str, &Usage)> = sessions.iter().map(|l| (l.label(), &l.claude.usage)).collect();
     let l = sessions.iter().find(|l| l.id == sid)?;
-    Some(report(l.label(), &l.claude.usage, &ed.limits, &all, now_ms(), ed.interface.zone))
+    let a = crate::llm::workspace_row(ed, l).shown;
+    Some(report_as(a, l.label(), &l.claude.usage, &ed.limits, &all, now_ms(), ed.interface.zone))
 }
 
 /// `:usage` — the front session's usage in a buffer of its own (Markdown, nothing to save); said again as

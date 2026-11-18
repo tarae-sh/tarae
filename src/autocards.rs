@@ -270,7 +270,9 @@ fn start<'a>(
 #[cfg(test)]
 pub fn args() -> Vec<String> {
     let cfg = llm::LlmConfig::default();
-    crate::agent::args(&start(&crate::agent::CLAUDE, &cfg, &POLICY.text())).expect("its flags").args
+    crate::agent::args(&start(&crate::agent::CLAUDE, &cfg, &POLICY.text_as(crate::agent::CLAUDE.shown)))
+        .expect("its flags")
+        .args
 }
 
 static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -351,7 +353,7 @@ pub fn review(ed: &mut Editor, card: u64, p: Option<Prepared>) {
             ed.events.jobs().spawn(move || {
                 let started = (|| -> Result<(u32, Folder), String> {
                     let folder = Folder::made()?;
-                    let policy = POLICY.text();
+                    let policy = POLICY.text_as(row.shown);
                     let at = agent::Place { dir: &folder.0, given: env.as_ref(), cred: Some(&cred) };
                     let first = agent::First { tools: false, prompt: Some(message) };
                     let route = move |ev| -> Option<crate::event::Apply> {

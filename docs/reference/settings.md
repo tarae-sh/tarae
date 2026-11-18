@@ -83,9 +83,9 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `llm.web-search` | bool | `true` | Chat: Claude can search the web (web_search) — a small model's search beside the chat (llm.web-search-model), a list of pages back; a chat's first search asks on a card showing its words, which leave the machine for Anthropic's search engine. On by default; false removes the tool. A change takes the next chat. Only your own config sets it |
 | `llm.web-search-model` | string | `"haiku"` | The model Claude's web search runs on (llm.web-search): a name or alias claude --model takes. Only your own config sets it |
 | `llm.code` | bool | `false` | Chat: Claude can run a JavaScript program in tarae (code) to compute from what the read-only tools give — each of its calls through the same gate and cards as Claude's own, a run's kept output by its id. Off by default; a change takes the next chat |
-| `llm.children-max` | integer 0–16 | `3` | Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it |
-| `llm.children-total` | integer 0–32 | `6` | Chat: how many sessions all Claudes together may have started and open at once (each its own checkout, build and Claude). Only your own config sets it |
-| `llm.parent-wakes` | integer 0–60 | `6` | Chat: how many turns of its own a Claude that started sessions may be woken for in an hour, each as a turn it asked to be woken for ends there (0 = never). Only your own config sets it |
+| `llm.children-max` | integer 0–16 | `3` | Chat: how many sessions one agent may have started and open at once (each its own checkout, build and agent). Only your own config sets it |
+| `llm.children-total` | integer 0–32 | `6` | Chat: how many sessions all agents together may have started and open at once (each its own checkout, build and agent). Only your own config sets it |
+| `llm.parent-wakes` | integer 0–60 | `6` | Chat: how many turns of its own an agent that started sessions may be woken for in an hour, each as a turn it asked to be woken for ends there (0 = never). Only your own config sets it |
 | `llm.docker-inert` | list of strings | `[]` | Chat: what a Docker card's a lets vary of a command whose code is pinned — "cargo xtask linux: clippy test --userns --bin= --" (an act, a switch, an option and its value, test names: after test or after --) |
 | `llm.run-allow` | list of strings | `[]` | Chat: commands Claude runs without asking, past the checks (cargo build/test/clippy/fmt, git status/diff/log…) — word prefixes, like "npm test" |
 | `llm.review-ask` | list of strings | `[]` | Chat, review at the end (space v a): more files whose edits still ask first — a name matches anywhere, in any case ("schema.sql"), a path from the project root ("src/secret/"); the protected ones (.git, .tarae.toml, build.rs, pom.xml… — every language pack's) always ask |
@@ -135,14 +135,14 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `review.screen` | list of strings | `[]` | Code review: the files that draw the screen — a change in one brings the board's design angle (space v C). Names and paths as review.risky |
 | `review.angles` | list of tables | correctness, security, tests, design | The board's angles (space v C): [[review.angles]] tables of name, ask, when (always, behaviour, high, screen), paths, languages, findings-max — replacing the built-in correctness, security, tests, design. Only your own config sets it |
 | `review.rules` | table of lists of paths | `{}` | Files of the repository's main checkout a board's angle reads besides the project's CLAUDE.md or AGENTS.md: [review.rules] design = [".sb/dev/design.md"] — keyed by angle name, `reviewer` for space v c. Read once as the review begins; one not there is left out. Only your own config sets it |
-| `review.board-at-once` | integer 1–8 | `3` | The board's Claudes reading at once, every session's together (one under memory pressure, none while it's critical). Only your own config sets it |
+| `review.board-at-once` | integer 1–8 | `3` | The board's reviewers at once, every session's together (one under memory pressure, none while it's critical). Only your own config sets it |
 | `review.skeptics-max` | integer 0–50 | `12` | The board's skeptics at most — the claims of groups past it go to you unchecked. Only your own config sets it |
 
 ## `[web]`
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| `web.signed-in` | list of tables | `[]` | Your work wiki (only your own config): [{ base = "https://corp.example/confluence", kind = "confluence-dc", token-env = "CONFLUENCE_PAT" }] — tarae's own GET under the base carries the token in that variable of tarae's environment (https only), and reads its pages through the wiki's API; Claude's reads there ask on their own card. The variable never reaches Claude's commands or any claude tarae starts |
+| `web.signed-in` | list of tables | `[]` | Your work wiki (only your own config): [{ base = "https://corp.example/confluence", kind = "confluence-dc", token-env = "CONFLUENCE_PAT" }] — tarae's own GET under the base carries the token in that variable of tarae's environment (https only), and reads its pages through the wiki's API; an agent's reads there ask on their own card. The variable never reaches any agent tarae starts or its commands |
 
 ## Tables you name yourself
 

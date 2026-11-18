@@ -174,7 +174,7 @@ fn over_cap(ed: &Editor, parent: SessionId, n: usize) -> Option<String> {
     let (open, total) = (started(ed), ed.config.llm.children_total);
     (open + n > total).then(|| {
         format!(
-            "{n} asked with {open} sessions Claude started open, all chats' together — llm.children-total is \
+            "{n} asked with {open} agent-started sessions open, all chats' together — llm.children-total is \
              {total} (the user's setting; :set llm.children-total raises it): nothing was made"
         )
     })
@@ -1168,15 +1168,16 @@ pub fn news_for_answer(ed: &mut Editor, tool: &str) -> String {
 /// What a parent's message is to its child's Claude: in `<from-session>`, and the first time in a conversation the
 /// line saying whose it is and where its final reply goes (orchestra §1, ~45 tokens once). Its closing tag carries an
 /// id of its own, one the text doesn't hold (as a quote's — `quote::id_for`): a brief or message printing
-/// `</from-session>` can't end the frame and have what follows read as the user's own words.
-pub fn framed(from: &str, text: &str, first: bool) -> String {
+/// `</from-session>` can't end the frame and have what follows read as the user's own words. `agent`: the parent's
+/// agent, its row's `Row.shown` (byte for byte as before on Claude's row).
+pub fn framed(from: &str, agent: &str, text: &str, first: bool) -> String {
     let from = from.replace(['"', '<', '>'], "");
     let text = crate::quote::inert(text);
     let id = crate::quote::id_for(&text);
     let head = match first {
         true => format!(
-            "This message is from Claude in session {from}, which started this session. The user sees this chat and \
-             answers its cards; your final reply goes to {} Claude.\n",
+            "This message is from {agent} in session {from}, which started this session. The user sees this chat and \
+             answers its cards; your final reply goes to {} {agent}.\n",
             crate::workspace::possessive(&from)
         ),
         false => String::new(),
@@ -1608,10 +1609,12 @@ fn review_said(ed: &Editor, l: &crate::workspace::Workspace) -> String {
 }
 
 /// The name of the parent of the session in `ed.workspace` (None: not a child, or its parent's gone).
-pub fn parent_label(ed: &Editor) -> Option<String> {
+/// With the parent's agent's name on screen (its row's `Row.shown`).
+pub fn parent_named(ed: &Editor) -> Option<(String, &'static str)> {
     let parent = ed.workspace.claude.parent?;
     let mut all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
-    all.find(|l| l.claude.id == parent).map(|l| l.label().to_string())
+    all.find(|l| l.claude.id == parent)
+        .map(|l| (l.label().to_string(), crate::llm::workspace_row(ed, l).shown))
 }
 
 /// A set card of `names` (each brief its name's), asked by the front workspace's Claude, as `start` would put it up —

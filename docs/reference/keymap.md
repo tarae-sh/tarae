@@ -660,7 +660,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:review` |  | Review the changes (uncommitted, or since a branch) |
 | `:review-send` |  | Send the review's comments to Claude |
 | `:review-claude` |  | A second Claude reviews the changes (uncommitted, or since a branch), in the background |
-| `:review-board` |  | A board of Claudes reviews the changes in the background, each from its angle, a skeptic checking each finding |
+| `:review-board` |  | A board of reviewers reads the changes in the background, each from its angle, a skeptic checking each finding |
 | `:review-verdict` |  | The reviewer's verdict and findings |
 | `:review-hunk-seen` |  | The high-risk change here: looked at |
 | `:review-file-seen` |  | The file's high-risk changes all drawn: looked at |

@@ -159,7 +159,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(
         &["review-board"],
         Arg::Branch,
-        "A board of Claudes reviews the changes in the background, each from its angle, a skeptic checking each \
+        "A board of reviewers reads the changes in the background, each from its angle, a skeptic checking each \
          finding",
     ),
     c(&["review-verdict"], Arg::None, "The reviewer's verdict and findings"),

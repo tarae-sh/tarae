@@ -712,15 +712,26 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
     step_as(ed, undo, false)
 }
 
+/// A turn step refused while `a` (the session's row's `Row.shown`) still works.
+pub(crate) fn still_working(a: &str) -> String {
+    format!("{a} is still working — stop it (C-c in the chat) or wait for the turn to end")
+}
+
+/// A turn's undo with no turn of `a`'s to undo.
+pub(crate) fn nothing_to_undo(a: &str) -> String {
+    format!("no turn of {a}'s changed files — nothing to undo")
+}
+
 /// `step`; `read`: its files not open were read already (`read_then`) — one still not open is a file missing now.
 fn step_as(ed: &mut Editor, undo: bool, read: bool) -> Result<(), String> {
+    let a = crate::llm::session_row(ed).shown;
     if !ed.workspace.claude.checkpoints.turn.is_empty()
         || ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
     {
-        return Err("Claude is still working — stop it (C-c in the chat) or wait for the turn to end".into());
+        return Err(still_working(a));
     }
     if ed.workspace.claude.checkpoints.gathering {
-        return Err("reading what Claude wrote this turn — a moment".into());
+        return Err(format!("reading what {a} wrote this turn — a moment"));
     }
     if ed.workspace.claude.checkpoints.reading {
         return Err("reading that turn's changes — a moment".into());
@@ -733,7 +744,7 @@ fn step_as(ed: &mut Editor, undo: bool, read: bool) -> Result<(), String> {
     }
     let list = &ed.workspace.claude.checkpoints.list;
     let i = if undo {
-        list.iter().rposition(|c| !c.undone).ok_or("no turn of Claude's changed files — nothing to undo")?
+        list.iter().rposition(|c| !c.undone).ok_or_else(|| nothing_to_undo(a))?
     } else {
         list.iter().rposition(|c| c.undone).ok_or("no undone turn to bring back")?
     };
@@ -1503,7 +1514,7 @@ fn saved(ed: &mut Editor, s: Saved) -> bool {
     if big > 0 {
         let mb = ed.config.llm.turns_max_mb;
         let said = format!(
-            "the oldest {big} of Claude's turns let go — this project's kept turns passed llm.turns-max-mb ({mb} MB); \
+            "the oldest {big} turns let go — this project's kept turns passed llm.turns-max-mb ({mb} MB); \
              space u reaches back as far as what's kept"
         );
         match std::mem::replace(&mut ed.workspace.claude.checkpoints.told_full, true) {

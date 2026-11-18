@@ -2453,7 +2453,11 @@ impl crate::editor::Editor {
             Some(What::WorkspaceRestore(mut r)) => {
                 r.making.billing = other(r.making.billing);
                 let id = self.offers[0].id;
-                let card = crate::endsave::card(&r, self.weakness_due());
+                let card = crate::endsave::card(
+                    &r,
+                    crate::agent::row_of(&self.config.llm).shown,
+                    self.weakness_due(),
+                );
                 let o = &mut self.offers[0];
                 (o.question, o.what, o.warning) = (card.question, card.what, card.warning);
                 o.rev += 1;
@@ -3143,7 +3147,7 @@ impl crate::editor::Editor {
             }
             What::LookAlike(ask) => crate::lookalike::later(self, &ask),
             What::SafeBare { .. } => crate::safebare::never(self),
-            What::ReviewAtEnd => self.set_status("Claude's edits come one at a time"),
+            What::ReviewAtEnd => self.set_status("Agents' edits come one at a time"),
             What::ProjectTrust { hash } => self.project_trust_answer(o.id, hash, false),
             What::ClaudeSettings { hash } => self.claude_settings_answer(o.id, hash, false),
             What::AgentFiles { hash } => self.agent_files_answer(o.id, hash, false),
@@ -3179,9 +3183,10 @@ impl crate::editor::Editor {
             What::WorkspaceRestore(r) => {
                 self.set_status(format!("Not brought back — {} stays saved", r.saved.name))
             }
-            What::CloseReviewed { .. } => {
-                self.set_status("kept open — Claude's change still waits for y or n")
-            }
+            What::CloseReviewed { .. } => self.set_status(format!(
+                "kept open — {}'s change still waits for y or n",
+                crate::llm::session_row(self).shown
+            )),
             What::ChangeSet { whose, .. } => crate::refactor::decline_all(self, whose),
             What::Instructions(b) => crate::instructions::answer(self, *b, false),
             What::ReviewEnd { session, .. } => {

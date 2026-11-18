@@ -39,6 +39,8 @@ use std::path::{Path, PathBuf};
 pub use cli::cli;
 pub use install::Install as PluginInstall;
 #[cfg(test)]
+pub(crate) use install::asks_title as install_asks_title;
+#[cfg(test)]
 pub(crate) use install::install_card;
 #[cfg(test)]
 pub(crate) use install::stand_in as install_stand_in;

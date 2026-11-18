@@ -101,13 +101,13 @@ fn each_level_is_said_once_and_the_reserve_holds_until_there_is_room() {
     assert_eq!(ed.disk.held(), None);
     look(&mut ed, 18);
     assert_eq!(ed.disk.held().as_deref(), Some("disk 18.0 GB free"));
-    let reserve = "Disk at its reserve: 18.0 GB free of 926.0 GB on /Volumes/x. Claude's runs and overlap rounds \
+    let reserve = "Disk at its reserve: 18.0 GB free of 926.0 GB on /Volumes/x. Agents' runs and overlap rounds \
                    wait for room";
     assert_eq!(whole(&ed, reserve), 1);
-    assert_eq!(said(&ed, ToastKind::Warning, "Claude's runs and overlap rounds wait for room"), 1);
+    assert_eq!(said(&ed, ToastKind::Warning, "Agents' runs and overlap rounds wait for room"), 1);
     look(&mut ed, 9);
     let full =
-        "Disk almost full: 9.0 GB free of 926.0 GB on /Volumes/x. Claude's runs and overlap rounds wait";
+        "Disk almost full: 9.0 GB free of 926.0 GB on /Volumes/x. Agents' runs and overlap rounds wait";
     assert_eq!(whole(&ed, full), 1);
     assert_eq!(said(&ed, ToastKind::Error, full), 1);
     look(&mut ed, 15);

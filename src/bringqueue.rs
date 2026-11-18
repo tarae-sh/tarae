@@ -709,7 +709,7 @@ impl Editor {
     /// The one under way (`id`) has changes in no commit (`h`): its held card up, and out — a preflight would test
     /// them, the bring land its commits without them.
     fn bring_queue_unclean(&mut self, id: WorkspaceId, h: crate::rebase::Held) {
-        self.push_offer(h.card());
+        self.push_offer(h.card_by(crate::rebase::drafter(self, &h.moved.root)));
         self.bring_queue_out(id, "changes not in a commit in its checkout — its card asks".into());
     }
 

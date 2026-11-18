@@ -207,7 +207,7 @@ fn watch(mut out: UnixStream, kinds: &Value, line: &[u32], tx: &crate::event::Tx
         ed.drawn_for("a UI-state watch");
         let claude = ed.claude_pids();
         if let Some(p) = line.iter().find(|p| claude.contains(p)) {
-            let _ = ok.send(Err(format!("refused: under a process of Claude's (pid {p})")));
+            let _ = ok.send(Err(format!("refused: under an agent's process (pid {p})")));
             ed.unchanged = true;
             return;
         }
@@ -279,7 +279,7 @@ fn answer(req: &str, line: &[u32], tx: &crate::event::Tx) -> Value {
         ed.drawn_for("a UI-state ask");
         let claude = ed.claude_pids();
         if let Some(p) = line.iter().find(|p| claude.contains(p)) {
-            let e = format!("refused: under a process of Claude's (pid {p}) — Claude has a view of its own");
+            let e = format!("refused: under an agent's process (pid {p}) — it has a view of its own");
             let _ = refused.send(json!({ "error": e }).to_string());
             // (nothing changed: no frame for it)
             ed.unchanged = true;
@@ -362,7 +362,7 @@ const USAGE: &str = "\
 usage: tarae state [--json] [--pid PID] [--after-input N]
                    [--chat [SESSION] | --review [SESSION] | --frame FILE | --features | --watch [KINDS]]
   the UI state of a running tarae: where the keys go, the mode, the sessions, the cards, the panels,
-  the runs, the toasts, what each session's Claude costs, its processes (:procs)
+  the runs, the toasts, what each session's agent costs, its processes (:procs)
   --json             as JSON (the schema: docs/design/ui-state.md)
   --pid PID          that tarae (else $TARAE_UI's, or the one whose session holds this folder)
   --after-input N    once N keys and clicks were handled and drawn (read `input` first, add what you send)

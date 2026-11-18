@@ -1973,7 +1973,7 @@ fn file_picker(cx: &mut Context) {
 }
 
 /// `:` commands to list in the palette (description, command line).
-const TYPED_IN_PALETTE: &[(&str, &str)] = &[
+pub(crate) const TYPED_IN_PALETTE: &[(&str, &str)] = &[
     ("Learn the keys (tutorial)", "tutor"),
     ("Save file", "w"),
     ("Quit", "q"),

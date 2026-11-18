@@ -122,8 +122,14 @@ impl Both {
         }
     }
 
-    /// The card.
+    /// The card, `row` the session's whose copy it is (its reader clause: `reads_said`).
+    /// `card_by` on Claude's row: the tests'.
+    #[cfg(test)]
     pub fn card(&self) -> Offer {
+        self.card_by(&crate::agent::CLAUDE)
+    }
+
+    pub fn card_by(&self, row: &crate::agent::Row) -> Offer {
         let rel = &self.rel;
         if self.out.is_some() {
             let from = self.base.as_deref().unwrap_or(&self.here);
@@ -152,8 +158,8 @@ impl Both {
             }
             let q = format!(
                 "This session changed its {rel} since its copy ({lines}). y carries those changes into the main \
-                 checkout's {rel}, v shows them, n leaves it as it is.{left}{shown}\n\nEvery session's Claude reads \
-                 it from its next start."
+                 checkout's {rel}, v shows them, n leaves it as it is.{left}{shown}\n\nEach session whose agent \
+                 reads {rel} takes it from its next start."
             );
             return Offer::new(
                 format!("{rel}: this session's changes for the main checkout"),
@@ -163,6 +169,10 @@ impl Both {
                 What::Instructions(Box::new(self.clone())),
             );
         }
+        let reads = match reads(row, rel) {
+            true => format!("\n\n{} reads it from its next start.", row.shown),
+            false => String::new(),
+        };
         let q = match &self.base {
             Some(_) => {
                 let left = match self.left {
@@ -174,13 +184,13 @@ impl Both {
                 };
                 format!(
                     "The main checkout's {rel} changed since this session's copy, and so did this one. y takes the \
-                     main checkout's changes here. {left}\n\nClaude reads it from its next start."
+                     main checkout's changes here. {left}{reads}"
                 )
             }
             None => format!(
                 "This session's {rel} differs from the main checkout's, and whose change it is can't be told (it was \
                  copied before tarae kept what it copied). y takes the main checkout's whole — this one's own lines \
-                 go; n keeps this one, and only later changes are asked.\n\nClaude reads it from its next start."
+                 go; n keeps this one, and only later changes are asked.{reads}"
             ),
         };
         Offer::new(
@@ -246,6 +256,43 @@ mod tests {
             q(2).contains("2 of them touch lines this session changed: those stay as they are here."),
             "{}",
             q(2)
+        );
+    }
+
+    /// The naming landing's rule 1 by file (fact c): a line about an instruction file in this session names its
+    /// agent as its reader only when its row reads that file (`Row.instructions`) — `CLAUDE.md` in a stand-in session
+    /// (standing for agy) has no reader said, `AGENTS.md` has; Claude's row reads `CLAUDE.md`.
+    #[test]
+    fn a_reader_is_named_only_for_a_file_its_row_reads() {
+        use crate::agent::{CLAUDE, STAND_IN};
+        let said = |row, rel: &str| super::reads_said(row, &[rel.to_string()]);
+        assert_eq!(said(&STAND_IN, "CLAUDE.md"), "");
+        assert_eq!(said(&STAND_IN, "AGENTS.md"), " — stand-in reads it from its next start");
+        assert_eq!(said(&CLAUDE, "CLAUDE.md"), " — Claude reads it from its next start");
+        assert_eq!(said(&CLAUDE, "AGENTS.md"), "");
+        assert_eq!(
+            super::reads_said(&STAND_IN, &["AGENTS.md".into(), "CLAUDE.md".into()]),
+            "",
+            "one it doesn't read"
+        );
+        let card = |rel: &str| {
+            let b = super::Both {
+                root: "/stand-in".into(),
+                rel: rel.into(),
+                base: None,
+                here: "a\n".into(),
+                main: "b\n".into(),
+                left: 0,
+                out: None,
+                ended: false,
+            };
+            b.card_by(&STAND_IN).question
+        };
+        assert!(!card("CLAUDE.md").contains("next start"), "{}", card("CLAUDE.md"));
+        assert!(
+            card("AGENTS.md").ends_with("stand-in reads it from its next start."),
+            "{}",
+            card("AGENTS.md")
         );
     }
 }
@@ -460,7 +507,12 @@ pub(crate) fn push_card(ed: &mut Editor, b: Both) {
     for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
         l.parked.retain(|o| !mine(o));
     }
-    let mut card = b.card();
+    // (its session's row — the one whose root it is, else the one in front)
+    let row = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .find(|w| w.root == b.root)
+        .map_or_else(|| crate::llm::session_row(ed), |w| crate::llm::workspace_row(ed, w));
+    let mut card = b.card_by(row);
     if ended {
         card.question = card.question.replacen(
             "n leaves it as it is.",
@@ -562,9 +614,8 @@ fn said(ed: &mut Editor, found: Found) {
     }
     if !updated.is_empty() {
         let names = updated.join(", ");
-        ed.set_success(format!(
-            "{names} updated from the main checkout — Claude reads it from its next start"
-        ));
+        let row = crate::llm::session_row(ed);
+        ed.set_success(format!("{names} updated from the main checkout{}", reads_said(row, &updated)));
         ed.workspace.claude.checkpoints.tell.push(format!(
             "The user's instruction files {names} were updated here from the main checkout (this session's copy \
              was untouched); what you were started with is older — read them again before you rely on them."
@@ -700,7 +751,8 @@ enum Wrote {
 fn answered_out(ed: &mut Editor, rel: String, done: Result<Wrote, String>, take: bool) {
     match (done, take) {
         (Ok(_), true) => ed.set_success(format!(
-            "the main checkout's {rel} takes this session's changes — every session's Claude reads it from its next start"
+            "the main checkout's {rel} takes this session's changes — each session whose agent reads it takes it from \
+             its next start"
         )),
         (Ok(Wrote::Ended), false) => ed.set_status(format!(
             "the main checkout's {rel} left as it is — the ended session's changes to it are dropped"
@@ -712,13 +764,27 @@ fn answered_out(ed: &mut Editor, rel: String, done: Result<Wrote, String>, take:
     }
 }
 
+/// Whether `row` reads instruction file `rel` (`Row.instructions`, by its name).
+fn reads(row: &crate::agent::Row, rel: &str) -> bool {
+    let name = std::path::Path::new(rel).file_name().and_then(|n| n.to_str()).unwrap_or(rel);
+    row.instructions.contains(&name)
+}
+
+/// The reader clause after a line about files `rels` in this session: ` — {a} reads it from its next start` when
+/// its row reads every one of them (`reads`), else none — a file it doesn't read is never said read.
+pub(crate) fn reads_said(row: &crate::agent::Row, rels: &[String]) -> String {
+    match !rels.is_empty() && rels.iter().all(|r| reads(row, r)) {
+        true => format!(" — {} reads it from its next start", row.shown),
+        false => String::new(),
+    }
+}
+
 /// An answer's write, said.
 fn answered(ed: &mut Editor, rel: String, done: Result<Wrote, String>, take: bool) {
     match (done, take) {
         (Ok(_), true) => {
-            ed.set_success(format!(
-                "{rel} takes the main checkout's changes — Claude reads it from its next start"
-            ));
+            let said = reads_said(crate::llm::session_row(ed), std::slice::from_ref(&rel));
+            ed.set_success(format!("{rel} takes the main checkout's changes{said}"));
             ed.workspace.claude.checkpoints.tell.push(format!(
                 "The user took the main checkout's changes to {rel} into this session's; what you were started \
                  with is older — read it again before you rely on it."
