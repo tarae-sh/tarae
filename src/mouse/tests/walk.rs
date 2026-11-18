@@ -929,6 +929,8 @@ fn keyed_lights(ed: &Editor) -> Option<Lights> {
         R::Side(_) | R::Rail => Some(Lights::Side),
         R::Chat | R::View(crate::view::Surface::Chat) => Some(Lights::Chat),
         R::List(k) if crate::floatlist::is_list(k) => Some(Lights::Dock(k)),
+        // (the memo docked: its leaf's line, lit by its keys — floating, its own frame's)
+        R::Memo if ed.memo_docked_shown() => Some(Lights::Dock(crate::pane::GroupKind::Memo)),
         R::Slot(_) | R::List(_) | R::Program | R::View(_) | R::Output(_) => {
             match ed.slot_in_hand().and(ed.workspace.viewer.hand) {
                 Some(k) if ed.docked_in_sight(k) || ed.floating_in_sight(k) => Some(Lights::Dock(k)),

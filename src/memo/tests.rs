@@ -3,6 +3,8 @@ use crate::config::Config;
 use crate::event::{Event, Mouse, MouseKind};
 use crate::uistate::Region;
 
+mod dock;
+
 const W: u16 = 120;
 const H: u16 = 40;
 
@@ -88,9 +90,11 @@ fn space_m_brings_the_memo_up_typed_into_at_its_end() {
     assert_eq!(ed.workspace.memo.as_ref().map(Memo::mode), Some(Mode::Normal));
     let rows = frame(&mut ed);
     let bottom = &rows[r.y + r.h - 1];
+    // (at its own width, 45: `C-w e dock` in sight — `C-w w code`, the last, folds: `space M` ends it the same way)
+    assert_eq!(r.w, WIDTH);
     assert!(
-        bottom.contains("space M put away")
-            && bottom.contains("C-w w code")
+        bottom.contains("space M put away  C-w e dock ")
+            && !bottom.contains("C-w w")
             && !bottom.contains("esc normal"),
         "{bottom}"
     );

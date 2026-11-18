@@ -44,6 +44,16 @@ pub const MEASURE: usize = 40;
 /// line and air each side — 45 (one camera zoom still holds it whole on a Short).
 pub const WIDTH: usize = MEASURE + 1 + 2 * PAD;
 
+/// Its width docked beside the code before you size it (its step (c)): the measure, the cursor's cell after it, its
+/// edge's line and a blank either side of its text — 44.
+pub const DOCK_W: usize = MEASURE + 1 + 3;
+
+/// The cells its text wraps at docked in a leaf `w` wide (its edge's line in it): what's left of the line and a blank
+/// either side — at `DOCK_W` the measure whole with the cursor after it, as floating.
+pub fn docked_text_w(w: usize) -> usize {
+    w.saturating_sub(3).max(1)
+}
+
 /// Its text's rows at least, before it grows with its text.
 pub const ROWS_MIN: usize = 3;
 
@@ -216,8 +226,11 @@ impl Memo {
     }
 }
 
-/// The keys at its bottom line, as its mode has them (a key that does nothing there is never shown): typing, `esc`
-/// and the way to the code; in normal mode, `space M` puts it away.
+/// The keys at its bottom line floating, at its foot docked, as its mode has them (a key that does nothing there is never
+/// shown): typing, `esc` and the way to the code; in normal mode, `space M` puts it away, `C-w e` docks it or floats it —
+/// docked with no room, floating while you use it, `undock`: what the key changes, as `C-w e`'s words just said "docked".
+/// Folding from the end (the design session, 2026-11-19): floating at 45 wide `C-w w code` goes, there `space M` and
+/// `C-w w` end it the same way, so `C-w e dock` is always in sight — the chat's way, its `C-w e` right after the way out.
 pub fn hints(ed: &Editor) -> Vec<(String, &'static str)> {
     let Some(m) = ed.workspace.memo.as_ref() else { return Vec::new() };
     match m.mode() {
@@ -226,8 +239,14 @@ pub fn hints(ed: &Editor) -> Vec<(String, &'static str)> {
         _ => {
             let key = ed.keymaps.bindings().get("memo").cloned();
             let mut v: Vec<(String, &'static str)> = key.map(|k| (k, "put away")).into_iter().collect();
+            let dock = match (ed.memo_docked(), ed.memo_docked_shown()) {
+                (true, true) => "float",
+                (true, false) => "undock",
+                (false, _) => "dock",
+            };
+            v.push(("C-w e".into(), dock));
             // (`code`: the keys to the code, as `esc code` says it everywhere — `to the code` folded at 45 wide, under the
-            // run of line every frame keeps before its keys)
+            // run of line every frame keeps before its keys; last, the first to fold)
             v.push(("C-w w".into(), "code"));
             v
         }
@@ -250,16 +269,41 @@ impl Editor {
         self.workspace.memo.as_ref().is_some_and(|m| m.up) && self.workspace.is_at(Here::Memo)
     }
 
-    /// The memo is drawn: up (the keys its, or a picker or a prompt it opened over it).
+    /// The memo is up: not put away — floating while you use it (the keys its, or a picker or a prompt it opened over
+    /// it), or docked, the keys anywhere.
     pub fn memo_up(&self) -> bool {
         self.workspace.memo.as_ref().is_some_and(|m| m.up)
     }
 
-    /// The status line's `¶ memo` (step (b)): the memo put away holding words — kept from before too, not brought up
-    /// since tarae started. None while it's up (in sight), nor for one empty or never typed into.
+    /// The memo docks (`Sizes.memo_dock`, `C-w e` from it): beside the code where there's room, else floating while you
+    /// use it.
+    pub fn memo_docked(&self) -> bool {
+        self.sizes.memo_dock.is_some()
+    }
+
+    /// The memo is up and drawn docked: its leaf in the tree with room (`docked_in_sight`).
+    pub fn memo_docked_shown(&self) -> bool {
+        self.memo_docked() && self.docked_in_sight(GroupKind::Memo)
+    }
+
+    /// The memo is drawn floating: up and not docked in sight — docked with no room, only while you use it.
+    pub fn memo_floating(&self) -> bool {
+        self.memo_up()
+            && !self.memo_docked_shown()
+            && (!self.memo_docked() || self.workspace.is_at(Here::Memo))
+    }
+
+    /// The memo is in sight: floating or docked.
+    pub fn memo_in_sight(&self) -> bool {
+        self.memo_floating() || self.memo_docked_shown()
+    }
+
+    /// The status line's `¶ memo` (step (b)): the memo holding words out of sight — put away, kept from before (not
+    /// brought up since tarae started), or docked where a screen grown narrow left it no room. None while it's in sight,
+    /// nor for one empty or never typed into.
     pub fn memo_marked(&self) -> bool {
         match self.workspace.memo.as_ref() {
-            Some(m) => !m.up && !m.is_empty(),
+            Some(m) => !m.is_empty() && !self.memo_in_sight(),
             None => (self.memos.get(&self.memo_key()))
                 .and_then(|v| v["text"].as_str())
                 .is_some_and(|t| !t.is_empty()),
@@ -267,7 +311,7 @@ impl Editor {
     }
 
     /// `space M`, `:memo`: the memo up with the keys, insert mode at the end of its text — made the first time, with
-    /// what was kept for this checkout; up already, put away.
+    /// what was kept for this checkout; with the keys already, put away (docked too: its leaf goes, its side kept).
     pub fn memo_toggle(&mut self) {
         if self.memo_up() && self.workspace.is_at(Here::Memo) {
             return self.memo_away();
@@ -275,7 +319,7 @@ impl Editor {
         self.memo_bring();
     }
 
-    /// The memo up with the keys, insert mode at the end of its text.
+    /// The memo up with the keys, insert mode at the end of its text — docked, where it stands.
     pub fn memo_bring(&mut self) {
         if self.workspace.memo.is_none() {
             let id = self.next_pane;
@@ -283,9 +327,11 @@ impl Editor {
             let kept = self.memos.get(&self.memo_key()).and_then(|v| v["text"].as_str()).unwrap_or_default();
             self.workspace.memo = Some(Memo::new(id, kept));
         }
+        let keys = self.workspace.is_at(Here::Memo);
         let Some(m) = self.workspace.memo.as_mut() else { return };
         let id = m.id;
-        if !m.up {
+        // (up, docked without the keys: given them as `space M` gives them, at the end of its words)
+        if !m.up || !keys {
             m.up = true;
             m.pane.dropped();
             m.pane.keys.mode = Mode::Insert;
@@ -300,20 +346,44 @@ impl Editor {
         self.plugin_panel_unfocus();
         self.procs_unfocus();
         self.workspace.set_at(Here::Memo);
+        // (docked: its leaf in the tree now, for this frame)
+        self.dock_sync();
     }
 
-    /// The memo put away: not drawn, the keys to the code — its words kept.
+    /// The memo put away: not drawn — docked too, its leaf gone, its side kept —, the keys to the code, its words kept.
     pub fn memo_away(&mut self) {
+        self.workspace.leave(Here::Memo);
+        if self.memo_up() {
+            self.memo_put_away();
+        }
+        self.dock_sync();
+    }
+
+    /// The keys leave the memo (a workspace switch): docked in sight it stays, else it's put away (`memo_sync`).
+    pub fn memo_leave(&mut self) {
         self.workspace.leave(Here::Memo);
         self.memo_sync();
     }
 
     /// Every key and event (`focus_sync`): once the keys are elsewhere, the memo is put away — not drawn, a prompt or
-    /// search it opened closed, its words kept.
+    /// search it opened closed, its words kept; docked in sight it stays, to be read (only its prompt goes).
     pub fn memo_sync(&mut self) {
         if !self.memo_up() || self.workspace.is_at(Here::Memo) {
             return;
         }
+        if self.memo_docked_shown() {
+            if let Some(m) = self.workspace.memo.as_mut()
+                && m.pane.dropped()
+            {
+                self.prompt = None;
+            }
+            return self.memo_keep();
+        }
+        self.memo_put_away();
+    }
+
+    /// Up no more: a prompt or search it opened closed, `C-w m` ended, its words kept.
+    fn memo_put_away(&mut self) {
         let Some(m) = self.workspace.memo.as_mut() else { return };
         m.up = false;
         if self.float_moving == Some(GroupKind::Memo) {
@@ -325,6 +395,27 @@ impl Editor {
             self.prompt = None;
         }
         self.memo_keep();
+    }
+
+    /// `C-w e` from the memo (normal mode, or empty — typing, `C-w` deletes a word): floating, docked beside the code
+    /// (right of it, left of the chat), the keys staying; docked, floating again. Docked where nothing draws it — the
+    /// code would keep less than `CODE_MIN` — said: it floats while you use it.
+    pub fn memo_dock_toggle(&mut self) {
+        let to = match self.sizes.memo_dock {
+            Some(_) => None,
+            None => Some(crate::pane::Side::Right),
+        };
+        self.sizes.memo_dock = to;
+        self.sizes_keep();
+        self.dock_sync();
+        if to.is_none() {
+            return self.set_status("memo floating — C-w e docks it, C-w m moves it");
+        }
+        let room = self.docked_in_sight(GroupKind::Memo) || self.screen.width.is_none();
+        self.set_status(match room {
+            true => "memo docked right — C-w e floats it",
+            false => "the memo is docked, with no room to draw it here: it floats while you use it",
+        });
     }
 
     /// The memo's words changed since they were last kept (auto-save's idle wait starts for them too).
@@ -363,15 +454,18 @@ impl Editor {
         self.events.jobs().background(move || crate::layouts::save(&path, &key, v, seq));
     }
 
-    /// The memo's rows and columns now (its frame on this screen), as its keys move by them.
+    /// The memo's rows and columns now (its frame on this screen, or its leaf as last drawn), as its keys move by them.
     fn memo_size(&self) -> (usize, usize) {
+        if let Some((_, r)) = self.dock_rect(GroupKind::Memo).filter(|_| self.memo_docked_shown()) {
+            return (memo_docked_rows(r.h), docked_text_w(r.w));
+        }
         let r = self.float_rect(GroupKind::Memo).unwrap_or(Rect { x: 0, y: 0, w: WIDTH, h: ROWS_MIN + 2 });
         (r.h.saturating_sub(2).max(1), text_w(r.w))
     }
 
-    /// The memo's cells on this screen while it's up (`float_rect`).
+    /// The memo's cells on this screen while it floats (`float_rect`).
     pub fn memo_rect(&self) -> Option<Rect> {
-        let m = self.workspace.memo.as_ref().filter(|m| m.up)?;
+        let m = self.workspace.memo.as_ref().filter(|_| self.memo_floating())?;
         let doc = m.pane.doc_in()?;
         let (sw, sh) = self.float_screen();
         let tab = self.config.tab_width;
@@ -389,6 +483,12 @@ impl Editor {
     pub(crate) fn memo_auto(&mut self) {
         self.sizes.memo = None;
     }
+}
+
+/// Its text's rows docked in a leaf `h` tall: under its top line, over its foot (its keys while it has them, a blank row
+/// without — the same rows either way: nothing moves as the keys come and go).
+pub fn memo_docked_rows(h: usize) -> usize {
+    h.saturating_sub(2).max(1)
 }
 
 /// Before drawing: the matches its search shows — the pattern its `/` prompt is typing, else its last search while

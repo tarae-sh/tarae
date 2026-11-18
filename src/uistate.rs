@@ -725,7 +725,11 @@ impl Editor {
             Region::List(k) => crate::grouplist::drawn(self, k),
             Region::Move => s.floating.borrow().iter().any(|f| Some(f.0) == self.float_moving),
             Region::Follow => s.thought_card.get().is_some(),
-            Region::Memo => s.floating.borrow().iter().any(|f| f.0 == crate::pane::GroupKind::Memo),
+            Region::Memo => {
+                let memo =
+                    |f: &(crate::pane::GroupKind, crate::split::Rect)| f.0 == crate::pane::GroupKind::Memo;
+                s.floating.borrow().iter().any(memo) || s.docked.borrow().iter().any(memo)
+            }
             Region::Slot(Slot::Task) => s.task_panel.get().is_some(),
             Region::Slot(Slot::Procs) => s.procs_panel.get().is_some(),
             Region::Slot(Slot::Plugin) => s.plugin_panel.get().is_some(),
@@ -1272,7 +1276,7 @@ impl Editor {
         use crate::pane::Shows;
         let floats_keys = matches!(l.here(), Here::Float(_));
         // (a session behind: its docked group in hand as it was left)
-        let mut at = l.at_pane(|k| !is_front || self.out_of_slot(k)).filter(|_| !floats_keys);
+        let mut at = l.at_pane(|k| !is_front || self.in_own_leaf(k)).filter(|_| !floats_keys);
         // (a group on screen: its members after its host, the host's keys its detail's)
         let mut ids = l.split.leaves();
         // (the floating groups' own panes after the tree's, bottom first — the front's)
@@ -1281,8 +1285,11 @@ impl Editor {
         }
         // (a docked or floating group's members name their host)
         let mut docked: Vec<(crate::split::PaneId, String)> = Vec::new();
-        // (the session list docked is the viewer's list, listed once below with the floating lists — not a member here)
-        let members = |g: &&crate::pane::Group| !crate::floatlist::is_list(g.kind);
+        // (the session list docked is the viewer's list, listed once below with the floating lists — not a member here;
+        // the memo docked is its leaf alone, as floating it's listed nowhere: its own pane no member)
+        let members = |g: &&crate::pane::Group| {
+            !crate::floatlist::is_list(g.kind) && g.kind != crate::pane::GroupKind::Memo
+        };
         for g in l
             .groups
             .iter()

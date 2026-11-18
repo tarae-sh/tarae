@@ -404,6 +404,14 @@ pub(crate) const SCENES: &[Scene] = &[
     }),
     // (…put away holding words: the keys the code's, the status line's `¶ memo` a press that brings it up — step (b))
     ("the memo put away holding words", |ed| feed(ed, &[" ", "M", "o", "n", "e", "<esc>", " ", "M"])),
+    // (…docked beside the code, its keys — its foot's keys, normal mode; and the code's keys, it there still — step (c))
+    // (two lines, on its first, as the normal mode scene above: its moves have somewhere to go)
+    ("the memo docked, its keys", |ed| {
+        feed(ed, &[" ", "M", "o", "n", "e", "<ret>", "t", "w", "o", "<esc>", "g", "g", "<C-w>", "e"])
+    }),
+    ("the memo docked, the code's keys", |ed| {
+        feed(ed, &[" ", "M", "o", "n", "e", "<esc>", "<C-w>", "e", "<C-w>", "w"])
+    }),
     // (bgreview: the reviewer reads in the background, no review open — its segment on the status line takes no key)
     ("the reviewer reading, no review open", |ed| {
         let rv = crate::reviewer::Reviewer::for_test(

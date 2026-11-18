@@ -405,8 +405,12 @@ configs carry over as they are.
   you type `C-w` deletes a word, as in the chat's input, and is the window prefix only in an empty memo); leaving it
   (`space M` again or `C-w w` from its normal mode, a press on the code) puts it away, not drawn, so nothing floats over the code you work
   in; put away holding words (kept from before too), the status line says a faint `¶ memo`, and a press on it brings
-  it up as `space M` does — none while it's empty or up; first as wide as a line of 40 characters (its measure, the cursor after it) and as tall as its lines, up to half the screen, centred with its top at 1/4, then moved and
-  sized as every floating pane; one a workspace, its words yours alone — it saves itself to tarae's state folder
+  it up as `space M` does — none while it's empty or in sight; first as wide as a line of 40 characters (its measure, the cursor after it) and as tall as its lines, up to half the screen, centred with its top at 1/4, then moved and
+  sized as every floating pane; `C-w e` from it (normal mode) docks it right of the code, left of the chat, its
+  measure wide, sized as a docked group is (`C-w < >`, a drag of its line) — docked it stays where it is while you
+  work, its words at full ink, its keys at its foot while it has them: `space M`, `C-w w`'s round or a press on it give
+  it the keys, `space M` or `C-w q` from it put it away (its side kept for the next `space M`), `C-w e` floats it again;
+  where the code would keep too little beside it, it says so and floats while you use it; one a workspace, its words yours alone — it saves itself to tarae's state folder
   (`memos.json`, never the project nor any agent's context) as you leave it, as auto-save saves and as tarae ends ·
   `C-w t` turn the code's
   split (side by side ↔ stacked) — from a group, its members (side by side ↔ over and under) · `C-w q` close — the window, or the panel that has the keys (side panel, the

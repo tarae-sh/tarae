@@ -145,9 +145,9 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
             let w = *sim.choices.pick(&[60, 100, 160]);
             crate::term::render(ed, &mut Vec::new(), w, 40).unwrap();
             let drawn = ed.screen.floating.borrow().iter().any(|f| f.0 == crate::pane::GroupKind::Memo);
-            if drawn != ed.memo_up() {
+            if drawn != ed.memo_floating() {
                 *world.drawn.borrow_mut() =
-                    Some(format!("a frame drew the memo {drawn}, up {}", ed.memo_up()));
+                    Some(format!("a frame drew the memo floating {drawn}, floating {}", ed.memo_floating()));
             }
             format!("a frame, {w} columns")
         }
@@ -160,19 +160,20 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
     }
 }
 
-/// The memo drawn and up exactly while its keys are in it; the file holds words asked for, never older than what it
-/// held before.
+/// The memo drawn floating and up exactly while its keys are in it — docked in sight, up whoever has them; the file holds
+/// words asked for, never older than what it held before.
 fn held(ed: &Editor, world: &World, file: &std::path::Path, key: &str) -> Result<(), String> {
     record(ed, world, key);
     let at = ed.workspace.is_at(crate::workspace::Here::Memo);
-    if ed.memo_up() != at {
+    if ed.memo_up() != at && !ed.memo_docked_shown() {
         return Err(format!("the memo up {} with the keys {at}", ed.memo_up()));
     }
     if let Some(said) = world.drawn.borrow_mut().take() {
         return Err(said);
     }
-    // (a workspace behind never keeps its memo up: put away as it went, its words kept)
-    if let Some(w) = ed.workspaces.iter().find(|w| w.memo.as_ref().is_some_and(|m| m.up)) {
+    // (a workspace behind never keeps its memo up but docked: put away as it went, its words kept)
+    let docked = |w: &crate::workspace::Workspace| w.group(crate::pane::GroupKind::Memo).is_some();
+    if let Some(w) = ed.workspaces.iter().find(|w| w.memo.as_ref().is_some_and(|m| m.up) && !docked(w)) {
         return Err(format!("workspace {:?} went behind with its memo up", w.id));
     }
     let Some(kept) =

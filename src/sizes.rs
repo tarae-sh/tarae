@@ -83,6 +83,9 @@ pub struct Sizes {
     /// for it, kept while it closes and opens and across `:restart`: the session in front holds its leaf
     /// (`list_dock_sync`). None: it floats.
     pub sessions_dock: Option<crate::pane::Side>,
+    /// The side the memo is docked on (its step (c), `C-w e` from it; again, it floats) — kept as its frame is; the
+    /// workspace's memo up holds its leaf there (`memo_dock_sync`). None: it floats while you use it.
+    pub memo_dock: Option<crate::pane::Side>,
     /// The follow card's width and height, whole cells, frame and all (#267: its free edges drag, `C-w < > - +` while
     /// it has the keys) — each None: automatic, by the pane it leads. Shown within the pane and
     /// the gap it stands in, never written back.
@@ -106,6 +109,7 @@ const DOCKED: [crate::pane::GroupKind; crate::pane::DOCKABLE] = [
     crate::pane::GroupKind::Preflight,
     crate::pane::GroupKind::Procs,
     crate::pane::GroupKind::Sessions,
+    crate::pane::GroupKind::Memo,
 ];
 
 impl Sizes {
@@ -132,6 +136,7 @@ impl Sizes {
             folders: crate::pane::Frame::of_json(&v["folders"]),
             memo: crate::pane::Frame::of_json(&v["memo"]),
             sessions_dock: v["sessions_dock"].as_str().and_then(crate::pane::Side::of_name),
+            memo_dock: v["memo_dock"].as_str().and_then(crate::pane::Side::of_name),
             follow_w: n(&v["follow"]["w"]),
             follow_h: n(&v["follow"]["h"]),
         }
@@ -147,9 +152,10 @@ impl Sizes {
         let dock = self.sessions_dock.map(crate::pane::Side::name);
         let folders = self.folders.map(crate::pane::Frame::json);
         let memo = self.memo.map(crate::pane::Frame::json);
+        let memo_dock = self.memo_dock.map(crate::pane::Side::name);
         let follow = json!({ "w": self.follow_w, "h": self.follow_h });
         json!({ "docked": docked, "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock,
-                "follow": follow, "memo": memo })
+                "follow": follow, "memo": memo, "memo_dock": memo_dock })
         .to_string()
     }
 }
@@ -512,6 +518,8 @@ impl crate::editor::Editor {
                 // (nothing said, as `space L` says nothing — the user, 2026-11-03: it's gone from sight)
                 crate::chat::hide(self);
             }
+            // (the memo put away, as `space M` puts it — its words kept, docked its side; never the code pane under it)
+            Region::Memo => self.memo_away(),
             _ => return false,
         }
         true
@@ -1201,6 +1209,7 @@ impl crate::editor::Editor {
             folders: s.folders,
             memo: s.memo,
             sessions_dock: s.sessions_dock,
+            memo_dock: s.memo_dock,
             ..Sizes::default()
         };
         // (the shares you set: a code pane's even again, a surface's its own — `Split::even`)
@@ -1643,12 +1652,13 @@ mod tests {
         let path = dir.join("sizes.json");
         assert_eq!(Sizes::read(Some(&path)), Sizes::default(), "missing: automatic");
         let s = Sizes {
-            docked: [Some(30), None, None, None, None],
+            docked: [Some(30), None, None, None, None, Some(50)],
             sessions: None,
             messages: None,
             folders: None,
             memo: None,
             sessions_dock: Some(crate::pane::Side::Right),
+            memo_dock: Some(crate::pane::Side::Right),
             follow_w: Some(60),
             follow_h: None,
         };

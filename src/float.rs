@@ -41,7 +41,7 @@ impl Editor {
     /// (`list_unshown`, #414).
     pub fn floating_in_sight(&self, kind: GroupKind) -> bool {
         if kind == GroupKind::Memo {
-            return self.memo_up();
+            return self.memo_floating();
         }
         if crate::floatlist::is_list(kind) {
             return self.float_list(kind).is_some()
@@ -65,8 +65,11 @@ impl Editor {
 
     /// The floating groups in sight, bottom first (`Group.raised`).
     pub fn floats_up(&self) -> Vec<Group> {
-        let mut v: Vec<Group> =
-            self.workspace.groups.iter().filter(|g| self.floating_in_sight(g.kind)).copied().collect();
+        // (the memo's group is its docked leaf's, never a frame of the groups': floating, it's its own pane — `floats`)
+        let mut v: Vec<Group> = (self.workspace.groups.iter())
+            .filter(|g| g.kind != GroupKind::Memo && self.floating_in_sight(g.kind))
+            .copied()
+            .collect();
         crate::sorting::by_key(&mut v, |g| g.raised);
         v
     }
@@ -101,9 +104,9 @@ impl Editor {
     /// said. One meaning (user, 2026-10-23): where nothing in hand can float — the code, the chat, the side panel —
     /// it says so (the side panel's keys are its own, `space e`, `space g`…).
     pub fn float_key(&mut self) {
-        // (the memo floats while you're in it; docking it is a later step — main's `.sb/memo-plan.md` (c))
+        // (the memo: docked beside the code, or floating again — its step (c))
         if self.memo_has_keys() {
-            return self.set_status("the memo floats while you type in it — space M puts it away");
+            return self.memo_dock_toggle();
         }
         // (the conversation is the docked column — the user, 2026-11-03: no floating reader; `space l` asks in one line)
         if self.workspace.is_at(crate::workspace::Here::Chat) && self.workspace.claude.chat.is_some() {
@@ -236,7 +239,7 @@ impl Editor {
 
     /// The floating group the keys are in, if they're in one.
     pub fn float_in_hand(&self) -> Option<GroupKind> {
-        if self.memo_has_keys() {
+        if self.memo_has_keys() && self.memo_floating() {
             return Some(GroupKind::Memo);
         }
         if let Some(k) = self.float_list_in_hand() {

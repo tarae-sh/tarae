@@ -84,13 +84,14 @@ pub enum GroupKind {
     Messages,
     /// `:folders` (`folders.rs`): the front workspace's added folders, a floating list alone as `:messages`.
     Folders,
-    /// The workspace's memo (`memo.rs`): a floating document of yours — no member of `Workspace.groups` either, its kind
-    /// names it in the float code (its frame, `C-w m`, its sizes) and where it's drawn.
+    /// The workspace's memo (`memo.rs`): a document of yours, floating while you use it — a member of `Workspace.groups`
+    /// only while it's docked and up, for its placement alone (`Editor::memo_dock_sync`, as the session list's), never a
+    /// run panel; its kind names it in the float code (its frame, `C-w m`, its sizes) and where it's drawn.
     Memo,
 }
 
 /// How many kinds dock (`GroupKind::dock_index`).
-pub const DOCKABLE: usize = 5;
+pub const DOCKABLE: usize = 6;
 
 impl GroupKind {
     pub const ALL: [GroupKind; 10] = [
@@ -134,10 +135,10 @@ impl GroupKind {
 
     /// It can leave the slot and dock beside the code (§3.1): the slot's groups. The git tab and the review's rail
     /// are the left column's (§3.7: how you move, not what you look at) — their detail is the code itself.
-    /// The session list docks too (P3 step 7d: the manager's overview kept in sight); `:messages` and `:folders` only
-    /// float, and the memo until its docking lands (the plan's step (c)).
+    /// The session list docks too (P3 step 7d: the manager's overview kept in sight), and the memo (its step (c): beside
+    /// the code, to be read while you work); `:messages` and `:folders` only float.
     pub fn dockable(self) -> bool {
-        !self.detail_is_code() && !matches!(self, GroupKind::Messages | GroupKind::Folders | GroupKind::Memo)
+        !self.detail_is_code() && !matches!(self, GroupKind::Messages | GroupKind::Folders)
     }
 
     /// Its index among the dockable kinds (`Sizes.docked`, `DOCKABLE` of them).
@@ -150,9 +151,9 @@ impl GroupKind {
             | GroupKind::Git
             | GroupKind::Review
             | GroupKind::Messages
-            | GroupKind::Folders
-            | GroupKind::Memo => 3,
+            | GroupKind::Folders => 3,
             GroupKind::Sessions => 4,
+            GroupKind::Memo => 5,
         }
     }
 }

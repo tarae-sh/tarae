@@ -760,6 +760,12 @@ impl Workspace {
             Here::Program | Here::Slot | Here::Plugin => Shows::Slot,
             Here::Side => Shows::Side,
             Here::Rail => Shows::Rail,
+            // (the memo docked in sight: its leaf's; floating, its own pane's, out of the tree)
+            Here::Memo
+                if let Some(g) = self.group(crate::pane::GroupKind::Memo).filter(|g| in_sight(g.kind)) =>
+            {
+                return Some(g.host);
+            }
             Here::Memo => Shows::Memo,
         })
     }
@@ -1704,9 +1710,10 @@ impl Editor {
         // kept)
         crate::view::leave(self);
         crate::chatdoc::leave(self);
-        // (the memo put away as its workspace goes behind — its words kept now: quit and `:restart` keep the front's only)
+        // (the memo put away as its workspace goes behind — its words kept now: quit and `:restart` keep the front's only;
+        // docked in sight it stays, the keys leaving it)
         if self.memo_up() {
-            self.memo_away();
+            self.memo_leave();
         }
         // (a card focused here lets go: in the other session nothing has the keys until something focuses it there —
         // `C-q` focuses the card it switched for, after this)

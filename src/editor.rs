@@ -3003,6 +3003,8 @@ impl Editor {
             Shows::Detail(k) => self.detail_focus(k),
             // (a docked group's leaf: the member it had last — its output alone while it lists nothing)
             Shows::Group(k) if self.floating_in_sight(k) => self.float_focus(k),
+            // (the memo docked: its keys, as `space M` gives them)
+            Shows::Group(crate::pane::GroupKind::Memo) => self.memo_bring(),
             // (up: its keys; put away since the frame that listed it, no hop lands in it — the code's)
             Shows::Memo if self.memo_up() => self.memo_bring(),
             Shows::Memo => self.workspace.viewer.keys_to_code(),

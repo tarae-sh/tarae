@@ -595,6 +595,21 @@ impl Editor {
         {
             return at(S::Edge, Part::Border(b));
         }
+        // (the memo docked, past its edge's line — its border's, above: its text's rows its text, as floating; its top
+        // line and its foot the rest of it)
+        if free
+            && self.memo_docked_shown()
+            && let Some((_, r)) = self.dock_rect(GroupKind::Memo)
+            && (r.x + 1..r.x + r.w).contains(&x)
+            && (r.y..r.y + r.h).contains(&y)
+        {
+            let rows = crate::memo::memo_docked_rows(r.h);
+            if y > r.y && y <= r.y + rows {
+                let col = x.saturating_sub(r.x + 2);
+                return at(S::Float(GroupKind::Memo), Part::Text { line: y - r.y - 1, col });
+            }
+            return at(S::Float(GroupKind::Memo), Part::Blank);
+        }
         let status = s.height == Some(y);
         if down
             && free
