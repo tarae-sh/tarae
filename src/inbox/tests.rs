@@ -91,6 +91,7 @@ fn read_waiting(since: Instant) -> crate::reads::Pending {
         keys: Vec::new(),
         cut: false,
         part: String::new(),
+        kept: Vec::new(),
     };
     crate::reads::Pending {
         request_id: "r1".into(),

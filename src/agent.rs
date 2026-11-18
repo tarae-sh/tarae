@@ -1677,6 +1677,7 @@ mod tests {
                 keys: Vec::new(),
                 cut: false,
                 part: String::new(),
+                kept: Vec::new(),
             },
             class: crate::cards::Class::Elsewhere,
             since: crate::clock::now(),

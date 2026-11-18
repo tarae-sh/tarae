@@ -1005,7 +1005,9 @@ impl Keeper {
     ) -> io::Result<(Started, Option<Arc<OwnedFd>>)> {
         let Asks { no_userns, ptys, mounts, covers, skipped } = asks;
         // (only a keeper in a user namespace can give its run a mount namespace of its own)
-        let covers = covers.filter(|c| !c.keys.is_empty() || !c.loose.is_empty() || !c.seals.is_empty());
+        let covers = covers.filter(|c| {
+            !c.keys.is_empty() || !c.loose.is_empty() || !c.seals.is_empty() || !kept_sent(c).is_empty()
+        });
         // (the break-once: the mounts skipped, the rules left whole — 7d's key tests fail where keys are mounted over)
         #[cfg(test)]
         let covers = covers.filter(|_| std::env::var_os("TARAE_TEST_NO_COVERS").is_none());
@@ -1048,12 +1050,13 @@ impl Keeper {
             ptys,
             mounts,
             shut: covers
-                .filter(|c| !c.keys.is_empty() || !c.loose.is_empty())
+                .filter(|c| !c.keys.is_empty() || !c.loose.is_empty() || !kept_sent(c).is_empty())
                 .and_then(|c| c.shut.as_ref())
                 .map(|s| channel::Covered { dev: s.dev, ino: s.ino, path: bytes(s.path.as_os_str()) }),
+            // (#633: the kept files in a place runs write, strict as the keys — one gone or swapped since fails the run)
             covers: covers
                 .iter()
-                .flat_map(|c| &c.keys)
+                .flat_map(|c| c.keys.iter().chain(kept_sent(c)))
                 .map(|k| channel::Covered { dev: k.dev, ino: k.ino, path: bytes(k.path.as_os_str()) })
                 .collect(),
             loose: covers
@@ -1089,6 +1092,17 @@ impl Keeper {
         let spawned = crate::spawn::Spawned { pid, stdout: Some(out_r), stderr: Some(err_r) };
         Ok((Started { spawned }, ours))
     }
+}
+
+/// The kept files in a place runs write a run's child hides as it hides the keys (`linux::Covers::kept`, #633). The
+/// break-once: none sent (`TARAE_TEST_KEPT_OFF_THE_WIRE`) — the write place's grant whole over them, so read and
+/// written.
+fn kept_sent(c: &super::linux::Covers) -> &[super::linux::Cover] {
+    #[cfg(test)]
+    if std::env::var_os("TARAE_TEST_KEPT_OFF_THE_WIRE").is_some() {
+        return &[];
+    }
+    &c.kept
 }
 
 /// What a run's child is asked besides its rules (`Keeper::start_with`): its filter refuses new user namespaces

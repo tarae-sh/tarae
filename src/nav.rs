@@ -2023,8 +2023,10 @@ fn go_search(ed: &mut Editor, call: Call, q: Query, args: Value, granted: Vec<Pa
         if !q.paths.is_empty() {
             trace.step("places judged");
         }
-        let mut run =
-            |scopes: Vec<PathBuf>| run_search_traced(&root, &scopes, &q, &unsaved, &keys, &mut trace);
+        let mut run = |scopes: Vec<PathBuf>| {
+            let left_out = gate.left_out(&scopes);
+            run_search_traced(&root, &scopes, &q, &unsaved, &keys, &left_out, &mut trace)
+        };
         let r = r.map(|s| {
             s.map(|scopes| match share {
                 Some(n) => crate::grep::shared(n, || run(scopes)),
@@ -2067,7 +2069,8 @@ fn scopes(
             return Err(crate::reads::key_left_out(&crate::allow::tilde(r)));
         }
         match &real {
-            Some(r) if r.starts_with(&root) => {}
+            // (in the project, but in a place runs never read: Read's rules, as outside it — #633)
+            Some(r) if r.starts_with(&root) && !gate.kept_in_project(r) => {}
             // (a `..` past what's there: where it leads can't be told — the card says the path as given)
             other => {
                 let at = other.clone().unwrap_or(abs);
@@ -2114,25 +2117,47 @@ fn run_search(
     unsaved: &[PathBuf],
     keys: &crate::reads::Keys,
 ) -> Result<String, String> {
+    run_search_gated(root, path, q, unsaved, keys, &crate::reads::Gate::for_test(root))
+}
+
+/// (Tests: `run_search` judged by `gate` — its kept places left out as the tool's are, `Gate::left_out`.)
+#[cfg(test)]
+fn run_search_gated(
+    root: &Path,
+    path: Option<&str>,
+    q: &Query,
+    unsaved: &[PathBuf],
+    keys: &crate::reads::Keys,
+    gate: &crate::reads::Gate,
+) -> Result<String, String> {
     let paths: Vec<String> = path.map(|p| vec![p.to_string()]).unwrap_or_default();
-    let gate = crate::reads::Gate::for_test(root);
-    match scopes(root, &paths, keys, &gate)? {
-        Ok(scopes) => run_search_traced(root, &scopes, q, unsaved, keys, &mut crate::trace::Trace::new("")),
+    match scopes(root, &paths, keys, gate)? {
+        Ok(scopes) => {
+            let left_out = gate.left_out(&scopes);
+            let trace = &mut crate::trace::Trace::new("");
+            run_search_traced(root, &scopes, q, unsaved, keys, &left_out, trace)
+        }
         Err(ask) => Err(format!("asks the user: {}", ask.at_said())),
     }
 }
 
-/// The search of `scopes` (real paths `scopes` judged), its steps said in `trace`.
+/// The search of `scopes` (real paths `scopes` judged), its steps said in `trace` — the places runs never read
+/// below them (`left_out`: `reads::Gate::left_out`) not searched, and said once at the answer's end by place,
+/// hits or none, so the line tells nothing of what's in them (#633).
 fn run_search_traced(
     root: &Path,
     scopes: &[PathBuf],
     q: &Query,
     unsaved: &[PathBuf],
     keys: &crate::reads::Keys,
+    left_out: &[PathBuf],
     trace: &mut crate::trace::Trace,
 ) -> Result<String, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let shut = |f: &crate::grep::File| keys.shut(&root.join(&f.rel));
+    let shut = |f: &crate::grep::File| {
+        let p = root.join(&f.rel);
+        keys.shut(&p) || left_out.iter().any(|k| p.starts_with(k))
+    };
     let query = grep_query(q, true);
     let mut search = |each: &mut dyn FnMut(crate::grep::File) -> bool| {
         crate::grep::search(&root, scopes, &query, &|| false, &mut |f| shut(&f) || each(f))
@@ -2146,7 +2171,16 @@ fn run_search_traced(
         }
     };
     let mut told = OnDisk { t: crate::testcode::Tests::new(&root), root: root.clone() };
-    Ok(answer_of(q, &mut search, &mut told, trace)? + &note)
+    Ok(answer_of(q, &mut search, &mut told, trace)? + &note + &left_out_said(left_out))
+}
+
+/// The line an answer ends with for the places runs never read its search left out (#633) — nothing when none.
+fn left_out_said(left_out: &[PathBuf]) -> String {
+    if left_out.is_empty() {
+        return String::new();
+    }
+    let places: Vec<String> = left_out.iter().map(|k| crate::allow::tilde(k)).collect();
+    format!("\n(left out: {} — what your commands never read; read asks the user for it)", places.join(", "))
 }
 
 /// `q` as grep.rs takes it — `judged`: each file read only where it really is in its scope (`grep::Query`).
@@ -2780,6 +2814,59 @@ mod tests {
         }
     }
 
+    /// #633: tarae's `search` of a temp folder holding a kubeconfig `KUBECONFIG` put there goes without a card and
+    /// leaves the kubeconfig out — not its hits, not its name — saying so once at the end, by place, whether it had
+    /// hits or not; a search of the project leaves a kept place in it out the same way, and one given that place
+    /// itself asks. Stand-ins, the variables the test's own.
+    #[test]
+    fn a_search_of_a_temp_folder_leaves_the_kept_place_out_and_says_it() {
+        let fake = concat!("tarae-fake", "-token");
+        let s = crate::scratch::Scratch::new("nav-kept-temp");
+        let base = crate::paths::real(&s).unwrap();
+        let (home, tmp) = (base.join("home"), base.join("tmp"));
+        let root = home.join("work/p");
+        let (kube, beside) = (tmp.join("kind/cluster.yaml"), tmp.join("kind/notes.txt"));
+        let deploy = root.join("deploy/cluster.yaml");
+        for (f, text) in [(&kube, fake), (&beside, "token: beside"), (&deploy, fake)] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, format!("token: {text}\n")).unwrap();
+        }
+        let list = std::env::join_paths([&kube, &deploy]).unwrap();
+        let env = [("HOME".to_string(), home.clone().into()), ("KUBECONFIG".to_string(), list)];
+        let here = crate::sandbox::Here {
+            env: env.into_iter().collect(),
+            tmp: Some(tmp.clone()),
+            os: crate::sandbox::Os::HOST,
+            ..Default::default()
+        };
+        let gate = crate::reads::Gate::for_test(&root).at_home(home.clone()).with_here(here).reading_temp();
+        let keys = crate::reads::Keys::none_opened(&root);
+        let search = |pattern: &str, path: Option<&Path>| {
+            let q = query_of(&serde_json::json!({ "pattern": pattern })).unwrap();
+            let path = path.map(|p| p.display().to_string());
+            run_search_gated(&root, path.as_deref(), &q, &[], &keys, &gate)
+        };
+        let line = |k: &Path| {
+            format!(
+                "(left out: {} — what your commands never read; read asks the user for it)",
+                crate::allow::tilde(k)
+            )
+        };
+        let said = search("token", Some(&tmp)).expect("no card");
+        assert!(said.contains("notes.txt") && said.contains("beside"), "the hit beside it: {said}");
+        assert!(!said.contains(fake) && !said.contains("cluster.yaml:"), "not the kept one: {said}");
+        assert!(said.ends_with(&line(&kube)), "said once at the end: {said}");
+        let said = search("nothing-like-it", Some(&tmp)).expect("no card");
+        assert!(
+            said.starts_with("no matches") && said.ends_with(&line(&kube)),
+            "no hits, said all the same: {said}"
+        );
+        // The project: its kept place left out of a search of it whole, asked for when given itself
+        let said = search("token", None).expect("no card");
+        assert!(!said.contains(fake) && said.ends_with(&line(&deploy)), "{said}");
+        assert_eq!(search("token", Some(&deploy)), Err(format!("asks the user: {}", deploy.display())));
+    }
+
     /// #292: Claude's `search` in tarae's own state or cache, or of a folder holding them, is refused — no card —
     /// in plain words; beside them it asks, and of the log itself on its own card.
     #[test]
@@ -3329,7 +3416,7 @@ mod tests {
             let t0 = std::time::Instant::now();
             let mut trace = crate::trace::Trace::new("search");
             let scopes = [std::fs::canonicalize(root).unwrap()];
-            let text = run_search_traced(root, &scopes, &q, &[], &keys, &mut trace).unwrap();
+            let text = run_search_traced(root, &scopes, &q, &[], &keys, &[], &mut trace).unwrap();
             took.push(t0.elapsed().as_secs_f64() * 1000.0);
             assert!(
                 text.contains("in test code, listed last"),

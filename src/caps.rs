@@ -322,9 +322,37 @@ impl Caps {
             .collect()
     }
 
-    /// Whether `real` is read unasked: in the checkout, a place read by default, or one answered.
+    /// Whether `real` is read unasked: one answered (`answer_covers`), or in the checkout or a place read by default
+    /// where no default covers it (`no_default`, #633).
     pub fn reads(&self, real: &Path) -> bool {
-        self.read.iter().any(|e| real.starts_with(&e.what))
+        self.answer_covers(real)
+            || (!self.no_default(real) && self.read.iter().any(|e| real.starts_with(&e.what)))
+    }
+
+    /// Whether an answer the user gave (`Source::Grant`, any scope) holds `real`: what covers a kept place, as
+    /// today — a default never does (#633).
+    pub fn answer_covers(&self, real: &Path) -> bool {
+        self.read.iter().any(|e| matches!(e.source, Source::Grant(_)) && real.starts_with(&e.what))
+    }
+
+    /// Whether no default covers `real` — the checkout, another checkout, a temp folder, a toolchain's, a workspace
+    /// folder, a run's file (#633): it's in a place runs never read (`kept`: a kubeconfig `KUBECONFIG` put in
+    /// `/tmp`) or one under home that holds keys (`allow::secret_in`). But such a place holding the checkout, for
+    /// what's in the checkout — else every read there would ask (Linux's runs read the project there too).
+    pub fn no_default(&self, real: &Path) -> bool {
+        let (home, win) = (self.home.as_deref(), &self.windows);
+        let project = !self.root.as_os_str().is_empty() && real.starts_with(&self.root);
+        let kept = self.kept.iter().any(|k| real.starts_with(k) && !(project && self.root.starts_with(k)));
+        kept || (crate::allow::secret_in(real, home, win)
+            && !(project && crate::allow::secret_in(&self.root, home, win)))
+    }
+
+    /// The places runs never read strictly below the folder `at` that no answer covers (`kept` — known, no walk):
+    /// what tarae's own search of `at` leaves out and says (`reads::Gate::left_out`), and what makes an agent's own
+    /// search of it ask (`reads::Look.kept`), #633.
+    pub fn kept_below(&self, at: &Path) -> Vec<PathBuf> {
+        let below = |k: &&PathBuf| k.starts_with(at) && k.as_path() != at && !self.answer_covers(k);
+        self.kept.iter().filter(below).cloned().collect()
     }
 
     /// Whether the file named like a key at `real` was opened.
@@ -333,8 +361,13 @@ impl Caps {
     }
 
     /// Why `real` is read by default, if it is: a default place holding it, else outside home where that's read
-    /// (but others' homes and volumes).
+    /// (but others' homes and volumes). None where no default covers it (`no_default`), nor for a place holding
+    /// one runs never read: an answer kept there stands for more than the default would (`Basis::drop_covered`,
+    /// #633).
     pub fn default_for(&self, real: &Path) -> Option<Why> {
+        if self.no_default(real) || self.kept.iter().any(|k| k.starts_with(real) && k.as_path() != real) {
+            return None;
+        }
         let held = self.read.iter().find_map(|e| match e.source {
             Source::Default(why) if real.starts_with(&e.what) => Some(why),
             _ => None,
@@ -450,6 +483,10 @@ pub struct Basis {
     /// (Tests: home in place of the process's — `Editor.caps_home`.)
     #[cfg(test)]
     pub home: Option<PathBuf>,
+    /// (Tests: the variables and the temp folder in place of the process's — what `build` and the gate's kept places
+    /// go by, #633.)
+    #[cfg(test)]
+    pub here: Option<crate::sandbox::Here>,
 }
 
 impl Basis {
@@ -502,7 +539,16 @@ impl Basis {
     /// The whole value, for home and the variables as the process has them. A worker's: it reads the store and
     /// looks for the defaults.
     pub fn build(&self) -> Caps {
-        self.build_in(self.home().as_deref(), &crate::sandbox::Here::now())
+        self.build_in(self.home().as_deref(), &self.here())
+    }
+
+    /// The variables and the temp folder as the process has them (a test's own, when it set them).
+    pub(crate) fn here(&self) -> crate::sandbox::Here {
+        #[cfg(test)]
+        if let Some(here) = &self.here {
+            return here.clone();
+        }
+        crate::sandbox::Here::now()
     }
 
     /// Home as the process has it (a test's own, when it set one). It may read the disk: a worker's.
@@ -554,6 +600,8 @@ impl crate::editor::Editor {
             hosts: ws.granted_hosts(),
             #[cfg(test)]
             home: self.caps_home.clone(),
+            #[cfg(test)]
+            here: None,
         }
     }
 
@@ -612,6 +660,8 @@ impl crate::editor::Editor {
             hosts,
             #[cfg(test)]
             home,
+            #[cfg(test)]
+            here: None,
         };
         self.events.shared_jobs().spawn(move || {
             let caps = Arc::new(basis.build());
@@ -757,6 +807,30 @@ mod tests {
         caps.read.push(Entry { what: covering, source: Source::Default(Why::Toolchain) });
         assert_eq!(basis.drop_covered(&caps), []);
         assert_eq!(crate::allow::Store::read(Some(&store)).get(&main).read, [place]);
+    }
+
+    /// #633: an answer kept for the project whose place holds one runs never read — a kubeconfig `KUBECONFIG` put in a
+    /// temp folder — stays when the temp folder's default holds it: removed, the default wouldn't stand in for it (a
+    /// default never covers a kept place). One holding none goes, as ever.
+    #[test]
+    fn an_answer_holding_a_kept_place_stays_in_the_store() {
+        let s = crate::scratch::Scratch::new("caps-drop-kept");
+        let base = std::fs::canonicalize(s.path()).unwrap();
+        let (root, store, tmp) = (base.join("p"), base.join("sandbox.json"), base.join("tmp"));
+        let (kind, other) = (tmp.join("kind"), tmp.join("other"));
+        for d in [&root, &kind, &other] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        crate::allow::keep(&store, &root, |a| {
+            [&kind, &other].iter().for_each(|p| a.add_read(p.to_path_buf()))
+        })
+        .unwrap();
+        let basis = Basis { root: root.clone(), store: Some(store.clone()), ..Default::default() };
+        let mut caps = basis.granted();
+        caps.read.push(Entry { what: tmp.clone(), source: Source::Default(Why::Temp) });
+        caps.kept = vec![kind.join("cluster.yaml")];
+        assert_eq!(basis.drop_covered(&caps), [(other.clone(), Why::Temp)], "the one holding nothing kept");
+        assert_eq!(crate::allow::Store::read(Some(&store)).get(&root).read, [kind], "the one holding it");
     }
 
     /// Review J 6, 10, 12, 13: what the card and the toast say `A` is for goes by the store's own rule — here for a

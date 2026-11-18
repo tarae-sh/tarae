@@ -43,6 +43,10 @@ pub struct Look {
     /// A folder outside the project searched where it would go unasked, too big to look through for files named
     /// like keys (past `KEYS_WALK_MAX` entries): it asks, and never goes unasked (`covered`).
     pub cut: bool,
+    /// The places runs never read below a folder an agent's own Grep searches (`Caps::kept_below`, no answer
+    /// covering them): tarae can't leave them out of that tool's walk, so it asks, `Secret` (#633) — tarae's own
+    /// `search` leaves them out instead (`Gate::left_out`).
+    pub kept: Vec<PathBuf>,
     /// What of the file a read takes, as its card says it under the path (`lines 1830–1900`, `the whole file, 3 KB`)
     /// — tarae's `read` sets it (`readtool::Want::said`, #298: a few lines and a whole log looked the same). Empty:
     /// not said.
@@ -205,6 +209,20 @@ impl Gate {
         self
     }
 
+    /// (Tests: the variables and the temp folder `here` says, in place of the process's — #633.)
+    #[cfg(test)]
+    pub fn with_here(mut self, here: crate::sandbox::Here) -> Gate {
+        self.basis.here = Some(here);
+        self
+    }
+
+    /// (Tests: the temp folders read by default, as tarae reads them — `Editor.read_temp`.)
+    #[cfg(test)]
+    pub fn reading_temp(mut self) -> Gate {
+        self.basis.temp = true;
+        self
+    }
+
     /// (Tests: `dir` a folder of one of the chat's runs.)
     #[cfg(test)]
     pub fn with_run_folder(mut self, dir: PathBuf) -> Gate {
@@ -261,14 +279,44 @@ impl Gate {
     /// The home tarae's state and cache are found from, and the variables.
     fn home_here(&self) -> Option<(PathBuf, crate::sandbox::Here)> {
         let home = self.basis.home()?;
-        let here = crate::sandbox::Here::now();
-        // (tests: a test's home, its variables none — tarae's state and cache in it)
+        // (tests: a test's home, its variables none — tarae's state and cache in it — but those it gave)
         #[cfg(test)]
-        let here = match self.basis.home.is_some() {
-            true => crate::sandbox::Here::default(),
-            false => here,
-        };
-        Some((home, here))
+        if self.basis.home.is_some() {
+            return Some((home, self.basis.here.clone().unwrap_or_default()));
+        }
+        Some((home, self.basis.here()))
+    }
+
+    /// The places runs never read strictly below each of `scopes` that no answer covers (`Caps::kept_below`): what
+    /// tarae's own `search` leaves out of its walk and says by place, whether they had hits or not (#633) — known
+    /// from the variables, never from a walk of what's in them. A worker's: it reads the store.
+    pub fn left_out(&self, scopes: &[PathBuf]) -> Vec<PathBuf> {
+        let caps = self.kept_caps();
+        let mut out: Vec<PathBuf> = scopes.iter().flat_map(|s| caps.kept_below(s)).collect();
+        out.retain(|k| !self.granted.iter().any(|g| k.starts_with(g)));
+        crate::sorting::sort(&mut out);
+        out.dedup();
+        out
+    }
+
+    /// Whether `at` (real, in the project) is where no default covers it (`Caps::no_default` — a place runs never
+    /// read inside the checkout) and no answer does: a search or read of it goes by Read's rules (`judge`), as one
+    /// outside the project does (#633). A worker's.
+    pub fn kept_in_project(&self, at: &Path) -> bool {
+        let caps = self.kept_caps();
+        caps.no_default(at) && !caps.answer_covers(at)
+    }
+
+    /// The answers and what runs never read (`Caps.kept`), the defaults not looked for: what `left_out` and
+    /// `kept_in_project` go by, cheaper than `Basis::build`.
+    fn kept_caps(&self) -> crate::caps::Caps {
+        let mut caps = self.basis.granted();
+        if let Some((home, here)) = self.home_here() {
+            caps.kept = crate::sandbox::kept_places(&home, &here);
+            caps.windows = here.windows.clone();
+            caps.home = Some(home);
+        }
+        caps
     }
 
     /// Whether reading `at` (real, outside the project or named like a key in it) goes without asking —
@@ -487,7 +535,8 @@ fn look_with(tool: &str, input: &Value, cwd: &Path, folder_keys: bool, no_text: 
         }
         _ => Vec::new(),
     };
-    Look { tool: tool.to_string(), at, pattern, filter, given, file, keys, cut: false, part: String::new() }
+    let (cut, part, kept) = (false, String::new(), Vec::new());
+    Look { tool: tool.to_string(), at, pattern, filter, given, file, keys, cut, part, kept }
 }
 
 /// The files named like keys (`sandbox::key_named`) a Grep of `at` (real) opens, the project at `root`: `at`
@@ -1184,6 +1233,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
         keys,
         cut: false,
         part: String::new(),
+        kept: Vec::new(),
     };
     let p = Pending {
         request_id: String::new(),
@@ -1250,12 +1300,19 @@ pub fn pointing_asks(ed: &Editor) -> bool {
 /// (`Made`) — and every file named like a key it opens opened (`Grant::Key`, the same grant a run's reads go
 /// by).
 pub fn covered(look: &Look, caps: &crate::caps::Caps, made: &Made) -> bool {
-    !look.cut && look.keys.iter().all(|k| caps.opens_key(k)) && place_covered(look, caps, made)
+    !look.cut
+        && look.kept.is_empty()
+        && look.keys.iter().all(|k| caps.opens_key(k))
+        && place_covered(look, caps, made)
 }
 
-/// `covered`'s place alone, whatever files named like keys it opens.
+/// `covered`'s place alone, whatever files named like keys it opens: a run's file covers it as a default does —
+/// never in a place runs never read (`Caps::no_default`, #633) but the run's own folder.
 fn place_covered(look: &Look, caps: &crate::caps::Caps, made: &Made) -> bool {
-    look.at.as_ref().is_some_and(|at| caps.reads(at) || made.covers(at, SystemTime::now()))
+    let own = |at: &Path| made.dirs.iter().any(|d| at.starts_with(d));
+    look.at.as_ref().is_some_and(|at| {
+        caps.reads(at) || ((own(at) || !caps.no_default(at)) && made.covers(at, SystemTime::now()))
+    })
 }
 
 /// One of Claude's runs started (`tools::go`) — by the clock its files are stamped by (`file_clock`).
@@ -1387,10 +1444,10 @@ fn decide_with(
     let mut look = look_with(tool, input, &caps.root, folder_keys, no_text);
     // (a folder outside the project, or holding it, searched where it would go unasked — a place read, or one
     // read by default: its files named like keys looked for now, so many entries at most; past them, it asks.
-    // Where a card would ask for the place, nothing is walked: no Grep reaches that card today — the chat has no
-    // Grep or Glob (user decision 2026-10-13, `chat::tools`), and the reviewer, whose Grep comes here, never asks
-    // (`reviewer::read` refuses what isn't covered). A Grep back in the chat would need the walk before its card,
-    // or the card's yes would let the keys there through — frictions29 review)
+    // Where a card would ask for the place, nothing is walked: no Grep reaches that card from the chat today — it has
+    // no Grep or Glob (user decision 2026-10-13, `chat::tools`); an ACP agent's own Grep would. The reviewer never
+    // comes here: it reads its snapshot only (`readtool::read_snapshot_*`, `snapread.rs`). A Grep that reaches the
+    // card would need the walk before it, or the card's yes would let the keys there through — frictions29 review)
     if let Some(at) = look
         .at
         .clone()
@@ -1407,6 +1464,11 @@ fn decide_with(
         }
         crate::sorting::sort(&mut look.keys);
         look.keys.dedup();
+    }
+    // (an agent's own search of a folder holding a place runs never read: tarae can't leave that place out of its
+    // walk, so it asks — #633; tarae's own `search` leaves it out and says so, `Gate::left_out`)
+    if let Some(at) = look.at.as_deref().filter(|_| folder_keys && look.tool == "Grep" && !look.file) {
+        look.kept = caps.kept_below(at);
     }
     // (named like one, closed where runs close it — one answer)
     look.keys.retain(|k| key_closed(caps, k));
@@ -1500,7 +1562,7 @@ pub fn by_default(class: crate::cards::Class, caps: &crate::caps::Caps) -> bool 
 fn class_of(look: &Look, caps: &crate::caps::Caps) -> crate::cards::Class {
     // (a file is in `Look.keys` where it's closed — by its name alone only a folder)
     let named_key = !look.file && look.at.as_deref().is_some_and(crate::secretnames::named_secret);
-    match look.keys.is_empty() && !named_key && !look.cut {
+    match look.keys.is_empty() && look.kept.is_empty() && !named_key && !look.cut {
         true => caps.class(look.at.as_deref()),
         false => crate::cards::Class::Secret,
     }
@@ -2374,6 +2436,7 @@ mod tests {
             keys: Vec::new(),
             cut: false,
             part: String::new(),
+            kept: Vec::new(),
         };
         let none = Allowed::default();
         let some = Allowed { read: vec!["/t/x".into()], ..Default::default() };
@@ -2934,5 +2997,213 @@ mod tests {
         let beside = home.join(".config/else/f");
         assert!(Gate::for_test(&root).at_home(home.clone()).refused(&beside).is_none());
         assert!(crate::allow::keepable(&beside, Some(&home)));
+    }
+
+    /// #633's places: a scratch folder (real), its stand-in home and temp folder, the project in home. Its
+    /// variables are only those a test gives (`Here`), never this process's; its files plain-text stand-ins, named
+    /// like no key (else their name would ask, whatever the rule).
+    struct Kept {
+        _s: crate::scratch::Scratch,
+        base: PathBuf,
+        home: PathBuf,
+        tmp: PathBuf,
+        root: PathBuf,
+    }
+
+    impl Kept {
+        fn new(name: &str) -> Kept {
+            let s = crate::scratch::Scratch::new(name);
+            let base = std::fs::canonicalize(s.path()).unwrap();
+            let (home, tmp) = (base.join("home"), base.join("tmp"));
+            let root = home.join("work/p");
+            for d in [&root, &tmp] {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            Kept { _s: s, base, home, tmp, root }
+        }
+
+        /// Each of `files` written, its folders made: a stand-in token in each.
+        fn write(&self, files: &[&PathBuf]) {
+            for f in files {
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(f, format!("token: {}\n", concat!("tarae-fake", "-token"))).unwrap();
+            }
+        }
+
+        /// The variables `env` (and `HOME`), the temp folder the scratch's.
+        fn here(&self, env: &[(&str, &Path)]) -> crate::sandbox::Here {
+            let mut vars: std::collections::HashMap<String, std::ffi::OsString> =
+                env.iter().map(|(k, v)| (k.to_string(), v.as_os_str().to_owned())).collect();
+            vars.insert("HOME".into(), self.home.clone().into());
+            let tmp = Some(self.tmp.clone());
+            crate::sandbox::Here { env: vars, tmp, os: crate::sandbox::Os::HOST, ..Default::default() }
+        }
+
+        /// tarae's own tools' gate for project `root`, the temp folders read by default.
+        fn gate_at(&self, root: &Path, env: &[(&str, &Path)]) -> Gate {
+            Gate::for_test(root).at_home(self.home.clone()).with_here(self.here(env)).reading_temp()
+        }
+
+        fn gate(&self, env: &[(&str, &Path)]) -> Gate {
+            self.gate_at(&self.root, env)
+        }
+
+        /// The session's caps as an agent's own Read and Grep are judged by (`decide`), temp folders read or not.
+        fn caps(&self, env: &[(&str, &Path)], temp: bool) -> crate::caps::Caps {
+            let here = Some(self.here(env));
+            let home = Some(self.home.clone());
+            crate::caps::Basis { root: self.root.clone(), temp, home, here, ..Default::default() }.build()
+        }
+    }
+
+    /// What `gate` asks for reading the file `f`, as tarae's `read` judges it: its class, or None — read unasked.
+    fn asks(gate: &Gate, f: &Path) -> Option<crate::cards::Class> {
+        gate.judge(f, true).err().map(|a| a.class)
+    }
+
+    /// #633: a kubeconfig `KUBECONFIG` put in a temp folder, read by default, asks for itself — the read card, as
+    /// `~/.kube/config` at home does — while the file beside it reads unasked, and tarae's own search of its
+    /// folder goes without a card (it leaves the place out: `Gate::left_out`). Before: read unasked.
+    #[test]
+    fn a_default_temp_folder_never_covers_a_kept_place() {
+        let k = Kept::new("reads-kept-temp");
+        let (kube, beside) = (k.tmp.join("kind/cluster.yaml"), k.tmp.join("kind/notes.txt"));
+        k.write(&[&kube, &beside]);
+        let gate = k.gate(&[("KUBECONFIG", &kube)]);
+        assert_eq!(asks(&gate, &kube), Some(crate::cards::Class::Secret), "the kept file");
+        assert_eq!(asks(&gate, &beside), None, "beside it: the temp folder's default");
+        assert!(gate.judge(&k.tmp.join("kind"), false).is_ok(), "tarae's own search of its folder");
+        assert_eq!(gate.left_out(std::slice::from_ref(&k.tmp)), [kube], "…which leaves it out");
+    }
+
+    /// #633, through an agent's own Read (`decide`): a credentials file `AWS_SHARED_CREDENTIALS_FILE` moved into a
+    /// temp folder asks, `Secret`; what's beside it reads unasked.
+    #[test]
+    fn a_variable_moved_credentials_file_in_temp_asks() {
+        let k = Kept::new("reads-kept-aws");
+        let (creds, beside) = (k.tmp.join("aws/creds.ini"), k.tmp.join("aws/notes.txt"));
+        k.write(&[&creds, &beside]);
+        let caps = k.caps(&[("AWS_SHARED_CREDENTIALS_FILE", &creds)], true);
+        let read = |f: &Path| decide("Read", &json!({ "file_path": f }), &caps, &Made::default());
+        let (_, covered, class) = read(&creds);
+        assert!(!covered && class == crate::cards::Class::Secret, "the credentials file: {class:?}");
+        assert!(read(&beside).1, "beside it");
+    }
+
+    /// #633: an agent's own Grep of a folder holding a kept place asks, `Secret`, once (`Look.kept`) — tarae can't
+    /// leave the place out of that tool's walk; one of a folder holding none goes unasked.
+    #[test]
+    fn an_agents_grep_of_a_folder_holding_a_kept_place_asks() {
+        let k = Kept::new("reads-kept-grep");
+        let (kube, other) = (k.tmp.join("kind/cluster.yaml"), k.tmp.join("else/notes.txt"));
+        k.write(&[&kube, &other]);
+        let caps = k.caps(&[("KUBECONFIG", &kube)], true);
+        let grep =
+            |at: &Path| decide("Grep", &json!({ "pattern": "token", "path": at }), &caps, &Made::default());
+        let (look, covered, class) = grep(&k.tmp);
+        assert!(!covered && class == crate::cards::Class::Secret, "{class:?}");
+        assert_eq!(look.kept, [kube]);
+        let (look, covered, _) = grep(&k.tmp.join("else"));
+        assert!(covered && look.kept.is_empty(), "a folder holding none: {look:?}");
+    }
+
+    /// #633: another checkout of the repository, read by default, doesn't cover a kept place in it — the linked
+    /// checkout's git files written by hand, as `allow::checkouts` reads them (no git run).
+    #[test]
+    fn another_checkout_holding_a_kept_place_covers_it_not() {
+        let k = Kept::new("reads-kept-checkout");
+        let (main, wt) = (k.base.join("repo"), k.base.join("wt"));
+        let linked = main.join(".git/worktrees/wt");
+        for d in [&linked, &wt] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", linked.display())).unwrap();
+        std::fs::write(linked.join("gitdir"), format!("{}\n", wt.join(".git").display())).unwrap();
+        std::fs::write(linked.join("commondir"), "../..\n").unwrap();
+        let (kube, beside) = (wt.join("deploy/cluster.yaml"), wt.join("README.md"));
+        k.write(&[&kube, &beside]);
+        let gate = Gate::for_test(&main).at_home(k.home.clone()).with_here(k.here(&[("KUBECONFIG", &kube)]));
+        assert_eq!(asks(&gate, &beside), None, "the other checkout: read by default");
+        assert_eq!(asks(&gate, &kube), Some(crate::cards::Class::Secret), "the kept file in it");
+    }
+
+    /// #633: a toolchain's code tree, read by default (cargo's downloaded crates, its home moved by `CARGO_HOME`),
+    /// doesn't cover a kept place in it.
+    #[test]
+    fn a_toolchains_default_holding_a_kept_place_covers_it_not() {
+        let k = Kept::new("reads-kept-toolchain");
+        let cargo = k.base.join("cargo");
+        let src = cargo.join("registry/src/index-x");
+        let (kube, beside) = (src.join("cluster.yaml"), src.join("lib.rs"));
+        k.write(&[&kube, &beside]);
+        let gate = Gate::for_test(&k.root)
+            .at_home(k.home.clone())
+            .with_here(k.here(&[("CARGO_HOME", &cargo), ("KUBECONFIG", &kube)]));
+        assert_eq!(asks(&gate, &beside), None, "cargo's crates: read by default");
+        assert_eq!(asks(&gate, &kube), Some(crate::cards::Class::Secret), "the kept file there");
+    }
+
+    /// #633: an answer the user gave still covers a kept place it holds — this conversation's, this session's — as
+    /// before; the rule is only the defaults'.
+    #[test]
+    fn an_answer_still_covers_a_kept_place_it_holds() {
+        let k = Kept::new("reads-kept-answer");
+        let (kind, kube) = (k.tmp.join("kind"), k.tmp.join("kind/cluster.yaml"));
+        k.write(&[&kube]);
+        let allowed = crate::allow::Allowed { read: vec![kind.clone()], ..Default::default() };
+        let mut chat = k.gate(&[("KUBECONFIG", &kube)]);
+        chat.basis.chat = allowed.clone();
+        assert_eq!(asks(&chat, &kube), None, "this conversation's answer for its folder");
+        assert!(chat.left_out(std::slice::from_ref(&k.tmp)).is_empty(), "nor left out of a search");
+        let mut session = k.gate(&[("KUBECONFIG", &kube)]);
+        session.basis.session = allowed;
+        assert_eq!(asks(&session, &kube), None, "this session's");
+    }
+
+    /// #633: a kept place holding the project doesn't close the project — its files read unasked (else every
+    /// read there would ask), what's beside the project in that place asks.
+    #[test]
+    fn a_kept_place_holding_the_project_doesnt_close_it() {
+        let k = Kept::new("reads-kept-holds-project");
+        let gcloud = k.base.join("gcloud");
+        let root = gcloud.join("p");
+        let (own, beside) = (root.join("src/a.rs"), gcloud.join("state.txt"));
+        k.write(&[&own, &beside]);
+        let gate = k.gate_at(&root, &[("CLOUDSDK_CONFIG", &gcloud)]);
+        assert_eq!(asks(&gate, &own), None, "the project's file");
+        assert!(!gate.kept_in_project(&own) && !gate.kept_in_project(&root), "its search");
+        assert_eq!(asks(&gate, &beside), Some(crate::cards::Class::Secret), "beside the project");
+    }
+
+    /// #633: a file one of Claude's runs made in a temp folder covers itself, as ever — but not in a kept place there:
+    /// a run's file is a default too.
+    #[test]
+    fn a_runs_file_in_a_kept_place_isnt_covered() {
+        let k = Kept::new("reads-kept-made");
+        let (kube, beside) = (k.tmp.join("kind/cluster.yaml"), k.tmp.join("kind/notes.txt"));
+        let since = SystemTime::now() - std::time::Duration::from_secs(3600);
+        k.write(&[&kube, &beside]);
+        let made = Made { runs: vec![(since, None)], dirs: Vec::new(), temp: vec![k.tmp.clone()] };
+        let caps = k.caps(&[("KUBECONFIG", &kube)], false);
+        let read = |f: &Path| decide("Read", &json!({ "file_path": f }), &caps, &made);
+        assert!(read(&beside).1, "a run's file beside it");
+        let (_, covered, class) = read(&kube);
+        assert!(!covered && class == crate::cards::Class::Secret, "the kept one: {class:?}");
+    }
+
+    /// #633: a kept place inside the project asks, the read card's `y` once letting that read through, while the
+    /// rest of the project reads unasked — the checkout is a default too.
+    #[test]
+    fn a_kept_place_in_the_project_asks_once_and_the_rest_reads() {
+        let k = Kept::new("reads-kept-in-project");
+        let (kube, own) = (k.root.join("deploy/cluster.yaml"), k.root.join("src/a.rs"));
+        k.write(&[&kube, &own]);
+        let gate = k.gate(&[("KUBECONFIG", &kube)]);
+        assert_eq!(asks(&gate, &kube), Some(crate::cards::Class::Secret), "the kept file");
+        assert_eq!(asks(&gate, &own), None, "the rest of the project");
+        assert!(gate.kept_in_project(&kube) && !gate.kept_in_project(&own));
+        let once = k.gate(&[("KUBECONFIG", &kube)]).granting(kube.clone());
+        assert_eq!(asks(&once, &kube), None, "after the card's y");
+        assert_eq!(asks(&gate, &kube), Some(crate::cards::Class::Secret), "the next read asks again");
     }
 }

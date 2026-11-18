@@ -1532,17 +1532,20 @@ impl Policy {
     pub fn merge_made(&self, seen: &mut [Denial], mut said: Vec<Denial>) -> Vec<Denial> {
         for d in seen.iter_mut().filter(|d| d.op == "file-make-in") {
             let folder = PathBuf::from(&d.target);
+            // (a kept place's refusal names its file on its target's first line — `linux::KeptWay::denial`)
             let named = said.iter().position(|s| {
-                ["file-entry-make", "file-write*", EITHER].contains(&s.op.as_str())
-                    && Path::new(&s.target).parent() == Some(folder.as_path())
+                ["file-entry-make", "file-write*", EITHER, super::KEPT_MAKE].contains(&s.op.as_str())
+                    && Path::new(s.target.lines().next().unwrap_or_default()).parent()
+                        == Some(folder.as_path())
             });
-            match named {
-                Some(i) => {
+            match (named, self.kept_made_in(&d.process, &folder)) {
+                (Some(i), _) => {
                     let s = said.remove(i);
                     (d.op, d.target) = (s.op, s.target);
                 }
-                None if self.closed_holds(&folder) => d.op = "file-entry-make-in".into(),
-                None => d.op = "file-write*".into(),
+                (None, Some(kept)) => *d = kept,
+                (None, None) if self.closed_holds(&folder) => d.op = "file-entry-make-in".into(),
+                (None, None) => d.op = "file-write*".into(),
             }
         }
         said
@@ -1561,6 +1564,17 @@ impl Policy {
             return c.project_sealed;
         }
         false
+    }
+
+    /// Linux (#633): a new file Landlock's record says was refused in `folder`, one a kept place below it closes —
+    /// said by it (`linux::KeptWay::denial`). None elsewhere.
+    fn kept_made_in(&self, process: &str, folder: &Path) -> Option<Denial> {
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(c)) = &self.confine {
+            return c.kept_closing(folder).map(|w| w.denial(process, "file-make-in", None));
+        }
+        let _ = (process, folder);
+        None
     }
 
     /// Linux: whether `folder` is one of the project's that take no new entry (`linux::Confine::takes_no_new`: one
@@ -1606,10 +1620,18 @@ impl Policy {
                     _ => "file-entry-make",
                 };
                 for real in paths_in(line, self.from()).into_iter().chain(named_in(line, self.from())) {
-                    let closed = real.parent().is_some_and(|d| c.takes_no_new(d));
                     let target = real.display().to_string();
-                    if closed && self.writes_allow(&real) && !out.iter().any(|d| d.target == target) {
-                        out.push(Denial { process: SEEN_IN_OUTPUT.into(), op: op.into(), target });
+                    let file = |d: &Denial| d.target.lines().next() == Some(target.as_str());
+                    if !self.writes_allow(&real) || out.iter().any(file) {
+                        continue;
+                    }
+                    // (#633: a folder a kept place below it closes — said by it, its way out)
+                    match real.parent().and_then(|d| c.kept_closing(d)) {
+                        Some(way) => out.push(way.denial(SEEN_IN_OUTPUT, op, Some(real.as_path()))),
+                        None if real.parent().is_some_and(|d| c.takes_no_new(d)) => {
+                            out.push(Denial { process: SEEN_IN_OUTPUT.into(), op: op.into(), target })
+                        }
+                        None => {}
                     }
                 }
             }

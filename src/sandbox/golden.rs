@@ -381,6 +381,7 @@ fn the_caps_are_pinned() {
             taking: Vec::new(),
             hosts: Vec::new(),
             home: None,
+            here: None,
         };
         out.push_str(&format!("══ {os:?}\n"));
         let caps = basis.build_in(Some(&f.home), &f.here);

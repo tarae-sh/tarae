@@ -360,6 +360,38 @@ Kept:
   test: `sandbox::movedhome::rustups_proxies_on_path_run_with_the_cargo_home_moved` (shown, both systems)
 - tarae's own state folder (chats, trust answers, grants) is never read.
   test: `sandbox::golden::the_policy_is_pinned` (rule: `$STATE` in the denied list)
+- **No default covers a place runs never read** (#633) — the kept places and home's key folders, wherever a variable
+  puts them (`KUBECONFIG=/tmp/kind/kubeconfig`): not the checkout, another checkout, a temp folder, a toolchain's
+  folders, a workspace folder, nor a file a run made. Claude's Read of one asks on the read card (`y` once); only an
+  answer you gave covers it, as before. A kept place holding the project doesn't close the project. tarae's `search`
+  of a folder holding one leaves it out — hits and name — and ends with one line naming it, hits or none; an agent's
+  own Grep of that folder asks. Runs: macOS's profile denies a kept place after its write allows (measured: a
+  kubeconfig in `/private/tmp` and in `$TMPDIR` refused, both folders writable). Linux: in tier own a kept file in a
+  place runs write is hidden by a mount of the run's own (unread, unwritten, not renamed or removed) and the folders
+  around it take new files; in the tiers without mounts — and in tier own for a kept folder or one not there yet —
+  it's left out of the write grant, as of `/`'s read grant: on Linux without mounts of the run's own a place is kept
+  only by being left out of its folder's rule, so the folders between it and the write place take no new entry, and a
+  refusal there names the folder, the kept place and its variable. Each run's `$TMPDIR` is a folder of its own on
+  every platform, outside every such place, so only a tool that writes a hard-coded `/tmp` meets that cost — the JVM
+  on Linux (`java.io.tmpdir`: Gradle's and Maven's tests). Why closed where a key-named file in a temp folder isn't:
+  that one is found by a walk of what anything writes, and writing it hands nothing to what runs later; a kept place
+  is named by your own variables and your own tools run from it — a kubeconfig a run could write can name an `exec`
+  credential plugin your next `kubectl` runs outside the sandbox — so writing it is closed on every tier, at the cost
+  said.
+  test: `reads::tests::a_default_temp_folder_never_covers_a_kept_place` ·
+  `reads::tests::another_checkout_holding_a_kept_place_covers_it_not` ·
+  `reads::tests::a_toolchains_default_holding_a_kept_place_covers_it_not` ·
+  `reads::tests::a_runs_file_in_a_kept_place_isnt_covered` ·
+  `reads::tests::a_kept_place_in_the_project_asks_once_and_the_rest_reads` ·
+  `reads::tests::a_kept_place_holding_the_project_doesnt_close_it` ·
+  `reads::tests::an_answer_still_covers_a_kept_place_it_holds` ·
+  `reads::tests::an_agents_grep_of_a_folder_holding_a_kept_place_asks` ·
+  `nav::tests::a_search_of_a_temp_folder_leaves_the_kept_place_out_and_says_it` ·
+  `caps::tests::an_answer_holding_a_kept_place_stays_in_the_store` ·
+  `sandbox::tests::a_kept_file_in_a_temp_folder_stays_unread_under_the_real_profile` (shown, macOS) ·
+  `sandbox::tests::a_kept_place_in_a_place_runs_write_is_closed` (shown, Linux) ·
+  `sandbox::tests::a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own` (shown, Linux) ·
+  `sandbox::tests::a_refused_new_file_beside_a_kept_place_names_it_and_the_way_out` (shown, Linux)
 
 Not kept:
 - **Outside home a run reads anything your user can** — `/etc`, `/opt`, `/Volumes`, other users' world-readable
@@ -409,6 +441,11 @@ Kept:
   test: `reads::tests::every_rows_place_is_kept_from_every_session` · `sandbox::tests::every_rows_place_is_kept_from_runs` ·
   `chat::tests::a_file_in_an_agents_own_place_reaches_claude_only_when_the_user_lets_it` ·
   `agent::tests::every_row_says_what_it_keeps_in_home` · `sandboxpack::tests::a_pack_cant_name_an_agents_place`
+- **A cloud CLI's sign-in a variable moves** (`KUBECONFIG`'s every entry, `AWS_SHARED_CREDENTIALS_FILE`,
+  `AWS_CONFIG_FILE`, `CLOUDSDK_CONFIG`, `AZURE_CONFIG_DIR`) is kept where it lands, a temp folder or another place
+  runs write included, and no default opens it to Claude's reads (§1.3, #633).
+  test: `reads::tests::a_variable_moved_credentials_file_in_temp_asks` ·
+  `sandbox::tests::a_kept_place_in_a_place_runs_write_is_closed` (shown, Linux)
 - macOS: what no run reads by its place — home, the kept places, a token's settings — isn't read through a clone of
   a folder above it either (G35): Seatbelt checks a folder's clone on its source alone, never as a read of what's in
   it, so the profile refuses every folder's clone but where a run reads everything below.

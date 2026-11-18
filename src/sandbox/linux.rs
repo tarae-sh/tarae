@@ -155,6 +155,13 @@ pub struct Confine {
     pub shut: Vec<(PathBuf, Option<String>)>,
     /// Those that take none because what the walk couldn't look through below them is closed whole (`unlooked`).
     pub shut_unlooked: Vec<PathBuf>,
+    /// The places runs write that take no new entry for a place runs never read inside them (`shut_by` of
+    /// `Reads.kept` there, #633: `KUBECONFIG=/tmp/kind/kubeconfig` — `/tmp`), left out of their grants — every
+    /// tier for one not there, a folder's in tier own too, a file's where its runs have no mounts of their own.
+    pub shut_kept: Vec<PathBuf>,
+    /// Every folder from such a place down to what's kept in it, and what (`kept_closing`): what a refusal there
+    /// names.
+    pub kept_ways: Vec<KeptWay>,
     /// Whether the project's own protected names are sealed (`Covers::seals` holds the opened folders' too): what the
     /// report says of the project and the output's readings go by this, never by `seals` being there.
     pub project_sealed: bool,
@@ -184,12 +191,26 @@ impl Confine {
         self.closed.iter().chain(&self.marked).any(|f| f == folder)
     }
 
+    /// Whether `folder` takes no new entry for a kept place below it left out of a write place's grant (#633), and
+    /// which — what the report says a refused new file, removal or move there by (`KeptWay::denial`).
+    pub fn kept_closing(&self, folder: &Path) -> Option<&KeptWay> {
+        // (the break-once: those refusals said as plain writes, or not at all)
+        #[cfg(test)]
+        if std::env::var_os("TARAE_TEST_KEPT_UNSAID").is_some() {
+            return None;
+        }
+        self.kept_ways.iter().find(|w| w.folder == folder)
+    }
+
     /// Tests: the ruleset's descriptor alone, for `Keeper::start` — refused where its keys are hidden by mounts
     /// (started so, they'd be read: `start_confined`).
     #[cfg(test)]
     pub fn rules_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         assert!(
-            self.covers.keys.is_empty() && self.covers.loose.is_empty() && self.covers.seals.is_empty(),
+            self.covers.keys.is_empty()
+                && self.covers.loose.is_empty()
+                && self.covers.seals.is_empty()
+                && self.covers.kept.is_empty(),
             "these rules come with files hidden or sealed by mounts: start_confined"
         );
         self.rules.fd()
@@ -245,6 +266,8 @@ impl PartialEq for Confine {
             && self.unlooked == other.unlooked
             && self.shut == other.shut
             && self.shut_unlooked == other.shut_unlooked
+            && self.shut_kept == other.shut_kept
+            && self.kept_ways == other.kept_ways
             && self.project_sealed == other.project_sealed
             && Arc::ptr_eq(&self.made, &other.made)
             && Arc::ptr_eq(&self.kept, &other.kept)
@@ -645,6 +668,19 @@ pub fn covers_said(c: &Confine) -> String {
     };
     let tilde =
         |places: &[PathBuf]| places.iter().map(|p| crate::allow::tilde(p)).collect::<Vec<_>>().join(", ");
+    // (#633: a kept file in a place runs write, hidden by a mount — that place takes new files)
+    let kept = match c.covers.kept.as_slice() {
+        [] => String::new(),
+        k => {
+            let places: Vec<PathBuf> = k.iter().map(|k| k.path.clone()).collect();
+            let (are, them) = if k.len() == 1 { ("is", "it") } else { ("are", "them") };
+            format!(
+                " {} {are} kept from every run and hidden by a mount of the run's own: unread, unwritten, not renamed \
+                 or removed; the folders around {them} take new files as usual.",
+                tilde(&places)
+            )
+        }
+    };
     let holes = match c.holes_elsewhere.as_slice() {
         [] => String::new(),
         places => format!(
@@ -679,7 +715,7 @@ pub fn covers_said(c: &Confine) -> String {
         (true, None) => String::new(),
     };
     format!(
-        "{how}{sealed}{elsewhere}{holes}{whole}{unseen}{}{}",
+        "{how}{kept}{sealed}{elsewhere}{holes}{whole}{unseen}{}{}",
         outside_said(&c.outside, c.skipped.lock().unwrap_or_else(|e| e.into_inner()).as_ref()),
         unlooked_said(&c.unlooked) + &shut_said(c)
     )
@@ -736,6 +772,21 @@ fn shut_said(c: &Confine) -> String {
             " {} — and the folders between them and the protected names of a folder opened for writing — take no new \
              entry here: those names are closed by their folders' rules, not sealed ({why}).",
             named(&places)
+        );
+    }
+    // (#633: a place runs write holding a kept place left out of its grant — as a refusal there says it
+    // (`KeptWay::said`); in tier own, why that one isn't hidden by a mount)
+    for place in c.shut_kept.iter().take(SAID) {
+        let Some(way) = c.kept_ways.iter().find(|w| w.folder == *place) else { continue };
+        let words = way.said(false);
+        let words = words.strip_suffix('.').unwrap_or(&words);
+        let why = way.unhidden.map(|w| format!(" ({w})")).unwrap_or_default();
+        said += &format!(" {words}{why}. Write under $TMPDIR.");
+    }
+    if c.shut_kept.len() > SAID {
+        said += &format!(
+            " Nor do {} more places it writes, for what's kept below them.",
+            c.shut_kept.len() - SAID
         );
     }
     if !c.shut_unlooked.is_empty() {
@@ -1530,6 +1581,49 @@ pub struct Covers {
     /// are, writable (`Covers::sealed`): each a mount point, so renamed or removed, refused (EBUSY) — else moving
     /// one away would carry its sealed entry with it and leave the name free for a new file.
     pub pins: Vec<Cover>,
+    /// The kept files in a place runs write (#633: `KUBECONFIG=/tmp/kind/kubeconfig`), hidden as `keys` are and as
+    /// strictly — one gone or swapped by the run's start fails it, as its name would be free in a folder taking new
+    /// entries — so the write place's grant stays whole. One not there, or a folder, stays a hole (`Confine.shut_kept`).
+    pub kept: Vec<Cover>,
+}
+
+/// A folder that takes no new entry because a kept place below it is left out of a write place's grant (#633: `/tmp`
+/// for `KUBECONFIG=/tmp/kind/kubeconfig`): the kept place, the write place holding it, the variable that put it there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeptWay {
+    pub folder: PathBuf,
+    pub kept: PathBuf,
+    /// The place runs write holding it (`/tmp`) — what the person's way out names.
+    pub place: PathBuf,
+    pub var: Option<String>,
+    /// Where its runs have mounts of their own (tier own): why this one isn't hidden by one — the standing note's.
+    pub unhidden: Option<&'static str>,
+}
+
+impl KeptWay {
+    /// `/tmp takes no new files in this run: it holds /tmp/kind/kubeconfig ($KUBECONFIG), kept from every run.` —
+    /// `keeps its files` for a removal or a move there (`keeps`).
+    pub fn said(&self, keeps: bool) -> String {
+        let var = self.var.as_ref().map(|v| format!(" (${v})")).unwrap_or_default();
+        let what = if keeps { "keeps its files" } else { "takes no new files" };
+        let (folder, kept) = (crate::allow::tilde(&self.folder), crate::allow::tilde(&self.kept));
+        format!("{folder} {what} in this run: it holds {kept}{var}, kept from every run.")
+    }
+
+    /// A refusal there said by it (`super::KEPT_MAKE`, `KEPT_REMOVE`, `KEPT_MOVE`), from Landlock's op (`op`:
+    /// `file-entry-make`, `-remove`, `-move`, or `file-make-in`, the audit's record naming the folder alone — `file`
+    /// None): its target the file, the folder, its words and the write place, a line each (`Denial::kept_said`).
+    pub fn denial(&self, process: &str, op: &str, file: Option<&Path>) -> super::Denial {
+        let (op, keeps) = match op {
+            "file-entry-remove" => (super::KEPT_REMOVE, true),
+            "file-entry-move" => (super::KEPT_MOVE, true),
+            _ => (super::KEPT_MAKE, false),
+        };
+        let file = file.map(|f| f.display().to_string()).unwrap_or_default();
+        let target =
+            format!("{file}\n{}\n{}\n{}", self.folder.display(), self.said(keeps), self.place.display());
+        super::Denial { process: process.into(), op: op.into(), target }
+    }
 }
 
 /// A key hidden by a mount: where it is, a real path, and which file it is.
@@ -1586,6 +1680,7 @@ impl Covers {
             loose: Vec::new(),
             seals: Vec::new(),
             pins: Vec::new(),
+            kept: Vec::new(),
         })
     }
 
@@ -1858,10 +1953,27 @@ pub(super) fn confine_in(
     let mut elsewhere: Vec<PathBuf> = ways.iter().map(|(at, _)| at.clone()).collect();
     crate::sorting::sort(&mut elsewhere);
     elsewhere.dedup();
+    // (#633: a kept file in a place runs write, there now — hidden by a mount as a key is where the run can have one,
+    // strictly (`Covers.kept`), so that place's grant stays whole. One not there, or a folder (its shut folder is
+    // frictions29 #634), stays a hole on every tier: its folders take no new entry, said)
+    let kept_files: Vec<PathBuf> = p
+        .reads
+        .kept
+        .iter()
+        .filter(|k| p.write.iter().any(|w| k.starts_with(w) && *k != w))
+        .filter(|k| k.symlink_metadata().is_ok_and(|m| m.file_type().is_file()))
+        .cloned()
+        .collect();
+    // (the break-once: no kept file hidden — each a hole again, its folders taking no new entry)
+    #[cfg(test)]
+    let kept_files = match std::env::var_os("TARAE_TEST_NO_KEPT_COVERS") {
+        Some(_) => Vec::new(),
+        None => kept_files,
+    };
     // (7d: hidden by mounts in the run's own mount namespace where it can have one — its folders whole then; else
     // split as 7b, and where mounts could have been, why not)
     let decided: Option<Result<Covers, String>> =
-        match (&own.mounts, keys.is_empty() && outside_found.is_empty()) {
+        match (&own.mounts, keys.is_empty() && outside_found.is_empty() && kept_files.is_empty()) {
             (None, _) | (_, true) => None,
             (Some(Err(why)), false) => Some(Err(why.clone())),
             (Some(Ok(())), false) => Some(match (&own.table, elsewhere.first(), &p.run) {
@@ -1936,8 +2048,10 @@ pub(super) fn confine_in(
         Some(_) => {
             // (`/` read but home and each Windows profile (Q11) — and but each kept place outside them: a cloud
             // CLI's sign-in a variable moved, `AWS_SHARED_CREDENTIALS_FILE=/opt/creds/…`, #182; Landlock only
-            // grants, so a place is kept by being left out. One inside a place a run writes stays read through that
-            // grant, as its writes would be)
+            // grants, so a place is kept by being left out. One inside a place a run writes is left out of that
+            // grant too, below (#633: `KUBECONFIG=/tmp/kind/kubeconfig`) — the folders between them take no new
+            // entry, said in the report (`Confine.shut_kept`) — but a kept file there that a mount of the run's own
+            // hides (tier own, `Covers.kept`): that grant stays whole)
             let homes: Vec<PathBuf> = p.reads.homes().map(Path::to_path_buf).collect();
             let outside: Vec<PathBuf> =
                 p.reads.kept.iter().filter(|k| p.reads.home_of(k).is_none()).cloned().collect();
@@ -2048,9 +2162,25 @@ pub(super) fn confine_in(
     }
     let mut outside = Outside { unwalked, mounts: beside, failed, ..Default::default() };
     let mut covers = covers;
+    // (the kept files hidden, as named in the policy — none of them a hole below)
+    let mut kept_hidden: Vec<PathBuf> = Vec::new();
     match covers.as_mut() {
         Some(c) => {
-            let room = COVERS_MAX.saturating_sub(c.keys.len() + c.loose.len() + seals.len() + pins.len());
+            // (the kept files first, as room is left: strict, as the project's keys are)
+            let mut room = COVERS_MAX.saturating_sub(c.keys.len() + seals.len() + pins.len());
+            for k in &kept_files {
+                if room == 0 {
+                    break;
+                }
+                if let Some(cover) = Cover::of(k) {
+                    c.kept.push(cover);
+                    kept_hidden.push(k.clone());
+                    room -= 1;
+                }
+            }
+            let outside_found: Vec<PathBuf> =
+                outside_found.into_iter().filter(|f| !kept_hidden.contains(f)).collect();
+            let room = room.saturating_sub(c.loose.len());
             let through =
                 |k: &Path| table.as_ref().and_then(|t| ways_through(t, k).into_iter().next()).map(|w| w.0);
             let (loose, open) = place_outside(outside_found, room, through);
@@ -2151,13 +2281,53 @@ pub(super) fn confine_in(
     if let Some(run) = &p.run {
         grant(&mut r, run.path(), landlock::ALL, &protected_in(run.path()))?;
     }
+    // (a kept place in a place runs write — a kubeconfig `KUBECONFIG` put in `/tmp`: left out of that grant as of
+    // `/`'s, read and written by none, #633, but where a mount hides it (`kept_hidden`); a file granted alone that's
+    // in one gets no rule)
+    let kept_in = |place: &Path| {
+        let holes = p.reads.kept.iter().filter(|k| k.starts_with(place) && !kept_hidden.contains(*k));
+        holes.cloned().collect::<Vec<_>>()
+    };
+    #[cfg(test)]
+    let kept_in = |place: &Path| match std::env::var_os("TARAE_TEST_KEPT_IN_WRITES") {
+        Some(_) => Vec::new(),
+        None => kept_in(place),
+    };
+    let mut kept_writes: Vec<PathBuf> = Vec::new();
     for w in &p.write {
         let mut holes: Vec<PathBuf> = p.caches.iter().filter(|c| c.starts_with(w)).cloned().collect();
         holes.extend(protected_in(w));
+        let kept = kept_in(w);
+        holes.extend(kept.iter().cloned());
+        kept_writes.extend(kept);
         grant(&mut r, w, landlock::ALL, &holes)?;
     }
     for f in &p.files {
-        grant(&mut r, f, WRITE_ONE, &protected_in(f))?;
+        let mut holes = protected_in(f);
+        holes.extend(p.reads.kept.iter().filter(|k| f.starts_with(k)).cloned());
+        grant(&mut r, f, WRITE_ONE, &holes)?;
+    }
+    let shut_kept = shut_by(&kept_writes, &p.write);
+    // (every folder from the outermost write place holding one down to it: what a refusal there names)
+    let mut kept_ways: Vec<KeptWay> = Vec::new();
+    for k in &kept_writes {
+        let holding = p.write.iter().filter(|w| k.starts_with(w) && *w != k);
+        let Some(place) = holding.min_by_key(|w| w.components().count()) else { continue };
+        let var = p.reads.kept_vars.iter().find(|(at, _)| at == k).map(|(_, v)| v.clone());
+        let unhidden = match (matches!(own.mounts, Some(Ok(()))), k.symlink_metadata()) {
+            (false, _) => None,
+            (true, Ok(m)) if m.is_dir() => {
+                Some("a folder: a run's mounts hide a kept file, not yet a folder")
+            }
+            (true, Ok(_)) => Some("a run's mounts couldn't hide it here"),
+            (true, Err(_)) => Some("not there yet: a mount can't sit on what isn't there"),
+        };
+        for a in k.ancestors().skip(1).take_while(|a| a.starts_with(place)) {
+            if !kept_ways.iter().any(|w| w.folder == a) {
+                let (folder, kept, place) = (a.to_path_buf(), k.clone(), place.clone());
+                kept_ways.push(KeptWay { folder, kept, place, var: var.clone(), unhidden });
+            }
+        }
     }
     for (d, access) in DEVICES {
         if ptys.is_some() && Path::new(d) == pts {
@@ -2211,6 +2381,8 @@ pub(super) fn confine_in(
         unlooked: opened.closed,
         shut,
         shut_unlooked,
+        shut_kept,
+        kept_ways,
         project_sealed,
         kept: Arc::new(kept),
         keeper: None,

@@ -1255,6 +1255,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "in fn keeper_env: match cfg!(test) {",
         "`TARAE_KEEPER=1`: the test binary starts as the keeper",
     ),
+    ("src/sandbox/keeper.rs", "in fn kept_sent: if std::env::var_os(\"TARAE_TEST_KEPT_OFF_THE_WIRE\"", SEAM),
     ("src/sandbox/keeper.rs", "in fn number: if let Some(info) = s.fdinfo {", HOOK),
     ("src/sandbox/keeper.rs", "in fn number: if let Some(d) = s.number_after {", HOOK),
     (
@@ -1275,6 +1276,13 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/linux.rs", "in fn confine_in: sealing", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: ways", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: ways_in", SEAM),
+    ("src/sandbox/linux.rs", "in fn confine_in: kept_in", SEAM),
+    ("src/sandbox/linux.rs", "in fn confine_in: kept_files", SEAM),
+    (
+        "src/sandbox/linux.rs",
+        "in fn kept_closing: if std::env::var_os(\"TARAE_TEST_KEPT_UNSAID\").is_s",
+        SEAM,
+    ),
     ("src/sandbox/policy.rs", "in fn for_project: swap_pause", HOOK),
     ("src/sandbox/policy.rs", "in fn for_project: seals_off", HOOK),
     (

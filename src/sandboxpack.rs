@@ -1771,8 +1771,9 @@ pub struct Vars {
     /// Each home: (name, where it is — its variable's when that's an absolute path (a list home's: its first
     /// entry's), else its default — its default).
     pub homes: Vec<(String, PathBuf, PathBuf)>,
-    /// The `kept-moved` places: each at its default and where its variable moves it (every absolute entry).
-    pub kept_moved: Vec<PathBuf>,
+    /// The `kept-moved` places: each at its default (None) and where its variable moves it (every absolute entry,
+    /// with the variable's name — what a refusal beside one names, #633).
+    pub kept_moved: Vec<(PathBuf, Option<String>)>,
     /// A list home's other entries (absolute) — homes too, with none of its places in them.
     pub listed: Vec<PathBuf>,
     pub user_config: PathBuf,
@@ -1849,8 +1850,8 @@ impl Vars {
                     (true, Some(v)) => std::env::split_paths(&v).collect(),
                     (false, Some(v)) => vec![v],
                 };
-                std::iter::once(from(&k.default, &unmoved))
-                    .chain(moved.into_iter().filter(|p| p.is_absolute()))
+                let moved = moved.into_iter().filter(|p| p.is_absolute()).map(|p| (p, Some(k.env.clone())));
+                std::iter::once((from(&k.default, &unmoved), None)).chain(moved)
             })
             .collect();
         let mut v = Vars {

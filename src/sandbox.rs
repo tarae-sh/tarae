@@ -511,7 +511,8 @@ impl Guard {
             // (step 8: another session's port, or one whose can't be told — no grant opens it, so nothing to
             // point at; nor beyond this machine past the proxy; nor what every run is refused by design — macdeny)
             let openable = |d: &&Denial| {
-                ![SESSION_OP, UNTOLD_OP, DIRECT_OP, MOUNT_OP, USERNS_OP].contains(&d.op.as_str())
+                ![SESSION_OP, UNTOLD_OP, DIRECT_OP, MOUNT_OP, USERNS_OP, KEPT_MAKE, KEPT_REMOVE, KEPT_MOVE]
+                    .contains(&d.op.as_str())
                     && !d.by_design()
             };
             let open: Vec<Denial> = all_seen.iter().filter(openable).filter(|_| !all).cloned().collect();
@@ -1276,6 +1277,9 @@ pub struct Reads {
     pub allow: Vec<PathBuf>,
     /// Never read, denied after every allow (`kept_reads`) — tarae's log too: it says every session's news (#292).
     pub kept: Vec<PathBuf>,
+    /// Of `kept`, those a variable put where they are (`kept-moved`: `KUBECONFIG`) and its name — what a refused new
+    /// file beside one says (#633). Real paths.
+    pub kept_vars: Vec<(PathBuf, String)>,
     /// Settings that hold a token: the copies the tools read instead, in the run's own folder, and the files
     /// themselves, not read (`tokens.rs`).
     pub copies: crate::tokens::Copies,
@@ -1569,7 +1573,13 @@ pub fn reads_for(home: &Path, also: &[PathBuf], vars: &crate::sandboxpack::Vars,
     });
     crate::sorting::sort(&mut allow);
     allow.dedup();
-    Reads { home: Some(home.to_path_buf()), profiles, allow, kept, copies: Default::default() }
+    let kept_vars = vars
+        .kept_moved
+        .iter()
+        .filter_map(|(p, var)| Some((profile_path(p), var.clone()?)))
+        .filter(|(p, _)| kept.contains(p))
+        .collect();
+    Reads { home: Some(home.to_path_buf()), profiles, allow, kept, kept_vars, copies: Default::default() }
 }
 
 /// What a toolchain reads above the project (`root`, real) in `home`: the packs' `reads-above` files in every
@@ -1720,7 +1730,7 @@ fn keys_in(home: &Path, vars: &crate::sandboxpack::Vars) -> Vec<PathBuf> {
     let at = |p: PathBuf| profile_path(&p);
     let floor = crate::allow::SECRETS.iter().chain(KEPT_FLOOR_KEYS);
     let mut v: Vec<PathBuf> = floor.map(|s| at(home.join(s))).collect();
-    v.extend(vars.kept_moved.iter().cloned().map(at));
+    v.extend(vars.kept_moved.iter().map(|(p, _)| at(p.clone())));
     // (the `.config/…` keys where `$XDG_CONFIG_HOME` puts them: git's credential store, gh's and gcloud's sign-in)
     let moved = crate::allow::SECRETS.iter().filter_map(|s| s.strip_prefix(".config/"));
     v.extend(moved.map(|s| at(vars.xdg_config.join(s))));
@@ -2919,6 +2929,12 @@ const LIKELY_MADE: &str = "file-entry-make-likely";
 /// ("Read-only file system", "Device or resource busy"), naming nothing, likely tried — a protected name, bound
 /// read-only for the run (`linux::Covers::seals`): its target the folder it ran in.
 const SEALED_LIKELY: &str = "sealed-likely";
+/// Linux (#633): a new file, a removal or a move refused in a folder a kept place below it closes — one left out of
+/// a write place's grant (`linux::KeptWay::denial`: its target the file, the folder, its words and the write place).
+/// No grant opens it.
+pub(crate) const KEPT_MAKE: &str = "kept-entry-make";
+pub(crate) const KEPT_REMOVE: &str = "kept-entry-remove";
+pub(crate) const KEPT_MOVE: &str = "kept-entry-move";
 
 /// `target` (a path, or what a denial names) with home spelled `~` — how a denial's words show it.
 pub(crate) fn home_shown(target: &str) -> String {
@@ -3032,6 +3048,10 @@ impl Denial {
 
     /// `plain`, a path in the project `root` named from it (`target_in`): `deleting .env` — the run's panel row.
     pub fn plain_in(&self, root: Option<&Path>) -> String {
+        // (#633: the person's words — Claude's, then the other way out)
+        if let Some((what, why, place)) = self.kept_said(root) {
+            return format!("{what}: refused. {why} Write under $TMPDIR. Or move that file out of {place}.");
+        }
         let t = self.target_in(root);
         let op = self.op.as_str();
         // (a pty the run made, or the user's: Seatbelt can't tell them apart — the grant opens them all)
@@ -3211,8 +3231,31 @@ impl Denial {
         }
     }
 
-    /// For Claude: the plain words, then Seatbelt's (`writing ~/x (file-write-create, touch)`).
+    /// Linux (#633): a refusal in a folder a kept place closes (`KEPT_MAKE` …) — what was tried, as the project
+    /// `root` names a path in it, the folder's words, the write place (`linux::KeptWay::denial`). None for any other.
+    fn kept_said(&self, root: Option<&Path>) -> Option<(String, String, String)> {
+        let verb = match self.op.as_str() {
+            KEPT_MAKE => "making",
+            KEPT_REMOVE => "removing",
+            KEPT_MOVE => "moving",
+            _ => return None,
+        };
+        let mut lines = self.target.splitn(4, '\n');
+        let (file, folder, why, place) = (lines.next()?, lines.next()?, lines.next()?, lines.next()?);
+        let shown = |p: &str| Denial { target: p.into(), ..self.clone() }.target_in(root);
+        let what = match file.is_empty() {
+            true => format!("making a new file in {}", shown(folder)),
+            false => format!("{verb} {}", shown(file)),
+        };
+        Some((what, why.to_string(), home_shown(place)))
+    }
+
+    /// For Claude: the plain words, then Seatbelt's (`writing ~/x (file-write-create, touch)`) — a refusal a kept place
+    /// closes the folder for, its way out (#633).
     pub fn reported(&self) -> String {
+        if let Some((what, why, _)) = self.kept_said(None) {
+            return format!("{what}: refused. {why} Write under $TMPDIR.");
+        }
         match self.plain() {
             p if p == self.shown() => format!("{p} ({})", self.process),
             p => format!("{p} ({}, {})", self.op, self.process),
@@ -7788,6 +7831,7 @@ mod tests {
                 home: Some("/Users/u".into()),
                 profiles: Vec::new(),
                 allow: vec!["/Users/u/.cargo".into(), "/Users/u/.gitconfig".into()],
+                kept_vars: Vec::new(),
                 kept: vec![
                     "/Users/u/.ssh".into(),
                     "/Users/u/.claude".into(),
@@ -16857,6 +16901,201 @@ mod tests {
         }
     }
 
+    /// Where #633's Linux tests make their stand-ins: beside the build folder (where
+    /// `a_kept_place_outside_home_is_closed`'s are), or the project's `target` where that isn't writable — no temp
+    /// folder, which is a write place of every run already.
+    #[cfg(not(target_os = "macos"))]
+    fn beside_the_build() -> PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).expect("the build folder");
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(beside.as_os_str().as_bytes()).expect("a path");
+        // SAFETY: a NUL-terminated path; access(2) only reads it.
+        let beside = match unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0 {
+            true => beside.to_path_buf(),
+            false => Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        };
+        std::fs::create_dir_all(&beside).unwrap();
+        beside
+    }
+
+    /// For real, on Linux in every tier (#633): a kept place inside a place runs write — a kubeconfig `KUBECONFIG`
+    /// put in a temp folder, a cloud CLI's folder there (`CLOUDSDK_CONFIG`) — is neither read nor written, while
+    /// what's beside it is both; the report names the place that takes no new entry for it (`Confine.shut_kept`).
+    /// Where its runs have no mounts of their own both are left out of that grant as of `/`'s; in tier own the file
+    /// is hidden by a mount (`a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own`) and the folder still
+    /// left out (its shut folder is frictions29 #634) — the place shut for it. Before: read and written through the
+    /// write grant. Its break-once: `TARAE_TEST_KEPT_IN_WRITES=1`.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_kept_place_in_a_place_runs_write_is_closed() {
+        let test = "a_kept_place_in_a_place_runs_write_is_closed";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-in-writes");
+        let t = profile_path(&s);
+        let (home, root, writes) = (t.join("home"), t.join("home/project"), t.join("writes"));
+        let (kube, gcloud) = (writes.join("kind/cluster.yaml"), writes.join("gcloud"));
+        let closed = [kube.clone(), gcloud.join("state.txt")];
+        let open = writes.join("kind/notes.txt");
+        for f in closed.iter().chain([&open, &root.join("own.txt")]) {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, FAKE).unwrap();
+        }
+        let reads = Reads { home: Some(home.clone()), kept: vec![kube.clone(), gcloud], ..Reads::default() };
+        let p = Policy::for_project(&Env {
+            root: root.clone(),
+            reads,
+            run_env: run_env_here(),
+            ..Env::default()
+        });
+        let c = confined(Policy { write: vec![writes.clone()], run: RunDir::new().ok(), ..p });
+        let (tier, shut) = match &c.confine {
+            Some(Ok(c)) => (c.tier(), c.shut_kept.clone()),
+            other => panic!("{test}: not confined: {other:?}"),
+        };
+        for f in &closed {
+            let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
+            assert!(
+                !ok && !out.contains(FAKE) && err.contains(KEY_DENIED),
+                "{tier}: read {}: {out} {err}",
+                f.display()
+            );
+            let (ok, _, err) = sh_confined(&c, &root, &format!("echo x >> '{}'", f.display()));
+            assert!(!ok, "{tier}: written {}: {err}", f.display());
+        }
+        assert_eq!(std::fs::read_to_string(&kube).unwrap(), FAKE, "{tier}: the kept file as it was");
+        let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{0}' && echo y >> '{0}'", open.display()));
+        assert!(ok && out == FAKE, "{tier}: beside it, read and written: {err}");
+        assert_eq!(shut, [writes], "{tier}: the place that takes no new entry for it");
+    }
+
+    /// For real, on Linux in tier own (#633): a kept file in a place runs write — a kubeconfig `KUBECONFIG` put in a
+    /// temp folder — is hidden by a mount of the run's own (`Covers.kept`): not read, written, moved nor removed, and
+    /// as it was after, while a new file is made and read back beside it and in the write place itself — the folders
+    /// on its way take new entries, no place said shut. A key in the project gives the runs their mounts whatever
+    /// becomes of the kept file's: the skip (`skipped_for_mounts`) goes by those. Its break-once:
+    /// `TARAE_TEST_NO_KEPT_COVERS=1` (a hole again: no new file there) and `TARAE_TEST_KEPT_OFF_THE_WIRE=1` (the
+    /// cover never sent: the file read through the write place's grant).
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own() {
+        let test = "a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-mounted");
+        let t = profile_path(&s);
+        let (home, root, writes) = (t.join("home"), t.join("home/project"), t.join("writes"));
+        let kube = writes.join("kind/kubeconfig");
+        for f in [&kube, &root.join(".env")] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, FAKE).unwrap();
+        }
+        let reads = Reads { home: Some(home), kept: vec![kube.clone()], ..Reads::default() };
+        let env = Env { root: root.clone(), reads, run_env: run_env_here(), ..Env::default() };
+        let p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
+        if skipped_for_mounts(&p, test, true) {
+            return;
+        }
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let (tier, shut, hidden) = match &c.confine {
+            Some(Ok(c)) => {
+                let hidden: Vec<PathBuf> = c.covers.kept.iter().map(|k| k.path.clone()).collect();
+                (c.tier(), c.shut_kept.clone(), hidden)
+            }
+            other => panic!("{test}: not confined: {other:?}"),
+        };
+        let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", kube.display()));
+        assert!(!ok && !out.contains(FAKE) && err.contains(KEY_DENIED), "{tier}: read: {out} {err}");
+        let k = kube.display();
+        let changes = [
+            ("written", format!("echo x >> '{k}'")),
+            ("moved", format!("mv '{k}' '{k}.moved'")),
+            ("removed", format!("rm -f '{k}'")),
+        ];
+        for (what, script) in &changes {
+            let (ok, _, err) = sh_confined(&c, &root, script);
+            assert!(!ok, "{tier}: {what}: {err}");
+        }
+        assert_eq!(std::fs::read_to_string(&kube).unwrap(), FAKE, "{tier}: the kept file as it was");
+        for n in [writes.join("new.txt"), writes.join("kind/new.txt")] {
+            let (ok, out, err) = sh_confined(&c, &root, &format!("echo y > '{0}' && cat '{0}'", n.display()));
+            assert!(ok && out.trim() == "y", "{tier}: a new file beside it, {}: {err}", n.display());
+        }
+        assert!(shut.is_empty(), "{tier}: no place shut for it: {shut:?}");
+        assert_eq!(hidden, [kube], "{tier}: hidden by a mount");
+    }
+
+    /// For real, on Linux in every tier (#633): a new file refused in a place runs write because a kept place in it
+    /// is left out of its grant — a kubeconfig `KUBECONFIG` names that isn't there yet, a hole in every tier — is
+    /// said by that place: the folder, the kept place, its variable and the way out, in Claude's words and with the
+    /// person's other way, from the run's own error line and from Landlock's record of the folder alike; the standing
+    /// note says the same. Its break-once: `TARAE_TEST_KEPT_UNSAID=1` (said as a write, or not at all).
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_refused_new_file_beside_a_kept_place_names_it_and_the_way_out() {
+        let test = "a_refused_new_file_beside_a_kept_place_names_it_and_the_way_out";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-said");
+        let t = profile_path(&s);
+        let (home, root, writes) = (t.join("home"), t.join("home/project"), t.join("writes"));
+        let kube = writes.join("kind/kubeconfig");
+        for d in [&root, &writes] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let kept_vars = vec![(kube.clone(), "KUBECONFIG".to_string())];
+        let reads = Reads { home: Some(home), kept: vec![kube.clone()], kept_vars, ..Reads::default() };
+        let env = Env { root: root.clone(), reads, run_env: run_env_here(), ..Env::default() };
+        let p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let conf = match &c.confine {
+            Some(Ok(conf)) => conf,
+            other => panic!("{test}: not confined: {other:?}"),
+        };
+        let tier = conf.tier();
+        let new = writes.join("new.txt");
+        let (ok, _, err) = sh_confined(&c, &root, &format!("touch '{}'", new.display()));
+        assert!(!ok && !new.exists(), "{tier}: made beside a kept place's way: {err}");
+        let line = err.lines().find(|l| l.contains("Permission denied"));
+        let line = line.unwrap_or_else(|| panic!("{tier}: no refusal in its output: {err}")).to_string();
+        let words = format!(
+            "{} takes no new files in this run: it holds {} ($KUBECONFIG), kept from every run.",
+            crate::allow::tilde(&writes),
+            crate::allow::tilde(&kube)
+        );
+        let place = home_shown(&writes.display().to_string());
+        // (from the run's own line)
+        let said = c.said_in_output(&[(true, line.clone())], &[]);
+        let made = format!(
+            "making {}: refused. {words} Write under $TMPDIR.",
+            home_shown(&new.display().to_string())
+        );
+        assert_eq!(
+            said.iter().map(Denial::reported).collect::<Vec<_>>(),
+            std::slice::from_ref(&made),
+            "{tier}: {line}"
+        );
+        let person = format!("{made} Or move that file out of {place}.");
+        assert_eq!(said[0].plain_in(Some(&root)), person, "{tier}: the person's");
+        // (from Landlock's record, which names only the folder)
+        let mut seen = [Denial {
+            process: "touch".into(),
+            op: "file-make-in".into(),
+            target: writes.display().to_string(),
+        }];
+        c.merge_made(&mut seen, Vec::new());
+        let folder = format!("making a new file in {place}: refused. {words} Write under $TMPDIR.");
+        assert_eq!(seen[0].reported(), folder, "{tier}: the folder's record");
+        // (the standing note, its tier's reason before the period)
+        let note = linux::covers_said(conf);
+        let start = words.strip_suffix('.').unwrap();
+        assert!(note.contains(start) && note.contains("Write under $TMPDIR."), "{tier}: {note}");
+    }
+
     /// WSL (Q11, `winhome`): a Windows profile's keys are kept from a run as home's are — a stand-in drive's, in the
     /// case it spells them — and the rest of the profile reads, as anywhere outside home. Stand-ins where
     /// `a_kept_place_outside_home_is_closed`'s are.
@@ -18251,6 +18490,7 @@ mod tests {
             home: Some(home.clone()),
             profiles: vec![profile.clone()],
             allow: vec![home.join("allowed"), home.join("dir"), profile.join("AppData/Local/Programs")],
+            kept_vars: Vec::new(),
             // (`xcache`: tarae's cache where `XDG_CACHE_HOME` moves it out of home — only its kept rule closes it)
             kept: vec![
                 home.join("dir/.ssh"),
@@ -18311,6 +18551,106 @@ mod tests {
         assert!(cat(&inside, &claudes.join("own")) && !cat(&inside, &home.join(".claude/settings.json")));
         assert_eq!(sh(&p, "/usr/bin/pbpaste > /dev/null 2>&1; echo $?"), "1\n", "the clipboard reached");
         std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// For real, on macOS (#633, §6's check before the fix): a kept place in a temp folder runs write — a kubeconfig
+    /// `KUBECONFIG` names (the tools pack's `kept-moved`), in the shared `/tmp` and in the user's `$TMPDIR` — isn't
+    /// read by a run, though the folder holding it is writable to it. The policy a run gets (`run_policy_in`), from a
+    /// stand-in home and variables (`Here`: nothing of this process's environment); each place's outcome said past
+    /// libtest's capture as soon as it's known, `kept-in-temp: read` or `kept-in-temp: refused`, before any assert.
+    /// The user's temp folder is the write place the policy makes of `Here.tmp` (`user_temp`: a `/private/var/
+    /// folders/…/T` is its parent), read from the policy, never assumed — and never one holding the project, which
+    /// the policy drops (`for_project`: the project's own rule there). A run's own `TMPDIR` (its `RunDir`) isn't the
+    /// case: made new for each run, nothing outside it could have put a kubeconfig there. Harmless: a plain-text
+    /// stand-in in folders of the test's own.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_kept_file_in_a_temp_folder_stays_unread_under_the_real_profile() {
+        if skipped_inside("sandbox::tests::a_kept_file_in_a_temp_folder_stays_unread_under_the_real_profile")
+        {
+            return;
+        }
+        let say = |line: String| {
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), format!("{line}\n").as_bytes());
+        };
+        let fake = concat!("tarae-fake", "-token");
+        let s = crate::scratch::Scratch::new("sb-kept-temp");
+        let shared = crate::scratch::Scratch::in_dir(Path::new(TMP), "sb-kept-temp");
+        let (t, shared) = (profile_path(&s), profile_path(&shared));
+        // (`Here.tmp` beside home, not holding it: `tmpdir/T`, as macOS names a user's)
+        let (home, user_tmp) = (t.join("home"), t.join("tmpdir/T"));
+        let root = home.join("work/p");
+        for d in [&root, &user_tmp] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // (`uid`: this user's, as a run's is — a stand-in's 0 would be root's)
+        // SAFETY: getuid has no preconditions and can't fail.
+        let uid = unsafe { libc::getuid() };
+        let llm = crate::llm::LlmConfig::default();
+        let policy = |kubes: &[PathBuf]| {
+            let list = std::env::join_paths(kubes).unwrap();
+            let env =
+                HashMap::from([("HOME".to_string(), home.clone().into()), ("KUBECONFIG".to_string(), list)]);
+            let here = Here { env, tmp: Some(user_tmp.clone()), uid, os: Os::HOST, ..Here::default() };
+            run_policy_in(&root, &llm, &[], &here).expect("a run's policy")
+        };
+        // The user's temp folder as the policy gives it to runs: its write place holding `Here.tmp`, `/tmp` aside
+        let first = policy(&[shared.join("kind/kubeconfig")]);
+        let place =
+            first.write.iter().find(|w| w.as_path() != Path::new(TMP) && user_tmp.starts_with(w)).cloned();
+        let Some(place) = place else {
+            say(format!(
+                "kept-in-temp: not checked — no write place of the run's holds Here.tmp {} (write: {:?})",
+                user_tmp.display(),
+                first.write
+            ));
+            panic!("the run's policy gives no write place for the user's temp folder");
+        };
+        drop(first);
+        say(format!(
+            "kept-in-temp: the user's temp folder is {} (the policy's write place)",
+            place.display()
+        ));
+        let kubes = [shared.join("kind/kubeconfig"), place.join("k3d/kubeconfig")];
+        for k in &kubes {
+            std::fs::create_dir_all(k.parent().unwrap()).unwrap();
+            std::fs::write(k, format!("users:\n- user:\n    token: {fake}\n")).unwrap();
+        }
+        let p = policy(&kubes);
+        let sh = |script: &str| {
+            let mut c = command(Some(&p), "/bin/sh", &["-c".into(), script.into()]);
+            let out = c.current_dir(&p.root).stdin(Stdio::null()).output().unwrap();
+            let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
+            (out.status.success(), text(&out.stdout), text(&out.stderr))
+        };
+        let (mut read, mut unmet) = (Vec::new(), Vec::new());
+        for k in &kubes {
+            if !p.reads.kept.contains(k) {
+                say(format!("kept-in-temp: not kept by the policy — {}", k.display()));
+                unmet.push(format!("{}: not kept", k.display()));
+            }
+            // (the folder holding it is the run's to write, as a temp folder is)
+            let folder = k.parent().unwrap();
+            let beside = folder.join("beside");
+            let (wrote, _, why) = sh(&format!("echo x > '{}'", beside.display()));
+            if !(wrote && beside.exists()) {
+                say(format!(
+                    "kept-in-temp: its folder isn't writable to the run — {} ({why})",
+                    folder.display()
+                ));
+                unmet.push(format!("{}: not writable", folder.display()));
+            }
+            let (ok, out, err) = sh(&format!("cat '{}'", k.display()));
+            match ok || out.contains(fake) {
+                true => {
+                    say(format!("kept-in-temp: read — {}", k.display()));
+                    read.push(k.display().to_string());
+                }
+                false => say(format!("kept-in-temp: refused — {} ({err})", k.display())),
+            }
+        }
+        assert!(read.is_empty(), "a kept file in a temp folder was read by a run: {read:?}");
+        assert!(unmet.is_empty(), "the probe's preconditions: {unmet:?}");
     }
 
     /// For real, on macOS (card model P2): git's credential store — plain-text passwords in
