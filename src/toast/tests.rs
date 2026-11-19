@@ -9,14 +9,16 @@ use crate::workspace::Here;
 /// A toast's kind's setter (`set_status`, …).
 type Say = fn(&mut Editor, String);
 
-/// Every toast tarae's code says, from where it's made (#482): each `set_status`, `set_success`, `set_warning`,
-/// `set_error` and `say` of a text written at the call (`written`: its literals, each `{…}` a stand-in path, or a
+/// Every toast tarae's code says, from where it's made (#482): each `set_status`, `say_keys`, `set_success`,
+/// `set_warning`, `set_error` and `say` of a text written at the call (`written`: its literals, each `{…}` a stand-in path, or a
 /// `const`'s) — its kind's setter, the text and its file; and how many make theirs elsewhere (a variable, a function's
 /// result), not walked.
 fn toasts_said() -> (Vec<(Say, String, String)>, usize) {
     use crate::editor::ToastKind;
-    let setters: [(&str, Say); 4] = [
+    let setters: [(&str, Say); 5] = [
         (".set_status(", |ed, s| ed.set_status(s)),
+        // (where the keys are: `set_status`'s, gone once they move — #657)
+        (".say_keys(", |ed, s| ed.say_keys(s)),
         (".set_success(", |ed, s| ed.set_success(s)),
         (".set_warning(", |ed, s| ed.set_warning(s)),
         (".set_error(", |ed, s| ed.set_error(s)),

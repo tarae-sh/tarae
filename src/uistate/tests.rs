@@ -2157,6 +2157,66 @@ fn c_q_says_how_many_presses_reach_each_wait_and_steps_on() {
     assert_eq!(ed.keys_to().region, Region::Chat, "a card alone: its C-q gives the keys back");
 }
 
+/// #657: a notice that says where the keys are goes when they next move — gone in the very frame of the key that moved
+/// them, the toast and the status line alike; a key that leaves them where they are leaves it up. The edit review's `esc`
+/// (`back to the code — …`) then `C-q`; a card's `C-q` toggle (`keys back — …`) then `C-q`; and the reverse, `C-q` on a
+/// card read in its buffer (`the card has the keys — …`) then `esc`.
+#[test]
+fn a_notice_of_where_the_keys_are_goes_when_they_move() {
+    // (each key an event, as the main loop has it, then its frame: what that frame shows)
+    let shown = |ed: &mut Editor, keys: &[&str]| {
+        for k in keys {
+            ed.handle_event(crate::event::Event::Key(key(k)));
+        }
+        frame(ed);
+        let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        let up = |words: &str| {
+            text.contains(words)
+                || ed.toasts.iter().any(|t| t.text.contains(words))
+                || ed.status.as_ref().is_some_and(|s| s.0.contains(words))
+        };
+        (ed.keys_to().region, up("back to the code"), up("keys back"), up("the card has the keys"))
+    };
+    // The edit review: `esc` says where the keys went; a key in the code leaves it; `C-q` back into it takes it away
+    let mut ed = editor();
+    edit_review(&mut ed);
+    ed.workspace.viewer.keys_to_code();
+    frame(&mut ed);
+    assert_eq!(shown(&mut ed, &["<C-q>"]).0, Region::EditReview);
+    assert_eq!(shown(&mut ed, &["<esc>"]), (Region::Code, true, false, false), "esc: said");
+    assert_eq!(shown(&mut ed, &["j"]), (Region::Code, true, false, false), "the keys unmoved: still up");
+    assert_eq!(shown(&mut ed, &["<C-q>"]), (Region::EditReview, false, false, false), "C-q: gone at once");
+    // A card alone: its `C-q` toggle says the keys are back; `C-q` into it again takes that away
+    let mut ed = editor();
+    ed.workspace.viewer.keys_to_code();
+    light_card(&mut ed);
+    frame(&mut ed);
+    let card = Region::Card(ed.offers[0].id);
+    assert_eq!(shown(&mut ed, &["<C-q>"]).0, card);
+    assert_eq!(shown(&mut ed, &["<C-q>"]), (Region::Code, false, true, false), "the toggle: said");
+    assert_eq!(shown(&mut ed, &["<C-q>"]), (card, false, false, false), "C-q: gone at once");
+    // The reverse: a tall card's text read in its buffer (`snapshot_card_reading_bar`'s), `C-q` says the card has the
+    // keys; `esc` gives them back and it goes
+    let mut ed = editor();
+    ed.offer_popups = true;
+    ed.workspace.viewer.keys_to_code();
+    let script: String = (1..=60).map(|i| format!("echo step {i}\n")).collect();
+    let what = What::Install {
+        tool: "script".into(),
+        run: vec!["true".into()],
+        cwd: std::env::temp_dir(),
+        then: crate::install::Then::Lsp,
+    };
+    ed.push_offer(Offer::new("Claude wants to run a script".into(), &script, "", String::new(), what));
+    frame(&mut ed);
+    let card = Region::Card(ed.offers[0].id);
+    let reading = shown(&mut ed, &["<C-q>", "v"]);
+    assert!(ed.offer_reading(), "v opened its text: {reading:?}");
+    assert_eq!(shown(&mut ed, &["<C-q>"]), (card, false, false, true), "C-q while reading: said");
+    assert_eq!(shown(&mut ed, &["<esc>"]), (Region::Code, false, false, false), "esc: gone at once");
+    assert!(ed.keys_said.is_none(), "nothing left watching");
+}
+
 /// #544: `C-w w`'s round takes what waits in the order `C-q` does (`in_line`): from the chat (the last pane), the one
 /// that has waited longest, then the other, then on round to the code — the review a stop with a card waiting too.
 #[test]

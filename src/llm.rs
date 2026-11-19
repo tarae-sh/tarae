@@ -1107,7 +1107,7 @@ pub fn review_let_go(ed: &mut Editor) -> Option<bool> {
 fn review_back(ed: &mut Editor) -> bool {
     let to = if review_let_go(ed) == Some(true) { "chat" } else { "code" };
     let key = ed.way_in(crate::inbox::Waiting::Review).unwrap_or_else(|| ed.key_said("C-q"));
-    ed.set_status(format!("back to the {to} — the change waits unanswered, {key} answers it"));
+    ed.say_keys(format!("back to the {to} — the change waits unanswered, {key} answers it"));
     true
 }
 

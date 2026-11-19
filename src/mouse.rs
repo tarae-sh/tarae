@@ -1002,7 +1002,7 @@ pub fn let_go(ed: &mut Editor, u: Under) {
     ed.card_focus = None;
     if u.surface != Surface::Toast && !matches!(u.part, Part::Word(Word::Session(_))) {
         let key = ed.key_said("C-q");
-        ed.set_status(format!("keys back — the card waits, {key} answers it"));
+        ed.say_keys(format!("keys back — the card waits, {key} answers it"));
     }
 }
 

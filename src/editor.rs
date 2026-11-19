@@ -193,6 +193,9 @@ pub(crate) const NAME_DOCKED: &str =
 pub(crate) const NAME_ZOOMED: &str =
     "it fills the screen — C-w z gives it its place back, then its line sizes it";
 
+/// Where the keys are, as a notice of it is judged (`Editor::keys_said`): the region they go to and the docked pane.
+pub(crate) type KeysAt = (crate::uistate::Region, Option<crate::split::PaneId>);
+
 /// The longest a step's toast stays up without its end being said.
 const STEP_MAX: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -1048,6 +1051,9 @@ pub struct Editor {
     /// once), off where a test or simulation is about the worker's path.
     pub read_inline: bool,
     pub status: Option<(String, Severity)>,
+    /// The notice up that says where the keys are (`say_keys`): its toast's id, and the place the event that said it
+    /// left the keys in (`None` until that event ends) — it goes once they're elsewhere (`keys_said_sync`, #657).
+    pub(crate) keys_said: Option<(u64, Option<KeysAt>)>,
     pub should_quit: bool,
     /// Text area (rows, cols) — the terminal updates it every frame. Used by page motions.
     pub viewport: (usize, usize),
@@ -1663,6 +1669,7 @@ impl Editor {
             colouring: None,
             read_inline: cfg!(test),
             status: None,
+            keys_said: None,
             should_quit: false,
             viewport: (24, 80),
             last_motion: None,
@@ -3169,6 +3176,47 @@ impl Editor {
         });
     }
 
+    /// Words that say where the keys are (`keys back — the card waits, C-q answers it`): a toast as `set_status`'s,
+    /// that goes when the keys next move (#657: it said the code while the card had them). A notice of this kind still
+    /// up goes first — the new place's words replace it.
+    pub(crate) fn say_keys(&mut self, msg: impl Into<String>) {
+        self.keys_said_drop();
+        // (`set_status`'s own: the toast walk reads its words at `say_keys`' calls)
+        self.report(ToastKind::Info, msg.into());
+        self.keys_said = Some((self.said, None));
+    }
+
+    /// Every event: the notice of where the keys are (`say_keys`) learns where the event that said it left them, then
+    /// goes once they're elsewhere — dropped, not replaced: where they went says itself (its lit frame, the mode's
+    /// name), and a move that has words of its own says them with `say_keys`.
+    fn keys_said_sync(&mut self) {
+        let Some((id, at)) = self.keys_said else { return };
+        // (its time over, or gone with its card: nothing to watch)
+        if !self.toasts.iter().any(|t| t.id == id) {
+            self.keys_said = None;
+            return;
+        }
+        let now = (self.keys_region(), self.at_pane());
+        match at {
+            None => self.keys_said = Some((id, Some(now))),
+            Some(was) if was == now => {}
+            Some(_) => {
+                self.keys_said_drop();
+                self.unchanged = false;
+            }
+        }
+    }
+
+    /// The notice of where the keys are goes: its toast, and the status line's copy of it.
+    fn keys_said_drop(&mut self) {
+        let Some((id, _)) = self.keys_said.take() else { return };
+        let Some(at) = self.toasts.iter().position(|t| t.id == id) else { return };
+        let gone = self.toasts.remove(at);
+        if self.status.as_ref().is_some_and(|s| s.0 == gone.text) {
+            self.status = None;
+        }
+    }
+
     /// Record only, no toast — `status` is never drawn. Only for what the screen shows already (the
     /// diagnostic at the cursor, the selections just made); anything else the user has to see is a toast.
     pub fn note(&mut self, msg: impl Into<String>) {
@@ -3652,6 +3700,8 @@ impl Editor {
         crate::now::sync(self);
         self.bring_queue_sync();
         self.plugin_front();
+        // (where the keys are, said: gone once they moved — after every sync that can move them)
+        self.keys_said_sync();
         self.schedule_tick();
         #[cfg(test)]
         if let Some(step) = AFTER_EVENT.get() {
@@ -4639,7 +4689,7 @@ impl Editor {
             _ if !has && self.offers.first().is_some_and(|o| !o.installing()) => {
                 self.card_focus_front();
                 self.card_pressed = self.offers.first().map(|o| (o.id, crate::clock::now()));
-                self.set_status("the card has the keys — its answers answer it, esc gives them back");
+                self.say_keys("the card has the keys — its answers answer it, esc gives them back");
             }
             _ => {}
         }
@@ -6346,7 +6396,7 @@ impl Editor {
             if self.offer_reading() {
                 self.card_focus_front();
                 self.pending.clear();
-                self.set_status(match has {
+                self.say_keys(match has {
                     true => "the card has the keys — esc gives them back",
                     false => "the card has the keys — its answers answer it, esc gives them back",
                 });
@@ -6357,10 +6407,7 @@ impl Editor {
             if has {
                 if !self.c_q_step() {
                     self.card_focus = None;
-                    self.set_status(format!(
-                        "keys back — the card waits, {} answers it",
-                        self.key_said("C-q")
-                    ));
+                    self.say_keys(format!("keys back — the card waits, {} answers it", self.key_said("C-q")));
                 }
                 return true;
             }
