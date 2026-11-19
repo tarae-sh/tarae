@@ -564,9 +564,15 @@ fn kept_home(name: &str) -> (crate::scratch::Scratch, PathBuf) {
     (s, home)
 }
 
-/// What `kept_named` says of `cmd` run from `home/p`.
+/// What `kept_named` says of `cmd` run from `home/p`, on the system tests run on.
 fn kept_of(cmd: &str, home: &Path) -> Vec<String> {
-    kept_named(cmd, &home.join("p"), home, &crate::sandbox::Here::default())
+    kept_on(crate::sandbox::Os::HOST, cmd, home)
+}
+
+/// What `kept_named` says of `cmd` run from `home/p` on `os` — each system's kept places are made on any (#635:
+/// `Here::default()`'s system is the Mac, so a Linux run asked the Mac's).
+fn kept_on(os: crate::sandbox::Os, cmd: &str, home: &Path) -> Vec<String> {
+    kept_named(cmd, &home.join("p"), home, &crate::sandbox::Here { os, ..crate::sandbox::Here::default() })
 }
 
 /// The kept-rows landing's condition 2: one reader of paths — `~` and `~/…`, `$HOME` and `${HOME}`, an absolute
@@ -614,18 +620,27 @@ fn an_outside_command_naming_a_kept_place_is_said_by_place_and_whose() {
 /// Whose a kept place is, said truthfully (`whose_kept`, the design session's review): a pack's `kept` cache (Go's
 /// build cache, uv's) and the floor's daemons' registry (`~/.gradle/daemon`) are a toolchain's own place, not
 /// where keys are; cargo's credentials at its default home (`KEPT_FLOOR_KEYS`) and `SECRETS`' places are. Every
-/// `KEPT_FLOOR_KEYS` is the floor's. A scratch home. Breaks if every kept place that isn't an agent's or tarae's is
-/// said to hold keys.
+/// `KEPT_FLOOR_KEYS` is the floor's. Each system's, on any (Go's build cache is in `~/Library/Caches` on the Mac,
+/// `~/.cache` on Linux — `sandbox_policy.txt`'s `reads.kept`). A scratch home. Breaks if every kept place that isn't
+/// an agent's or tarae's is said to hold keys, or if a system's places are looked up as another's (#635).
 #[test]
 fn a_kept_place_is_said_by_its_kind() {
+    use crate::sandbox::Os;
     let (_s, home) = kept_home("cardwarn-kept-kinds");
-    let cache = if cfg!(target_os = "macos") { "Library/Caches" } else { ".cache" };
-    let toolchains = [format!("~/{cache}/go-build"), "~/.gradle/daemon".into(), "~/.kotlin/daemon".into()];
-    for t in &toolchains {
-        assert_eq!(kept_of(&format!("ls {t}/x"), &home), vec![format!("{t} (a toolchain's own place)")]);
-    }
-    for k in ["~/.cargo/credentials.toml", "~/.ssh", "~/.config/gh"] {
-        assert_eq!(kept_of(&format!("cat {k}"), &home), vec![format!("{k} (where keys are)")]);
+    for (os, cache) in [(Os::Mac, "Library/Caches"), (Os::Linux, ".cache")] {
+        let toolchains =
+            [format!("~/{cache}/go-build"), "~/.gradle/daemon".into(), "~/.kotlin/daemon".into()];
+        for t in &toolchains {
+            let said = kept_on(os, &format!("ls {t}/x"), &home);
+            assert_eq!(said, vec![format!("{t} (a toolchain's own place)")], "{os:?}");
+        }
+        for k in ["~/.cargo/credentials.toml", "~/.ssh", "~/.config/gh"] {
+            assert_eq!(
+                kept_on(os, &format!("cat {k}"), &home),
+                vec![format!("{k} (where keys are)")],
+                "{os:?}"
+            );
+        }
     }
     assert!(crate::sandbox::KEPT_FLOOR_KEYS.iter().all(|k| crate::sandbox::KEPT_FLOOR.contains(k)));
 }
