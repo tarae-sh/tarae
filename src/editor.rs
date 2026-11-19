@@ -555,8 +555,9 @@ impl RunRows {
     }
 }
 
-/// A card standing whole: its id, its top row, and the room it stands in (columns from, width, rows from, rows).
-pub type CardTop = (u64, usize, (usize, usize, usize, usize));
+/// A card standing whole: its id, its top row, the room it stands in (columns from, width, rows from, rows), and its
+/// inner width (#632, landing 3: given the keys it keeps the width it stood at).
+pub type CardTop = (u64, usize, (usize, usize, usize, usize), usize);
 
 /// Screen layout of the last frame (term.rs fills it on every draw).
 #[derive(Clone, Debug, Default)]
@@ -618,8 +619,9 @@ pub struct Screen {
     pub offer_way: Option<(usize, usize, usize)>,
     /// The front card as drawn, its back cards' rows too (x, y, width, height) — the UI state's `at`.
     pub offer_card: Option<(usize, usize, usize, usize)>,
-    /// The front card standing whole this frame: its id, its top row and the room it stands in (`term::asks_area`'s) —
-    /// the next frame keeps that top while the same card stands in the same room (#561).
+    /// The front card standing whole this frame: its id, its top row, the room it stands in (`term::asks_area`'s) and
+    /// its inner width — the next frame keeps that top (#561) and no less than that width (#632) while the same card
+    /// stands in the same room.
     pub offer_top: Option<CardTop>,
     /// The cards this frame draws, each whole or as its peek (the front's id first; any session's): what waits in
     /// sight — the status line's `▲N waiting` counts only the rest (polish landing 1).
@@ -10749,7 +10751,7 @@ mod tests {
         let s = screen(&mut ed);
         assert!(s.contains("Claude changes 3 files") && s.contains("replace `old_(\\w+)` → `new_$1`"), "{s}");
         assert!(s.contains("4 matches in 3 files:") && s.contains("src/deep/c.rs  1"), "{s}");
-        let line = "╰─ C-q answer · y Accept · r Each · v See · n Decline ─╯";
+        let line = "╰─ C-q answer · y Accept all · r One by one · v See them · n Decline all ─╯";
         assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "its answers on its bottom line\n{s}");
         settled(&mut ed);
         // `v`: every change, file by file
@@ -11172,8 +11174,8 @@ mod tests {
         crate::term::render(&mut ed, &mut bytes, 140, 40).unwrap();
         let mut parser = vt100::Parser::new(40, 140, 0);
         parser.process(&bytes);
-        // (its answers on its bottom line, the form its width gives — the card as wide as what it reads makes it)
-        let says = "C-q answer · y Once · a Chat · s Session · A Always · n No";
+        // (its answers on its bottom line, whole: the card grows left for them — #632)
+        let says = "C-q answer · y Once · a This chat · s This session · A Always here · n No";
         let s = parser.screen().contents();
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
@@ -13259,9 +13261,8 @@ mod tests {
         // `a`: this conversation — and it runs again now
         feed(&mut ed, "<ret>");
         let s = settled(&mut ed, crate::blocked::GRANT_TITLE);
-        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
-        // wide as the folder it names makes it)
-        let says = "esc back · y Once · a Chat · s Session · A Always · n No";
+        // (its answers on its bottom line, whole: the card wider than the folder it names makes it, for them — #632)
+        let says = "esc back · y Once · a This chat · s This session · A Always here · n No";
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         feed(&mut ed, "a");
         assert!(ed.workspace.claude.chat.as_ref().unwrap().allowed.write.contains(&deep));
@@ -13658,9 +13659,9 @@ mod tests {
             "{q}"
         );
         assert!(s.contains("marker.txt"), "{s}");
-        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
-        // wide as its path makes it, whatever the system's temp folder: #126, `/tmp/…` on Linux)
-        let says = "C-q answer · y Once · a Chat · s Session · A Always · n";
+        // (its answers on its bottom line, whole: the card grows left for them, whatever the system's temp folder its
+        // path names — #126, `/tmp/…` on Linux; #632)
+        let says = "C-q answer · y Once · a This chat · s This session · A Always here · n No";
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         answer(&mut ed, "n");
         let a = answered(&mut ed, "p2");
@@ -20543,10 +20544,13 @@ mod tests {
             parser.screen().contents()
         };
         let s = narrow(&mut ed, 80);
-        // (at its reading width there, 40 — wider than the chat, #177 — the way in, `y once read` and `v Read all`
-        // whole; never `y run` — as wide as its cut row's widest form, `↑ 12 lines above, open but not read to its end`,
-        // so `n No` fits: the card keeps its width as the wheel reads it)
-        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v Read all · n No ─╯", "80 columns:\n{s}");
+        // (wider than its reading width there, 40 — wider than the chat, #177 — for its answers whole, #632: the way
+        // in, `y once it's read` and `v Read it all`; never `y run` — the card keeps its width as the wheel reads it)
+        assert_eq!(
+            line(&ed),
+            "╰─ C-q answer · y once it's read · v Read it all · n No ─╯",
+            "80 columns:\n{s}"
+        );
         let plain = cut_color(&mut ed);
         let y_at = |ed: &Editor| ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').map(|b| (b.0, b.1));
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
@@ -20646,7 +20650,7 @@ mod tests {
         assert!(s.contains("more lines, not read yet"), "{s}");
         assert_eq!(
             crate::term::card_line(&ed).as_deref(),
-            Some("╰─ C-q answer · y once read · v Read all · n Hold back ─╯"),
+            Some("╰─ C-q answer · y once it's read · v Read it all · n Hold back ─╯"),
             "{s}"
         );
         assert!(!s.contains("y Trust"), "{s}");

@@ -15,19 +15,19 @@
 12  12 }
 13  13
 14  14 fn main() {
-15  15     let text = "the quick brown fox jumps╭─ End fix-login? ───────────────────────────────────╮
-16  16     let counts = word_counts(text);      │ 2 commits not in main:                             │
-17  17     println!("{} distinct words", counts.│   a1b2c3d Parse hours too                          │
-18  18 }                                        │   9f8e7d6 Say the hours in the summary             │
-19                                              │ A squash merge on a forge looks unmerged here.     │
-20                                              │                                                    │
-21                                              │ Not kept (over 64 MB) — goes with the checkout:    │
-22                                              │   .sb        2400 files, 310 MB                    │
-23                                              │   CLAUDE.md  differs from main's                   │
-24                                              │                                                    │
-25                                              │ Removing both deletes fix-login too — its commits  │
-26                                              │ are on other branches.                             │
-27                                              ╰─ C-q answer · y Remove · D Both · n Cancel ────────╯
+15  15     let text = "the quick brown ╭─ End fix-login? ────────────────────────────────────────────╮
+16  16     let counts = word_counts(tex│ 2 commits not in main:                                      │
+17  17     println!("{} distinct words"│   a1b2c3d Parse hours too                                   │
+18  18 }                               │   9f8e7d6 Say the hours in the summary                      │
+19                                     │ A squash merge on a forge looks unmerged here.              │
+20                                     │                                                             │
+21                                     │ Not kept (over 64 MB) — goes with the checkout:             │
+22                                     │   .sb        2400 files, 310 MB                             │
+23                                     │   CLAUDE.md  differs from main's                            │
+24                                     │                                                             │
+25                                     │ Removing both deletes fix-login too — its commits are on    │
+26                                     │ other branches.                                             │
+27                                     ╰─ C-q answer · y Remove checkout · D Remove both · n Cancel ─╯
 28
 29  ● normal                                                                               rust   1:1
 ## bg · surface per cell, blank = ui.background
@@ -77,19 +77,19 @@
 12  ff
 13  ff
 14  ff
-15  ff                gggg ggggg ggggg ggg gggggff TTT TTTTTTTTTT ffffffffffffffffffffffffffffffffffff
-16  ff                                          f                                                    f
-17  ff              ggg gggggggg gggggg         f                                                    f
-18  ff                                          f                                                    f
-19                                              f d dddddd ddddd dd d ddddd ddddd dddddddd ddddd     f
-20                                              f                                                    f
-21                                              f www wwww wwwww ww www w wwww wwww www wwwwwwwww    f
-22                                              f   www        wwww wwwwww www ww                    f
-23                                              f   wwwwwwwww  wwwwwww wwww wwwwww                   f
-24                                              f                                                    f
-25                                              f dddddddd dddd ddddddd ddddddddd ddd d ddd ddddddd  f
-26                                              f ddd dd ddddd ddddddddd                             f
-27                                              ff FFF ffffff f F ffffff f F ffff f F ffffff fffffffff
+15  ff                gggg ggggg ggggg ff TTT TTTTTTTTTT fffffffffffffffffffffffffffffffffffffffffffff
+16  ff                                 f                                                             f
+17  ff              ggg gggggggg ggggggf                                                             f
+18  ff                                 f                                                             f
+19                                     f d dddddd ddddd dd d ddddd ddddd dddddddd ddddd              f
+20                                     f                                                             f
+21                                     f www wwww wwwww ww www w wwww wwww www wwwwwwwww             f
+22                                     f   www        wwww wwwwww www ww                             f
+23                                     f   wwwwwwwww  wwwwwww wwww wwwwww                            f
+24                                     f                                                             f
+25                                     f dddddddd dddd ddddddd ddddddddd ddd d ddd ddddddd ddd dd    f
+26                                     f ddddd ddddddddd                                             f
+27                                     ff FFF ffffff f F ffffff ffffffff f F ffffff ffff f F ffffff ff
 28
 29  a TTTTTT                                                                               dddd   TTT
 ## legend

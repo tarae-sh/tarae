@@ -675,15 +675,17 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
     // (the exact line: `a` and `s` keep their words, `y` says it waits; read whole, `y` its meaning in that form)
     let line = |ed: &Editor| crate::term::card_line(ed).unwrap_or_default();
     assert!(s.contains("more lines, not read yet"), "{s}");
-    assert_eq!(line(&ed), "╰─ C-q answer · y once read · a Chat · s Session · v Details · n ─╯", "{s}");
+    let cut = "╰─ C-q answer · y once it's read · a This chat · s This session · v Details · n No ─╯";
+    assert_eq!(line(&ed), cut, "{s}");
     let waiting = y_at(&ed);
     ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
     let s = draw(&mut ed);
-    assert_eq!(
-        line(&ed),
-        "╰─ C-q answer · y Once · a Chat · s Session · v Details · n ──────╯",
-        "its meaning back: {s}"
+    // (`Once` ten cells shorter than `once it's read`: those cells a run before the corner)
+    let read = format!(
+        "╰─ C-q answer · y Once · a This chat · s This session · v Details · n No {}╯",
+        "─".repeat(11)
     );
+    assert_eq!(line(&ed), read, "its meaning back: {s}");
     assert_eq!(y_at(&ed), waiting, "no narrower once read:\n{s}");
 }
 
@@ -785,9 +787,9 @@ fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     let _ = sent();
     // `y`: the next run's, nothing sent for the run that's over, Claude told
     settled(&mut ed);
-    // (over a chat 48 wide, another card behind it: its line — its way in, what lasts in words — is wider than the
-    // chat, so the card grows left to it; no key in its body)
-    let line = "╰─ C-q answer · y Once · a Chat · s Session · A Always · n ──╯";
+    // (over a chat 48 wide, another card behind it: its line — its way in, its answers whole — is wider than the
+    // chat, so the card grows left to it, the screen's width before they shorten (#632); no key in its body)
+    let line = "╰─ C-q answer · y Once · a This chat · s This session · A Always here · n No ─╯";
     assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line));
     let (bytes, w, h) = ed.last_frame.clone().unwrap();
     let mut p = vt100::Parser::new(h, w, 0);

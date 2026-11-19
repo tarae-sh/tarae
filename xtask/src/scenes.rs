@@ -6281,6 +6281,9 @@ const SCENES: &[Scene] = &[
     // (…and paused with no card up: the turn goes on after the run that made it)
     Scene { name: "words-lsp-mid-nosandbox", claude: "protmademid", files: MAIN, keys: WORDS_LSP[0] },
     Scene { name: "words-host", claude: "refusedhost", files: MAIN, keys: WORDS_HOST },
+    // (#632's landing 3: the host card come on its own while you type in the code — waiting, unfocused, grown left
+    // for its answers whole over the code being typed in)
+    Scene { name: "words-wide-typing", claude: "refusedhost", files: MAIN, keys: WORDS_WIDE_TYPING },
 ];
 
 /// #631's scenes' keys: the chat's question, the run card's `y` (the sandbox off), the pause said.
@@ -6331,6 +6334,30 @@ const WORDS_HOST: &[&str] = &[
     "@1",
     "y",
     "@20?command reach",
+    "@1",
+];
+
+/// #632 landing 3's typing scene: refused-host's keys up to the run's `y`, then the code (`esc`), a line opened under the
+/// first and typed into while the host's card comes on its own, and typed on after it.
+const WORDS_WIDE_TYPING: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "check the upload host",
+    "\r",
+    "@20?It runs curl",
+    "@1",
+    "\x11",
+    "@1",
+    "y",
+    "\x1b",
+    "g",
+    "g",
+    "o",
+    "// the strands kept",
+    "@20?command reach",
+    " whole",
     "@1",
 ];
 

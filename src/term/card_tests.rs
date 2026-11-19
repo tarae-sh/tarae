@@ -67,8 +67,8 @@ type Card = (&'static str, fn(&mut Editor));
 
 /// Every layout the routing scenes use for a card — the chat docked or not × a bottom panel or not — at halil's size
 /// and two others, × a card short, tall (halil's end card), tallest (the nine-file one) and taller than the screen: a card
-/// drawn waiting is drawn the frame after `C-q` gave it the keys, with at least the rows it showed and no more of it
-/// left out; whole while it waited, whole with the keys, its top where it was.
+/// drawn waiting is drawn the frame after `C-q` gave it the keys, with at least the rows it showed, no more of it
+/// left out and no narrower (#632, landing 3); whole while it waited, whole with the keys, its top where it was.
 #[test]
 fn turning_to_a_drawn_card_never_shows_less_of_it() {
     let cards: [Card; 4] = [
@@ -119,7 +119,8 @@ fn turning_to_a_drawn_card_never_shows_less_of_it() {
                     if !ed.card_has_keys() {
                         off.push(format!("{name}: drawn, but the keys aren't its"));
                     }
-                    if now.3 < was.3 || now_cut > was_cut {
+                    // (#632, landing 3: nor narrower — the width it stood at kept)
+                    if now.3 < was.3 || now_cut > was_cut || now.2 < was.2 {
                         off.push(format!(
                             "{name}: {was:?} cut {was_cut} waiting, {now:?} cut {now_cut} with the keys"
                         ));
@@ -199,4 +200,56 @@ fn halils_end_card_stays_put_given_the_keys() {
     frame(&mut ed, size);
     assert!(ed.card_has_keys(), "the keys its own");
     assert_eq!(drawn(&ed), Some((was, 0)), "the same rect, whole");
+}
+
+/// #632, landing 3 (the design session's, on #640's shots): a card given the keys keeps the width it stood at — never
+/// narrower, wider only if what it now shows needs it. The nine-file end card in halil's layout, cut while it waits
+/// over the chat's foot, its cut row setting its width: given the keys it stands whole down to the chat's floor, and
+/// went 5 columns narrower, its answers shortened with it (`h Go to them · n Keep reviewing` to `h Go there · n Keep`).
+/// Its answers whole first (#632), their line is as wide as its cut row; the same card with no high-risk change says
+/// `y End it · n Keep reviewing`, narrower than that row — the width it stood at is what holds it.
+#[test]
+fn the_nine_file_end_card_keeps_its_width_given_the_keys() {
+    if crate::sandbox::no_pty_here("term::card_tests::the_nine_file_end_card_keeps_its_width_given_the_keys")
+    {
+        return;
+    }
+    let size = (80, 34);
+    for (high, answers) in [(9, ["h Go to them", "n Keep reviewing"]), (0, ["y End it", "n Keep reviewing"])]
+    {
+        let mut ed = editor();
+        crate::uistate::tests::terminal(&mut ed);
+        frame(&mut ed, size);
+        ed.workspace.set_kept(crate::pane::Shows::Slot, Some(13));
+        chat(&mut ed, "");
+        frame(&mut ed, size);
+        // (with none high-risk, nothing holds its yes; as tall as the nine's: more files listed)
+        let mut o = end_card(9, high);
+        if high == 0 {
+            o.held = None;
+            for i in 1..=6 {
+                o.question.push_str(&format!("\n  src/also{i}.rs"));
+            }
+        }
+        ed.push_offer(o);
+        frame(&mut ed, size);
+        frame(&mut ed, size);
+        let (was, cut) = drawn(&ed).expect("drawn waiting over the chat's foot");
+        assert!(cut > 0, "{high}: cut while it waits: {was:?}");
+        let whole = |line: &str| answers.iter().all(|a| line.contains(&format!(" {a} ")));
+        let line = super::card_line(&ed).unwrap_or_default();
+        assert!(whole(&line), "{high}: its answers whole, waiting: {line}");
+        ed.handle_key("C-q".parse().unwrap());
+        frame(&mut ed, size);
+        assert!(ed.card_has_keys(), "{high}: the keys its own");
+        let (now, cut) = drawn(&ed).expect("drawn with the keys");
+        assert_eq!(cut, 0, "{high}: whole with the keys: {now:?}");
+        assert_eq!(
+            (now.0, now.1, now.2),
+            (was.0, was.1, was.2),
+            "{high}: its top and its sides where they were"
+        );
+        let line = super::card_line(&ed).unwrap_or_default();
+        assert!(whole(&line), "{high}: its answers whole, with the keys: {line}");
+    }
 }

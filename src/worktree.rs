@@ -5256,9 +5256,10 @@ mod tests {
             ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
         // Cut to fit a short screen: `v` is the card's text with the output after it (the review of 42: it was
-        // the card's text alone) — 80 columns (at its own width, #177, 112 hold it whole in 12 rows), the chat out of
-        // sight (over its foot a card with the keys has the room down to its floor — #640 — and stands whole), as few
-        // rows as draw it
+        // the card's text alone) — the chat out of sight (over its foot a card with the keys has the room down to its
+        // floor — #640 — and stands whole), the first size that draws it cut, as few rows as draw it at the widest
+        // that has one: at 80 it grows for its answers whole (#632) and its text, wrapped to that, stands whole in the
+        // fewest rows that draw it
         let chat_hidden = |ed: &mut Editor, hidden: bool| {
             if let Some(c) = ed.workspace.claude.chat.as_mut() {
                 c.hidden = hidden;
@@ -5266,21 +5267,28 @@ mod tests {
         };
         chat_hidden(&mut ed, true);
         let mut out = Vec::new();
-        let rows = (8..=30u16)
-            .find(|&rows| {
+        let sizes = (40..=80u16).rev().flat_map(|cols| (8..=30u16).map(move |rows| (cols, rows)));
+        let (cols, rows) = sizes
+            .into_iter()
+            .find(|&(cols, rows)| {
+                // (each size tried as if the first: drawn whole at a wider one, it'd count as read — by its text too)
                 ed.card_focus = None;
+                ed.offer_whole.set(None);
+                ed.offer_read.borrow_mut().clear();
+                ed.offer_rows_drawn = None;
                 out.clear();
-                crate::term::render(&mut ed, &mut out, 80, rows).unwrap();
+                crate::term::render(&mut ed, &mut out, cols, rows).unwrap();
                 ed.card_focus_front();
                 out.clear();
-                crate::term::render(&mut ed, &mut out, 80, rows).unwrap();
-                ed.screen.offer_card.is_some()
+                crate::term::render(&mut ed, &mut out, cols, rows).unwrap();
+                ed.screen.offer_card.is_some() && !ed.offer_seen_whole()
             })
-            .expect("drawn at some height");
+            .expect("drawn cut at some size");
         let drawn: Vec<char> = ed.screen.offer_buttons.iter().map(|b| b.3).collect();
-        let mut vt = vt100::Parser::new(rows, 80, 0);
+        let mut vt = vt100::Parser::new(rows, cols, 0);
         vt.process(&out);
-        assert!(!ed.offer_seen_whole(), "cut at {rows} rows\n{}", vt.screen().contents());
+        let shown = vt.screen().contents();
+        assert!(shown.contains("more lines"), "cut at {cols}×{rows}\n{shown}");
         chat_hidden(&mut ed, false);
         assert!(drawn.contains(&'v'), "{drawn:?}\n{}", vt.screen().contents());
         feed(&mut ed, "v");

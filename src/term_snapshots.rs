@@ -3782,8 +3782,8 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     // reason — still whole)
     // (16 rows: its answers on its bottom line, not two rows of their own, gave 20 the room for it whole)
     for (how, said, bottom) in [
-        (1, "", "╰─── esc back · y Start · v See · n ─╯"),
-        (2, "not taken", "╰─ C-q answer · y Start · v See · n ─╯"),
+        (1, "", "╰─── esc back · y Start it · v See · n Not now ─╯"),
+        (2, "not taken", "╰─ C-q answer · y Start it · v See · n Not now ─╯"),
     ] {
         let (at, line) = screen_as(60, 16, how);
         assert!(at.contains(said) && !at.contains("more lines"), "{at}");
@@ -3791,7 +3791,7 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     }
     let (narrow, line) = screen_as(60, 16, 0);
     assert!(narrow.contains("Start a board on tarae-demo?"), "{narrow}");
-    assert_eq!(line, "╰─ C-q answer · y Start · v See · n ─╯", "{narrow}");
+    assert_eq!(line, "╰─ C-q answer · y Start it · v See · n Not now ─╯", "{narrow}");
     assert!(!narrow.contains("more lines") && !narrow.contains("Each from its angle"), "{narrow}");
     assert!(narrow.contains("A yes holds for this session"), "what a yes means stays: {narrow}");
     let wide = screen(160, 30);
@@ -8600,8 +8600,9 @@ fn what_takes_the_keys_is_framed_with_its_name() {
 
 /// The user, 2026-10-25: a floating card's keys are always in its bottom line — an ask too wide for its answers whole
 /// says each answer's short words there, in their whole words' case (#632; `main moved`: `y Move · c All · v More ·
-/// n Not now`), never rows of keys inside; where they fit, whole; each answer's button where its key is drawn; focused, `esc back` where its way in
-/// was and the answers where they were.
+/// n Not now`), never rows of keys inside; where the screen has the room for them whole, the card grows for them
+/// (#632, the user's exception to #177's measure); each answer's button where its key is drawn; focused, `esc back`
+/// where its way in was and the answers where they were.
 #[test]
 fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
     let moves = base_moved;
@@ -8616,8 +8617,9 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
         let inside: Vec<String> = rows[y + 1..y + ch - 1].iter().map(|r| at(r)).collect();
         (s, rows.clone(), at(&rows[y + ch - 1]), inside, y + ch - 1)
     };
-    // (at 80 the card's reading width is 40: its last answer its key alone)
-    let short = "╰─ C-q answer · y Move · c All · v More · n ─";
+    // (at 80 its answers whole are wider than the screen: each its short words, the last too — the screen has the room
+    // for its word: never its key alone, #632)
+    let short = "╰─ C-q answer · y Move · c All · v More · n Not now ─";
     let (mut s, rows, bottom, inside, by) = shown(80);
     assert!(bottom.starts_with(short) && bottom.ends_with('╯'), "{bottom:?}");
     assert!(
@@ -8637,16 +8639,15 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
     let rows: Vec<String> = cells(&s.frame(), 80, 30).screen().rows(0, 80).collect();
     let (x, ..) = s.ed.screen.offer_card.unwrap();
     let bottom: String = rows[by].chars().skip(x).collect();
-    assert!(bottom.starts_with("╰─── esc back · y Move · c All · v More · n ─"), "{bottom:?}");
+    assert!(bottom.starts_with("╰─── esc back · y Move · c All · v More · n Not now ─"), "{bottom:?}");
     assert_eq!(s.ed.screen.offer_buttons, buttons, "the answers in place");
-    // At 160 its reading width is 56: every one its short words — the card never wider for them (the user,
-    // 2026-10-25: "answers too wide for it" — for the card, not the screen)
+    // At 160 its reading width is 56, its answers whole wider: the card takes the screen's width for them before they
+    // shorten (#632), their line its bottom line's whole width
     let (s, _, bottom, ..) = shown(160);
-    assert!(bottom.starts_with("╰─ C-q answer · y Move · c All · v More · n Not now ─"), "{bottom:?}");
     let whole =
         "╰─ C-q answer · y Move the clean ones · c Conflicting ones too · v What each does · n Not now ─╯";
-    let card = s.ed.screen.offer_card.unwrap();
-    assert!(card.2 < whole.chars().count(), "never widened for its answers: {card:?}");
+    assert_eq!(bottom, whole, "grown for its answers whole");
+    assert_eq!(s.ed.screen.offer_card.unwrap().2, whole.chars().count());
     // (what keeps its words is its kind's flag on the answer (`Offer::answers_all`): a move onto the base is a rebase
     // that can be taken back — none of `main moved`'s last; an install's `N` never asks again — it does)
     let o = moves(true).card();
@@ -8927,7 +8928,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         ended: false,
     };
     vec![
-        ("end", ending.card(), "╰─ C-q answer · c Commit · R Remove · D Both · n Cancel ───────╯"),
+        ("end", ending.card(), "╰─ C-q answer · c Commit, then end · R Remove · D Remove both · n Cancel ─╯"),
         (
             "bring",
             moved.bring_card(None, true),
@@ -8946,19 +8947,19 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
                 Vec::new(),
                 false,
             ),
-            "╰─ C-q answer · y Once · a Chat · s Session · A Always · n No ──╯",
+            "╰─ C-q answer · y Once · a This chat · s This session · A Always here · n No ─╯",
         ),
         (
             "host",
             crate::hosts::card("Claude", host),
-            "╰─ C-q answer · y Once · a Chat · s Session · v Details · n No ─╯",
+            "╰─ C-q answer · y Once · a This chat · s This session · v Details · n No ─╯",
         ),
     ]
 }
 
 /// R1 step 3's shot question: a card a row taller (the write card with fix 6's words) moves nothing beside or under it
-/// — the chat's rows stay where they were, only the card's own differ — at 120×34 and 80×43 (B1's shorter words
-/// fit 120 as they were: taller at one of them at least, its bottom line where it was at both). With
+/// — the chat's rows stay where they were, only the card's own differ — at 120×34, 80×43 and 72×43 (B1's shorter
+/// words fit 120 as they were: taller at one of them at least, its bottom line where it was at each). With
 /// `TARAE_FRAMES_DIR`, its frames before fix 6 (the words as they were) and after, both themes, for their screenshots
 /// (`r1-write-{before,after}-{w}`).
 #[test]
@@ -8967,7 +8968,8 @@ fn a_taller_card_moves_nothing_beside_it() {
     const SINCE: &str = " but files named like keys";
     crate::clock::hold();
     let mut taller = Vec::new();
-    for (w, h) in [(120u16, 34u16), (80, 43)] {
+    // (72: grown for its answers whole at 80 and 120 — #632 — its text wraps wide enough there that the words add no row)
+    for (w, h) in [(120u16, 34u16), (80, 43), (72, 43)] {
         let shot = |before: bool| {
             let mut s = Shot::new(w, h);
             s.ed.offer_popups = true;

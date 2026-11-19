@@ -14787,7 +14787,8 @@ struct OfferCard {
     /// Stepped aside to a one-row bar while its text is read in its buffer (U8): `lines` = title, how far. Else in
     /// a frame (D3) — its title (`lines[0]`) the frame's name, one cell of padding inside.
     bar: bool,
-    /// Standing whole: its id, its top row and the room it stands in — kept by the next frame (`Screen.offer_top`).
+    /// Standing whole: its id, its top row, the room it stands in and its inner width — kept by the next frame
+    /// (`Screen.offer_top`): that top, and no narrower (#632).
     top: Option<crate::editor::CardTop>,
     /// Rows of `lines` that say why a key of yours was just refused, said in place (`Editor::offer_marked_now`): bold,
     /// the accent's `▎` at their left, a pulse over them where things move.
@@ -15038,8 +15039,10 @@ fn answers_line_w(key: &str, labels: &[(char, String)]) -> usize {
 /// The form of a card's answers (`answer_forms`' index) its bottom line takes within `room` cells. One order for what
 /// the line gives up (the user, 2026-10-25), kept longest first: (1) its way in (`key`, `C-q answer`) — without it
 /// nothing on the card says a key typed now doesn't answer it; (2) what keeps its short words (`answer_forms`: its
-/// yes, `kept`); (3) the other answers' short words, then their keys alone, the last first. Past (3), None: the card
-/// grows left for its narrowest form (`OfferCard::laid`) — no key is ever said in a card's body.
+/// yes, `kept`); (3) the other answers' short words, then their keys alone, the last first. Past (3), None. Its room is
+/// what the card may grow to (`OfferCard::laid_of`, #632): whole words take the card to the screen's width before
+/// they shorten, and a key goes alone only where the screen is narrower than the short line — no key is ever said in a
+/// card's body.
 fn answers_fit(key: &str, forms: &[Vec<(char, String)>], room: usize) -> Option<usize> {
     (0..forms.len()).find(|&f| answers_line_w(key, &forms[f]) <= room)
 }
@@ -15447,15 +15450,14 @@ impl OfferCard {
         // A refused key whose reason it says already — its hold, in its warning lines (`Offer::says_its_hold`): said in
         // place, those lines marked (`marked`), no rows added for it (#561: the design session's, on take 3's end card).
         let in_place = editor.offer_said_now().is_some_and(|s| o.says_its_hold(s));
-        let kept_top = (editor.screen.offer_top)
-            .filter(|t| {
-                !measuring
-                    && t.0 == o.id
-                    && t.2 == area
-                    && editor.offers.first().is_some_and(|f| f.id == o.id)
-            })
-            .map(|t| t.1)
-            .filter(|&y| y > atop && y < floor);
+        let kept = (editor.screen.offer_top).filter(|t| {
+            !measuring && t.0 == o.id && t.2 == area && editor.offers.first().is_some_and(|f| f.id == o.id)
+        });
+        let kept_top = kept.map(|t| t.1).filter(|&y| y > atop && y < floor);
+        // (the width it stood at, the frame before: never narrower while it stands in the same room — #632, the design
+        // session's for landing 3: the nine-file end card went 5 columns narrower as you turned to it, its cut row no
+        // longer setting its width, and its answers shortened with it)
+        let kept_w = kept.map_or(0, |t| t.3);
         // A card covers the chat's input only while the card has the keys (the design session's, on the user's "while
         // you type nothing moves"): standing on the input's rule and without them — the keys in the input, or `esc` to
         // the code, the input there for the next `i` — it keeps its rows, never over the input, never lifted: its room
@@ -15859,14 +15861,17 @@ impl OfferCard {
             Some(t) => inner.max(t.0.width() + 2),
             None => inner,
         };
+        // (no narrower than it stood: its text wraps as it did, the card's sides where they were)
+        let inner = inner.max(kept_w);
         // Its bottom line (the user, 2026-10-25: a floating card's keys are always there, its body only what it says):
-        // its way in first (`C-q answer`), then its answers — whole, else each its short words, else the last ones their
-        // key alone — the first form that fits the card: its text's width, up to its reading width (over the chat, its
-        // width); never wider for them. A card cut short adds `v read it all` (unless an answer of its own is `v`),
-        // and its weighty yes says it waits `once it's read`, in the warning colour once a `y` came early (frictions29
-        // 13). What gives way, in `answers_fit`'s one order: the other answers' words down to their keys — never its
-        // way in, its yes, what lasts (`Offer::lasting`), what a cut yes waits for, nor what lists the cards behind it;
-        // past that the card grows left for its line, and only a screen too narrow for that draws none.
+        // its way in first (`C-q answer`), then its answers. A card cut short adds `v read it all` (unless an answer of
+        // its own is `v`), and its weighty yes says it waits `once it's read`, in the warning colour once a `y` came
+        // early (frictions29 13). One order (the user's exception to #177's measure, 2026-11-19, with the design
+        // session's floor — #632): its answers whole, in its text's width where that has room, else the card grows left
+        // for them as far as the screen allows; else each its short words; else, only where the screen is narrower than
+        // that line, the others' keys alone, the last first — never its way in, its yes, what lasts
+        // (`Offer::lasting`), what a cut yes waits for, nor what lists the cards behind it; only a screen too narrow
+        // even for that draws none. A card is never lost to keep a word.
         let room = fixed.unwrap_or_else(|| inner.max(reading)).saturating_sub(2);
         // (cut, or scrolled to its end: the same card — its yes keeps the form it had, the card its width)
         let read =
@@ -15890,27 +15895,14 @@ impl OfferCard {
             .map(|(i, _)| i)
             .collect();
         let forms = answer_forms(&whole, &short, read, &kept);
-        // (where even its narrowest line doesn't fit, the card grows left by just the cells that line needs — still
+        // (where a form doesn't fit its text's width, the card grows left by just the cells that line needs — still
         // bottom-right, over the code beside the chat or a docked list (the user, 2026-10-25: asks are always
         // bottom-right, never another place by width); the most it may take, its frame's sides and padding with it:
-        // from its corner's column to the screen's left, a cell of air there — else not drawn, the status line saying
-        // the size it needs)
+        // from its corner's column to the screen's left, a cell of air there — so the first form that fits that is the
+        // one, its own width or grown; none: not drawn, the status line saying the size it needs)
         let most_w = right.saturating_sub(1);
         let form = match has_buttons {
-            true => match answers_fit(&way_key, &forms, room) {
-                // (words before blanks — polish landing 4: as its text may run `CARD_SLACK` past its reading width, so
-                // may its bottom line, before an answer but the last goes down to its key alone — the last's words go
-                // first as ever: `main moved` at 80 keeps `v more`, its prose behind that `v`)
-                Some(fit) if fit > 2 && fixed.is_none() => {
-                    let slack = max_inner.max(reading + CARD_SLACK).saturating_sub(2);
-                    answers_fit(&way_key, &forms, slack).map_or(fit, |f| f.clamp(2, fit))
-                }
-                Some(fit) => fit,
-                None => {
-                    let need = answers_line_w(&way_key, forms.last()?);
-                    (need + 2 + 4 <= most_w).then(|| answers_fit(&way_key, &forms, need)).flatten()?
-                }
-            },
+            true => answers_fit(&way_key, &forms, room.max(most_w.saturating_sub(2 + 4)))?,
             false => 0,
         };
         let line_w = if has_buttons { answers_line_w(&way_key, &forms[form]) } else { 0 };
@@ -16050,7 +16042,7 @@ impl OfferCard {
                 cut,
                 seen,
                 bar: false,
-                top: (!measuring && front).then_some((o.id, y, area)),
+                top: (!measuring && front).then_some((o.id, y, area, inner)),
                 marked,
             },
             grown,
@@ -27094,14 +27086,16 @@ mod tests {
         );
     }
 
-    /// #488: a card's yes keeps its word on its bottom line however narrow, every answer a whole pair, in order.
+    /// #488: a card's yes keeps its word on its bottom line however narrow, every answer a whole pair, in order; #632:
+    /// a key alone only where the screen is narrower than its short line.
     #[test]
     fn a_cards_yes_keeps_its_word_on_its_bottom_line() {
         use crate::offer::{Offer, What};
         // #488: the cards whose `y` stands beside answers that may fold — the grant Claude's `also` raises (R1's
         // `also-read`: `y once` beside the lasting `a chat · s session · A always`), a host's, a change set's, a
-        // restart's (its yes lasts) — at 80×43 and 120×34, over the code and over the chat's foot, waiting and focused:
-        // `y` always with its words, every answer whole (its words, its short words, or its key alone), never cut
+        // restart's (its yes lasts) — at 50, 72 and 80×43 and 120×34, over the code and over the chat's foot, waiting
+        // and focused: `y` always with its words, every answer whole (its words, its short words, or — only narrower
+        // than its short line, #632 — its key alone), never cut
         let scratch = crate::scratch::Scratch::new("card-yes");
         let base = scratch.to_path_buf();
         let grant = |g: crate::allow::Grant| {
@@ -27132,9 +27126,9 @@ mod tests {
                 Offer::new("Restart into the same build?".into(), q, "", String::new(), what)
             }
         };
-        let mut bare = 0;
+        let (mut shortened, mut bare) = (0, 0);
         for name in ["a folder's grant", "a host's grant", "a change set", "a restart"] {
-            for (cols, rows) in [(80u16, 43u16), (120, 34)] {
+            for (cols, rows) in [(50u16, 43u16), (72, 43), (80, 43), (120, 34)] {
                 for (chat, focused) in [(false, false), (true, false), (true, true)] {
                     let at = format!("{name} at {cols}×{rows}, the chat {chat}, focused {focused}");
                     let mut ed = Editor::new(Config::default());
@@ -27148,7 +27142,11 @@ mod tests {
                         ed.handle_key("C-q".parse().unwrap());
                         render(&mut ed, &mut Vec::new(), cols, rows).unwrap();
                     }
-                    let line = card_line(&ed).unwrap_or_else(|| panic!("{at}: no card drawn"));
+                    // (at 50 a card whose narrowest line is wider isn't drawn: the narrow tests say what it needs)
+                    let Some(line) = card_line(&ed) else {
+                        assert!(cols < 72, "{at}: no card drawn");
+                        continue;
+                    };
                     let o = &ed.offers[0];
                     let (whole, short) = (o.answers(false), o.answers_short(false));
                     let said = line.trim_start_matches(['╰', '─', ' ']).trim_end_matches(['╯', '─', ' ']);
@@ -27168,6 +27166,13 @@ mod tests {
                         let fits = words.is_empty() || words == w.1 || words == s.1;
                         assert!(fits, "{at}: `{p}` isn't a whole pair: {line}");
                         assert!(k != 'y' || !words.is_empty(), "{at}: `y` without its word: {line}");
+                        // (#632, the design session's floor: a key alone only where the screen is narrower than the
+                        // short line — from 72 columns up these cards' short lines fit)
+                        assert!(
+                            cols < 72 || !words.is_empty(),
+                            "{at}: `{k}` alone with the room for its word: {line}"
+                        );
+                        shortened += usize::from(!words.is_empty() && words != w.1);
                         bare += usize::from(words.is_empty());
                         keys.push(k);
                     }
@@ -27176,8 +27181,11 @@ mod tests {
                 }
             }
         }
-        // (the walk meets a fold: some answer somewhere went down to its key)
-        assert!(bare > 0, "no card folded its foot: the walk proves nothing");
+        // (the walk meets each fold: some answer somewhere took its short words, and — at 50 — went down to its key)
+        assert!(
+            shortened > 0 && bare > 0,
+            "no card folded its foot ({shortened}, {bare}): the walk proves nothing"
+        );
     }
 
     /// #201: a weighty card fits itself to a narrow screen — its answers on its bottom line, whole, else their short

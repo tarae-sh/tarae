@@ -245,23 +245,25 @@ reach it in turn all the same.
 
 A card is as wide as what it says needs — its text wrapped to half the screen (30 to 56 cells), its title, its bottom
 line — whether the chat is open or not: over the chat's foot a short ask is narrower than the chat, a long one
-reaches left over the code, its corner bottom-right either way.
+reaches left over the code, its corner bottom-right either way. Given the keys, a card keeps the width it stood at:
+never narrower, wider only if what it now shows needs it.
 
-A card's keys are always on its bottom line, never in its body. Where they don't all fit there whole, the line gives
-up what matters least first, in one order. Kept longest:
+A card's keys are always on its bottom line, never in its body, after its way in, `C-q answer` (inside zellij its
+twin, `F2 answer`) — without it nothing on the card says your keys don't answer it. One order, the first that fits:
 
-1. its way in, `C-q answer` (inside zellij its twin, `F2 answer`) — without it nothing on the card says your keys
-   don't answer it;
-2. its yes, `y`, in its short words (`y Once`, `y Move`) — the answer you read the card for is never a bare letter —,
-   and answers that last or can't be taken back, in theirs — each card kind marks them on its answers
-   (`y Remove checkout`, `y Commit`, `y Stop it`, `y Bring`, a trust, a capital such as `N` never or `D` remove both,
-   the `a`/`s` grants), and a cut card's `y once read` and `v Read all`;
-3. the other answers' short words, in the case of their whole ones (`y Move · c All · v Files · n Not now`), then
-   their keys alone, the last first.
+1. its answers whole (`y Once · a This chat · s This session · n No`), in its text's width where that leaves room;
+2. else the card grows left over the code for them whole, as far as the screen allows (on an 80-column screen up to
+   79 cells);
+3. else each answer its short words, in the case of its whole ones (`y Move · c All · v More · n Not now`), the card
+   as wide as that line needs;
+4. only on a screen narrower than that line, the other answers' keys alone, the last first — never its yes (the
+   answer you read the card for), answers that last or can't be taken back (each card kind marks them on its
+   answers: `y Remove checkout`, `y Commit`, `y Stop it`, a trust, a capital such as `N` never or `D` remove both, the
+   `a`/`s` grants), nor a cut card's `y once read` and `v Read all`.
 
-Past that, the card grows left over the code by just the cells its line needs, its corner where it was —
-bottom-right, over the chat's foot or a docked list's, or above the status line: asks never go anywhere else. Only a
-screen too narrow even for that draws no card; the status line says the width it needs (`▲1 waiting · card needs N
+Whichever it takes, the card grows left, its corner where it was — bottom-right, over the chat's foot or a docked
+list's, or above the status line: asks never go anywhere else. A card is never lost to keep a word: only a
+screen too narrow even for step 4 draws no card; the status line says the width it needs (`▲1 waiting · card needs N
 cols`). `C-q` still gives such a card the keys, but nothing answers a card nobody can see: every key is refused,
 said on the status line (`y not taken — no room on screen for the card, the window needs to be wider`); `esc` gives
 the keys back.
@@ -279,8 +281,8 @@ before that (a repeat) is refused and said on it, never an answer to a card not 
 the stack's: a one-row peek each under it, this session's first, then other sessions' named in their colours — the
 card and three peeks at most. A card that came on its own never covers a pane you opened (a floating list, the
 floating chat): it folds to its peeks at the screen's foot, `C-q` standing it whole. A card cut
-short says how much and whether it's read (`↓ 45 more lines, not read yet`); its bottom line has `v Read all`, and
-a yes that waits for it says `y once read` until it is.
+short says how much and whether it's read (`↓ 45 more lines, not read yet`); its bottom line has `v Read it all`, and
+a yes that waits for it says `y once it's read` until it is (`v Read all`, `y once read` in the short words).
 
 Claude's calls made at once can stack cards asking for the very same run — the same command, character for
 character, in the same folder, showing the same. The card in front lists those behind it — `+1 more like it: card#53 — same command, unchanged`
