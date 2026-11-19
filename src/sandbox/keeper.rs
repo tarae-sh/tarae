@@ -3943,10 +3943,13 @@ mod tests {
     }
 
     /// A keeper a test asked for (`ready`) and never ended ends with the test (`used_by_this_test`): its process
-    /// gone and its descriptors let go before the next test, not at the test binary's end (#643: 91 of them, ~640
+    /// gone and its descriptors let go by the next test, not at the test binary's end (#643: 91 of them, ~640
     /// descriptors, past a Raspberry Pi's 1024). In a process of its own, one test after the other, each asking and
     /// returning — the first only to open what's opened once for the process (the proxy, the log) — then a third
-    /// finds no keeper there and every descriptor the second had back.
+    /// finds no keeper there and every descriptor the second had back. Each count is taken once the ends before it
+    /// are done on every thread that carries one (`ends_carried`) — the test's end waits for the keeper gone, not
+    /// for its threads and the proxy to let go of what they hold (#655: one descriptor more, under a whole run's
+    /// load).
     #[test]
     fn a_keeper_a_test_asked_for_ends_with_the_test() {
         let scenes = ["left_scene_1_asks", "left_scene_2_asks", "left_scene_3_looks"];
@@ -3963,8 +3966,42 @@ mod tests {
         let fds = |s: &str| s.split("fds=").nth(1).and_then(|n| n.parse::<usize>().ok()).unwrap();
         assert!(said[1].starts_with("asked "), "{text}");
         assert!(said[2].starts_with("keepers=0 "), "the keepers ended with their tests: {text}\n{err}");
+        assert!(!text.contains("still ending: "), "the keepers' ends done on every thread: {text}");
         let (before, after) = (fds(said[1]), fds(said[2]));
         assert!(after <= before, "its descriptors let go: {before} before it was asked for, {after} after");
+    }
+
+    /// The threads of this process carrying a keeper's end, by name: its reader and its wait (`tarae-keeper`,
+    /// `tarae-kwait` — each holds the keeper, its channel, pidfd and device places, until it ends), one ending it
+    /// (`tarae-kend`), and a session port's accept loop (`tarae-proxy-port`, cut to Linux's 15 bytes: it holds the
+    /// port's listener and its stop until the proxy, hearing `SessionPortGone`, lets the stop go). Waited for until
+    /// none is there, `PATIENCE` at most: those still there then.
+    fn ends_carried() -> Vec<String> {
+        const CARRY: [&str; 4] = ["tarae-keeper", "tarae-kwait", "tarae-kend", "tarae-proxy-por"];
+        let there = || -> Vec<String> {
+            let tasks = std::fs::read_dir("/proc/self/task").unwrap().flatten();
+            let names = tasks.filter_map(|t| std::fs::read_to_string(t.path().join("comm")).ok());
+            names.map(|n| n.trim_end().to_string()).filter(|n| CARRY.contains(&n.as_str())).collect()
+        };
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        loop {
+            let carrying = there();
+            if carrying.is_empty() || Instant::now() >= end {
+                return carrying;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// This process's descriptors, once the keepers' ends before are done (`ends_carried`): `fds=N`, and what
+    /// still carried one past the patience.
+    fn fds_after_the_ends() -> String {
+        let carrying = ends_carried();
+        let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
+        match carrying.is_empty() {
+            true => format!("fds={fds}"),
+            false => format!("still ending: {} fds={fds}", carrying.join(" ")),
+        }
     }
 
     /// `a_keeper_a_test_asked_for_ends_with_the_test`'s tests: a session's keeper asked for, never ended — and
@@ -3973,10 +4010,10 @@ mod tests {
         if std::env::var_os(SCENE).is_none() {
             return;
         }
-        let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
+        let fds = fds_after_the_ends();
         let root = std::env::temp_dir().join(format!("tarae-keeper-left-{}-{n}", std::process::id()));
         let k = ready(&root, Some("a key"), ns()).unwrap();
-        println!("scene: asked pid={} fds={fds}", k.pid);
+        println!("scene: asked pid={} {fds}", k.pid);
     }
 
     #[test]
@@ -3999,8 +4036,7 @@ mod tests {
             return;
         }
         let there = of(None).iter().filter(|k| !k.is_gone()).count();
-        let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
-        println!("scene: keepers={there} fds={fds}");
+        println!("scene: keepers={there} {}", fds_after_the_ends());
     }
 
     /// `:procs` names each session's keeper (CLAUDE.md: a new kind of child process gets a line there).

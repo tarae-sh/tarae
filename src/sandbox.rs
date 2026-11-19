@@ -16915,10 +16915,9 @@ mod tests {
         }
     }
 
-    /// Where #633's Linux tests make their stand-ins: beside the build folder (where
-    /// `a_kept_place_outside_home_is_closed`'s are), or the project's `target` where that isn't writable — no temp
-    /// folder, which is a write place of every run already.
-    #[cfg(not(target_os = "macos"))]
+    /// Where #633's tests and `every_rows_place_is_kept_from_runs` make their stand-ins: beside the build folder
+    /// (where `a_kept_place_outside_home_is_closed`'s are), or the project's `target` where that isn't writable — a
+    /// binary in `/usr/local/bin` run as a user (#656) — no temp folder, which is a write place of every run already.
     fn beside_the_build() -> PathBuf {
         let exe = std::env::current_exe().unwrap();
         let beside = exe.parent().and_then(Path::parent).expect("the build folder");
@@ -17464,10 +17463,7 @@ mod tests {
         if !keys_tested_here(test) {
             return;
         }
-        let exe = std::env::current_exe().unwrap();
-        let beside = exe.parent().and_then(Path::parent).expect("the build folder").to_path_buf();
-        std::fs::create_dir_all(&beside).unwrap();
-        let s = crate::scratch::Scratch::in_dir(&beside, "sb-rows-kept");
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-rows-kept");
         let t = profile_path(&s);
         let (home, root) = (t.join("home"), t.join("home/project"));
         let vars = vars_in(&home, &Here::default());
