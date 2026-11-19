@@ -20,9 +20,9 @@ fn found(slot: Slot, run: u64, pid: u32, quiet: Duration, reach: Option<crate::s
     Stuck { slot, run, pid, asked: Instant::now(), quiet, cpu: 0.0, at: 0, reach, quiet_there: false }
 }
 
-/// #181: a run is stuck once it has printed nothing *and* used next to no CPU for the setting's minutes —
-/// asked once, again only after as long again; never while it says what it waits on, nor with the setting
-/// at 0. Working (a look over `IDLE_PCT`) starts its idle time over.
+/// #181: a run is stuck once it has printed nothing *and* used next to no CPU, on average, over the setting's
+/// minutes — asked once, again only after as long again; never while it says what it waits on, nor with the setting
+/// at 0. Work in those minutes holds it until it's out of them (#641: judged over them, not look by look).
 #[test]
 fn quiet_and_idle_for_its_minutes_is_stuck() {
     let t0 = Instant::now();
@@ -30,25 +30,147 @@ fn quiet_and_idle_for_its_minutes_is_stuck() {
     let after = 10 * MIN;
     let mut w = Waiting::default();
     assert_eq!(w.stuck_for(t0, at(30), after), None, "never looked at: not known to be idle");
-    w.looked(0.4, at(0));
-    assert_eq!(w.idle, Some(at(0)));
-    w.looked(0.0, at(5));
-    assert_eq!(w.idle, Some(at(0)), "idle since the first idle look");
-    assert_eq!(w.stuck_for(t0, at(9), after), None, "9 minutes");
+    w.looked(0.4, at(0), after);
+    w.looked(0.0, at(5), after);
+    assert_eq!(w.stuck_for(t0, at(9), after), None, "looked at for 9 minutes");
     assert_eq!(w.stuck_for(t0, at(12), after), Some(12 * MIN));
     assert_eq!(w.stuck_for(at(4), at(12), after), None, "it printed 8 minutes ago");
     assert_eq!(w.stuck_for(t0, at(12), Duration::ZERO), None, "0 = never");
-    // Working starts it over
-    w.looked(35.0, at(12));
-    assert_eq!((w.idle, w.cpu), (None, Some(35.0)));
+    // Working: 35% of a core over the 7 minutes up to this look
+    w.looked(35.0, at(12), after);
+    assert_eq!(w.cpu, Some(35.0));
     assert_eq!(w.stuck_for(t0, at(13), after), None);
-    w.looked(0.2, at(13));
-    assert_eq!(w.stuck_for(t0, at(22), after), None, "idle 9 minutes only");
-    assert_eq!(w.stuck_for(t0, at(23), after), Some(23 * MIN));
+    w.looked(0.2, at(13), after);
+    assert_eq!(w.stuck_for(t0, at(21), after), None, "a minute of that work still in its last 10");
+    assert_eq!(w.cpu_over(after, at(21)).map(|c| (c * 100.0).round()), Some(368.0), "(35 + 9 × 0.2) / 10");
+    assert_eq!(w.stuck_for(t0, at(22), after), Some(22 * MIN));
     // Asked: not again until as long again
-    w.stuck_asked = Some(at(23));
-    assert_eq!(w.stuck_for(t0, at(30), after), None);
-    assert_eq!(w.stuck_for(t0, at(33), after), Some(33 * MIN));
+    w.stuck_asked = Some(at(22));
+    assert_eq!(w.stuck_for(t0, at(31), after), None);
+    assert_eq!(w.stuck_for(t0, at(32), after), Some(32 * MIN));
+}
+
+/// #641 A's stand-in's looks, recorded (`a_parent_polling_by_hand`, `bursts`, this Mac, 2026-11-19): a parent waking
+/// five times a second for about a millisecond, now and then a step of 30–90 ms, over a sleeping child — its tree's
+/// share of a core each 30 s look, as (ms since the look before, %). 0.58 % on average, two looks over 1 %.
+const RECORDED: &[(u64, f32)] = &[
+    (30235, 0.40),
+    (30213, 0.40),
+    (30281, 0.53),
+    (30194, 1.11),
+    (30266, 0.40),
+    (30232, 0.38),
+    (30238, 0.79),
+    (30205, 0.61),
+    (30218, 0.52),
+    (30187, 0.61),
+    (30177, 1.15),
+    (30176, 0.37),
+    (30203, 0.49),
+    (30166, 0.48),
+    (30202, 0.59),
+    (30178, 0.52),
+    (30190, 0.73),
+    (30183, 0.55),
+    (30213, 0.38),
+    (26187, 0.57),
+];
+
+/// #641 as met: 45 minutes of no output, a look every 30 s at 0.7 % of a core on average — one in five at 1.2 %.
+fn incident_641() -> Vec<(Duration, f32)> {
+    let shares = [0.5, 0.6, 0.55, 0.65, 1.2];
+    (0..90).map(|i| (Duration::from_secs(30), shares[i % shares.len()])).collect()
+}
+
+/// A real build's quiet stretch: tens of percent, a look now and then at next to none (the linker waiting on its
+/// last object, a test binary between two tests).
+fn a_build() -> Vec<(Duration, f32)> {
+    let shares = [35.0, 60.0, 0.4, 80.0, 22.0, 0.6];
+    (0..90).map(|i| (Duration::from_secs(30), shares[i % shares.len()])).collect()
+}
+
+/// `looks` fed to a quiet run's `Waiting` as `stuck::look` does, over and over until 45 minutes from its start (its
+/// first look then, at 0 %), its last line at its start: the minutes it's found stuck at (asked, then not again for
+/// the setting's 10), and the first minute the inbox lists it.
+fn judged(looks: &[(Duration, f32)]) -> (Vec<u64>, Option<u64>) {
+    let after = 10 * MIN;
+    let t0 = Instant::now();
+    let (mut w, mut at, mut asked, mut listed) = (Waiting::default(), t0, Vec::new(), None);
+    w.looked(0.0, t0, after);
+    for &(d, pct) in looks.iter().cycle() {
+        at += d;
+        if at > t0 + 45 * MIN {
+            break;
+        }
+        w.looked(pct, at, after.max(crate::waits::SILENT));
+        let minute = (at - t0).as_secs() / 60;
+        if w.stuck_for(t0, at, after).is_some() {
+            w.stuck_asked = Some(at);
+            asked.push(minute);
+        }
+        if listed.is_none() && w.worth_a_look(t0, t0, at) {
+            listed = Some(minute);
+        }
+    }
+    (asked, listed)
+}
+
+/// #641 B: next to no CPU is judged over the minutes asked about, not look by look — a look over the line now and
+/// then starts nothing over. Looks in, what's said out: the stand-in's recorded looks and #641 as met are found
+/// stuck from minute 10 (asked again every 10 while nothing changes) and listed in the inbox from minute 3; a real
+/// build's, at tens of percent with a quiet look among them, never stuck — listed only at 10, as busy at what it
+/// doesn't show (`waits::BUSY`), never as idle.
+#[test]
+fn next_to_no_cpu_is_judged_over_its_minutes() {
+    let recorded: Vec<_> = RECORDED.iter().map(|&(ms, pct)| (Duration::from_millis(ms), pct)).collect();
+    assert!(
+        recorded.iter().filter(|l| l.1 >= crate::waits::IDLE_PCT).count() == 2,
+        "two looks over the line"
+    );
+    assert_eq!(judged(&recorded), (vec![10, 20, 30, 40], Some(3)), "the stand-in's looks");
+    assert_eq!(judged(&incident_641()), (vec![10, 20, 30, 40], Some(3)), "#641 as met");
+    assert_eq!(judged(&a_build()), (vec![], Some(10)), "a build at work");
+    // (the share said: its average over the minutes, 0.7 %)
+    let t0 = Instant::now();
+    let mut w = Waiting::default();
+    w.looked(0.0, t0, 10 * MIN);
+    let mut at = t0;
+    for (d, pct) in incident_641().into_iter().take(20) {
+        at += d;
+        w.looked(pct, at, 10 * MIN);
+    }
+    assert_eq!(w.cpu_over(10 * MIN, at).map(|c| (c * 100.0).round()), Some(70.0));
+    assert_eq!(w.cpu, Some(1.2), "its last look over the line");
+}
+
+/// #641 as met, where it's drawn: a run of Claude's printing nothing, looked at every 30 s as the sampling thread does
+/// (#641's shares, one look in five over 1 %), on a clock the looks move — nothing said for 9m 30s, `◦ stuck?` on
+/// its panel's top line from minute 10 with the minutes' average, still said at 45. The run is the test's own `sleep`.
+#[test]
+fn the_incident_641_is_said_stuck_from_minute_ten() {
+    let dir = crate::scratch::Scratch::new("stuck-641");
+    let (mut ed, pid) = quiet_run(dir.path(), "sleep 30");
+    let t0 = crate::clock::hold();
+    let r = ed.workspace.task_run.as_mut().unwrap();
+    (r.last_output, r.wait) = (t0, Waiting::default());
+    ed.procs_sampled(sample(pid, 0.0));
+    for (i, (d, pct)) in incident_641().into_iter().enumerate() {
+        crate::clock::advance(d);
+        ed.procs_sampled(sample(pid, pct));
+        let asked = ed.workspace.task_run.as_ref().unwrap().wait.stuck_asked;
+        match i + 1 < 20 {
+            true => assert_eq!(asked, None, "look {}: {}s", i + 1, (i + 1) * 30),
+            false => assert_eq!(asked, Some(t0 + 10 * MIN), "asked at minute 10, once while it stands"),
+        }
+        if i + 1 == 20 {
+            settle_until(&mut ed, |ed| said_stuck(ed).is_some());
+            assert_eq!(said_stuck(&ed).unwrap(), "◦ stuck? no output for 10m 00s, 1% CPU");
+        }
+    }
+    ed.handle_event(crate::event::Event::Resize);
+    assert_eq!(said_stuck(&ed).as_deref(), Some("◦ stuck? no output for 10m 00s, 1% CPU"), "at 45 min");
+    crate::clock::release();
+    ed.workspace.task_run = None;
 }
 
 /// cardburden 5: step 6c's breaks run — Docker's socket granted, `timeout 2700` its own — was asked "stuck?" at
@@ -141,7 +263,7 @@ fn a_run_under_its_own_time_limit_is_not_asked_before_it_is_up() {
     let at = |m: u64| t0 + MIN * m as u32;
     let after = 10 * MIN;
     let mut w = Waiting::default();
-    w.looked(0.0, at(0));
+    w.idle_since(at(0));
     w.limited(t0, Some(45 * MIN));
     assert_eq!(w.stuck_for(t0, at(12), after), None, "its timeout 33 min away");
     assert_eq!(w.stuck_for(t0, at(44), after), None);
@@ -198,7 +320,7 @@ fn work_maybe_elsewhere_is_asked_at_its_own_later_minutes() {
     let t0 = Instant::now();
     let at = |m: u64| t0 + MIN * m as u32;
     let mut w = Waiting::default();
-    w.looked(0.0, at(0));
+    w.idle_since(at(0));
     assert!(held(&w, t0, at(12), true, &llm));
     assert!(!held(&w, t0, at(31), true, &llm), "asked then");
     assert!(!held(&w, t0, at(12), false, &llm), "#181: still stuck at 10");
@@ -315,7 +437,7 @@ fn a_stuck_run_is_captured_then_said_where_it_is_drawn() {
     // Idle at the first look — and since 11 minutes, as the looks before saw it
     ed.procs_sampled(sample(pid, 0.0));
     assert!(said_stuck(&ed).is_none(), "idle only from this look");
-    ed.workspace.task_run.as_mut().unwrap().wait.idle = Some(ago(11));
+    ed.workspace.task_run.as_mut().unwrap().wait.idle_since(ago(11));
     ed.procs_sampled(sample(pid, 0.0));
     settle_until(&mut ed, |ed| said_stuck(ed).is_some());
     assert_eq!(said_stuck(&ed).unwrap(), "◦ stuck? no output for 11m 00s, 0% CPU");
@@ -437,7 +559,7 @@ fn a_stuck_runs_stop_ends_what_left_the_runs_group() {
     let pid = r.pid().unwrap();
     let ago = |m: u32| Instant::now().checked_sub(MIN * m).unwrap();
     r.last_output = ago(11);
-    r.wait.idle = Some(ago(11));
+    r.wait.idle_since(ago(11));
     ed.procs_sampled(sample(pid, 0.0));
     settle_until(&mut ed, |ed| said_stuck(ed).is_some());
     ed.task_close();
@@ -471,7 +593,8 @@ fn a_quiet_run_let_out_to_a_socket_is_asked_as_maybe_working_elsewhere() {
     policy.sockets = vec![dir.join("engine.sock")];
     let ago = |m: u32| Instant::now().checked_sub(MIN * m).unwrap();
     let r = ed.workspace.task_run.as_mut().unwrap();
-    (r.by_claude, r.last_output, r.wait.idle) = (true, ago(12), Some(ago(12)));
+    (r.by_claude, r.last_output) = (true, ago(12));
+    r.wait.idle_since(ago(12));
     r.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
     let pid = r.pid().unwrap();
     ed.procs_sampled(sample(pid, 0.0));
@@ -479,7 +602,8 @@ fn a_quiet_run_let_out_to_a_socket_is_asked_as_maybe_working_elsewhere() {
     let runs = ed.ui_runs();
     assert_eq!(runs.iter().map(|r| r.state.as_str()).collect::<Vec<_>>(), ["quiet"]);
     let r = ed.workspace.task_run.as_mut().unwrap();
-    (r.last_output, r.wait.idle) = (ago(31), Some(ago(31)));
+    r.last_output = ago(31);
+    r.wait.idle_since(ago(31));
     ed.procs_sampled(sample(pid, 0.0));
     settle_until(&mut ed, |ed| said_stuck(ed).is_some());
     assert_eq!(ed.ui_runs()[0].state, "running", "said: no longer held");
@@ -556,7 +680,8 @@ fn a_run_found_connected_outside_is_held_to_the_later_minutes() {
     assert!(ed.task_start_for(task, crate::tools::For::User("b".into()), None, Default::default()).is_ok());
     let ago = |m: u32| Instant::now().checked_sub(MIN * m).unwrap();
     let r = ed.workspace.task_run.as_mut().unwrap();
-    (r.by_claude, r.last_output, r.wait.idle) = (true, ago(12), Some(ago(12)));
+    (r.by_claude, r.last_output) = (true, ago(12));
+    r.wait.idle_since(ago(12));
     let (pid, run) = (r.pid().unwrap(), r.trace.id());
     let s = |quiet| found(Slot::Task, run, pid, quiet, None);
     let peers = || vec!["10.0.0.7:2376".to_string()];
@@ -664,7 +789,8 @@ fn a_stuck_mark_goes_when_its_run_prints() {
     assert!(ed.task_start_for(task, crate::tools::For::User("h".into()), None, Default::default()).is_ok());
     let ago = |m: u32| Instant::now().checked_sub(MIN * m).unwrap();
     let r = ed.workspace.task_run.as_mut().unwrap();
-    (r.by_claude, r.last_output, r.wait.idle) = (true, ago(12), Some(ago(12)));
+    (r.by_claude, r.last_output) = (true, ago(12));
+    r.wait.idle_since(ago(12));
     let pid = r.pid().unwrap();
     ed.procs_sampled(sample(pid, 0.0));
     settle_until(&mut ed, |ed| said_stuck(ed).is_some());
@@ -755,7 +881,8 @@ fn quiet_run(dir: &std::path::Path, cmd: &str) -> (Editor, u32) {
     assert!(ed.task_start_for(task, crate::tools::For::User("s".into()), None, Default::default()).is_ok());
     let ago = Instant::now().checked_sub(MIN * 11).unwrap();
     let r = ed.workspace.task_run.as_mut().unwrap();
-    (r.by_claude, r.last_output, r.wait.idle) = (true, ago, Some(ago));
+    (r.by_claude, r.last_output) = (true, ago);
+    r.wait.idle_since(ago);
     let pid = r.pid().unwrap();
     (ed, pid)
 }
@@ -876,5 +1003,98 @@ fn a_filtered_stuck_run_says_why_nothing_shows() {
     assert_eq!(
         said("sleep 30 2>&1 | grep --line-buffered FAIL"),
         "── tarae: its output goes through grep: only what it lets through shows ──"
+    );
+}
+
+/// #641 A, by hand (`cargo test -q --bin tarae -- --ignored --nocapture stuck::tests::a_parent_polling_by_hand`):
+/// the incident's stand-in — a parent waking five times a second over a sleeping child — two ways: `even`, 0.8–2 ms
+/// of work each wake; `bursts`, 0.5–1.1 ms and about one wake in 120 a step of 30–90 ms (a frame written, a log
+/// flushed), the same 0.7 % of a core on average. Each looked at as tarae's sampler looks at a run, its tree's share
+/// of a core since the look before (`Sampler::sample`), every second for `FOR`, its start left out; the 30 s looks
+/// (`QUIET_EVERY`) are those added up. Printed, then fed to a run's `Waiting` on a simulated clock, cycled through 45
+/// minutes: when it's first said stuck.
+#[test]
+#[ignore = "by hand: #641's stand-in, recorded live"]
+fn a_parent_polling_by_hand() {
+    const EVERY: Duration = Duration::from_secs(1);
+    const FOR: Duration = Duration::from_secs(10 * 60 + 5);
+    const START: usize = 5;
+    let script = |work: &str| {
+        format!(
+            "if (!fork) {{ exec 'sleep', '100000' }} srand(641); \
+             while (1) {{ my $w = {work}; my $t = time; 1 while time - $t < $w; sleep 0.2 }}"
+        )
+    };
+    let ways = [
+        ("even", script("0.0008 + rand(0.0012)")),
+        ("bursts", script("rand(120) < 1 ? 0.03 + rand(0.06) : 0.0005 + rand(0.0006)")),
+    ];
+    let mut runs: Vec<_> = ways
+        .iter()
+        .map(|(name, script)| {
+            let mut c = std::process::Command::new("perl");
+            c.args(["-MTime::HiRes=time,sleep", "-e", script]);
+            let pid = crate::spawn::setsid(&c).unwrap().pid;
+            let mut s = crate::procs::Sampler::default();
+            let last = s.sample(pid).at;
+            (*name, pid, s, last, Vec::<(Duration, f32)>::new())
+        })
+        .collect();
+    let t0 = Instant::now();
+    while t0.elapsed() < FOR {
+        crate::event::sleep(EVERY);
+        for (_, pid, s, last, looks) in &mut runs {
+            let sample = s.sample(*pid);
+            let pct: f32 = sample.procs.iter().filter_map(|(_, p)| *p).sum();
+            looks.push((sample.at - *last, pct));
+            *last = sample.at;
+        }
+    }
+    for (_, pid, ..) in &runs {
+        // SAFETY: a KILL to the stand-in's own group (`setsid`), never reaped before this: still its own.
+        unsafe { libc::kill(-(*pid as i32), libc::SIGKILL) };
+        let _ = crate::spawn::wait(*pid);
+    }
+    let add = |bins: &[(Duration, f32)]| {
+        let wall: Duration = bins.iter().map(|l| l.0).sum();
+        let cpu: f32 = bins.iter().map(|l| l.0.as_secs_f32() * l.1).sum();
+        (wall, cpu / wall.as_secs_f32())
+    };
+    for (way, _, _, _, looks) in &runs {
+        // (its start: perl's compile)
+        let second = &looks[START..];
+        let quiet: Vec<_> = second.chunks(crate::procs::QUIET_EVERY.as_secs() as usize).map(add).collect();
+        let said: Vec<String> = quiet.iter().map(|(d, p)| format!("({}, {p:.2})", d.as_millis())).collect();
+        println!("{way} every 30s: {}", said.join(", "));
+        for (name, looks) in [("every 1s", second), ("every 30s", &quiet[..])] {
+            report(way, name, looks);
+        }
+    }
+}
+
+/// `a_parent_polling_by_hand`'s line for `looks`.
+fn report(way: &str, name: &str, looks: &[(Duration, f32)]) {
+    let wall: f32 = looks.iter().map(|l| l.0.as_secs_f32()).sum();
+    let mean = looks.iter().map(|l| l.0.as_secs_f32() * l.1).sum::<f32>() / wall;
+    let over = looks.iter().filter(|l| l.1 >= crate::waits::IDLE_PCT).count();
+    let max = looks.iter().map(|l| l.1).fold(0.0, f32::max);
+    // (fed in on a simulated clock: its last line at the start, 45 minutes of these looks over and over)
+    let t0 = Instant::now();
+    let (mut w, mut at, mut first) = (Waiting::default(), t0, None);
+    for (d, pct) in looks.iter().cycle() {
+        at += *d;
+        if at > t0 + 45 * MIN {
+            break;
+        }
+        w.looked(*pct, at, 10 * MIN);
+        if first.is_none() && w.stuck_for(t0, at, 10 * MIN).is_some() {
+            first = Some(at - t0);
+        }
+    }
+    println!(
+        "{way}, {name}: {} looks, {mean:.2}% on average, {over} at {}% or over, the most {max:.2}% — said stuck: {}",
+        looks.len(),
+        crate::waits::IDLE_PCT,
+        first.map_or("never in 45 minutes".into(), crate::term::run_duration)
     );
 }

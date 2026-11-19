@@ -158,7 +158,7 @@ mod tests {
         ("plugin/io.rs", 7),
         ("plugin/perm.rs", 1),
         ("preflight.rs", 5),
-        ("procs.rs", 12),
+        ("procs.rs", 11),
         ("queued.rs", 5),
         ("reads.rs", 7),
         ("reaper.rs", 3),

@@ -823,7 +823,7 @@ fn the_status_lines_counts_dry_once_as_they_grow() {
     let cmd = "docker run img";
     let mut r = Run::for_test(Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.path().to_path_buf() });
     (r.state, r.by_claude, r.last_output, r.started) = (State::Running, true, then, then);
-    r.wait.looked(0.0, then);
+    r.wait.idle_since(then);
     ed.workspace.task_run = Some(r);
     assert_eq!(waiting_counts(&ed, &[]).1, 1, "quiet");
     let ups = |ed: &Editor| {

@@ -5,6 +5,7 @@
 //! core knows no tool's lines: a language whose pack declares none has none (#10: a check waited 37 of its
 //! 48 s on another session's build, and looked stuck).
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::trace::RunTrace;
@@ -14,7 +15,8 @@ use crate::trace::RunTrace;
 /// closed showed only `● run` for 27 minutes).
 pub const SILENT: Duration = Duration::from_secs(180);
 
-/// Under this share of a core, all its processes told, a run is doing nothing (`Waiting::looked`).
+/// Under this share of a core on average over the time asked about, all its processes told, a run is doing nothing
+/// (`Waiting::cpu_over`).
 pub const IDLE_PCT: f32 = 1.0;
 
 /// A run that has printed nothing this long at `BUSY_PCT` or more of a core — no new process in its tree since,
@@ -102,9 +104,10 @@ pub struct Waiting {
     pub waited: Vec<(String, Duration)>,
     /// A line has come (the trace's `first output` is said).
     output: bool,
-    /// Since when its processes have used next to no CPU, as `:procs`' looks saw them (`stuck.rs`) — None:
-    /// they're working, or haven't been looked at.
-    pub idle: Option<Instant>,
+    /// The looks at its processes (`looked`), oldest first, as far back as the longest time asked about: when each
+    /// was taken and its share of a core since the one before, all its processes told — the first one's stands for
+    /// no time before it (`cpu_over`).
+    looks: VecDeque<(Instant, f32)>,
     /// Its share of a core at the last look, all its processes told.
     pub cpu: Option<f32>,
     /// When it was last found stuck — looked at again only after as long again.
@@ -180,15 +183,12 @@ impl Waiting {
     }
 
     /// Whether a quiet run (its last line at `last`) is for the user to look at (the inbox): its processes idle as
-    /// well for `SILENT`, or not looked at yet; one still working — a build under `| tail -60`, its output held
-    /// by the filter — only once half the time its own command gives it (`limited`) is gone (frictions29 9: three
-    /// long Linux runs an hour landed there at 3 minutes), or once it's busy at nothing it shows (`busy`).
+    /// well over the last `SILENT` (`idle_over`), or not looked at yet; one still working — a build under
+    /// `| tail -60`, its output held by the filter — only once half the time its own command gives it (`limited`) is
+    /// gone (frictions29 9: three long Linux runs an hour landed there at 3 minutes), or once it's busy at nothing it
+    /// shows (`busy`).
     pub fn worth_a_look(&self, started: Instant, last: Instant, now: Instant) -> bool {
-        let idle = match (self.cpu, self.idle) {
-            (None, _) => true,
-            (Some(_), Some(since)) => now.saturating_duration_since(since) >= SILENT,
-            (Some(_), None) => false,
-        };
+        let idle = self.cpu.is_none() || self.idle_over(SILENT, now);
         // (a process new in its tree lately: it's at work, printing or not)
         let idle = idle && !self.moved.is_some_and(|m| now.saturating_duration_since(m) < SILENT);
         let half = self
@@ -222,14 +222,46 @@ impl Waiting {
         self.hold_until = limit.and_then(|d| started.checked_add(d.min(crate::stuck::HOLD_MAX)));
     }
 
-    /// A look at its processes at `now`: `pct` of a core, all told — under `IDLE_PCT`, idle from then on
-    /// (unless it already was).
-    pub fn looked(&mut self, pct: f32, now: Instant) {
+    /// A look at its processes at `now`: `pct` of a core since the look before, all told. The looks are kept as far
+    /// back as `keep` — the longest time `cpu_over` will be asked about — one at or before its start among them.
+    pub fn looked(&mut self, pct: f32, now: Instant, keep: Duration) {
         self.cpu = Some(pct);
-        match pct < IDLE_PCT {
-            true => _ = self.idle.get_or_insert(now),
-            false => self.idle = None,
+        self.looks.push_back((now, pct));
+        if let Some(from) = now.checked_sub(keep) {
+            while self.looks.get(1).is_some_and(|l| l.0 <= from) {
+                self.looks.pop_front();
+            }
         }
+    }
+
+    /// Its share of a core on average over the `window` up to `now`, all its processes told — None when its looks
+    /// don't reach back that far. Each look's share stands for the time since the look before; the time since the
+    /// last look at the last one's. (#641: a recorder over a sleeping tarae, 0.7 % on average, was never said in 45
+    /// minutes — judged look by look, a look over 1 % now and then started its quiet time over; its stand-in's read
+    /// 1.1 % two looks in twenty.)
+    pub fn cpu_over(&self, window: Duration, now: Instant) -> Option<f32> {
+        let from = now.checked_sub(window)?;
+        let &(first, _) = self.looks.front().filter(|l| l.0 <= from && !window.is_zero())?;
+        let mut cpu = 0.0;
+        let mut before = first;
+        let ends = self.looks.iter().skip(1).copied().chain(self.looks.back().map(|l| (now.max(l.0), l.1)));
+        for (at, pct) in ends {
+            let span = at.saturating_duration_since(before.max(from));
+            cpu += pct * span.as_secs_f32();
+            before = before.max(at);
+        }
+        Some(cpu / window.as_secs_f32())
+    }
+
+    /// Its processes used next to no CPU over the last `window` (`cpu_over` under `IDLE_PCT`).
+    pub fn idle_over(&self, window: Duration, now: Instant) -> bool {
+        self.cpu_over(window, now).is_some_and(|c| c < IDLE_PCT)
+    }
+
+    /// Tests: its processes looked at once, at `at`, using none — idle since then.
+    #[cfg(test)]
+    pub fn idle_since(&mut self, at: Instant) {
+        (self.cpu, self.looks) = (Some(0.0), VecDeque::from([(at, 0.0)]));
     }
 
     /// A look at `now` found `at_work` in its tree (`procs::at_work`): one the last look didn't is progress
@@ -248,16 +280,16 @@ impl Waiting {
         self.moved.map_or(last, |m| m.max(last))
     }
 
-    /// How long a running run has printed nothing, when it has also used next to no CPU for `after` or
-    /// more, and wasn't asked about within `after` — it looks stuck (#181: cargo hung under qemu, `no output
-    /// for 68:11` at 0% CPU, and nothing asked). Never when it says what it waits on, nor `after` zero.
+    /// How long a running run has printed nothing, when it has also used next to no CPU on average over the last
+    /// `after` (`idle_over` — a look over the line now and then doesn't start it over, #641), and wasn't asked about
+    /// within `after` — it looks stuck (#181: cargo hung under qemu, `no output for 68:11` at 0% CPU, and nothing
+    /// asked). Never when it says what it waits on, nor `after` zero.
     pub fn stuck_for(&self, last: Instant, now: Instant, after: Duration) -> Option<Duration> {
         let quiet = now.saturating_duration_since(last);
-        let idle = now.saturating_duration_since(self.idle?);
         let asked = self.stuck_asked.is_some_and(|a| now.saturating_duration_since(a) < after);
         // (its own time limit still to come: it ends by then, stuck or not — cardburden 5; two hours at most)
         let limited = self.hold_until.is_some_and(|at| at > now);
-        let due = !after.is_zero() && self.now.is_none() && quiet >= after && idle >= after;
+        let due = !after.is_zero() && self.now.is_none() && quiet >= after && self.idle_over(after, now);
         (due && !asked && !limited).then_some(quiet)
     }
 

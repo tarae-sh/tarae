@@ -1991,7 +1991,7 @@ impl Editor {
         let (found, learned) = self.procs.check(&rows, &self.procs_lsp_facts(), Instant::now());
         self.disk_looked(s.free.clone(), s.shot);
         // (a run of Claude's printing nothing at next to no CPU — `stuck.rs`)
-        crate::stuck::look(self, &rows, Instant::now());
+        crate::stuck::look(self, &rows, crate::clock::now());
         let flagged: HashSet<u32> = found.iter().map(|f| f.pid).filter(|&p| p > 0).collect();
         let held_before = self.procs.holding();
         self.procs_found(found, now);

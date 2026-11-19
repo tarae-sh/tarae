@@ -33966,7 +33966,7 @@ mod tests {
         };
         let r = ed.workspace.task_run.as_mut().unwrap();
         r.last_output = then;
-        r.wait.looked(100.0, std::time::Instant::now());
+        r.wait.looked(100.0, std::time::Instant::now(), crate::waits::SILENT);
         let s = shown(&mut ed);
         // (the chat's row cut where it's narrow — the CPU before the key, the key whole)
         let said = s.lines().filter(|l| l.contains("no output for 10m 0") && l.contains(" · 100% ")).count();

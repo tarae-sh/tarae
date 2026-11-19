@@ -313,8 +313,10 @@ too. A reviewer's end is its session's `•` (on its tab, or in the status line'
 the same mark that says its files came again from disk: something happened there while you were away.
 
 **A run that looks stuck** is said where it's drawn, never on a card: when a run of Claude's has printed nothing
-*and* used next to no CPU for `llm.stuck-after` minutes (10 by default; 0 = never), its panel's top line and
-Claude's run row in the chat say `◦ stuck? no output for 12m 00s, 0% CPU`, in the warning colour, beside the key
+*and* used next to no CPU for `llm.stuck-after` minutes (10 by default; 0 = never) — under 1 % of a core on average
+over those minutes, all its processes told, so a poll that touches 1 % on a look now and then doesn't start them over
+— its panel's top line and Claude's run row in the chat say `◦ stuck? no output for 12m 00s, 0% CPU` (that
+average), in the warning colour, beside the key
 that stops it (`space m c stop`, `space x c` for tests) — the first of the line's keys while it's said stuck. On a
 narrow line the words fold before that key does: to `◦ stuck? 12m quiet`, then to `◦ stuck?` alone. First tarae reads what each of the run's threads is
 waiting in and puts it at the end of the run's output, so it's in sight there and still there if you stop the run:

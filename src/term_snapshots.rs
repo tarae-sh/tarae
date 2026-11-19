@@ -9557,7 +9557,7 @@ fn chat_cut(w: u16, h: u16, live: bool) -> Shot {
     let now = std::time::Instant::now();
     r.last_output =
         now.checked_sub(crate::waits::BUSY + Duration::from_secs(3)).expect("a machine up a while");
-    r.wait.looked(100.0, now);
+    r.wait.looked(100.0, now, crate::waits::SILENT);
     s.ed.workspace.task_run = Some(r);
     s
 }

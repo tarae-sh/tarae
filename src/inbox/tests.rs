@@ -507,7 +507,7 @@ fn a_quiet_run_still_working_stays_out_of_the_inbox() {
     let said = |ed: &Editor| ed.inbox().into_iter().find(|e| e.kind == "silent-run").map(|e| e.asks);
     // Working: out
     let mut r = run("cargo test 2>&1 | grep -E 'result' | tail -60");
-    r.wait.looked(240.0, Instant::now());
+    r.wait.looked(240.0, Instant::now(), crate::waits::SILENT);
     ed.workspace.task_run = Some(r);
     assert_eq!(said(&ed), None, "a run using the CPU behind its filter");
     // Its own time limit half gone: in, working or not
@@ -517,12 +517,12 @@ fn a_quiet_run_still_working_stays_out_of_the_inbox() {
     // Idle for minutes as well: in, the filter said
     let r = ed.workspace.task_run.as_mut().unwrap();
     r.wait.limited(then, None);
-    r.wait.looked(0.0, then);
+    r.wait.idle_since(then);
     let l = said(&ed).expect("idle and quiet: in the inbox");
     assert!(l.contains("no output for") && l.contains("its output goes through grep"), "{l}");
     // No filter: said as before
     let mut r = run("cargo test");
-    r.wait.looked(0.0, then);
+    r.wait.idle_since(then);
     ed.workspace.task_run = Some(r);
     assert!(said(&ed).is_some_and(|l| !l.contains("goes through")), "{:?}", said(&ed));
     // `C-q` takes the user to its panel, as for any quiet run

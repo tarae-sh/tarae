@@ -101,6 +101,7 @@ mod stall;
 mod starts;
 mod steer;
 mod stuckstop;
+mod stuckwindow;
 mod termview;
 mod toasts;
 mod trustscan;

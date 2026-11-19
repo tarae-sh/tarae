@@ -1,13 +1,13 @@
 //! A run of Claude's that looks stuck (#181: cargo hung under qemu — `no output for 68:11` at 0% CPU — and
 //! nothing asked). Each look at the processes (`procs_sampled`, every `procs::QUIET_EVERY`) tells a running
 //! run of Claude's its share of a core, all its processes told (`Waiting::looked`). Once it has printed
-//! nothing and used next to no CPU for `llm.stuck-after` minutes, what each of its threads waits in is read
-//! on a worker — unprivileged only: Linux's `/proc/<pid>/task/*/{stat,wchan}`, macOS's thread states — and
-//! put in its output, so it's kept whatever comes next (stopped, its output is in Claude's report); then it's said
-//! where the run is drawn — `◦ stuck? no output for 12m 03s, 0% CPU` on its panel's top line and the chat's row, in
-//! warning, beside its stop key (`space m c`, `space x c`), which then stops it whole and keeps its output (`stop`).
-//! No card (polish landing 4: the stuck card was answered `n` 24 times of 40, dropped 8). Said until it prints, starts
-//! new work or ends.
+//! nothing and used next to no CPU on average over `llm.stuck-after` minutes (`Waiting::idle_over`, #641), what
+//! each of its threads waits in is read on a worker — unprivileged only: Linux's `/proc/<pid>/task/*/{stat,wchan}`,
+//! macOS's thread states — and put in its output, so it's kept whatever comes next (stopped, its output is in
+//! Claude's report); then it's said where the run is drawn — `◦ stuck? no output for 12m 03s, 0% CPU` on its
+//! panel's top line and the chat's row, in warning, beside its stop key (`space m c`, `space x c`), which then stops
+//! it whole and keeps its output (`stop`). No card (polish landing 4: the stuck card was answered `n` 24 times of 40,
+//! dropped 8). Said until it prints, starts new work or ends.
 //!
 //! Quiet isn't always stuck (frictions15): a client whose work goes on elsewhere — a container engine in a VM
 //! or on another host, a build server — prints nothing and uses no CPU here. What its tree is connected to
@@ -46,7 +46,8 @@ pub struct Stuck {
     pub pid: u32,
     /// When it was found stuck — a line printed after it means it wasn't.
     pub asked: Instant,
-    /// How long it had printed nothing then, and its share of a core.
+    /// How long it had printed nothing then, and its share of a core on average over the minutes it was judged
+    /// by.
     pub quiet: Duration,
     pub cpu: f32,
     /// Where what its threads wait in starts in its output.
@@ -105,23 +106,25 @@ pub fn look(ed: &mut Editor, rows: &[Row], now: Instant) {
             let held = slot == Slot::Task
                 && l.task_run.as_ref().is_some_and(|r| crate::readonly::held_by(&r.task.cmd).is_some());
             let Some((pid, run, last, wait, reach, away)) = running(l, slot) else { continue };
+            // (granted a daemon's socket, outside the sandbox, or found connected outside: its work may go on
+            // there — asked later)
+            let after = if away || wait.connected { outside } else { after };
             if let Some((pct, _)) = crate::procs::summed(rows, &[pid]) {
-                wait.looked(pct, now);
+                // (kept for the longest time asked about: its minutes here, the inbox's `SILENT`)
+                wait.looked(pct, now, after.max(crate::waits::SILENT));
             }
             // (frictions34 39 a: where its output is held, a process new in its tree since the last look is work
             // going on; elsewhere lines are the only sign — a poll loop's steps aren't progress)
             if held {
                 wait.saw(crate::procs::at_work(rows, &[pid]), now);
             }
-            // (granted a daemon's socket, outside the sandbox, or found connected outside: its work may go on
-            // there — asked later)
-            let after = if away || wait.connected { outside } else { after };
             // (said already: looked at again once it moved — never its threads written in again while it stands)
             if wait.stuck.is_none() && wait.stuck_for(wait.progress(last), now, after).is_some() {
                 wait.stuck_asked = Some(now);
                 // (what the card says is the time since its last line — not since its last new process)
                 let quiet = now.saturating_duration_since(last);
-                let cpu = wait.cpu.unwrap_or(0.0);
+                // (its share of a core as it was judged: on average over those minutes)
+                let cpu = wait.cpu_over(after, now).unwrap_or(0.0);
                 let s = Stuck { slot, run, pid, asked: now, quiet, cpu, at: 0, reach, quiet_there: false };
                 due.push((l.id, s));
             }
