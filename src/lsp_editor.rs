@@ -4147,10 +4147,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #610: a protected name's pause keeps `MADE_PAUSED`'s words, and said again after a "ready" it's still what the
+    /// #610: a protected name's pause keeps `made_paused`'s words, and said again after a "ready" it's still what the
     /// status line carries (a toast said again keeps its place on the card: the line reads the newest — the noted shot's
-    /// "marksman ready"). A folder git takes for a repository pauses the servers as a name does, said with what you do
-    /// first (a cut falls on the cause): made, then, back and ready, a noted one changed. (A stand-in server; the names
+    /// "marksman ready"). A folder git takes for a repository pauses the servers as a name does; both say what you do
+    /// first (#631: a cut falls on the cause): made, then, back and ready, a noted one changed. (A stand-in server; the names
     /// only listed, nothing made.)
     #[test]
     fn a_look_alikes_pause_says_the_answer_first_made_or_changed() {
@@ -4188,25 +4188,32 @@ mod tests {
         };
         // (from here what's said is this test's: a protected name's pause, a "ready", the pause again — the shot's order)
         ed.toasts.clear();
-        let made = "fake paused — Claude's run made a protected file";
-        assert!(crate::tools::made_paused("Claude").starts_with(&made["fake ".len()..]));
+        // (#631: the way out, the cause, then when it's asked — "a card": none may be up yet)
+        let made = "fake paused until you answer a card — Claude's run made a protected file; asked at Claude's \
+                    next command or its turn's end";
+        assert_eq!(format!("fake {}", crate::tools::made_paused("Claude")), made);
         hold(&mut ed, name(), made);
         back(&mut ed);
         hold(&mut ed, name(), made);
         back(&mut ed);
-        let act = "fake paused until you answer the card";
+        let act = "fake paused until you answer a card — Claude's run";
         hold(&mut ed, look(&[]), act);
         let newest =
             |ed: &Editor| ed.toasts.iter().max_by_key(|t| t.id).map(|t| t.text.clone()).unwrap_or_default();
+        let asked = "; asked at Claude's next command or its turn's end";
         assert_eq!(
             newest(&ed),
-            "fake paused until you answer the card — Claude's run made a folder git takes for a repository"
+            format!(
+                "fake paused until you answer a card — Claude's run made a folder git takes for a repository{asked}"
+            )
         );
         back(&mut ed);
         hold(&mut ed, look(&["config"]), act);
         assert_eq!(
             newest(&ed),
-            "fake paused until you answer the card — Claude's run changed a folder git takes for a repository"
+            format!(
+                "fake paused until you answer a card — Claude's run changed a folder git takes for a repository{asked}"
+            )
         );
     }
 

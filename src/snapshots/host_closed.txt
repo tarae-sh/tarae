@@ -27,7 +27,7 @@
 24                                      │ Rust's registry: a yes also lets in crates.io, *.crates.io │
 25                                      │ What it read can be sent there. From the next run, runs    │
 26                                      │ can also write cargo's caches, which your own builds run.  │
-27                                      ╰─ C-q answer · y once · a chat · s session · v details · n ─╯
+27                                      ╰─ C-q answer · y Once · a Chat · s Session · v Details · n ─╯
 28
 29  ● normal                                                                               rust   1:1
 ## bg · surface per cell, blank = ui.background

@@ -3486,21 +3486,32 @@ fn ask_with(
         .collect();
     // Where there's no sandbox, this card is where the user hears it (outside one, it said so already)
     let socket = outside.as_ref().and_then(|b| b.socket.clone());
+    // (#647: where yes means all your permissions — none here, or it's off — in the warning colour, as the outside
+    // card's; a partial one runs in it as far as it goes: body ink)
     let unprotected = match (&ed.sandbox, ed.config.llm.sandbox) {
         _ if outside.is_some() && socket.is_none() => None,
         (Availability::Missing(why), true) => {
-            Some(format!("No sandbox here ({why}) — it runs with all your permissions."))
+            Some((format!("No sandbox here ({why}) — it runs with all your permissions."), true))
         }
-        (Availability::Partial(why), true) => {
-            Some(format!("The sandbox here goes only so far ({why}) — it runs in it as far as it goes."))
-        }
+        (Availability::Partial(why), true) => Some((
+            format!("The sandbox here goes only so far ({why}) — it runs in it as far as it goes."),
+            false,
+        )),
         (_, false) => {
-            Some("The sandbox is off (llm.sandbox) — it runs with all your permissions.".to_string())
+            Some(("The sandbox is off (llm.sandbox) — it runs with all your permissions.".to_string(), true))
         }
         _ => None,
     };
-    if let Some(u) = &unprotected {
+    if let Some((u, warns)) = &unprotected {
         question.push_str(&format!("\n\n{u}"));
+        if *warns {
+            let at = question.split('\n').count() - 1;
+            // (a socket's own warning keeps its place: this one beside it)
+            match warning {
+                None => warning = Some(at..at + 1),
+                Some(_) => warnings.push(at..at + 1),
+            }
+        }
     }
     let a = crate::llm::session_row(ed).shown;
     let title = match (&outside, &socket) {
@@ -4663,6 +4674,7 @@ fn ask_unprotected(ed: &mut Editor, call: Call, job: Job, kind: Unsandboxed, rid
             format!("The sandbox here goes only so far ({why}) — it runs in it as far as it goes."),
         ),
     };
+    let is_missing = matches!(kind, Unsandboxed::Missing(_));
     let question = match first {
         true => format!(
             "{label}\n\n{there}\n\nAsked once until this session ends, in every chat: y runs this one and asks before \
@@ -4679,8 +4691,14 @@ fn ask_unprotected(ed: &mut Editor, call: Call, job: Job, kind: Unsandboxed, rid
     let asked =
         crate::cards::Asked::new(Why::NoSandbox, request).ran(call.run_id(), &cmd, &cwd, &ed.workspace.root);
     let what = crate::offer::What::NoSandbox { job, call, ride: Box::new(ride), kind, first };
-    let o = crate::offer::Offer::new(title, &question, "", String::new(), what);
-    ed.push_offer(o.asked(asked));
+    let o = crate::offer::Offer::new(title, &question, "", String::new(), what).asked(asked);
+    // (#647: no sandbox — what yes means, all your permissions, in the warning colour, as the outside card's; a partial
+    // one runs in it as far as it goes, and the first card's answers stay body ink)
+    let at = label.split('\n').count() + 1;
+    ed.push_offer(match is_missing {
+        true => o.warning(at..at + 1),
+        false => o,
+    });
 }
 
 /// The answer on that card: `y` runs it — without a sandbox, or in the partial one — `s` too, and the rest
@@ -4851,9 +4869,17 @@ pub fn made_body(a: &str, f: MadeFor, (named, it, among): (&str, &str, &str)) ->
     }
 }
 
-/// Said after the paused servers' names as they pause (`Editor::servers_hold`), `a` the session's agent.
+/// Said after the paused servers' names as they pause (`Editor::servers_hold`), `a` the session's agent: what you do
+/// first, the cause, then when it's asked — a folder git takes for a repository's line the same (#631, the design
+/// session's words). "a card": none may be up yet — the next run's asks, else the servers' own as the turn ends
+/// (`made_hold_sync`). Its first 60 characters are a toast in Claude's `ui:` line: the cause is the run's report's.
 pub fn made_paused(a: &str) -> String {
-    format!("paused — {a}'s run made a protected file; asked about once its turn is over")
+    format!("paused until you answer a card — {a}'s run made a protected file; {}", made_asked(a))
+}
+
+/// The end of a pause line: when the card asks (`made_paused`, `servers_hold`'s folder one).
+pub fn made_asked(a: &str) -> String {
+    format!("asked at {a}'s next command or its turn's end")
 }
 
 /// A `n` on the card: what a run of yours that didn't run says why (`made`: the names, `some_named`).
@@ -7896,11 +7922,11 @@ mod tests {
         let rows: Vec<String> = screen.screen().rows(0, 80).collect();
         let shown = rows.join("\n");
         assert!(ed.offer_seen_whole(), "whole at 80×43: no `v` before `y`:\n{shown}");
-        // (shorter: from its top line to its bottom one at most 13 rows, the details nowhere, `v see` on its keys)
+        // (shorter: from its top line to its bottom one at most 13 rows, the details nowhere, `v See` on its keys)
         let top = rows.iter().position(|r| r.contains("Open the sandbox a little?")).expect(&shown);
-        let bottom = rows.iter().position(|r| r.contains("y masked ·")).expect(&shown);
+        let bottom = rows.iter().position(|r| r.contains("y Masked ·")).expect(&shown);
         assert!(bottom - top < 13, "{} rows:\n{shown}", bottom - top + 1);
-        assert!(rows[bottom].contains("v see"), "{}", rows[bottom]);
+        assert!(rows[bottom].contains("v See"), "{}", rows[bottom]);
         for d in ["never shown", "sign-in header", "pack's", "sandbox-secrets"] {
             assert!(!shown.contains(d), "{d} on the card:\n{shown}");
         }
@@ -7911,7 +7937,7 @@ mod tests {
         assert!(o.lasting('y') && o.lasting('r'), "never a bare letter on the bottom line");
         let short: Vec<String> =
             o.answers_short(false).into_iter().map(|(k, s)| format!("{k} {s}")).collect();
-        assert_eq!(short, ["y masked", "r real value", "n no"]);
+        assert_eq!(short, ["y Masked", "r Real value", "n No"]);
         // (the value nowhere on the card, nor in its record: the name and the hosts)
         let card = format!("{:?} {} {:?}", o.what, o.question, o.asked);
         assert!(!card.contains(GH_STAND_IN) && !card.contains("tarae0fake"), "{card}");

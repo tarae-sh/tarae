@@ -3744,7 +3744,7 @@ fn plus_n_frames() {
 }
 
 /// The board's card at 60 columns (bgreview, the user's decision 2026-10-20): whole — no `↓ more lines`, so its
-/// `y` answers at once — its angles' line folded away first, and `v see` on its keys for it (#474c: no fold drops a
+/// `y` answers at once — its angles' line folded away first, and `v See` on its keys for it (#474c: no fold drops a
 /// fact out of reach); at 160 it's there.
 #[test]
 fn the_boards_card_folds_its_angles_rather_than_be_cut() {
@@ -3782,8 +3782,8 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     // reason — still whole)
     // (16 rows: its answers on its bottom line, not two rows of their own, gave 20 the room for it whole)
     for (how, said, bottom) in [
-        (1, "", "╰─── esc back · y start · v see · n ─╯"),
-        (2, "not taken", "╰─ C-q answer · y start · v see · n ─╯"),
+        (1, "", "╰─── esc back · y Start · v See · n ─╯"),
+        (2, "not taken", "╰─ C-q answer · y Start · v See · n ─╯"),
     ] {
         let (at, line) = screen_as(60, 16, how);
         assert!(at.contains(said) && !at.contains("more lines"), "{at}");
@@ -3791,7 +3791,7 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     }
     let (narrow, line) = screen_as(60, 16, 0);
     assert!(narrow.contains("Start a board on tarae-demo?"), "{narrow}");
-    assert_eq!(line, "╰─ C-q answer · y start · v see · n ─╯", "{narrow}");
+    assert_eq!(line, "╰─ C-q answer · y Start · v See · n ─╯", "{narrow}");
     assert!(!narrow.contains("more lines") && !narrow.contains("Each from its angle"), "{narrow}");
     assert!(narrow.contains("A yes holds for this session"), "what a yes means stays: {narrow}");
     let wide = screen(160, 30);
@@ -8599,8 +8599,8 @@ fn what_takes_the_keys_is_framed_with_its_name() {
 }
 
 /// The user, 2026-10-25: a floating card's keys are always in its bottom line — an ask too wide for its answers whole
-/// says each answer's short words there (`main moved`: `y move · c all · v more · n not now`), never rows of keys
-/// inside; where they fit, whole; each answer's button where its key is drawn; focused, `esc back` where its way in
+/// says each answer's short words there, in their whole words' case (#632; `main moved`: `y Move · c All · v More ·
+/// n Not now`), never rows of keys inside; where they fit, whole; each answer's button where its key is drawn; focused, `esc back` where its way in
 /// was and the answers where they were.
 #[test]
 fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
@@ -8617,7 +8617,7 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
         (s, rows.clone(), at(&rows[y + ch - 1]), inside, y + ch - 1)
     };
     // (at 80 the card's reading width is 40: its last answer its key alone)
-    let short = "╰─ C-q answer · y move · c all · v more · n ─";
+    let short = "╰─ C-q answer · y Move · c All · v More · n ─";
     let (mut s, rows, bottom, inside, by) = shown(80);
     assert!(bottom.starts_with(short) && bottom.ends_with('╯'), "{bottom:?}");
     assert!(
@@ -8637,12 +8637,12 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
     let rows: Vec<String> = cells(&s.frame(), 80, 30).screen().rows(0, 80).collect();
     let (x, ..) = s.ed.screen.offer_card.unwrap();
     let bottom: String = rows[by].chars().skip(x).collect();
-    assert!(bottom.starts_with("╰─── esc back · y move · c all · v more · n ─"), "{bottom:?}");
+    assert!(bottom.starts_with("╰─── esc back · y Move · c All · v More · n ─"), "{bottom:?}");
     assert_eq!(s.ed.screen.offer_buttons, buttons, "the answers in place");
     // At 160 its reading width is 56: every one its short words — the card never wider for them (the user,
     // 2026-10-25: "answers too wide for it" — for the card, not the screen)
     let (s, _, bottom, ..) = shown(160);
-    assert!(bottom.starts_with("╰─ C-q answer · y move · c all · v more · n not now ─"), "{bottom:?}");
+    assert!(bottom.starts_with("╰─ C-q answer · y Move · c All · v More · n Not now ─"), "{bottom:?}");
     let whole =
         "╰─ C-q answer · y Move the clean ones · c Conflicting ones too · v What each does · n Not now ─╯";
     let card = s.ed.screen.offer_card.unwrap();
@@ -8660,13 +8660,13 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
     };
     let install = crate::offer::Offer::new("Install?".into(), "q", "", String::new(), what);
     assert_eq!(['y', 'n', 'N'].map(|k| install.lasting(k)), [false, false, true]);
-    // (a restart over the same build's `y Restart anyway` can't be taken back: kept, lowercase as it is)
+    // (a restart over the same build's `y Restart anyway` can't be taken back: kept)
     assert_eq!(['y', 'n'].map(|k| lasting_card().lasting(k)), [true, false]);
     // (BaseMoved's short words, and those any card's answers fall back to)
     let card = moves(false).card();
     assert_eq!(
         card.answers_short(false),
-        [('y', "move".into()), ('c', "all".into()), ('v', "more".into()), ('n', "not now".into())]
+        [('y', "Move".into()), ('c', "All".into()), ('v', "More".into()), ('n', "Not now".into())]
     );
 }
 
@@ -8927,7 +8927,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         ended: false,
     };
     vec![
-        ("end", ending.card(), "╰─ C-q answer · c commit · R remove · D both · n cancel ───────╯"),
+        ("end", ending.card(), "╰─ C-q answer · c Commit · R Remove · D Both · n Cancel ───────╯"),
         (
             "bring",
             moved.bring_card(None, true),
@@ -8946,12 +8946,12 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
                 Vec::new(),
                 false,
             ),
-            "╰─ C-q answer · y once · a chat · s session · A always · n no ──╯",
+            "╰─ C-q answer · y Once · a Chat · s Session · A Always · n No ──╯",
         ),
         (
             "host",
             crate::hosts::card("Claude", host),
-            "╰─ C-q answer · y once · a chat · s session · v details · n no ─╯",
+            "╰─ C-q answer · y Once · a Chat · s Session · v Details · n No ─╯",
         ),
     ]
 }

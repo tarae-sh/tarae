@@ -247,13 +247,13 @@ impl Moves {
     }
 
     /// Its answers' short words, where its bottom line can't take them whole (`Offer::answers_short`):
-    /// `y move · c all · v more · n not now`.
+    /// `y Move · c All · v More · n Not now`.
     pub fn short(&self, k: char) -> Option<&'static str> {
         match k {
-            'y' if self.clean().next().is_none() => Some("rebase"),
-            'y' => Some("move"),
-            'c' => Some("all"),
-            'v' => Some("more"),
+            'y' if self.clean().next().is_none() => Some("Rebase"),
+            'y' => Some("Move"),
+            'c' => Some("All"),
+            'v' => Some("More"),
             _ => None,
         }
     }

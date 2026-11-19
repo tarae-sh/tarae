@@ -27,7 +27,7 @@
 24                                             │ lines this session changed: it stays as it is here. │
 25                                             │                                                     │
 26                                             │ Claude reads it from its next start.                │
-27                                             ╰─ C-q answer · y take · v see · n keep ──────────────╯
+27                                             ╰─ C-q answer · y Take · v See · n Keep ──────────────╯
 28
 29  ● normal                                                                               rust   1:1
 ## bg · surface per cell, blank = ui.background

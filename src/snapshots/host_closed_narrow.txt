@@ -27,7 +27,7 @@
 24                  │ What it read can be sent there. From the next run, │
 25                  │ runs can also write cargo's caches, which your own │
 26                  │ builds run.                                        │
-27                  ╰─ C-q answer · y once · a chat · s session · v · n ─╯
+27                  ╰─ C-q answer · y Once · a Chat · s Session · v · n ─╯
 28
 29  ● normal                                                   rust   1:1
 ## bg · surface per cell, blank = ui.background

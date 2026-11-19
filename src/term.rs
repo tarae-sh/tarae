@@ -15092,14 +15092,15 @@ const READ_FIRST: &str = "once it's read";
 const READ_FIRST_SHORT: &str = "once read";
 
 /// A cut card's way to all of it, on its bottom line (`v`, unless an answer of its own is `v`).
-const READ_ALL: (char, &str) = ('v', "read it all");
+/// Capitalised as a card's own answers are (#632: one line, one case).
+const READ_ALL: (char, &str) = ('v', "Read it all");
 
 /// `READ_ALL` in the short words.
-const READ_ALL_SHORT: &str = "read all";
+const READ_ALL_SHORT: &str = "Read all";
 
 /// A whole card's way to the lines folded off it (`Offer.folds`, `Offer.details` — #474c), on its bottom line: the
 /// words a card's own `v` says them in (`See them`'s short words).
-const SEE_FOLDED: (char, &str) = ('v', "see");
+const SEE_FOLDED: (char, &str) = ('v', "See");
 
 /// A cut card's row, after how many lines are left out: not read yet, open in its buffer, read whole.
 const CUT_UNREAD: &str = "not read yet";

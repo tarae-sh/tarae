@@ -6249,6 +6249,303 @@ const SCENES: &[Scene] = &[
             "@1",
         ],
     },
+    // (#640's question, the halil take's layout at `--size 80x34`: the terminal below, the chat docked, a turn's edit of a
+    // high-risk file reviewed at its end, `space v q` — the end card with its change unlooked; `-auto`: then `C-w =`)
+    Scene { name: "words-halil", claude: "fourhigh", files: MAIN, keys: WORDS_HALIL[0] },
+    Scene { name: "words-halil-auto", claude: "fourhigh", files: MAIN, keys: WORDS_HALIL[1] },
+    // (…and the tallest end card: nine files, every change high-risk)
+    Scene { name: "words-many", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[0] },
+    Scene { name: "words-many-auto", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[1] },
+    Scene { name: "words-halil-cq", claude: "fourhigh", files: MAIN, keys: WORDS_HALIL[2] },
+    Scene { name: "words-many-cq", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[2] },
+    Scene { name: "words-halil-auto-cq", claude: "fourhigh", files: MAIN, keys: WORDS_HALIL[3] },
+    Scene { name: "words-many-auto-cq", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[3] },
+    Scene { name: "words-many-bare", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[4] },
+    Scene { name: "words-many-chat", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[5] },
+    Scene { name: "words-many-nochat", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[6] },
+    // (#647: what yes means on cards where there's no sandbox, in the warning colour — taken in a run's sandbox, where
+    // tarae finds none: the session's first card, the third, a run card of its own; with it off (`-nosandbox`); and the
+    // outside card beside them)
+    Scene { name: "words-nosb-first", claude: "nosb", files: MAIN, keys: WORDS_NOSB[0] },
+    Scene { name: "words-nosb-third", claude: "nosb", files: MAIN, keys: WORDS_NOSB[1] },
+    Scene { name: "words-nosb-run", claude: "nosbrun", files: MAIN, keys: WORDS_NOSB[2] },
+    Scene { name: "words-off-run-nosandbox", claude: "nosbrun", files: MAIN, keys: WORDS_NOSB[3] },
+    Scene { name: "words-outside", claude: "card", files: MAIN, keys: WORDS_NOSB[4] },
+    // (#631: the language servers' two pause lines — a protected file made, a folder git takes for a repository — the
+    // stand-in server running, Claude's commands with the sandbox off so the run makes them; #632: the host card waiting,
+    // `also-read` the grant card, `basemoved` a narrow card)
+    Scene { name: "words-lsp-made-nosandbox", claude: "protmade", files: MAIN, keys: WORDS_LSP[0] },
+    Scene { name: "words-lsp-looks-nosandbox", claude: "lookalike", files: MAIN, keys: WORDS_LSP[1] },
+    // (…and paused with no card up: the turn goes on after the run that made it)
+    Scene { name: "words-lsp-mid-nosandbox", claude: "protmademid", files: MAIN, keys: WORDS_LSP[0] },
+    Scene { name: "words-host", claude: "refusedhost", files: MAIN, keys: WORDS_HOST },
+];
+
+/// #631's scenes' keys: the chat's question, the run card's `y` (the sandbox off), the pause said.
+const WORDS_LSP: [&[&str]; 2] = [
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "add the build script",
+        "\r",
+        "@20?build.rs",
+        "@1",
+        "\x11",
+        "@1",
+        "y",
+        "@20?paused",
+        "@2",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "set up the fixture",
+        "\r",
+        "@20?mkdir",
+        "@1",
+        "\x11",
+        "@1",
+        "y",
+        "@20?paused",
+        "@2",
+    ],
+];
+
+/// #632's host card: refused-host's keys up to the host's card, waiting.
+const WORDS_HOST: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "check the upload host",
+    "\r",
+    "@20?It runs curl",
+    "@1",
+    "\x11",
+    "@1",
+    "y",
+    "@20?command reach",
+    "@1",
+];
+
+/// #647's scenes' keys: the chat's question, then each card focused (`C-q`) and answered `y` as far as the one shot.
+const WORDS_NOSB: [&[&str]; 5] = [
+    &["@1", " ", "l", "@1", "look around", "\r", "@?without a sandbox", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "look around",
+        "\r",
+        "@?without a sandbox",
+        "@1",
+        "\x11",
+        "@1",
+        "y",
+        "@?git status --short",
+        "@1",
+        "\x11",
+        "@1",
+        "y",
+        "@?wc -l src",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "look around",
+        "\r",
+        "@?without a sandbox",
+        "@1",
+        "\x11",
+        "@1",
+        "y",
+        "@?touch notes",
+        "@1",
+    ],
+    &["@1", " ", "l", "@1", "look around", "\r", "@?touch notes", "@1"],
+    &["@1", " ", "l", "@1", "run the tests", "\r", "@?Its reason", "@1"],
+];
+
+/// #640's scenes' keys: the terminal opened, grown to 13 rows and left, the chat's question, the turn's review,
+/// `space v q` (then `C-w =`; or `C-q`).
+const WORDS_HALIL: [&[&str]; 7] = [
+    &[
+        "@1",
+        " ",
+        "T",
+        "@2",
+        "\x17",
+        "+",
+        "@1",
+        "\x1c",
+        "\x1c",
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "v",
+        "q",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "T",
+        "@2",
+        "\x17",
+        "+",
+        "@1",
+        "\x1c",
+        "\x1c",
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "v",
+        "q",
+        "@1",
+        "\x17",
+        "=",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "T",
+        "@2",
+        "\x17",
+        "+",
+        "@1",
+        "\x1c",
+        "\x1c",
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "v",
+        "q",
+        "@1",
+        "@~600",
+        "\x11",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "T",
+        "@2",
+        "\x17",
+        "+",
+        "@1",
+        "\x1c",
+        "\x1c",
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "v",
+        "q",
+        "@1",
+        "\x17",
+        "=",
+        "@1",
+        "\x11",
+        "@1",
+    ],
+    // (the barest: no terminal, the chat hidden once it asked)
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "L",
+        "@1",
+        " ",
+        "v",
+        "q",
+        "@1",
+        "\x11",
+        "@1",
+    ],
+    // (the chat docked, no terminal; `C-q` after)
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "v",
+        "q",
+        "@1",
+        "\x11",
+        "@1",
+    ],
+    // (the halil layout, then the chat hidden and `C-q`)
+    &[
+        "@1",
+        " ",
+        "T",
+        "@2",
+        "\x17",
+        "+",
+        "@1",
+        "\x1c",
+        "\x1c",
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "v",
+        "q",
+        "@1",
+        " ",
+        "L",
+        "@1",
+        "\x11",
+        "@1",
+    ],
 ];
 
 /// `scenes --compare A B`: each shot in `A` against `B`'s of its name, pixel for pixel — `same`, or the box the
@@ -6694,7 +6991,9 @@ fn one(
     if own_home(scene.name) {
         let homes = homes(&dir.0, &|k| std::env::var_os(k))?;
         let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("home/tarae-demo"))?;
-        return shot::take_at(&setup, &keys, size, 1, &dir.0.join("state"), &homes, out).map(|_| ());
+        // (at `TARAE_SHOT_SCALE`, as `shot::take` takes the others)
+        let scale = shot::scale(std::env::var("TARAE_SHOT_SCALE").ok().as_deref())?;
+        return shot::take_at(&setup, &keys, size, scale, &dir.0.join("state"), &homes, out).map(|_| ());
     }
     let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("tarae-demo"))?;
     shot::take(&setup, &keys, size, &dir.0.join("state"), out)
@@ -7433,7 +7732,7 @@ fn scene_config(scene: &Scene, bg: &str, transparent: bool, me: &Path, dir: &Pat
     if scene.name.ends_with("-nosandbox") {
         toml = toml.replacen("[llm]\n", "[llm]\nsandbox = false\n", 1);
     }
-    if scene.name == "diag" {
+    if scene.name == "diag" || scene.name.starts_with("words-lsp-") {
         toml = stand_in_lsp(me, toml);
     }
     if scene.name.starts_with("chatlink-") || scene.name.starts_with("rest-") {
@@ -7464,11 +7763,14 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
     let review = match script {
         "boardmid" => "\n[review]\nrisky = [\"knot.rs\"]\nscreen = [\"thread.rs\"]\nboard-at-once = 2\n",
         "boarddone" => "\n[review]\nrisky = [\"knot.rs\"]\n",
+        // (#640's: the turn's edit of a high-risk file, its review's end held for a look)
+        "sixhigh" | "fourhigh" => "\n[review]\nrisky = [\"main.rs\"]\n",
+        "manyhigh" => "\n[review]\nrisky = [\"main.rs\", \"high*\"]\n",
         _ => "",
     };
     // (motion §2's: review at the end, following or not)
     let llm = match script {
-        "six" | "sixend" => "review-at-end = true\nfollow = false\n",
+        "six" | "sixend" | "sixhigh" | "fourhigh" | "manyhigh" => "review-at-end = true\nfollow = false\n",
         "sixfollow" => "review-at-end = true\nfollow = true\n",
         // (V4's: the edits land unseen, so the turn runs through to its replay)
         "v4" => "review-at-end = true\n",
@@ -8174,6 +8476,9 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "six",
     "sixfollow",
     "sixend",
+    "sixhigh",
+    "fourhigh",
+    "manyhigh",
     "strip",
     "askframe",
     "now",
@@ -8218,7 +8523,11 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "keptblocked",
     "lookalike",
     "lookalikenoted",
+    "protmade",
+    "protmademid",
     "safebare",
+    "nosb",
+    "nosbrun",
     "big",
     "fork",
     "foot41",
@@ -8361,8 +8670,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // (two changes: the press's sheet — the first answered, the second in hand)
             "two" => turn.explain_items(2)?,
             // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
-            "six" | "sixfollow" => turn.six(true)?,
-            "sixend" => turn.six(false)?,
+            "six" | "sixfollow" => turn.six(true, 0)?,
+            "sixend" | "sixhigh" => turn.six(false, 0)?,
+            "fourhigh" => turn.six(false, 3)?,
+            "manyhigh" => turn.six(false, 8)?,
             // (motion §4: twenty stops, one run failing, held at the last)
             "strip" => turn.strip()?,
             "now" => turn.now(Held::Run)?,
@@ -8421,8 +8732,13 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // answered y, then a run only edits its config — the card again, with no r)
             "lookalike" => turn.look_alike(false)?,
             "lookalikenoted" => turn.look_alike(true)?,
+            "protmade" => turn.prot_made()?,
+            "protmademid" => turn.prot_made_mid()?,
             // (#610 L3: a turn a command ran in, making nothing git takes — the offer's card by itself at its end)
             "safebare" => turn.safe_bare()?,
+            // (#647: no sandbox — three checks' cards; a check, then a run card of its own)
+            "nosb" => turn.no_sandbox_runs(false)?,
+            "nosbrun" => turn.no_sandbox_runs(true)?,
             // (Short 4's second turn: what tarae sent by itself as your run again of the `.env` read ended)
             "runtime" if turns > 1 => turn.runtime_allowed()?,
             "runtime" => turn.runtime()?,
@@ -9094,16 +9410,18 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// Motion §2's turn: a word, then one edit rewriting six lines of the loop, sent whole (no input streamed: the
     /// frames kept are the landing's and its drying's) — then, with `pause`, three seconds before its last words and
     /// the result (the drying runs out before the turn's review opens), else the result at once.
-    fn six(&mut self, pause: bool) -> io::Result<()> {
+    fn six(&mut self, pause: bool, more: usize) -> io::Result<()> {
         self.words("I will make the loop keep the first strand, in one go.")?;
         std::thread::sleep(Duration::from_millis(500));
         let old = "    let first = Thread { name: \"타래\".into(), knots: vec![1, 2, 3] };\n    threads.insert(first.name.clone(), first);\n    for (name, t) in &threads {\n        println!(\"{name}: {} knots, {} long\", t.knots.len(), t.length());\n";
         let new = "    let first = Thread { name: \"타래\".into(), knots: vec![1, 2, 3, 5] };\n    threads.entry(first.name.clone()).or_insert(first);\n    for (name, t) in threads.iter() {\n        let long = t.length();\n        println!(\"{name}: {} knots, {long} long\", t.knots.len());\n        debug_assert!(long > 0);\n";
-        self.call(
-            2,
-            "edit",
-            json!({"edits": [{"file_path": "src/main.rs", "old_string": old, "new_string": new}]}),
-        )?;
+        let mut edits = vec![json!({"file_path": "src/main.rs", "old_string": old, "new_string": new})];
+        // (#640's: more files made beside it — `fourhigh` three, `manyhigh` eight, each a few lines)
+        edits.extend((1..=more).map(|i| {
+            let text = format!("//! Strand {i}.\n\npub fn strand_{i}() -> usize {{\n    {i}\n}}\n");
+            json!({"file_path": format!("src/high{i}.rs"), "old_string": "", "new_string": text})
+        }));
+        self.call(2, "edit", json!({ "edits": edits }))?;
         if pause {
             std::thread::sleep(Duration::from_secs(3));
         }
@@ -9639,12 +9957,52 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
+    /// #631's turn: a protected file made (a build script), then the tests — held on the protected-made card, the
+    /// language servers paused. Run in the scene's own project.
+    fn prot_made(&mut self) -> io::Result<()> {
+        self.words("I'll add the build script the parser needs, then run the tests.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "printf 'fn main() {}\\n' > build.rs"}))?;
+        self.call(2, "run", json!({"command": "cargo test -q parser"}))?;
+        self.words("Done.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #631's question: the build script made, then the turn goes on writing — no command after it, so no card asks yet
+    /// (the servers' own waits for the turn's end) while the servers are paused. Held 30 s: the shot is taken in it.
+    fn prot_made_mid(&mut self) -> io::Result<()> {
+        self.words("I'll add the build script the parser needs.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "printf 'fn main() {}\\n' > build.rs"}))?;
+        self.words("The script is in place. Next I'll work out which grammar rules the parser")?;
+        std::thread::sleep(Duration::from_secs(30));
+        self.words(" needs.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
     /// #610 L3's turn: one command run (its card answered), nothing git takes for a repository made — the offer about
     /// git's bare repositories comes by itself as the turn ends.
     fn safe_bare(&mut self) -> io::Result<()> {
         self.words("I'll make the fixtures folder the parser tests read.")?;
         self.text("\n")?;
         self.call(1, "run", json!({"command": "mkdir -p tests/fixtures"}))?;
+        self.words("Done.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #647's turns: three checks, each a card where there's no sandbox (the session's first, then one a run) — or, `run`,
+    /// a check then a command that asks for itself (its run card, saying there's none or it's off).
+    fn no_sandbox_runs(&mut self, run: bool) -> io::Result<()> {
+        self.words("I'll look around the crate first.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "ls src"}))?;
+        match run {
+            true => self.call(2, "run", json!({"command": "touch notes.txt"}))?,
+            false => {
+                self.call(2, "run", json!({"command": "git status --short"}))?;
+                self.call(3, "run", json!({"command": "wc -l src/main.rs"}))?;
+            }
+        }
         self.words("Done.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }

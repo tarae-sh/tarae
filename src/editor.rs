@@ -10675,7 +10675,7 @@ mod tests {
         let s = screen(&mut ed);
         assert!(s.contains("Claude changes 3 files") && s.contains("replace `old_(\\w+)` → `new_$1`"), "{s}");
         assert!(s.contains("4 matches in 3 files:") && s.contains("src/deep/c.rs  1"), "{s}");
-        let line = "╰─ C-q answer · y accept · r each · v see · n decline ─╯";
+        let line = "╰─ C-q answer · y Accept · r Each · v See · n Decline ─╯";
         assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "its answers on its bottom line\n{s}");
         settled(&mut ed);
         // `v`: every change, file by file
@@ -11099,7 +11099,7 @@ mod tests {
         let mut parser = vt100::Parser::new(40, 140, 0);
         parser.process(&bytes);
         // (its answers on its bottom line, the form its width gives — the card as wide as what it reads makes it)
-        let says = "C-q answer · y once · a chat · s session · A always · n no";
+        let says = "C-q answer · y Once · a Chat · s Session · A Always · n No";
         let s = parser.screen().contents();
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
@@ -13187,7 +13187,7 @@ mod tests {
         let s = settled(&mut ed, crate::blocked::GRANT_TITLE);
         // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
         // wide as the folder it names makes it)
-        let says = "esc back · y once · a chat · s session · A always · n no";
+        let says = "esc back · y Once · a Chat · s Session · A Always · n No";
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         feed(&mut ed, "a");
         assert!(ed.workspace.claude.chat.as_ref().unwrap().allowed.write.contains(&deep));
@@ -13586,7 +13586,7 @@ mod tests {
         assert!(s.contains("marker.txt"), "{s}");
         // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
         // wide as its path makes it, whatever the system's temp folder: #126, `/tmp/…` on Linux)
-        let says = "C-q answer · y once · a chat · s session · A always · n";
+        let says = "C-q answer · y Once · a Chat · s Session · A Always · n";
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         answer(&mut ed, "n");
         let a = answered(&mut ed, "p2");
@@ -20450,7 +20450,7 @@ mod tests {
         assert!(s.contains("more lines, not read yet"), "{s}");
         // (the exact line each width gives: at 140 — its own width over the chat, #177 — its whole words)
         let line = |ed: &Editor| crate::term::card_line(ed).unwrap_or_default();
-        assert_eq!(line(&ed), "╰─ C-q answer · y once it's read · v read it all · n No ─────────╯", "{s}");
+        assert_eq!(line(&ed), "╰─ C-q answer · y once it's read · v Read it all · n No ─────────╯", "{s}");
         let hint_color = |ed: &mut Editor| {
             let p = frame(ed);
             let s = p.screen().contents();
@@ -20469,10 +20469,10 @@ mod tests {
             parser.screen().contents()
         };
         let s = narrow(&mut ed, 80);
-        // (at its reading width there, 40 — wider than the chat, #177 — the way in, `y once read` and `v read all`
+        // (at its reading width there, 40 — wider than the chat, #177 — the way in, `y once read` and `v Read all`
         // whole; never `y run` — as wide as its cut row's widest form, `↑ 12 lines above, open but not read to its end`,
-        // so `n no` fits: the card keeps its width as the wheel reads it)
-        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n no ─╯", "80 columns:\n{s}");
+        // so `n No` fits: the card keeps its width as the wheel reads it)
+        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v Read all · n No ─╯", "80 columns:\n{s}");
         let plain = cut_color(&mut ed);
         let y_at = |ed: &Editor| ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').map(|b| (b.0, b.1));
         let before = y_at(&ed);
@@ -20497,7 +20497,7 @@ mod tests {
         // (focused since its early `y`: `esc back` where its way in was)
         assert_eq!(
             line(&ed),
-            "╰─── esc back · y Run · v read it all · n No ────────────────────╯",
+            "╰─── esc back · y Run · v Read it all · n No ────────────────────╯",
             "its meaning back"
         );
         assert_eq!(y_at(&ed), waiting_at, "no narrower once read:\n{s}");
@@ -20570,7 +20570,7 @@ mod tests {
         assert!(s.contains("more lines, not read yet"), "{s}");
         assert_eq!(
             crate::term::card_line(&ed).as_deref(),
-            Some("╰─ C-q answer · y once read · v read all · n hold back ─╯"),
+            Some("╰─ C-q answer · y once read · v Read all · n Hold back ─╯"),
             "{s}"
         );
         assert!(!s.contains("y Trust"), "{s}");
@@ -20910,6 +20910,107 @@ mod tests {
         assert_eq!(fg("Its reason: the network"), theme("ui.virtual"), "Claude's words: faint");
         let cmd = fg("cargo fetch");
         assert!(cmd != theme("warning") && cmd != theme("ui.virtual"), "the command: full strength");
+    }
+
+    /// The colour the first cell of `needle` is drawn in on a 120×40 frame of `ed`, and the theme's warning colour.
+    pub(crate) fn drawn_fg(ed: &mut Editor, needle: &str) -> (vt100::Color, vt100::Color) {
+        let mut bytes = Vec::new();
+        crate::term::render(ed, &mut bytes, 120, 40).unwrap();
+        let mut parser = vt100::Parser::new(40, 120, 0);
+        parser.process(&bytes);
+        let screen = parser.screen();
+        let (y, row) = screen.rows(0, 120).enumerate().find(|(_, r)| r.contains(needle)).expect(needle);
+        let x = row[..row.find(needle).unwrap()].chars().count();
+        let warning = match ed.theme.try_get("warning").and_then(|s| s.fg) {
+            Some(crossterm::style::Color::Rgb { r, g, b }) => vt100::Color::Rgb(r, g, b),
+            c => panic!("warning: {c:?}"),
+        };
+        (screen.cell(y as u16, x as u16).unwrap().fgcolor(), warning)
+    }
+
+    /// #647: where a card's yes means "it runs with all your permissions" — no sandbox here, or it's off — that
+    /// sentence is the card's warning line, in the warning colour as the outside card's: the session's first no-sandbox
+    /// card (its answers' paragraph body ink), a later one, and a run card that asks, with none and with it off. A
+    /// partial sandbox's line — it runs in it as far as it goes — stays body ink on both. Nothing is answered: nothing
+    /// runs.
+    #[test]
+    fn all_your_permissions_is_said_in_the_warning_colour() {
+        use crate::sandbox::Availability;
+        use crate::tools::NoSandbox;
+        use serde_json::json;
+        crossterm::style::force_color_output(true);
+        // (`touch` let through, a check: past no card of its own, to the no-sandbox card; else the run card asks)
+        let card = |here: Availability, on: bool, asked: Option<NoSandbox>, allowed: bool| {
+            let mut ed = editor("text\n");
+            (ed.sandbox, ed.config.llm.sandbox, ed.workspace.claude.no_sandbox) = (here, on, asked);
+            if allowed {
+                ed.config.llm.run_allow = vec!["touch".into()];
+            }
+            let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "run",
+                "arguments": {"command": "touch made"}}});
+            assert!(crate::tools::mcp(&mut ed, 0, "c1", &msg).is_none(), "it waits for the user");
+            settle_until(&mut ed, |ed| !ed.offers.is_empty());
+            ed
+        };
+        // (the line starting `needle`: whether it's the card's warning line, and whether it's drawn in its colour)
+        let warned = |ed: &mut Editor, needle: &str| {
+            let o = ed.offers.first().expect("its card");
+            let at = o.question.split('\n').position(|l| l.starts_with(needle)).expect(needle);
+            let line = o.warning.as_ref().is_some_and(|w| *w == (at..at + 1))
+                || o.warnings.iter().any(|w| *w == (at..at + 1));
+            let (fg, warning) = drawn_fg(ed, needle);
+            assert_eq!(line, fg == warning, "{needle}: its line and its colour agree");
+            line
+        };
+        let missing = || Availability::Missing("not on this system".into());
+        let partial =
+            || Availability::Partial("this kernel's Landlock can't control truncating files".into());
+        // The session's first no-sandbox card: what yes means warned, its answers body ink
+        let mut ed = card(missing(), true, None, true);
+        assert!(matches!(ed.offers[0].what, crate::offer::What::NoSandbox { first: true, .. }));
+        assert!(warned(&mut ed, "There's no sandbox here"), "the first card's");
+        assert!(!warned(&mut ed, "Asked once until"), "its answers: body ink");
+        // A later one (after its `y`)
+        let mut ed = card(missing(), true, Some(NoSandbox::Ask), true);
+        assert!(matches!(ed.offers[0].what, crate::offer::What::NoSandbox { first: false, .. }));
+        assert!(warned(&mut ed, "There's no sandbox here"), "a later card's");
+        // A partial sandbox: body ink
+        let mut ed = card(partial(), true, None, true);
+        assert!(!warned(&mut ed, "The sandbox here goes only so far"), "partial: body ink");
+        // The run card (with none, after the session card's `y`), and with it off
+        let mut ed = card(missing(), true, Some(NoSandbox::Ask), false);
+        assert!(matches!(ed.offers[0].what, crate::offer::What::Run(_)));
+        assert!(warned(&mut ed, "No sandbox here"), "the run card with none");
+        let mut ed = card(Availability::Ready, false, None, false);
+        assert!(warned(&mut ed, "The sandbox is off"), "the run card with it off");
+        let mut ed = card(partial(), true, Some(NoSandbox::Ask), false);
+        assert!(matches!(ed.offers[0].what, crate::offer::What::Run(_)));
+        assert!(!warned(&mut ed, "The sandbox here goes only so far"), "the run card, partial: body ink");
+    }
+
+    /// #647: `space m s outside`'s card says what yes means on a line of its own, in the warning colour as Claude's
+    /// outside card does; how Claude hears the run's end under it, body ink. Dismissed: nothing runs.
+    #[test]
+    fn the_panels_outside_card_warns_in_its_colour() {
+        crossterm::style::force_color_output(true);
+        let mut ed = editor("text\n");
+        let job = crate::tools::Job::Command("cargo fetch".into(), ed.workspace.root.clone());
+        ed.workspace.blocked = Some((crate::blocked::BlockedRun::of(job), Vec::new()));
+        ed.sandbox_grant("outside").unwrap();
+        let o = ed.offers.first().expect("its card");
+        assert_eq!(o.title, crate::blocked::OUTSIDE_TITLE);
+        let lines: Vec<&str> = o.question.split('\n').collect();
+        let at =
+            lines.iter().position(|l| l.starts_with("Outside the sandbox it runs")).expect("what yes means");
+        assert!(lines[at].ends_with("this once."), "a line of its own: {}", o.question);
+        assert_eq!(o.warning, Some(at..at + 1));
+        let then = lines[at + 1].to_string();
+        assert!(then.starts_with("Claude "), "how Claude hears the end, under it: {}", o.question);
+        let (fg, warning) = drawn_fg(&mut ed, "Outside the sandbox it runs");
+        assert_eq!(fg, warning, "what yes means: the warning colour");
+        let (fg, warning) = drawn_fg(&mut ed, &then);
+        assert_ne!(fg, warning, "the end's line: body ink");
+        ed.offer_dismiss();
     }
 
     /// The screen as text reads a real frame the way a terminal shows it (checked against a terminal emulator:

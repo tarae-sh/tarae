@@ -777,7 +777,7 @@ fn a_cards_warning_leads_with_what_it_does_and_folds_the_how_to() {
     assert_eq!(lines[3], format!("  {say}"), "the how-to after it, hanging");
     assert_eq!((o.warnings.len(), &o.warnings[0]), (1, &(2..3)), "the lead in the warning colour");
     assert_eq!((o.details.len(), &o.details[0]), (1, &(3..4)), "the how-to folded off the card");
-    // Drawn: the lead whole, the how-to nowhere, `v see` on its bottom line
+    // Drawn: the lead whole, the how-to nowhere, `v See` on its bottom line
     let shown = |ed: &mut crate::editor::Editor| {
         let mut frame = Vec::new();
         crate::term::render(ed, &mut frame, 120, 34).unwrap();
@@ -801,7 +801,7 @@ fn a_cards_warning_leads_with_what_it_does_and_folds_the_how_to() {
         .collect();
     assert!(inside.contains(&tight(&lead)), "the lead whole:\n{card}");
     assert!(!card.contains("mktemp") && !card.contains("checked form"), "the how-to folded:\n{card}");
-    assert!(card.lines().any(|r| r.contains("╰") && r.contains("v see")), "{card}");
+    assert!(card.lines().any(|r| r.contains("╰") && r.contains("v See")), "{card}");
     // `C-q v`: the card's whole text, the how-to in it
     crate::chatnotes::tests::feed(&mut ed, "<C-q>v");
     assert!(ed.offer_reading(), "its whole text in sight");

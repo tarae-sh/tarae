@@ -252,11 +252,12 @@ up what matters least first, in one order. Kept longest:
 
 1. its way in, `C-q answer` (inside zellij its twin, `F2 answer`) — without it nothing on the card says your keys
    don't answer it;
-2. its yes, `y`, in its short words (`y once`, `y move`) — the answer you read the card for is never a bare letter —,
+2. its yes, `y`, in its short words (`y Once`, `y Move`) — the answer you read the card for is never a bare letter —,
    and answers that last or can't be taken back, in theirs — each card kind marks them on its answers
    (`y Remove checkout`, `y Commit`, `y Stop it`, `y Bring`, a trust, a capital such as `N` never or `D` remove both,
-   the `a`/`s` grants), and a cut card's `y once read` and `v read all`;
-3. the other answers' short words (`y move · c all · v files · n not now`), then their keys alone, the last first.
+   the `a`/`s` grants), and a cut card's `y once read` and `v Read all`;
+3. the other answers' short words, in the case of their whole ones (`y Move · c All · v Files · n Not now`), then
+   their keys alone, the last first.
 
 Past that, the card grows left over the code by just the cells its line needs, its corner where it was —
 bottom-right, over the chat's foot or a docked list's, or above the status line: asks never go anywhere else. Only a
@@ -278,7 +279,7 @@ before that (a repeat) is refused and said on it, never an answer to a card not 
 the stack's: a one-row peek each under it, this session's first, then other sessions' named in their colours — the
 card and three peeks at most. A card that came on its own never covers a pane you opened (a floating list, the
 floating chat): it folds to its peeks at the screen's foot, `C-q` standing it whole. A card cut
-short says how much and whether it's read (`↓ 45 more lines, not read yet`); its bottom line has `v read all`, and
+short says how much and whether it's read (`↓ 45 more lines, not read yet`); its bottom line has `v Read all`, and
 a yes that waits for it says `y once read` until it is.
 
 Claude's calls made at once can stack cards asking for the very same run — the same command, character for
@@ -1605,8 +1606,8 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   card comes at once while Claude waits
 - **Claude can ask to run a command outside the sandbox**, when one can't work in it (it needs the network,
   say), but only with a reason. Its card always asks, even for a command that would otherwise run at once.
-  It shows the command, Claude's reason, and that it runs with all your permissions, this once: `y` or `n`,
-  nothing kept. A request without a reason is turned back before it reaches you. When all it needs is one unix
+  It shows the command, Claude's reason, and, in the warning colour, that it runs with all your permissions, this
+  once: `y` or `n`, nothing kept. A request without a reason is turned back before it reaches you. When all it needs is one unix
   socket (a server's — `cargo xtask linux` talks to colima's Docker), Claude asks for that instead
   (`unix_socket`): the card names the file, says everything else stays in the sandbox, and offers `y` this
   run or `a` this socket for the rest of the conversation — whatever command asks for it. Asked for it again,
@@ -1707,7 +1708,7 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   `script-changed`, `edit-protected`, `outside-sandbox`; `{paths}` with the first), `say`, `asks`, `start`
   (said as the run starts when no card asks: one toast, its chat row, Claude's report), and `lead` — what it
   does, in plain words, at most 100 characters: the card's `▲` line, its `say` then the card's details, off
-  the card and whole on `v see`; Claude, the log and the run's chat row keep `say`. In a lead `{named}` is what
+  the card and whole on `v See`; Claude, the log and the run's chat row keep `say`. In a lead `{named}` is what
   the command names, as written, home spelled `~` (`a, b and c`, then `and 2 more`), `{it}` is `it` or `them`;
   a command naming nothing has no lead, its `say` the line. The bash pack's `rm -r` says
   `▲ It removes ~/Documents and everything in it (bash pack)`, its checked form behind `v`; `sudo`'s leads with
@@ -1744,7 +1745,10 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   Claude's commands go until the session ends, in every chat of it: `y` runs this one and asks before each
   next (`y` runs it, `s` turns to the next answer, `n` not this one) · `s` runs checks and reads unasked (a
   command that would ask anyway still has its own card) · `n` runs none, and Claude is told why once. The
-  answer is never kept: after a restart the first command asks again. While they run without one, the chat's
+  answer is never kept: after a restart the first command asks again. Every card that asks there — that first
+  one, each later one, and a command's own card, with none here or with `llm.sandbox` off — says that it runs
+  with all your permissions in the warning colour, as the card for a run outside the sandbox does (a partial
+  sandbox's line, that it runs in it as far as it goes, doesn't). While they run without one, the chat's
   title says `› no sandbox`. `llm.sandbox = false` turns the sandbox off; the title says so too
 
 #### On Linux

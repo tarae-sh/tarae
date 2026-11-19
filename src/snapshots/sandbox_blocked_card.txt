@@ -23,7 +23,7 @@
 20                                      │ which runs again now with it open, whichever you choose.   │
 21                                      │ Claude hears how it ended with your next message. s lasts  │
 22                                      │ until this session ends, A until :granted takes it back.   │
-23                                      ╰─── esc back · y once · a chat · s session · A always · n ──╯
+23                                      ╰─── esc back · y Once · a Chat · s Session · A Always · n ──╯
 24
 25 ─ npm test ▲ ── failed 2.4s ────────────────────────────────────────────────────── space m c close ─
 26   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacache/index-v5  +1

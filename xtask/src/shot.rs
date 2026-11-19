@@ -541,7 +541,7 @@ fn picture(vt: &Vt, scale: usize, out: &Path) -> Result<()> {
 }
 
 /// `TARAE_SHOT_SCALE`'s value: 1 when unset, else a whole number from 1 to 4.
-fn scale(given: Option<&str>) -> Result<usize> {
+pub(crate) fn scale(given: Option<&str>) -> Result<usize> {
     match given.map(|v| v.trim().parse::<usize>()) {
         None => Ok(1),
         Some(Ok(s @ 1..=4)) => Ok(s),

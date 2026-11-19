@@ -675,13 +675,13 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
     // (the exact line: `a` and `s` keep their words, `y` says it waits; read whole, `y` its meaning in that form)
     let line = |ed: &Editor| crate::term::card_line(ed).unwrap_or_default();
     assert!(s.contains("more lines, not read yet"), "{s}");
-    assert_eq!(line(&ed), "╰─ C-q answer · y once read · a chat · s session · v details · n ─╯", "{s}");
+    assert_eq!(line(&ed), "╰─ C-q answer · y once read · a Chat · s Session · v Details · n ─╯", "{s}");
     let waiting = y_at(&ed);
     ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
     let s = draw(&mut ed);
     assert_eq!(
         line(&ed),
-        "╰─ C-q answer · y once · a chat · s session · v details · n ──────╯",
+        "╰─ C-q answer · y Once · a Chat · s Session · v Details · n ──────╯",
         "its meaning back: {s}"
     );
     assert_eq!(y_at(&ed), waiting, "no narrower once read:\n{s}");
@@ -730,7 +730,7 @@ fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
     assert!(sent().is_empty(), "nothing answered");
     let said = status(&mut ed, cols);
     let line = crate::term::card_line(&ed).unwrap_or_else(|| panic!("drawn at {cols}: {said}"));
-    assert!(line.contains(" · a chat · s session · "), "its lasting answers in words: {line}");
+    assert!(line.contains(" · a Chat · s Session · "), "its lasting answers in words: {line}");
     // (the width they need, not the card's least: the line full, no run of `─` left before its corner)
     assert!(line.ends_with(" ─╯") && !line.ends_with("──╯"), "{line}");
     // Drawn again, it answers again: its `y` reaches the proxy (nothing left over from the frame with no room)
@@ -786,7 +786,7 @@ fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     settled(&mut ed);
     // (over a chat 48 wide, another card behind it: its line — its way in, what lasts in words — is wider than the
     // chat, so the card grows left to it; no key in its body)
-    let line = "╰─ C-q answer · y once · a chat · s session · A always · n ──╯";
+    let line = "╰─ C-q answer · y Once · a Chat · s Session · A Always · n ──╯";
     assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line));
     let (bytes, w, h) = ed.last_frame.clone().unwrap();
     let mut p = vt100::Parser::new(h, w, 0);

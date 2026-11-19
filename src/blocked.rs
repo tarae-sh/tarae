@@ -455,10 +455,14 @@ impl Editor {
                 let warned = crate::cardwarn::names_kept(&crate::sandboxpack::get().warn, &cmd, &run.kept);
                 let (mut question, mut warnings, mut details) = (cmd.clone(), Vec::new(), Vec::new());
                 crate::cardwarn::put_on_card(&mut question, &warned, &mut warnings, &mut details);
-                question.push_str(&format!(
+                // (#647: what yes means on a line of its own, in the warning colour as Claude's outside card says it;
+                // how Claude hears the end under it, body ink)
+                question.push_str(
                     "\n\nOutside the sandbox it runs with all your permissions — your files, your network — this \
-                     once. {then}"
-                ));
+                     once.",
+                );
+                let at = question.split('\n').count() - 1;
+                question.push_str(&format!("\n{then}"));
                 let request = Request::Run {
                     past: Past::Outside,
                     sandboxed: crate::cards::sandboxed(self.config.llm.sandbox, &self.sandbox),
@@ -470,7 +474,7 @@ impl Editor {
                 let what = crate::offer::What::Outside { run };
                 let mut o =
                     crate::offer::Offer::new(OUTSIDE_TITLE.into(), &question, "", String::new(), what);
-                o = o.asked(asked).with_details(details);
+                o = o.asked(asked).with_details(details).warning(at..at + 1);
                 o.warnings = warnings;
                 o
             }

@@ -1348,16 +1348,14 @@ impl Editor {
         }
         if id == self.workspace.id && !paused.is_empty() {
             let names = paused.join(", ");
-            // (#610: folders git takes for a repository alone — what you do first, so a cut falls on the cause)
+            // (#610, #631: what you do first, then the cause, then when it's asked — `made_paused` as well)
+            let a = crate::llm::session_row(self).shown;
             match looks {
                 Some(verb) => self.set_warning(format!(
-                    "{names} paused until you answer the card — {}'s run {verb} a folder git takes for a repository",
-                    crate::llm::session_row(self).shown
+                    "{names} paused until you answer a card — {a}'s run {verb} a folder git takes for a repository; {}",
+                    crate::tools::made_asked(a)
                 )),
-                None => self.set_warning(format!(
-                    "{names} {}",
-                    crate::tools::made_paused(crate::llm::session_row(self).shown)
-                )),
+                None => self.set_warning(format!("{names} {}", crate::tools::made_paused(a))),
             }
         }
     }

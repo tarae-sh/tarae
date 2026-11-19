@@ -27,7 +27,7 @@
 24                                              │                                                    │
 25                                              │ Removing both deletes fix-login too — its commits  │
 26                                              │ are on other branches.                             │
-27                                              ╰─ C-q answer · y remove · D both · n cancel ────────╯
+27                                              ╰─ C-q answer · y Remove · D Both · n Cancel ────────╯
 28
 29  ● normal                                                                               rust   1:1
 ## bg · surface per cell, blank = ui.background

@@ -87,11 +87,11 @@
 22                                         f                                                         f
 23                                         f d d dddd ddddd ddddddd ddddd dddddddd dddd dddd         f
 24                                         f                                                         f
-25                                         f ddd ddddddd dd ddd ddddddddddddd d dd dddd dddd ddd     f
-26                                         f dddd dddddddddddd                                       f
+25                                         f www wwwwwww ww www wwwwwwwwwwwww w ww wwww wwww www     f
+26                                         f wwww wwwwwwwwwwww                                       f
 27                                         ff FFF ffffff f F ffff f F ffff ffff f F ff fffffffffffffff
 28
 29  a TTTTTT                                                                               dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary
-fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  w=warning  g=diff.plus

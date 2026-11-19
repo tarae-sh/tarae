@@ -27,7 +27,7 @@
 24                                             │ m shows its version; :w there goes on with it.      │
 25                                             │                                                     │
 26                                             │ X aborts the rebase: dev goes back as it was.       │
-27                                             ╰─ C-q answer · y continue · m message · X abort · n ─╯
+27                                             ╰─ C-q answer · y Continue · m Message · X Abort · n ─╯
 28
 29  ● normal                                                                               rust   1:1
 ## bg · surface per cell, blank = ui.background

@@ -594,31 +594,32 @@ fn plain(k: char, says: &'static str) -> Answer {
     (k, says, false)
 }
 
-/// The short words of answers whose first word wouldn't say them (`Offer::answers_short`).
+/// The short words of answers whose first word wouldn't say them (`Offer::answers_short`) — capitalised as the
+/// whole words are (#632: a narrower card's answers look like its wider twin's).
 const SHORT: &[(&str, &str)] = &[
-    ("Not now", "not now"),
-    ("Real value", "real value"),
-    ("This chat", "chat"),
-    ("This session", "session"),
-    ("Always here", "always"),
-    ("This command, this chat", "command"),
-    ("This command, these arguments, this chat", "command"),
-    ("This socket, this chat", "socket"),
-    ("Ask each time", "ask"),
-    ("Don't run them", "none"),
-    ("Hold back", "hold back"),
-    ("Remove both", "both"),
-    ("Go to them", "go there"),
-    ("All listed", "all"),
-    ("New sessions too", "new ones"),
-    ("What it waits on", "waits on"),
-    ("The front's instead", "front's"),
-    ("Its output", "output"),
-    ("Git tab", "git tab"),
-    ("Other base", "other base"),
-    ("Turn on", "turn on"),
-    ("See the diff", "diff"),
-    ("One by one", "each"),
+    ("Not now", "Not now"),
+    ("Real value", "Real value"),
+    ("This chat", "Chat"),
+    ("This session", "Session"),
+    ("Always here", "Always"),
+    ("This command, this chat", "Command"),
+    ("This command, these arguments, this chat", "Command"),
+    ("This socket, this chat", "Socket"),
+    ("Ask each time", "Ask"),
+    ("Don't run them", "None"),
+    ("Hold back", "Hold back"),
+    ("Remove both", "Both"),
+    ("Go to them", "Go there"),
+    ("All listed", "All"),
+    ("New sessions too", "New ones"),
+    ("What it waits on", "Waits on"),
+    ("The front's instead", "Front's"),
+    ("Its output", "Output"),
+    ("Git tab", "Git tab"),
+    ("Other base", "Other base"),
+    ("Turn on", "Turn on"),
+    ("See the diff", "Diff"),
+    ("One by one", "Each"),
 ];
 
 impl Offer {
@@ -1370,9 +1371,10 @@ impl Offer {
     }
 
     /// Its answers as its bottom line says them where they don't fit there whole (the user, 2026-10-25: a floating
-    /// card's keys are always in its bottom line, never rows inside): each its short words, in the same order —
-    /// `y move · c all · v more · n not now`; the card's text explains them. Its kind's own first (`Moves::short`),
-    /// else `SHORT`'s, else its first word; two alike keep their words whole (lowercase), or they'd say nothing apart.
+    /// card's keys are always in its bottom line, never rows inside): each its short words, in the same order and case
+    /// as the whole ones (#632) — `y Move · c All · v More · n Not now`; the card's text explains them. Its kind's own
+    /// first (`Moves::short`), else `SHORT`'s, else its first word; two alike keep their words whole, or they'd say
+    /// nothing apart.
     pub fn answers_short(&self, quick: bool) -> Vec<(char, String)> {
         let whole = self.answers(quick);
         let own = |k: char| match &self.what {
@@ -1382,14 +1384,14 @@ impl Offer {
         let short = |&(k, l): &(char, &'static str)| -> String {
             match own(k).or_else(|| SHORT.iter().find(|s| s.0 == l).map(|s| s.1)) {
                 Some(s) => s.to_string(),
-                None => l.split(' ').next().unwrap_or(l).trim_end_matches(',').to_lowercase(),
+                None => l.split(' ').next().unwrap_or(l).trim_end_matches(',').to_string(),
             }
         };
         let mut v: Vec<(char, String)> = whole.iter().map(|a| (a.0, short(a))).collect();
         let alike: Vec<bool> = v.iter().map(|a| v.iter().filter(|b| b.1 == a.1).count() > 1).collect();
         for (i, same) in alike.into_iter().enumerate() {
             if same {
-                v[i].1 = whole[i].1.to_lowercase();
+                v[i].1 = whole[i].1.to_string();
             }
         }
         v
