@@ -1176,6 +1176,22 @@ impl crate::editor::Editor {
         crate::split::Rect { x: (w - fw) / 2, w: fw, ..r }
     }
 
+    /// Whether `C-w =` changes a size the screen is laid out by — a share you set in this workspace's tree, a docked
+    /// group's size (#640: `C-q`'s row on a card with no room offers it only where it makes room, `term::card_no_room`).
+    pub fn sizes_set(&self) -> bool {
+        let s = self.sizes;
+        let auto = Sizes {
+            sessions: s.sessions,
+            messages: s.messages,
+            folders: s.folders,
+            sessions_dock: s.sessions_dock,
+            ..Sizes::default()
+        };
+        let mut split = self.workspace.split.clone();
+        split.even(&|k| self.workspace.own_sized(k));
+        s != auto || split != self.workspace.split
+    }
+
     /// `C-w =` — every size automatic again, and how each group lays its members (`C-w t`'s).
     pub fn sizes_auto(&mut self) {
         // (from a floating pane: it alone, back in the middle)

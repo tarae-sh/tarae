@@ -724,7 +724,8 @@ fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
     ed.handle_key("C-q".parse().unwrap());
     assert!(!ed.card_has_keys(), "C-q gives no keys to a card it can't draw");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-    assert_eq!(said, crate::editor::CARD_NO_ROOM);
+    // (#640: one row, what's short and by how much — the window, every size automatic)
+    assert_eq!(said, format!("the window has {} columns, the card needs {cols}", cols - 1));
     assert!(ed.keys_to().answers.is_empty(), "the state names no answer for it");
     assert_eq!(hosts_cards(&ed.offers).len(), 1, "not answered");
     assert!(sent().is_empty(), "nothing answered");

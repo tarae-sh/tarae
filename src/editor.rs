@@ -627,6 +627,8 @@ pub struct Screen {
     /// What the screen lacks for the front card this frame couldn't draw (`term::card_short`: `card needs 62 cols`,
     /// `card needs more rows`) — the status line says it, and `C-q` on it (#637).
     pub card_short: Option<String>,
+    /// What `C-q` says on that card, measured (`term::card_no_room`, #640) — its words at `card_key`.
+    pub card_no_room: Option<NoRoom>,
     /// The sessions' strip drawn on the screen's top row this frame (`term::draw_header`): the home of a bring's
     /// progress — the status line's chip says it only on a frame with none (#319).
     pub top_strip: std::cell::Cell<bool>,
@@ -1578,6 +1580,20 @@ pub struct Editor {
 
 /// Said for `C-q` on a card no frame has room for (#637) — the status line beside it says what the screen lacks.
 pub(crate) const CARD_NO_ROOM: &str = "no room to draw the card";
+
+/// What a card no frame has room for lacks, as `C-q` says it (#640, after #637: one row, in the pane's terms, the way
+/// out first where there is one — `term::card_no_room` measures it, `Editor::card_key` says it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoRoom {
+    /// A pane sized under the rows a card is laid in, `C-w =` changing a size: it makes room.
+    Sized { has: usize, needs: usize },
+    /// Every size automatic: the window's rows.
+    Rows { has: usize, needs: usize },
+    /// The window's columns.
+    Cols { has: usize, needs: usize },
+    /// More rows, no number.
+    More,
+}
 
 impl Editor {
     /// An editor whose root is the folder the tests run in (`main` gives its own: `with_root`).
@@ -6359,7 +6375,18 @@ impl Editor {
             // beside the status line's `▲3 waiting · card needs 38 rows` at 80 columns, which says what it needs)
             if self.offer_unshown_now() == up {
                 self.card_focus = None;
-                self.set_status(CARD_NO_ROOM);
+                match self.screen.card_no_room {
+                    Some(NoRoom::Sized { has, needs }) => self.set_status(format!(
+                        "C-w = makes room — the pane has {has} rows, the card needs {needs}"
+                    )),
+                    Some(NoRoom::Rows { has, needs }) => {
+                        self.set_status(format!("the window has {has} rows, the card needs {needs}"))
+                    }
+                    Some(NoRoom::Cols { has, needs }) => {
+                        self.set_status(format!("the window has {has} columns, the card needs {needs}"))
+                    }
+                    Some(NoRoom::More) | None => self.set_status(CARD_NO_ROOM),
+                }
                 return true;
             }
             self.card_focus_front();
@@ -20475,9 +20502,11 @@ mod tests {
         assert_eq!(line(&ed), "╰─ C-q answer · y once read · v Read all · n No ─╯", "80 columns:\n{s}");
         let plain = cut_color(&mut ed);
         let y_at = |ed: &Editor| ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').map(|b| (b.0, b.1));
-        let before = y_at(&ed);
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
         ed.card_focus = Some((o.0, o.1));
+        // (where it stands with the keys: over the chat's foot, its room down to the chat's floor — #640)
+        screen(&mut ed);
+        let before = y_at(&ed);
         answer(&mut ed, "y");
         assert_eq!(ed.offers.len(), 1, "y waits");
         let s = screen(&mut ed);
@@ -21353,7 +21382,9 @@ mod tests {
         ed.card_focus = None;
         feed(&mut ed, "<C-q>");
         assert!(!ed.card_has_keys(), "C-q gives no keys to a card it can't draw");
-        assert_eq!(status(&ed), CARD_NO_ROOM);
+        // (#640: one row, what's short and by how much — the window, every size automatic: no `C-w =` offered)
+        let needs = short.strip_prefix("card needs ").and_then(|s| s.strip_suffix(" rows")).expect("rows");
+        assert_eq!(status(&ed), format!("the window has 8 rows, the card needs {needs}"));
         // Room: `C-q` focuses it, its `n` answers it
         frame(&mut ed, 34);
         feed(&mut ed, "<C-q>");

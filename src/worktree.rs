@@ -5256,16 +5256,32 @@ mod tests {
             ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
         // Cut to fit a short screen: `v` is the card's text with the output after it (the review of 42: it was
-        // the card's text alone) — 80 columns (at its own width, #177, 112 hold it whole in 12 rows)
+        // the card's text alone) — 80 columns (at its own width, #177, 112 hold it whole in 12 rows), the chat out of
+        // sight (over its foot a card with the keys has the room down to its floor — #640 — and stands whole), as few
+        // rows as draw it
+        let chat_hidden = |ed: &mut Editor, hidden: bool| {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                c.hidden = hidden;
+            }
+        };
+        chat_hidden(&mut ed, true);
         let mut out = Vec::new();
-        crate::term::render(&mut ed, &mut out, 80, 12).unwrap();
-        ed.card_focus_front();
-        out.clear();
-        crate::term::render(&mut ed, &mut out, 80, 12).unwrap();
-        assert!(!ed.offer_seen_whole(), "cut at 12 rows");
+        let rows = (8..=30u16)
+            .find(|&rows| {
+                ed.card_focus = None;
+                out.clear();
+                crate::term::render(&mut ed, &mut out, 80, rows).unwrap();
+                ed.card_focus_front();
+                out.clear();
+                crate::term::render(&mut ed, &mut out, 80, rows).unwrap();
+                ed.screen.offer_card.is_some()
+            })
+            .expect("drawn at some height");
         let drawn: Vec<char> = ed.screen.offer_buttons.iter().map(|b| b.3).collect();
-        let mut vt = vt100::Parser::new(12, 80, 0);
+        let mut vt = vt100::Parser::new(rows, 80, 0);
         vt.process(&out);
+        assert!(!ed.offer_seen_whole(), "cut at {rows} rows\n{}", vt.screen().contents());
+        chat_hidden(&mut ed, false);
         assert!(drawn.contains(&'v'), "{drawn:?}\n{}", vt.screen().contents());
         feed(&mut ed, "v");
         let title = format!("{}Bring feat into main", crate::offer::CARD_VIEW);

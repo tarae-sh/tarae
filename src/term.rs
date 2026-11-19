@@ -910,6 +910,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         asks_ways: offer.as_ref().map(OfferCard::peek_ways).unwrap_or_default(),
         // (said once the frame knows whether the card stands: below, beside `offer_unshown`)
         card_short: None,
+        card_no_room: None,
         top_strip: Default::default(),
         news: Default::default(),
         offer_held: offer.is_none()
@@ -1262,6 +1263,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     // shows has no keys, `Editor::card_has_keys`)
     editor.screen.card_short =
         editor.offers.first().filter(|_| offer.is_none()).and(card_short(editor, &lay));
+    editor.screen.card_no_room =
+        editor.offers.first().filter(|_| offer.is_none()).and(card_no_room(editor, &lay));
     let unshown = (editor.offers.first())
         .filter(|_| editor.screen.card_short.is_some())
         .map(|o| (o.id, o.rev, editor.frames));
@@ -14882,11 +14885,47 @@ fn card_rows(text: &str, w: usize) -> Vec<String> {
         .collect()
 }
 
+/// What the screen lacks for the card up (`card_lack`): the window's columns it needs; the rows its area has and the
+/// window's it needs (its area under the 8 rows a card is laid in); more rows, no number.
+enum CardLack {
+    Cols(usize),
+    Rows { has: usize, window: usize },
+    MoreRows,
+}
+
 /// What the screen lacks for the card up when this frame couldn't draw it (#201: in a 50-column pane
 /// `:restart`'s card was nowhere, and nothing said one waited): the window's size it needs — `card needs 62 cols`,
 /// `card needs 20 rows` —, over the chat's foot too (P3 step 7d: whichever is short, the screen's width or its rows).
 /// None when it's drawn, or held back on purpose (a picker, keys under way, its text read in its buffer).
 fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
+    Some(match card_lack(editor, lay)? {
+        CardLack::Cols(cols) => format!("card needs {cols} cols"),
+        CardLack::Rows { window, .. } => format!("card needs {window} rows"),
+        CardLack::MoreRows => "card needs more rows".into(),
+    })
+}
+
+/// `C-q`'s row on a card this frame couldn't draw, measured (#640, after #637: one row, in the pane's terms, the way out
+/// first where there is one — `Editor::card_key` says it): a pane sized under the card's 8 rows — `C-w = makes room —
+/// the pane has 4 rows, the card needs 8`, only where `C-w =` changes a size (`Editor::sizes_set`); with every size
+/// automatic it's the window that's short, said with what it has and needs (`the window has 8 rows, the card needs
+/// 10`; the columns so too). Turning to a card drawn never comes here (the design session's rule, 2026-11-19: it's cut,
+/// never dropped) — this is what's left: a card no frame has room for.
+fn card_no_room(editor: &Editor, lay: &Layout) -> Option<crate::editor::NoRoom> {
+    use crate::editor::NoRoom;
+    let height = lay.status_y as usize + 1;
+    Some(match card_lack(editor, lay)? {
+        CardLack::Rows { has, .. } if editor.sizes_set() => NoRoom::Sized { has, needs: CARD_ROWS_MIN },
+        CardLack::Rows { window, .. } => NoRoom::Rows { has: height, needs: window },
+        CardLack::Cols(cols) => NoRoom::Cols { has: lay.width, needs: cols },
+        CardLack::MoreRows => NoRoom::More,
+    })
+}
+
+/// The fewest rows a card's area lays one in (`OfferCard::laid_of`): fewer, it's not drawn (`card_lack`).
+const CARD_ROWS_MIN: usize = 8;
+
+fn card_lack(editor: &Editor, lay: &Layout) -> Option<CardLack> {
     let o = editor.offers.first()?;
     if editor.screen.offer_card.is_some()
         || lay.offer_bar.is_some()
@@ -14922,15 +14961,16 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
         // beyond it, as now)
         let need = (CARD_MIN_INNER + 8).max(answer.unwrap_or(0) + 2 + 4 + 1);
         if ax + aw < need {
-            return Some(format!("card needs {} cols", lay.width + need - (ax + aw)));
+            return Some(CardLack::Cols(lay.width + need - (ax + aw)));
         }
-        return Some(match arows < 8 {
-            true => format!("card needs {} rows", height + 8 - arows),
-            false => "card needs more rows".into(),
+        return Some(match arows < CARD_ROWS_MIN {
+            true => CardLack::Rows { has: arows, window: height + CARD_ROWS_MIN - arows },
+            false => CardLack::MoreRows,
         });
     }
-    if lay.text_rows < 8 {
-        return Some(format!("card needs {} rows", height + 8 - lay.text_rows));
+    if lay.text_rows < CARD_ROWS_MIN {
+        let has = lay.text_rows;
+        return Some(CardLack::Rows { has, window: height + CARD_ROWS_MIN - has });
     }
     // (as `OfferCard::new` lays it out: its text at least `CARD_MIN_INNER` wide — 8 cells less than the code —
     // and its answers' keys on its bottom line at the widest it can be — 6 cells less, and the scrollbar's)
@@ -14939,12 +14979,12 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     let (fx, fr) = lay.float_area();
     if need_w <= fr - fx {
         // (too few rows for its text and answers — how many depends on the card)
-        return Some("card needs more rows".into());
+        return Some(CardLack::MoreRows);
     }
     // The window width that leaves the code that much beside the chat as it's laid out (`sizes::give_way`)
     let code = |w: usize| w - chat(w);
     let cols = (lay.width..lay.width + 400).find(|&w| code(w) >= need_w)?;
-    Some(format!("card needs {cols} cols"))
+    Some(CardLack::Cols(cols))
 }
 
 /// A card's answers in the forms its frame's bottom line takes them, the first that fits (`answers_fit` — the user,
@@ -15381,7 +15421,7 @@ impl OfferCard {
         };
         let (_, (ax, aw, atop, arows)) = asks_area(editor, lay);
         if lay.offer_bar.is_none()
-            && (editor.picker.is_some() || !editor.pending.is_empty() || arows < 8 || aw == 0)
+            && (editor.picker.is_some() || !editor.pending.is_empty() || arows < CARD_ROWS_MIN || aw == 0)
         {
             return None;
         }
@@ -15395,7 +15435,15 @@ impl OfferCard {
         // area's — where another card comes in front, the room it stands in changed, or it wasn't standing whole the
         // frame before.
         let area = (ax, aw, atop, arows);
-        let floor = card_floor(lay);
+        // (the floor is the card's own area's — the design session's rule, #640: over the chat's foot the chat's last row,
+        // right above what's under the chat, which the code's floor isn't once a slot is docked under the code alone —
+        // halil's take: `C-q` held the end card to the code's floor over the terminal, and it vanished; else the area's
+        // last row, the code's or a docked list's: `card_floor` where the area is the code's)
+        let in_chat = chat_foot(editor, lay).is_some();
+        let floor = match lay.chat().filter(|_| in_chat) {
+            Some(c) => (c.y + c.h).saturating_sub(1).max(atop + arows - 1),
+            None => atop + arows - 1,
+        };
         // A refused key whose reason it says already — its hold, in its warning lines (`Offer::says_its_hold`): said in
         // place, those lines marked (`marked`), no rows added for it (#561: the design session's, on take 3's end card).
         let in_place = editor.offer_said_now().is_some_and(|s| o.says_its_hold(s));
@@ -15414,10 +15462,23 @@ impl OfferCard {
         // the rows from its top down to the area's foot, what a renewal adds past them cut as a card too tall for its
         // area is (its `↓ N more lines` row, its answers its bottom line); given the keys (`C-q`, a press on it), laid by
         // the rule above, whole. (its top is kept cut or not: `top` is a card standing in its frame, whatever it left out)
-        let over_input = chat_foot(editor, lay).is_some() && !editor.card_has_keys();
+        let over_input = in_chat && !editor.card_has_keys();
         let held_in = kept_top.filter(|&y| over_input && atop + arows + 1 - y >= 5);
+        // Turning to it never makes it vanish nor shows less of it (#640, the design session's rule): with the keys over
+        // the chat's foot its room runs on from its top down to the area's floor — whole while it waited, whole now, its
+        // top where it was; taller than that, cut to it (`↓ N more lines`, a weighty yes waiting for `v`). Laid anew
+        // with the keys, from the area's top down to that floor. (no chat: the area's foot is its floor — unchanged)
+        let keyed = in_chat
+            && !measuring
+            && editor.card_has_keys()
+            && editor.offers.first().is_some_and(|f| f.id == o.id);
         // (its room, as the area's counts it: a row above its top as above the area's)
-        let rows = held_in.map_or(arows, |y| atop + arows + 1 - y);
+        let rows = match (held_in, kept_top) {
+            (Some(y), _) => atop + arows + 1 - y,
+            (None, Some(y)) if keyed => arows.max(floor + 3 - y),
+            (None, None) if keyed => arows.max(floor + 2 - atop),
+            _ => arows,
+        };
         let pad = CARD_PAD;
         // (its right edge: its area's — the chat's foot a cell in from the screen's right, a docked list's, else the
         // code's; one width whatever the chat — #177, the user 2026-10-27: as wide as what it says needs, its reading
@@ -15889,7 +15950,8 @@ impl OfferCard {
             (Some(y), _) => y,
             // (its last row on the floor at most)
             (None, Some(y)) => y.min((floor + 1).checked_sub(h)?).max(atop),
-            (None, None) => bottom.checked_sub(h)?.max(atop),
+            // (on the area's foot; with the keys, taller than that, down from the area's top)
+            (None, None) => bottom.saturating_sub(h).max(atop),
         };
         let x = (ax + aw).saturating_sub(width + 1);
         // Back cards: one row each above the front card (as room allows, max three — beyond that "1/N" tells) —
@@ -26815,6 +26877,9 @@ mod snapshot_tests;
 
 #[cfg(test)]
 mod layout_tests;
+
+#[cfg(test)]
+mod card_tests;
 
 #[cfg(test)]
 mod tests {

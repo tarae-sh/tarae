@@ -6263,6 +6263,8 @@ const SCENES: &[Scene] = &[
     Scene { name: "words-many-bare", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[4] },
     Scene { name: "words-many-chat", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[5] },
     Scene { name: "words-many-nochat", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[6] },
+    Scene { name: "words-halil-turn", claude: "fourhigh", files: MAIN, keys: WORDS_HALIL[7] },
+    Scene { name: "words-many-turn", claude: "manyhigh", files: MAIN, keys: WORDS_HALIL[7] },
     // (#647: what yes means on cards where there's no sandbox, in the warning colour — taken in a run's sandbox, where
     // tarae finds none: the session's first card, the third, a run card of its own; with it off (`-nosandbox`); and the
     // outside card beside them)
@@ -6376,7 +6378,7 @@ const WORDS_NOSB: [&[&str]; 5] = [
 
 /// #640's scenes' keys: the terminal opened, grown to 13 rows and left, the chat's question, the turn's review,
 /// `space v q` (then `C-w =`; or `C-q`).
-const WORDS_HALIL: [&[&str]; 7] = [
+const WORDS_HALIL: [&[&str]; 8] = [
     &[
         "@1",
         " ",
@@ -6517,7 +6519,38 @@ const WORDS_HALIL: [&[&str]; 7] = [
         "\x11",
         "@1",
     ],
-    // (the halil layout, then the chat hidden and `C-q`)
+    // (the halil layout, the chat hidden, then `space v q` and `C-q` — the chat hidden first: drawn with the keys, your
+    // own card keeps them, and a `space L` after it would be its key)
+    &[
+        "@1",
+        " ",
+        "T",
+        "@2",
+        "\x17",
+        "+",
+        "@1",
+        "\x1c",
+        "\x1c",
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand",
+        "\r",
+        "@?in one go",
+        "@3",
+        " ",
+        "L",
+        "@1",
+        " ",
+        "v",
+        "q",
+        "@1",
+        "\x11",
+        "@1",
+    ],
+    // (#640's turn: `space v q`'s card with the keys as it comes, `C-q` gives them back, waiting; then `C-q` again —
+    // turning to the card drawn waiting, its frames around that key)
     &[
         "@1",
         " ",
@@ -6540,9 +6573,9 @@ const WORDS_HALIL: [&[&str]; 7] = [
         "v",
         "q",
         "@1",
-        " ",
-        "L",
+        "\x11",
         "@1",
+        "@~600",
         "\x11",
         "@1",
     ],
@@ -7670,8 +7703,9 @@ fn prepare(
         background: Some(bg),
         // (the terminal scenes': a plain sh of the shot's own — a `$ ` prompt, no rc, no history, no user or host
         // name; never the shell of whoever takes the shots. Inside zellij or not as `cargo xtask shot` is: `ZELLIJ`
-        // taken out unless `TARAE_SHOT_ZELLIJ=1` — a scene taken from inside zellij said the twins)
-        env: match scene.name.starts_with("quote-term") {
+        // taken out unless `TARAE_SHOT_ZELLIJ=1` — a scene taken from inside zellij said the twins; #640's halil layout
+        // shows its terminal's prompt too)
+        env: match ["quote-term", "words-halil", "words-many"].iter().any(|p| scene.name.starts_with(p)) {
             true => {
                 vec![("SHELL", Some("/bin/sh")), ("PS1", Some("$ ")), ("HISTFILE", Some("")), ("ENV", None)]
             }
