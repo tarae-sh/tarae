@@ -286,6 +286,21 @@ pub struct Found {
     pub bridged: bool,
 }
 
+/// What a root tarae's runs lack, in the session's user namespace (#646: the tier's word stays `own`) — `why`'s
+/// words, `tier::ROOT_NO_MOUNTS` after them (`linux::confine`).
+pub const ROOT_UNMOUNTED: &str = "its runs have no mounts of their own";
+
+/// The same in the sandbox panel's few words (`brief`) — what it costs the person, the mechanism the why's (the
+/// design session, 2026-11-19).
+pub const ROOT_UNMOUNTED_BRIEF: &str =
+    "tarae runs as root: files named like keys outside the project stay readable";
+
+/// The same where the panel is narrow (`brief_narrow`).
+pub const ROOT_UNMOUNTED_NARROW: &str = "as root: keys outside the project stay readable";
+
+/// A `brief` part's fewer words, for a narrow panel (`Guarantees::brief_narrow`).
+const NARROW: &[(&str, &str)] = &[(ROOT_UNMOUNTED_BRIEF, ROOT_UNMOUNTED_NARROW)];
+
 /// The loopback of a run served without a network namespace of its own (host): this machine's — another
 /// session's socket on it refused (step 8).
 const THEIRS_REFUSED: &str = "this machine's, other sessions' sockets refused";
@@ -464,6 +479,18 @@ impl Guarantees {
     /// `asking`.
     pub fn listing(self, listed: bool) -> Guarantees {
         Guarantees { listed: listed && self.network && !self.asks, ..self }
+    }
+
+    /// `brief` with each part that has fewer words in them (`NARROW`) — what a narrow panel says, where a part is
+    /// wider than its row. None: no part has.
+    pub fn brief_narrow(&self) -> Option<String> {
+        let brief = self.brief.as_deref()?;
+        let parts: Vec<&str> = brief.split(" · ").collect();
+        let narrow = |p: &str| NARROW.iter().find(|(w, _)| *w == p).map(|(_, n)| *n);
+        parts
+            .iter()
+            .any(|p| narrow(p).is_some())
+            .then(|| parts.iter().map(|p| narrow(p).unwrap_or(p)).collect::<Vec<_>>().join(" · "))
     }
 
     /// Its tier — None: Seatbelt's (no tiers).

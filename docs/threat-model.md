@@ -254,7 +254,8 @@ Not kept:
   `safebare::tests::the_offer_rides_on_a_look_alike_card_and_drops_once_written` ·
   `sim::safebare::the_offer_comes_once_and_its_answer_holds`
 - **A protected name made where none is yet, or moved in inside a folder.** Linux: Landlock only grants. Where a
-  run has a mount namespace of its own (tier own), each protected name is bound read-only over itself and every
+  run has mounts of its own (tier own, or unserved with namespaces; not where tarae runs as root), each protected
+  name is bound read-only over itself and every
   folder takes new files, so a new `build.rs` beside a `Cargo.toml` is made; each folder between the project and a
   protected name is bound over itself too, so it can't be moved away (or removed) with the name inside it and the
   name made anew — a file moved between such a folder and the rest of the project goes as a copy (`EXDEV`)
@@ -324,9 +325,9 @@ Not kept:
   `refs/`, `HEAD` and `info/` are written. Keeping the whole folder would refuse every write in the project.
 - **Linux: a folder on the way to a kept git folder or `llm.sandbox-protect` path takes no new files** and keeps the
   ones it has, as a folder holding a protected name does (Landlock grants around what's kept); writing a file already
-  there works. Tier own's seals spare a folder on the way to one that's there. A folder holding a step not there yet,
-  a link on the way or a kept path not there now pays it on every tier, tier own's too: a mount can't sit on what
-  isn't there. The run's report says why a new file there was refused.
+  there works. Where its runs have mounts of their own (tier own, or unserved with namespaces; not where tarae runs
+  as root) seals spare a folder on the way to one that's there. A folder holding a step not there yet, a link on
+  the way or a kept path not there now pays it on every tier, tier own's too: a mount can't sit on what isn't there. The run's report says why a new file there was refused.
   test: `sandbox::gitfolders::tests::a_folder_on_a_git_folders_way_says_why_it_takes_no_new_file`
 - **macOS: nested checkouts' git folders past the cap.** The walk's locks share `GIT_LOCKS_MAX` (32: each cost on
   every command's start grows with the square of their count, G33's budget): a nested git folder past it isn't kept,
@@ -369,7 +370,8 @@ Kept:
   answer you gave covers it, as before. A kept place holding the project doesn't close the project. tarae's `search`
   of a folder holding one leaves it out — hits and name — and ends with one line naming it, hits or none; an agent's
   own Grep of that folder asks. Runs: macOS's profile denies a kept place after its write allows (measured: a
-  kubeconfig in `/private/tmp` and in `$TMPDIR` refused, both folders writable). Linux: in tier own a kept file or
+  kubeconfig in `/private/tmp` and in `$TMPDIR` refused, both folders writable). Linux: where its runs have mounts
+  of their own (tier own, or unserved with namespaces; not where tarae runs as root) a kept file or
   folder in a place runs write is hidden by a mount of the run's own (unread, unwritten, not renamed or removed —
   Device or resource busy; a folder under an empty one nobody may open) and neither is a folder on the way to it,
   each bound over itself, so a run can't move one away — renamed, renamed onto, exchanged, emptied and removed, from a
@@ -380,7 +382,7 @@ Kept:
   `sandbox::tests::a_runs_folder_in_a_kept_place_is_refused_in_its_words` ·
   `sandbox::tests::a_run_in_a_kept_folder_starts_nothing` ·
   `sandbox::tests::a_run_in_a_kept_folder_is_refused_before_its_start` (shown, Linux)). Never hidden without its way
-  held: in the tiers without mounts — and in tier own
+  held: without mounts of the run's own (tarae run as root too, whose refusal there says so) — and with them
   for one not there yet, a link or something not a file or folder on its way, a way past the room a run's mounts take,
   or one reached through another mount — it's left out of the write grant, as of `/`'s read grant: on Linux without
   mounts of the run's own a place is kept
@@ -502,7 +504,8 @@ Kept:
 - Linux: no way around it through a link, a rename, another mount, another process's root or folder, or the run's
   own working folder: where keys are hidden by mounts its child enters that folder only after them, so a key beside
   a protected name or a kept file isn't read from its own folder either, by `./`, `../` or `/proc/self/cwd/`; and it
-  holds no descriptor from before them. In tier own, nor by moving a folder on its way and making a file at its name,
+  holds no descriptor from before them. Where its runs have mounts of their own (tier own, or unserved with
+  namespaces; never where tarae runs as root), nor by moving a folder on its way and making a file at its name,
   which your own tools would read later: each folder between the project's root — or the place runs write holding
   one outside it — and a key hidden is bound over itself for the run (renamed, renamed onto, exchanged, emptied and
   removed, from a namespace of its own: Device or resource busy), in the room a run's mounts take after the
@@ -528,8 +531,8 @@ Kept:
   folder (its `TMPDIR`), and nowhere wider closes them, so a toolchain's folders in home stay readable — Claude's
   Read too. Outside home Claude's Read asks for one wherever it is; runs read one there that's in no place they
   close ("not kept" in §1.3). tarae's own tools (search, read, the message's context) still leave out every file named like
-  a key outside the project by its name. Linux's runs close them in the project, and in tier own in those places
-  too: found afresh before each run, at most 20,000 entries looked through (`linux::WALK_MAX`) — the places no run
+  a key outside the project by its name. Linux's runs close them in the project, and where they have mounts of
+  their own (tier own, or unserved with namespaces; not where tarae runs as root) in those places too: found afresh before each run, at most 20,000 entries looked through (`linux::WALK_MAX`) — the places no run
   writes (other checkouts, read grants) first, so filling `/tmp` can't hide those from the walk — and hidden by a
   mount of the run's own as the project's are ([D-i](design/sandbox-keeper.md#decisions)) — so, as the project's,
   the run can't write, remove or rename one, nor move a folder on its way from the place (read-only, busy: an
@@ -538,8 +541,10 @@ Kept:
   hidden, that the run's panel lets runs use that file only and that once the user removes it the next run's walk
   finds it gone (`sandbox::hidden_keys_said`); one gone or replaced by another file between the walk and the run's
   mount is skipped, which the run's child says before its exec — the report names a replaced one as readable and
-  counts the gone ones, the hidden ones a most past what the child's record holds (`linux::outside_said`); tiers host and unserved
-  close them in the project only (Landlock only grants). Claude's Read goes by the rule as designed there too.
+  counts the gone ones, the hidden ones a most past what the child's record holds (`linux::outside_said`); without
+  mounts of the run's own — tier host, unserved without namespaces, and tarae run as root (a container), whose tier
+  is still `own` — they're closed in the project only (Landlock only grants), and the run's report says so for root
+  (`linux::covers_said`) and the grant card says the open form ("files named like keys too"). Claude's Read goes by the rule as designed there too.
   Inside those places a toolchain's own files read: an install the packs name (pyenv's, conda's, rbenv's, asdf's and mise's installs) and what's below an install's
   packages as its layout has them (`lib/python3*/site-packages`, `lib/ruby/gems`, `lib/ruby/3.*` — never a bare
   `gems`, a monorepo's own) as below tools' output; CA bundles by a `ca` name (`cacert.pem`, `ca-bundle.pem`,
@@ -591,9 +596,10 @@ Kept:
 
 Not kept:
 - **Linux: a file named like a key in a place outside the project a run reads** — a folder you granted, another
-  checkout, the temp folders. Tiers host and offline: Landlock only grants, so a name can't be closed inside a
-  granted folder; in the project its folders are granted entry by entry around each key (`linux::there`), outside
-  they aren't. Tier own hides those found before the run, but not: one made while it runs (found before the next);
+  checkout, the temp folders. Without mounts of the run's own (tier host, unserved without namespaces, tarae run as
+  root): Landlock only grants, so a name can't be closed inside a granted folder; in the project its folders are
+  granted entry by entry around each key (`linux::there`), outside they aren't. With them (tier own, unserved with
+  namespaces) a run hides those found before it, but not: one made while it runs (found before the next);
   one past the 20,000 entries looked through (the folders not reached named in its report); one past the 1,024 a
   run's mounts hide, the project's and its protected names' first (named); one another mount of its filesystem
   reaches (named); one on another filesystem mounted below such a place, which the walk doesn't enter (a hung NFS
@@ -936,7 +942,7 @@ Not kept:
 
 | Tier | When | What it means |
 |---|---|---|
-| own | unprivileged user namespaces work, and tarae serves a run's sockets (at Yama's `ptrace_scope` 2 too) | the session's own processes, loopback, IPC, `/dev/shm`, terminals; where `/proc` is masked (Docker's default) no PID namespace: processes shared (command lines, priority) |
+| own | unprivileged user namespaces work, and tarae serves a run's sockets (at Yama's `ptrace_scope` 2 too) | the session's own processes, loopback, IPC, `/dev/shm`, terminals; where `/proc` is masked (Docker's default) no PID namespace: processes shared (command lines, priority); tarae run as root (a container): no mounts of the run's own — files named like keys, protected names and kept places closed by their folders' rules as in host, keys outside the project open, said in the tier's why |
 | host | no user namespaces (Ubuntu's restriction without tarae's profile; a container), sockets served | files and signals kept; loopback this machine's, other sessions' sockets refused; processes, SysV IPC, `/dev/shm` shared |
 | unserved | tarae can't serve a run's sockets (Yama 3, Yama 2 without the session's namespaces, inside another seccomp listener — WSL2's port tracker in its mirrored and Consomme networking, `pidfd_getfd` refused), with the session's namespaces or none | no port of this machine's, no unix socket; with the namespaces the network beyond only through tarae's proxy, by the run's token (the bridge), and its own loopback, IPC, `/dev/shm`, terminals; without, no socket at all and those shared |
 

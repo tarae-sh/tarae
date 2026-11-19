@@ -1103,7 +1103,7 @@ impl Guard {
                 // (7a, 7b — names from the data, `secretnames`; what a file made beside one does on Linux is
                 // `linux::unread_said`'s, in the notes)
                 // (macOS: in the places outside a grant or a default opened too — Landlock only grants, so Linux
-                // closes them in the project, and outside it only tier own's mounts do: `linux::outside_said`)
+                // closes them in the project, and outside it only the run's own mounts do: `linux::outside_said`)
                 let keys = match (p.keys.is_some(), !p.supervised) {
                     (true, true) if !p.folders.is_empty() => {
                         " In the project, its folders, the repository's other checkouts, the temp folders and what the \
@@ -1393,8 +1393,8 @@ pub struct Here {
     /// bridge) — None: as the tier probe says (`tier::Probed.bridged`; on another system: no bridge); a test's
     /// stand-in gives its own.
     pub bridged: Option<fn() -> Result<(), String>>,
-    /// Linux: whether its runs hide the files named like keys outside the project by mounts (tier own, D-i) — None:
-    /// as the tier probe says; a test's stand-in gives its own.
+    /// Linux: whether its runs hide the files named like keys outside the project by mounts (D-i: mounts of their
+    /// own, `tier::runs_mount`) — None: as the tier probe says; a test's stand-in gives its own.
     pub hides_keys: Option<fn() -> bool>,
     /// What runs besides this project's may write (real paths): every open session's write places with what's
     /// been granted there, the write grants kept for any project (`Editor::others_write`) — a store in or holding
@@ -5658,13 +5658,13 @@ pub fn key_rules_for(root: &Path, w: crate::tools::Widened, here: &Here) -> KeyR
     rules
 }
 
-/// Linux: whether runs here hide the files named like keys outside the project by mounts (tier own, D-i). False
-/// elsewhere.
+/// Linux: whether runs here hide the files named like keys outside the project by mounts (D-i): they have mounts
+/// of their own (`tier::runs_mount`, #646). False elsewhere.
 fn hides_keys(here: &Here) -> bool {
     match (here.os, here.hides_keys) {
         (Os::Linux, Some(f)) => f(),
         #[cfg(target_os = "linux")]
-        (Os::Linux, None) => tier::get().tier() == tier::Tier::Own,
+        (Os::Linux, None) => tier::runs_mount(tier::get().ns),
         _ => false,
     }
 }
@@ -11471,10 +11471,22 @@ mod tests {
                 }
             }
         }
-        // On Linux, the real tier here: hidden by the confined policy's mounts exactly where the words say so
+        // On Linux, the real tier here: hidden by the confined policy's mounts exactly where the words say so, and
+        // read by a run exactly where they say it's open — root's too (#646: the tier's word `own`, no mounts of
+        // the run's own), with no branch of its own. A key in the project too, so the report says both halves
         #[cfg(target_os = "linux")]
         if keys_tested_here("a_grants_words_say_what_its_runs_rule_does_to_a_key_in_it") {
             let here = Here { tmp: None, ..Here::now() };
+            // (first no key in the project: the report's outside half alone, where none outside was looked for)
+            let p = policy_from(&root, crate::tools::with_allowed(&llm, &caps, Some(&read)), &here).unwrap();
+            let p = confined(Policy { run: RunDir::new().ok(), ..p });
+            let Some(Ok(c)) = &p.confine else { panic!("{:?}", p.confine) };
+            let report = linux::covers_said(c);
+            let alone = "In the places outside the project it reads (the repository's other checkouts, the temp folders, \
+                         what the user let it read or write), a file named like a key is read as any other, not hidden \
+                         by a mount of the run's own: ";
+            assert_eq!(report.contains(alone), c.outside.unsought.is_some(), "{report}");
+            std::fs::write(root.join(".env"), "tarae-fake-token\n").unwrap();
             for g in [&read, &write] {
                 let (Grant::Read(place) | Grant::Write(place)) = g else { unreachable!() };
                 let key = std::fs::canonicalize(place.join(policy::KEY_NAMED)).unwrap();
@@ -11488,6 +11500,37 @@ mod tests {
                 let said = grant_keys(&llm, &caps, g, &here);
                 assert_eq!(said == Some(Keys::Closed), hidden, "{g:?}: tier {:?}", p.tier_said());
                 assert_eq!(said == Some(Keys::Open), p.key_rule(&key).is_none() && !hidden, "{g:?}");
+                let (_, out, err) = sh_confined(&p, &root, &format!("cat '{}'", key.display()));
+                let read = out.contains("tarae-fake-token");
+                assert_eq!(
+                    read,
+                    said == Some(Keys::Open),
+                    "{g:?}: a run reads it where it's said open: {err}"
+                );
+                // (the report: where none outside the project was looked for, it says those are open — the card's
+                // open form beside it; the project's half only of the project)
+                let Some(Ok(c)) = &p.confine else { panic!("{:?}", p.confine) };
+                let report = linux::covers_said(c);
+                let open_said = report.contains("a file named like a key is read as any other");
+                assert_eq!(open_said, c.outside.unsought.is_some(), "{report}");
+                assert!(!open_said || said == Some(Keys::Open), "{g:?}: {report}");
+                assert!(
+                    !report.contains("Files named like keys are closed by their folders' rules here"),
+                    "{report}"
+                );
+                // (the tier's word stays; its why says what's missing — the report's, `tarae state`'s, the panel's)
+                let g = c.guarantees.as_ref().expect("a keeper's run");
+                let why = g.why.clone().unwrap_or_default();
+                assert_eq!(
+                    why.contains("its runs have no mounts of their own"),
+                    !c.runs_mount() && g.ns.is_some_and(|n| n.user),
+                    "{why}"
+                );
+                assert_eq!(
+                    c.outside.unsought.is_some(),
+                    !c.runs_mount() && g.ns.is_some_and(|n| n.user),
+                    "{why}"
+                );
             }
         }
     }
@@ -15961,7 +16004,8 @@ mod tests {
     /// one the walk found and gone before the run starts doesn't keep it from starting — and the report says what
     /// the run's child left, as it said before its exec: a replaced one named as readable, a gone one counted. A
     /// project with no keys nor protected names of its own still has those outside hidden.
-    /// In tiers host and unserved nothing closes it outside the project: read, and nothing says it's hidden.
+    /// In tiers host and unserved nothing closes it outside the project: read, and nothing says it's hidden; nor in a
+    /// root tarae's tier own, whose report says those are open (#646).
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_key_made_two_deep_in_a_key_place_after_a_run_is_covered_on_the_next_run() {
@@ -16143,8 +16187,16 @@ mod tests {
                     ok && out.contains("tarae-fake-token"),
                     "host, unserved: nothing closes it: {out} {err}"
                 );
-                assert!(c.outside == linux::Outside::default() && !said.contains("found before it started"));
+                let o = linux::Outside { unsought: c.outside.unsought.clone(), ..Default::default() };
+                assert!(c.outside == o && !said.contains("found before it started"), "{:?}", c.outside);
                 assert_eq!(next.key_rule(&key), None);
+                // (a root tarae's, whose tier's word is `own`: none looked for, each said open — #646)
+                let user_ns = c.guarantees.as_ref().and_then(|g| g.ns).is_some_and(|n| n.user);
+                assert_eq!(c.outside.unsought.is_some(), user_ns, "{:?}", c.outside);
+                let open = "In the places outside the project it reads (the repository's other checkouts, the temp \
+                            folders, what the user let it read or write), a file named like a key is read as any \
+                            other.";
+                assert_eq!(said.contains(open), user_ns, "{said}");
             }
         }
         std::fs::remove_dir_all(&t).ok();
@@ -18081,6 +18133,15 @@ mod tests {
         let note = linux::covers_said(conf);
         let start = words.strip_suffix('.').unwrap();
         assert!(note.contains(start) && note.contains("Write under $TMPDIR."), "{tier}: {note}");
+        // (why a mount didn't hide it, where the session has a user namespace — a root tarae's too, whose tier's word
+        // is `own` and whose runs have no mounts of their own: #646)
+        let user_ns = conf.guarantees.as_ref().and_then(|g| g.ns).is_some_and(|n| n.user);
+        let why = match (user_ns, conf.runs_mount()) {
+            (false, _) => "",
+            (true, false) => " (tarae runs as root: its runs have no mounts of their own)",
+            (true, true) => " (not there yet: a mount can't sit on what isn't there)",
+        };
+        assert!(note.contains(&format!("{start}{why}. Write under $TMPDIR.")), "{tier}: {note}");
     }
 
     /// WSL (Q11, `winhome`): a Windows profile's keys are kept from a run as home's are — a stand-in drive's, in the

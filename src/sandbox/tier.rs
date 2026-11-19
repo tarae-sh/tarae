@@ -18,6 +18,34 @@ use std::time::Duration;
 // (what a keeper's namespaces are, its tier and how a run's sockets go: pure, `guarantees.rs`'s — built everywhere)
 pub use super::guarantees::{Ns, RunNet, Tier};
 
+/// Why a session's runs have no mounts of their own where it has a user namespace but tarae runs as root (a
+/// container): 7d's mounts need the run's own user namespace, which root can't map itself into — since Linux 5.12 a
+/// map of the parent's uid 0 needs `CAP_SETFCAP` where the namespace was made, and the run has none (measured on
+/// Debian 12, EPERM at `uid_map`).
+pub const ROOT_NO_MOUNTS: &str = "tarae runs as root, and the kernel lets a namespace map root only with a capability nothing of tarae's keeps";
+
+/// Whether the runs of a keeper with `ns` have mounts of their own — the one place that decides it (#646): the
+/// session's user namespace (tier own, or unserved with namespaces) and tarae not run as root. What hides the files
+/// named like keys (7d, and outside the project D-i), seals the protected names (B9) and hides a kept place (#633)
+/// — `linux::confine`'s mounts, `Policy::hides` and `sandbox::hides_keys` read it. None: no user namespace (the tier
+/// says it); Err: one, but not for the runs' mounts (why).
+pub fn own_mounts(ns: Ns) -> Option<Result<(), String>> {
+    // SAFETY: geteuid only reads.
+    let root = unsafe { libc::geteuid() } == 0;
+    ns.user.then(|| if root { Err(ROOT_NO_MOUNTS.to_string()) } else { Ok(()) })
+}
+
+/// `own_mounts`, yes or no — what the words go by.
+pub fn runs_mount(ns: Ns) -> bool {
+    // (the break-once: the words back on the namespace alone, root's too — the grant card's real-tier half fails as
+    // root; the runs' mounts unchanged)
+    #[cfg(test)]
+    if std::env::var_os("TARAE_TEST_ROOT_SAID_MOUNTS").is_some() {
+        return ns.user;
+    }
+    matches!(own_mounts(ns), Some(Ok(())))
+}
+
 impl Ns {
     /// As `clone3`'s flags.
     pub fn clone_flags(self) -> u64 {

@@ -211,6 +211,12 @@ impl Confine {
         self.guarantees.as_ref().and_then(|g| g.tier()).map_or("", |t| t.said())
     }
 
+    /// Whether its runs have mounts of their own (`tier::runs_mount`, of its keeper's namespaces) — none without a
+    /// keeper's.
+    pub fn runs_mount(&self) -> bool {
+        self.guarantees.as_ref().and_then(|g| g.ns).is_some_and(super::tier::runs_mount)
+    }
+
     /// The Landlock ruleset's descriptor with the files its run's child hides by mounts — what a keeper's run
     /// confines itself with (`Keeper::start_confined`, `start_served`): the rules alone would leave those files'
     /// folders whole with nothing over the files.
@@ -686,13 +692,23 @@ pub fn covers_said(c: &Confine) -> String {
             if places.len() == 1 { "es" } else { "" }
         ),
     };
-    let how = match (c.covers.keys.is_empty() && c.covers.loose.is_empty(), &c.split_why) {
-        (true, Some(why)) => format!(
-            " Files named like keys are closed by their folders' rules here, not hidden by mounts of the run's own: \
-             {why}."
+    // (#646: where none outside the project was looked for — a root tarae's — those are open, the places said as
+    // `outside_said` says them)
+    let outside_open = " In the places outside the project it reads (the repository's other checkouts, the temp \
+                        folders, what the user let it read or write), a file named like a key is read as any other.";
+    let how = match (c.covers.keys.is_empty() && c.covers.loose.is_empty(), &c.split_why, &c.outside.unsought) {
+        (true, Some(why), unsought) => format!(
+            " Files named like keys are closed by their folders' rules in the project, not hidden by mounts of the \
+             run's own: {why}.{}",
+            if unsought.is_some() { outside_open } else { "" }
         ),
-        (true, None) => String::new(),
-        (false, _) => " Here a file named like a key is hidden by a mount of the run's own: it reads as an empty file \
+        (true, None, Some(why)) => format!(
+            " In the places outside the project it reads (the repository's other checkouts, the temp folders, what \
+             the user let it read or write), a file named like a key is read as any other, not hidden by a mount of \
+             the run's own: {why}."
+        ),
+        (true, None, None) => String::new(),
+        (false, ..) => " Here a file named like a key is hidden by a mount of the run's own: it reads as an empty file \
                         it may not open (Permission denied) and can't be written, renamed, removed or replaced (Device \
                         or resource busy) nor linked (Invalid cross-device link) — and neither is a folder on the way \
                         to one, each bound over itself; what's beside it is read and written as usual. One named like \
@@ -1335,6 +1351,9 @@ pub struct Outside {
     pub mounts: Vec<PathBuf>,
     /// The places and folders not looked through, and why (`Walked.failed`).
     pub failed: Vec<(PathBuf, String)>,
+    /// Where the session has a user namespace but its runs no mounts of their own (`tier::own_mounts`' Err: tarae
+    /// runs as root): why none was looked for — each read as any other file (#646).
+    pub unsought: Option<String>,
 }
 
 /// The keys outside the project a run's child didn't hide (`Covers::loose`), as it said before its exec: each with
@@ -1665,7 +1684,8 @@ pub struct KeptWay {
     /// The place runs write holding it (`/tmp`) — what the person's way out names.
     pub place: PathBuf,
     pub var: Option<String>,
-    /// Where its runs have mounts of their own (tier own): why this one isn't hidden by one — the standing note's.
+    /// Where the session has a user namespace (tier own, unserved with one): why this one isn't hidden by a mount —
+    /// the standing note's.
     pub unhidden: Option<&'static str>,
 }
 
@@ -1961,18 +1981,12 @@ pub fn confine(
     let no_userns = super::tier::runs_refuse_userns();
     let ptys = keeper.is_some() && ns.serves_ptys(net);
     let ptys = ptys.then(|| Arc::new(super::ptys::Ptys::open(super::ptys::POOL)));
-    // (7d's mounts need the run's own user namespace, which root can't map itself into: since Linux 5.12 a map of the
-    // parent's uid 0 needs CAP_SETFCAP there when the namespace was made, and the run has none — measured on Debian
-    // 12, EPERM at `uid_map`. tarae run as root — a container — closes keys as 7b does)
-    // SAFETY: a plain call.
-    let root = unsafe { libc::geteuid() } == 0;
-    let mounts = ns.user.then(|| match root {
-        true => Err(
-            "tarae runs as root, and the kernel lets a namespace map root only with a capability nothing of \
-                     tarae's keeps"
-                .to_string(),
-        ),
-        false => Ok(()),
+    // (tarae run as root — a container — closes keys as 7b does: `tier::ROOT_NO_MOUNTS`)
+    let mounts = super::tier::own_mounts(ns);
+    // (#646: what a root tarae's runs lack is said by the whys, never by the tier's word — `own` still)
+    let unmounted = mounts.as_ref().and_then(|m| m.as_ref().err()).map(|why| {
+        use super::guarantees::{ROOT_UNMOUNTED, ROOT_UNMOUNTED_BRIEF};
+        (format!("{ROOT_UNMOUNTED}: {why}"), ROOT_UNMOUNTED_BRIEF)
     });
     // (the mount table its runs see: the keeper's — a run's own namespace is a copy of it — read where it's made)
     let at = keeper.map_or("/proc/self/mountinfo".to_string(), |k| format!("/proc/{}/mountinfo", k.pid));
@@ -1986,14 +2000,22 @@ pub fn confine(
     let guarantees = keeper.map(|k| {
         let probed = super::tier::probed();
         let lo = [(k.lo_missing.v4, "IPv4"), (k.lo_missing.v6, "IPv6")];
+        let joined = |a: Option<String>, b: Option<String>, sep: &str| match (a, b) {
+            (Some(a), Some(b)) => Some(format!("{a}{sep}{b}")),
+            (a, b) => a.or(b),
+        };
+        let short =
+            joined(probed.and_then(|p| p.short.clone()), unmounted.as_ref().map(|u| u.0.clone()), "; ");
+        let brief =
+            joined(probed.and_then(|p| p.brief.clone()), unmounted.as_ref().map(|u| u.1.into()), " · ");
         super::guarantees::Guarantees::landlock(super::guarantees::Found {
             ns,
             served: c.serve.clone(),
             abi: c.abi,
             ptys: ptys.as_ref().map(|_| super::ptys::POOL),
             lo_missing: lo.into_iter().filter_map(|(m, f)| m.then_some(f)).collect(),
-            short: probed.and_then(|p| p.short.clone()),
-            brief: probed.and_then(|p| p.brief.clone()),
+            short,
+            brief,
             hint: probed.and_then(|p| p.hint.clone()),
             network: p.network,
             bridged: k.bridge.is_ok(),
@@ -2346,7 +2368,11 @@ pub(super) fn confine_in(
             Err(why) => split.push((o.clone(), names.clone(), why)),
         }
     }
-    let mut outside = Outside { unwalked, mounts: beside, failed, ..Default::default() };
+    let unsought = match &own.mounts {
+        Some(Err(why)) => Some(why.clone()),
+        _ => None,
+    };
+    let mut outside = Outside { unwalked, mounts: beside, failed, unsought, ..Default::default() };
     let mut covers = covers;
     // (the kept files hidden, as named in the policy — none of them a hole below)
     let mut kept_hidden: Vec<PathBuf> = Vec::new();
@@ -2575,10 +2601,12 @@ pub(super) fn confine_in(
         let holding = p.write.iter().filter(|w| k.starts_with(w) && *w != k);
         let Some(place) = holding.min_by_key(|w| w.components().count()) else { continue };
         let var = p.reads.kept_vars.iter().find(|(at, _)| at == k).map(|(_, v)| v.clone());
-        let unhidden = match (matches!(own.mounts, Some(Ok(()))), k.symlink_metadata()) {
-            (false, _) => None,
-            (true, Ok(_)) => Some("a run's mounts couldn't hide it here"),
-            (true, Err(_)) => Some("not there yet: a mount can't sit on what isn't there"),
+        // (#646: a root tarae's tier word is `own`, so why its runs hide none is said here too)
+        let unhidden = match (&own.mounts, k.symlink_metadata()) {
+            (None, _) => None,
+            (Some(Err(_)), _) => Some("tarae runs as root: its runs have no mounts of their own"),
+            (Some(Ok(())), Ok(_)) => Some("a run's mounts couldn't hide it here"),
+            (Some(Ok(())), Err(_)) => Some("not there yet: a mount can't sit on what isn't there"),
         };
         for a in k.ancestors().skip(1).take_while(|a| a.starts_with(place)) {
             if !kept_ways.iter().any(|w| w.folder == a) {

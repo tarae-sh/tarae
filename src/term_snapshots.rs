@@ -7511,12 +7511,13 @@ fn host_restricted() -> crate::sandbox::guarantees::Guarantees {
 /// 9e: the sandbox panel's state line (`space m s`) — the session's last run's sandbox as key hints over the list,
 /// a fallback's why faint under it, and (9f) where tarae's AppArmor profile would give commands namespaces of their own, that and where its
 /// step is, on rows of its own; at 60 columns the least important parts folded (`Guarantees::FOLD`); before any
-/// sandboxed run, said so in its place. Nothing blocked: the list says so where its first row would be. With
+/// sandboxed run, said so in its place; a root tarae's tier own says what its runs lack under it (#646). Nothing
+/// blocked: the list says so where its first row would be. With
 /// `TARAE_FRAMES_DIR` set, each in both themes (`.sb/shots-9e.sh` draws them).
 #[test]
 fn snapshot_sandbox_panel_tier() {
     use crate::sandbox::guarantees::{Found, Guarantees, Ns};
-    let top = Guarantees::landlock(Found {
+    let top_found = || Found {
         ns: Ns::session(true, true),
         served: Ok(()),
         abi: 8,
@@ -7527,12 +7528,26 @@ fn snapshot_sandbox_panel_tier() {
         hint: None,
         network: true,
         bridged: false,
+    };
+    let top = Guarantees::landlock(top_found());
+    // (#646: a root tarae — a container — keeps the tier's word `own`; what its runs lack is the why's, as
+    // `linux::confine` says it)
+    let root = Guarantees::landlock(Found {
+        short: Some(format!(
+            "{}: {}",
+            crate::sandbox::guarantees::ROOT_UNMOUNTED,
+            "tarae runs as root, and the kernel lets a namespace map root only with a capability nothing of tarae's \
+             keeps"
+        )),
+        brief: Some(crate::sandbox::guarantees::ROOT_UNMOUNTED_BRIEF.into()),
+        ..top_found()
     });
     for (w, h) in [(120, 30), (60, 24)] {
         let scenes = [
             ("fallback", Some(unserved_docker_default())),
             ("hint", Some(host_restricted())),
             ("top", Some(top.clone())),
+            ("root", Some(root.clone())),
             ("empty", None),
         ];
         for (name, g) in scenes {

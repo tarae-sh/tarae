@@ -180,8 +180,8 @@ pub struct KeyRules {
     /// macOS: the keys the walk before its run found and the folders it locked (`Policy::key_folders`; what it
     /// didn't reach left out).
     locks: super::keyfolders::KeyFolders,
-    /// Linux tier own: its run's child hides by mounts every file named like a key in the places outside the project
-    /// it reads (D-i) — what one made there would be (`in_grant`).
+    /// Linux, its runs with mounts of their own (`tier::runs_mount`): its run's child hides by mounts every file named
+    /// like a key in the places outside the project it reads (D-i) — what one made there would be (`in_grant`).
     pub(super) hides: bool,
 }
 
@@ -196,7 +196,8 @@ impl KeyRules {
     pub fn in_grant(&self, place: &Path) -> crate::allow::Keys {
         use crate::allow::Keys;
         let named = place.join(KEY_NAMED);
-        // (tier own's walk before each run hides every one in its key places: one there is one of them)
+        // (with mounts of the run's own, the walk before each run hides every one in its key places: one there is one
+        // of them)
         let covered: Vec<PathBuf> = self
             .covered
             .iter()
@@ -283,7 +284,8 @@ impl KeyRules {
     }
 
     /// The rule as designed, whatever the system enforces: macOS's profile's (Linux's Landlock only grants, so it
-    /// closes outside the project only what tier own's mounts hide — D-i — and tiers host and unserved none) — what
+    /// closes outside the project only what the run's own mounts hide — D-i, `tier::runs_mount` — and none without
+    /// them) — what
     /// Claude's reads go by (`reads::key_closed`).
     pub fn designed(self) -> KeyRules {
         KeyRules { supervised: false, ..self }
@@ -301,7 +303,7 @@ struct KeyView<'a> {
     run: Option<&'a Path>,
     write: &'a [PathBuf],
     files: &'a [PathBuf],
-    /// Linux tier own: the files named like keys outside the project its run's mounts hid (`linux::Outside`, D-i) —
+    /// Linux, mounts of the run's own: the files named like keys outside the project its run's mounts hid (`linux::Outside`, D-i) —
     /// closed, the rest there not.
     covered: &'a [PathBuf],
     /// What `writes_place` reads besides: the project's kept places, the folders opened for writing (their
@@ -332,8 +334,8 @@ impl KeyView<'_> {
         if real.starts_with(self.root) {
             return key_named_in(self.root, real).then(|| KeyRule::Closed(self.root.to_path_buf()));
         }
-        // (Linux: Landlock only grants — outside the project only what its run's mounts hid is closed (tier own,
-        // D-i); the run's own folder, its `TMPDIR`, only it writes: what's there is its own)
+        // (Linux: Landlock only grants — outside the project only what its run's mounts hid is closed (D-i,
+        // `tier::runs_mount`); the run's own folder, its `TMPDIR`, only it writes: what's there is its own)
         if self.supervised && self.covered.iter().any(|c| c == real) {
             return self.places.iter().find(|k| real.starts_with(k)).map(|k| KeyRule::Closed(k.clone()));
         }
@@ -496,7 +498,7 @@ pub struct Policy {
     pub keys: Option<Vec<PathBuf>>,
     /// The places outside the project a grant or a default opened — the repository's other checkouts, what the
     /// user let Claude read (`Env::key_places`), the temp folders — where the files named like keys are closed
-    /// as in the project (macOS's profile; Landlock only grants, so on Linux only tier own's mounts hide them there,
+    /// as in the project (macOS's profile; Landlock only grants, so on Linux only the run's own mounts hide them there,
     /// found before each run — `linux::outside_keys`, D-i). Never in the
     /// project (its own rule — a place holding it leaves it out), never wider: a CA bundle elsewhere is read. Real
     /// paths.
@@ -1319,11 +1321,12 @@ impl Policy {
         }
     }
 
-    /// Linux: whether its run's child hides the files named like keys outside the project by mounts (tier own, D-i).
+    /// Linux: whether its run's child hides the files named like keys outside the project by mounts (D-i): its runs
+    /// have mounts of their own (`tier::runs_mount`, #646 — not tier own's word, which a root tarae keeps).
     fn hides(&self) -> bool {
         #[cfg(target_os = "linux")]
         if let Some(Ok(c)) = &self.confine {
-            return c.tier() == "own";
+            return c.runs_mount();
         }
         false
     }
@@ -1338,7 +1341,7 @@ impl Policy {
         Vec::new()
     }
 
-    /// Linux: the files named like keys outside the project its run's mounts hid (tier own, `linux::Outside`, D-i).
+    /// Linux: the files named like keys outside the project its run's mounts hid (`linux::Outside`, D-i).
     fn covered(&self) -> &[PathBuf] {
         #[cfg(target_os = "linux")]
         if let Some(Ok(c)) = &self.confine {

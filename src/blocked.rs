@@ -842,6 +842,7 @@ fn head(g: &crate::sandbox::guarantees::Guarantees) -> crate::picker::Head {
         pairs: g.panel_pairs(),
         fold: Guarantees::FOLD,
         faint: g.brief.clone(),
+        faint_narrow: g.brief_narrow(),
         then: g.hint_brief(),
         note: None,
     }
@@ -1690,6 +1691,49 @@ mod tests {
             assert!(told.contains(&format!("The user let your commands {said} — ")), "{told}");
             let toast = ed.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
             assert!(toast.starts_with(&format!("Claude's commands may {said} ")), "{toast}");
+        }
+    }
+
+    /// #646: a read grant's card on Linux, from the run's panel — where its runs have mounts of their own (tier own as
+    /// a user: a key there stays closed) and where they don't (a root tarae, whose tier's word is `own` too: open, as
+    /// tier host's). What `sandbox::hides_keys` answers in each stood in; the real one is the container's
+    /// (`a_grants_words_say_what_its_runs_rule_does_to_a_key_in_it`). With `TARAE_FRAMES_DIR` set, its frames at
+    /// 80×34 (`646-grant-user-80-meok.bin` …; `cargo xtask shot` draws them: `TARAE_SHOT_REPLAY`), a stand-in home
+    /// under `/tmp`.
+    #[test]
+    fn a_grant_cards_words_go_by_the_runs_own_mounts() {
+        use crate::sandbox::{Here, Os};
+        let base = crate::scratch::Scratch::in_dir(Path::new("/tmp"), "646");
+        let home = std::fs::canonicalize(&base).unwrap();
+        let (root, place) = (home.join("proj"), home.join("ref"));
+        for d in [&root, &place] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(place.join("id_ed25519"), "tarae-fake-token\n").unwrap();
+        let user = || Here { os: Os::Linux, hides_keys: Some(|| true), tmp: None, ..Here::now() };
+        let root_here = || Here { os: Os::Linux, hides_keys: Some(|| false), tmp: None, ..Here::now() };
+        let cases =
+            [("user", true, "in it but files named like keys"), ("root", false, "files named like keys too")];
+        for (who, mounts, words) in cases {
+            let mut ed = Editor::new(crate::config::Config::default());
+            ed.workspace.root = root.clone();
+            let here: fn() -> Here = if mounts { user } else { root_here };
+            ed.sandbox_here = Some(std::sync::Arc::new(here));
+            let run = BlockedRun::of(crate::tools::Job::Command("cargo test".into(), root.clone()));
+            let why = format!("reading {}", place.join("Cargo.toml").display());
+            let choice = Choice { grant: Grant::Read(place.clone()), hint: String::new(), why };
+            ed.workspace.blocked = Some((run, vec![choice]));
+            ed.sandbox_grant("0").unwrap();
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while ed.offers.is_empty() {
+                assert!(std::time::Instant::now() < end, "{who}: its card");
+                if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                    ed.handle_event(ev);
+                }
+            }
+            let o = &ed.offers[0];
+            assert!(o.question.contains(words), "{who}: {}", o.question);
+            crate::screen::frames_sized(&mut ed, &format!("646-grant-{who}"), &[(80, 34)]);
         }
     }
 }

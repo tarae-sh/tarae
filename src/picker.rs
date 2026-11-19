@@ -324,6 +324,8 @@ pub struct Head {
     pub pairs: Vec<(&'static str, String)>,
     pub fold: &'static [&'static str],
     pub faint: Option<String>,
+    /// `faint` in fewer words, said instead where one of its parts is wider than a row (the sandbox panel's root line).
+    pub faint_narrow: Option<String>,
     pub then: Option<String>,
     pub note: Option<String>,
 }

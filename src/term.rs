@@ -24738,7 +24738,13 @@ fn head_rows(h: &crate::picker::Head, lw: usize) -> Vec<HeadRow> {
         }
         rows.into_iter().map(HeadRow::Faint)
     };
-    out.extend(broken(h.faint.as_deref(), HEAD_FAINT));
+    // (a part wider than a row: its fewer words, where it has them)
+    let wide = h.faint.as_deref().is_some_and(|f| f.split(" · ").any(|p| p.width() > room));
+    let faint = match (wide, &h.faint_narrow) {
+        (true, Some(n)) => Some(n.as_str()),
+        _ => h.faint.as_deref(),
+    };
+    out.extend(broken(faint, HEAD_FAINT));
     out.extend(broken(h.then.as_deref(), HEAD_THEN));
     if let Some(note) = &h.note {
         out.extend([HeadRow::Air, HeadRow::Faint(crate::whole::fit(note, room))]);

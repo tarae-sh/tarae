@@ -1403,8 +1403,9 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   on a write card, keeps the same names as the project however deep (`.git`, `Makefile`, `Cargo.toml`,
   `.envrc`, … — not below its tools' output): another repository opened for writing can't have its hooks or
   build files changed by a command, since those run later outside the sandbox. On Linux that has a cost wherever
-  those names can't be sealed by mounts of the command's own: in tiers host and unserved (Ubuntu's restriction on
-  user namespaces, Docker's default profile) always, and in tier own for a folder one of whose names is reached
+  those names can't be sealed by mounts of the command's own: without them (tier host and unserved without
+  namespaces — Ubuntu's restriction on user namespaces, Docker's default profile — and tarae run as root) always,
+  and with them for a folder one of whose names is reached
   through another mount, isn't a file or a folder, or is past the mounts a command takes. There those names are
   closed by their folders' rules instead, so the folder, every folder between it and one of them, and a place
   commands write that holds it (your temp folder, say) take no new entry — their files are still written, and an

@@ -26,7 +26,9 @@ the tier, and Claude's report and `tarae state` the whole reason — on WSL2, th
 Every namespace works under the port tracker, so a session's keeper is born in the session's own (user, network, IPC,
 PID, mount). A command keeps apart from other sessions' commands what it keeps in tier own: files (but the temp
 folders), processes, signals, System V IPC, `/dev/shm`, terminals and its own loopback. Files named like keys outside
-the project are hidden by mounts in the command's mount namespace, as in tier own.
+the project are hidden by mounts in the command's mount namespace, as in tier own — but where tarae runs as root,
+which can't map itself into a command's own user namespace: there they're open, as in tier host, and the command's
+report and the grant card say so.
 
 **The network beyond, only through tarae's proxy (the bridge).** As the session's keeper is born it listens at the
 proxy's address (`192.0.2.1:3128`) inside the session's network namespace, and hands that listener to tarae's proxy;
