@@ -163,6 +163,10 @@ pub struct Saver {
     /// Tests: how many times something waited for the saves (`wait`) — the main loop never should while it runs keys.
     #[cfg(test)]
     pub waited: std::sync::atomic::AtomicUsize,
+    /// Tests: how long a quit waits for the saves (`flush_saves`) — `QUIT_WAIT` unless a test passes its own, so a
+    /// quit refused over a held save comes back at once rather than at the full wait (#654).
+    #[cfg(test)]
+    pub quit_wait: Duration,
 }
 
 /// Tests: `Saver.held`.
@@ -202,6 +206,8 @@ impl Saver {
             held: Held::default(),
             #[cfg(test)]
             waited: Default::default(),
+            #[cfg(test)]
+            quit_wait: QUIT_WAIT,
         }
     }
 
@@ -493,7 +499,11 @@ impl Editor {
     /// writes the file itself (`Document::save_as`) where an older background save must not land after it.
     /// false: some are still being written after a long wait.
     pub fn flush_saves(&mut self) -> bool {
-        let all = self.saver.wait(QUIT_WAIT);
+        #[cfg(not(test))]
+        let within = QUIT_WAIT;
+        #[cfg(test)]
+        let within = self.saver.quit_wait;
+        let all = self.saver.wait(within);
         self.saves_done();
         all
     }
@@ -717,6 +727,39 @@ mod tests {
         let out: Vec<String> = r.output.iter().map(|(_, l)| l.into_owned()).collect();
         assert_eq!(out, ["TWOne"], "it read the saved file");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// #654: a quit while a save is still being written is refused, said on the status line, and loses nothing —
+    /// the buffer still modified with its text whole, the file on disk as it was — and once the save lands `:q`
+    /// goes through. The save is held (`Saver.held`) until the test lets it go; the refused quit waits the test's
+    /// own 30 ms (`Saver.quit_wait`), not the product's `QUIT_WAIT`, and the one after the hold the shared patience:
+    /// the write that lands is waited for, a condition, never a time.
+    #[test]
+    fn a_quit_while_a_save_is_held_is_refused_and_loses_nothing() {
+        let dir = crate::scratch::Scratch::new("saver-quit-held");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let mut ed = Editor::new(Config::default());
+        ed.open(&path).unwrap();
+        ed.saver.held.hold();
+        ed.saver.quit_wait = Duration::from_millis(30);
+        feed(&mut ed, "cTWO<esc>:w<ret>");
+        // (the drainer has the save in hand, held inside its write: a quit's flush can't write it itself)
+        settle_until(&mut ed, |ed| locked(&ed.saver.queue).jobs.is_empty());
+        feed(&mut ed, ":q<ret>");
+        assert!(!ed.should_quit, "quit with a save still being written");
+        let said = "still saving — the disk is slow; try again, or :q! to quit anyway";
+        assert_eq!(ed.status, Some((said.to_string(), crate::editor::Severity::Error)));
+        assert!(ed.doc().is_modified(), "still modified");
+        assert_eq!(ed.doc().text.to_string(), "TWOne\n", "its text whole");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n", "the file as it was");
+        // The hold let go: `:q` waits for the write and goes through
+        ed.saver.held.release();
+        ed.saver.quit_wait = crate::test_results::PATIENCE;
+        feed(&mut ed, ":q<ret>");
+        assert!(ed.should_quit, "{:?}", ed.status);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "TWOne\n");
+        assert!(!ed.doc().is_modified(), "saved");
     }
 
     /// A run asked in one session starts in that session, though another is in front once its saves are
