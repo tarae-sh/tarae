@@ -631,13 +631,14 @@ pub(super) fn grant_around(
     path: &Path,
     access: u64,
     holes: &[PathBuf],
-    keys: &[PathBuf],
-    closed: &mut Vec<PathBuf>,
+    keys: &KeyWays,
+    closed: &mut Closed,
 ) -> io::Result<()> {
-    if keys.iter().any(|k| k == path) {
+    walk_counted(1, 0);
+    if keys.is_key(path) {
         return Ok(());
     }
-    if holes.iter().any(|h| path.starts_with(h)) || !keys.iter().any(|k| k.starts_with(path)) {
+    if holes.iter().any(|h| path.starts_with(h)) || !keys.on_way(path) {
         return grant(r, path, access, holes);
     }
     let own = access & KEY_FOLDER_OWN;
@@ -650,9 +651,7 @@ pub(super) fn grant_around(
     };
     if own != 0 && !holes.iter().any(|h| h.starts_with(path)) {
         match r.allow(path, own) {
-            Ok(true) if access & landlock::MAKE_REG != 0 && !closed.iter().any(|u| u == path) => {
-                closed.push(path.to_path_buf())
-            }
+            Ok(true) if access & landlock::MAKE_REG != 0 => closed.add(path),
             Ok(_) => {}
             Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {}
             Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", path.display()))),
@@ -664,6 +663,101 @@ pub(super) fn grant_around(
     }
     Ok(())
 }
+
+/// The project's keys as `grant_around` looks them up, made once a policy for every grant that walks to them (both
+/// passes: `/`'s read grant reaches the project as the project's own grant does) — a set's lookup an entry where
+/// each entry scanned the whole key list twice: at 1,000 packages, 10× the rules took 67× the time.
+///
+/// `ways` holds every key's `ancestors()`: the key itself, its folder and each folder above it. Those are exactly the
+/// paths whose components are a prefix of the key's, which is what `Path::starts_with` asks; and `Path`'s `Eq` and
+/// `Hash` go by components as `starts_with` does (`/a/b/` is `/a/b` to all three). So `ways.contains(path)` is the
+/// old scan `keys.iter().any(|k| k.starts_with(path))`, and `keys.contains(path)` is `keys.iter().any(|k| k ==
+/// path)`: no rule changes (`the_lookups_give_the_old_scans_rules`, with the scans kept there as the oracle).
+pub(super) struct KeyWays {
+    keys: HashSet<PathBuf>,
+    ways: HashSet<PathBuf>,
+    /// Tests: the list, for the break-once of the work budget (`TARAE_TEST_KEYS_SCANNED`: `on_way` its old scan).
+    #[cfg(test)]
+    scanned: Option<Vec<PathBuf>>,
+}
+
+impl KeyWays {
+    pub(super) fn of(keys: &[PathBuf]) -> KeyWays {
+        let mut ways: HashSet<PathBuf> = HashSet::new();
+        for k in keys {
+            // (a folder in the set has its own folders there already: each key's way stops at the first one met)
+            for a in k.ancestors() {
+                if !ways.insert(a.to_path_buf()) {
+                    break;
+                }
+            }
+        }
+        // (the break-once of the oracle: a ways set of each key's own folder alone)
+        #[cfg(test)]
+        if std::env::var_os("TARAE_TEST_WAYS_PARENTS").is_some() {
+            ways = keys.iter().filter_map(|k| k.parent()).map(Path::to_path_buf).collect();
+        }
+        KeyWays {
+            keys: keys.iter().cloned().collect(),
+            ways,
+            #[cfg(test)]
+            scanned: std::env::var_os("TARAE_TEST_KEYS_SCANNED").map(|_| keys.to_vec()),
+        }
+    }
+
+    /// Whether `path` is one of the keys.
+    fn is_key(&self, path: &Path) -> bool {
+        walk_counted(0, 1);
+        self.keys.contains(path)
+    }
+
+    /// Whether `path` is a key or a folder on the way to one.
+    fn on_way(&self, path: &Path) -> bool {
+        #[cfg(test)]
+        if let Some(list) = &self.scanned {
+            return list.iter().any(|k| {
+                walk_counted(0, 1);
+                k.starts_with(path)
+            });
+        }
+        walk_counted(0, 1);
+        self.ways.contains(path)
+    }
+}
+
+/// The folders `grant_around` closed for a key ((a′), `Confine.key_closed`): in the order it closed them, with a set
+/// beside the list for its lookup.
+#[derive(Default)]
+pub(super) struct Closed {
+    pub(super) list: Vec<PathBuf>,
+    seen: HashSet<PathBuf>,
+}
+
+impl Closed {
+    fn add(&mut self, folder: &Path) {
+        walk_counted(0, 1);
+        if self.seen.insert(folder.to_path_buf()) {
+            self.list.push(folder.to_path_buf());
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the entries `grant_around` walked on this thread, and its lookups into the keys, their ways and the
+    /// folders closed — a set's one, a scan's one a key compared (`the_keys_walk_looks_up_a_few_times_an_entry`).
+    pub(super) static KEY_WALK: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+fn walk_counted(entries: u64, lookups: u64) {
+    KEY_WALK.with(|c| c.set((c.get().0 + entries, c.get().1 + lookups)));
+}
+
+/// (counted in tests only)
+#[cfg(not(test))]
+#[inline(always)]
+fn walk_counted(_entries: u64, _lookups: u64) {}
 
 /// What the report says of the folders closed for a file named like a key in them ((a′), `Confine.key_closed`): a
 /// few, then how many more — the project's own by their paths in it, its root as its top folder — and why Landlock
@@ -2470,14 +2564,16 @@ pub(super) fn confine_in(
         Some(_) => Vec::new(),
         None => ways_in,
     };
-    let mut key_closed: Vec<PathBuf> = Vec::new();
+    let mut key_closed = Closed::default();
+    // (the keys looked up as sets, made once for every grant below: `/`'s and the project's both walk to them)
+    let around = KeyWays::of(&keys);
     let mut grant = |r: &mut Ruleset, path: &Path, access: u64, holes: &[PathBuf]| {
         let more: Vec<&PathBuf> = ways_in.iter().filter(|w| !path.starts_with(w)).collect();
         match more.is_empty() {
-            true => grant_around(r, path, access, holes, &keys, &mut key_closed),
+            true => grant_around(r, path, access, holes, &around, &mut key_closed),
             false => {
                 let holes: Vec<PathBuf> = holes.iter().chain(more).cloned().collect();
-                grant_around(r, path, access, &holes, &keys, &mut key_closed)
+                grant_around(r, path, access, &holes, &around, &mut key_closed)
             }
         }
     };
@@ -2871,6 +2967,7 @@ pub(super) fn confine_in(
         true => Kept::none(),
         false => Kept::of(&[found.as_slice(), &split_names].concat()),
     };
+    let mut key_closed = key_closed.list;
     crate::sorting::sort(&mut key_closed);
     // (the folders a mark alone leaves without a rule of their own: said as the closed ones are — #609)
     let places: Vec<PathBuf> = std::iter::once(p.root.clone())
@@ -3507,8 +3604,8 @@ mod tests {
         // The project's grant: around the protected names and the keys
         let mut r = Ruleset::written(3).unwrap();
         let all = landlock::ALL & landlock::handled(3);
-        let mut closed = Vec::new();
-        grant_around(&mut r, &dir, all, &holes, &found, &mut closed).unwrap();
+        let (ways, mut closed) = (KeyWays::of(&found), Closed::default());
+        grant_around(&mut r, &dir, all, &holes, &ways, &mut closed).unwrap();
         let rule = |r: &Ruleset, f: &str| r.added.iter().find(|(p, _)| *p == dir.join(f)).map(|(_, a)| *a);
         for f in ["", ".env", "src/tls/server.KEY", ".cargo", ".git", "Cargo.toml"] {
             assert_eq!(rule(&r, f), None, "{f:?}");
@@ -3519,10 +3616,10 @@ mod tests {
         for f in ["src/main.rs", "src/tls/ca.pub", ".env.example", "node_modules", "open", "named.pem"] {
             assert!(rule(&r, f).is_some_and(|a| a & landlock::READ_FILE != 0), "{f}: whole");
         }
-        assert_eq!(closed, at(&["src", "src/tls"]));
+        assert_eq!(closed.list, at(&["src", "src/tls"]));
         // A read grant: the folders on the way listed, nothing taken
-        let (mut r, mut unread) = (Ruleset::written(3).unwrap(), Vec::new());
-        grant_around(&mut r, &dir, READ, &[], &found, &mut unread).unwrap();
+        let (mut r, mut unread) = (Ruleset::written(3).unwrap(), Closed::default());
+        grant_around(&mut r, &dir, READ, &[], &ways, &mut unread).unwrap();
         for f in ["", ".cargo", ".git", ".git/hooks", "src", "src/tls"] {
             assert_eq!(rule(&r, f), Some(landlock::READ_DIR), "{f:?}");
         }
@@ -3532,8 +3629,158 @@ mod tests {
         for f in [".cargo/sub", ".git/objects", "Cargo.toml"] {
             assert!(rule(&r, f).is_some_and(|a| a & landlock::READ_FILE != 0), "{f}: read whole");
         }
-        assert!(unread.is_empty(), "{unread:?}");
+        assert!(unread.list.is_empty(), "{:?}", unread.list);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The oracle of `KeyWays`: `grant_around` as it was before the sets, its two scans of the key list (:637, :640)
+    /// and `closed`'s (:653) as they were — 7b's break-once left out.
+    fn grant_around_scanned(
+        r: &mut Ruleset,
+        path: &Path,
+        access: u64,
+        holes: &[PathBuf],
+        keys: &[PathBuf],
+        closed: &mut Vec<PathBuf>,
+    ) -> io::Result<()> {
+        if keys.iter().any(|k| k == path) {
+            return Ok(());
+        }
+        if holes.iter().any(|h| path.starts_with(h)) || !keys.iter().any(|k| k.starts_with(path)) {
+            return grant(r, path, access, holes);
+        }
+        let own = access & KEY_FOLDER_OWN;
+        if own != 0 && !holes.iter().any(|h| h.starts_with(path)) {
+            match r.allow(path, own) {
+                Ok(true) if access & landlock::MAKE_REG != 0 && !closed.iter().any(|u| u == path) => {
+                    closed.push(path.to_path_buf())
+                }
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {}
+                Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", path.display()))),
+            }
+        }
+        let Ok(entries) = std::fs::read_dir(path) else { return Ok(()) };
+        for e in entries.flatten() {
+            grant_around_scanned(r, &e.path(), access, holes, keys, closed)?;
+        }
+        Ok(())
+    }
+
+    /// The lookup fix changed no rule: over a generated tree, `grant_around` with `KeyWays` gives the old scans' rules,
+    /// in their order, and closes the same folders — keys at several depths, a key's folder inside another's, prefixes
+    /// of a string but not of components (`cfg/` and `cfg2/`, `.env` and `.env.local`), a folder named like a key
+    /// and one in the key list, a hole above, at and below a key's way; for a grant that makes files, a read grant and
+    /// one that writes in place, the same `closed` taken through a second grant inside the first.
+    /// (`TARAE_TEST_WAYS_PARENTS`, a ways set of each key's own folder alone, breaks it once.)
+    #[test]
+    fn the_lookups_give_the_old_scans_rules() {
+        let held = crate::scratch::Scratch::new("keys-oracle");
+        let dir = held.to_path_buf();
+        let mut files: Vec<String> = [
+            ".env",
+            "cfg/.env",
+            "cfg/.env.local",
+            "cfg/sub/.env",
+            "cfg/sub/build/out.o",
+            "cfg/sub/x.rs",
+            "cfg2/a.rs",
+            "cfg2/sub/.env.local",
+            "deep/a/b/.env",
+            "deep/a/b/c/d.rs",
+            "deep/a/side/e.rs",
+            "nest/.env",
+            "nest/in/.env",
+            "nest/in/f.rs",
+            "vendor/p/q/.env",
+            "vendor/p/r.rs",
+            "named.pem/inside.rs",
+            "keydir.pem/inside.rs",
+            "src/main.rs",
+        ]
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
+        // (the generated part: packages two to five deep, each with a key at its bottom and a file at each level)
+        for i in 0..24 {
+            let deep: String = (0..2 + i % 4).map(|d| format!("/l{d}")).collect();
+            files.push(format!("gen/p{i:02}{deep}/.env"));
+            files.push(format!("gen/p{i:02}{deep}/index.js"));
+            files.push(format!("gen/p{i:02}/top.js"));
+        }
+        for f in &files {
+            std::fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(f), "tarae-fake-token").unwrap();
+        }
+        let keys: Vec<PathBuf> = files
+            .iter()
+            .filter(|f| f.ends_with("/.env") || *f == ".env")
+            .map(|f| dir.join(f))
+            .chain([dir.join("keydir.pem")])
+            .collect();
+        let holes = ["vendor", "deep/a/b", "cfg/sub/build"].map(|h| dir.join(h));
+        let all = landlock::ALL & landlock::handled(3);
+        let in_place = all & !(landlock::MAKE_REG | landlock::MAKE_DIR | landlock::REMOVE_FILE);
+        let mut failed = Vec::new();
+        for (what, access) in [("makes files", all), ("reads", READ), ("writes in place", in_place)] {
+            let (mut old, mut old_closed) = (Ruleset::written(3).unwrap(), Vec::new());
+            let (mut new, mut new_closed) = (Ruleset::written(3).unwrap(), Closed::default());
+            let ways = KeyWays::of(&keys);
+            for at in [dir.clone(), dir.join("cfg")] {
+                grant_around_scanned(&mut old, &at, access, &holes, &keys, &mut old_closed).unwrap();
+                grant_around(&mut new, &at, access, &holes, &ways, &mut new_closed).unwrap();
+            }
+            if old.added != new.added || old_closed != new_closed.list {
+                failed.push(format!(
+                    "{what}: {} rules and {:?} closed, the old scans {} and {old_closed:?}; first apart: {:?}",
+                    new.added.len(),
+                    new_closed.list,
+                    old.added.len(),
+                    old.added.iter().zip(&new.added).find(|(a, b)| a != b)
+                ));
+            }
+            // (the tree reaches every branch: the ways closed, a key's folder holding another's; none for a folder
+            // on the way to a hole, `cfg`)
+            let rule = |f: &str| old.added.iter().find(|(p, _)| *p == dir.join(f)).map(|(_, a)| *a);
+            let own = |f: &str| rule(f) == Some(access & KEY_FOLDER_OWN);
+            assert!(
+                own("nest") && own("nest/in") && own("gen/p03/l0/l1/l2") && rule("cfg").is_none(),
+                "{what}: {:?}",
+                old.added
+            );
+        }
+        assert!(failed.is_empty(), "{failed:#?}");
+    }
+
+    /// A budget of work, not time: `grant_around` over a monorepo of 1,000 packages with a key each looks into the
+    /// keys, their ways and the folders closed at most `PER_ENTRY` times an entry it walks — measured 2.0 (a key
+    /// looked up once, every other entry twice, each folder closed once more), so 3 leaves room and no scan of the key
+    /// list fits. (`TARAE_TEST_KEYS_SCANNED`, :640's old scan, breaks it once.)
+    #[test]
+    fn the_keys_walk_looks_up_a_few_times_an_entry() {
+        const PER_ENTRY: u64 = 3;
+        let held = crate::scratch::Scratch::new("keys-budget");
+        let dir = held.to_path_buf();
+        let mut keys = Vec::new();
+        for i in 0..1000 {
+            let at = dir.join(format!("packages/p{i:04}"));
+            std::fs::create_dir_all(&at).unwrap();
+            std::fs::write(at.join("index.js"), "").unwrap();
+            std::fs::write(at.join(".env"), "tarae-fake-token").unwrap();
+            keys.push(at.join(".env"));
+        }
+        let (mut r, mut closed) = (Ruleset::written(3).unwrap(), Closed::default());
+        KEY_WALK.with(|c| c.set((0, 0)));
+        let ways = KeyWays::of(&keys);
+        grant_around(&mut r, &dir, landlock::ALL & landlock::handled(3), &[], &ways, &mut closed).unwrap();
+        let (entries, lookups) = KEY_WALK.with(|c| c.get());
+        assert_eq!(closed.list.len(), 1002, "the walk reached every key's folder");
+        assert_eq!(entries, 3002, "the top, packages/, 1,000 folders and 2,000 files");
+        assert!(
+            lookups <= PER_ENTRY * entries,
+            "{lookups} lookups for {entries} entries: {:.1} an entry, past {PER_ENTRY}",
+            lookups as f64 / entries as f64
+        );
     }
 
     /// The other mounts that reach a key (`other_ways`), from a mount table as the kernel writes it: a second bind of

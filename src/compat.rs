@@ -1303,6 +1303,10 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/linux.rs", "in fn confine_in: walked", SEAM),
     ("src/sandbox/linux.rs", "in fn grant_around: own", SEAM),
     ("src/sandbox/linux.rs", "in fn place_outside: ways_last", SEAM),
+    ("src/sandbox/linux.rs", "in fn of: if std::env::var_os(\"TARAE_TEST_WAYS_PARENTS\").is_", SEAM),
+    ("src/sandbox/linux.rs", "in fn of: scanned", SEAM),
+    ("src/sandbox/linux.rs", "in fn on_way: if let Some(list) = &self.scanned {", SEAM),
+    ("src/sandbox/linux.rs", "fn walk_counted: a test build's twin", RECORD),
     (
         "src/sandbox/linux.rs",
         "in fn kept_closing: if std::env::var_os(\"TARAE_TEST_KEPT_UNSAID\").is_s",

@@ -18305,9 +18305,10 @@ mod tests {
             let mut written = (0, Vec::new());
             for _ in 0..7 {
                 let mut r = crate::landlock::Ruleset::written(crate::landlock::abi().unwrap()).unwrap();
-                let mut closed = Vec::new();
+                let mut closed = linux::Closed::default();
                 let at = std::time::Instant::now();
-                linux::grant_around(&mut r, &root, crate::landlock::ALL, &[], &keys, &mut closed).unwrap();
+                let ways = linux::KeyWays::of(&keys);
+                linux::grant_around(&mut r, &root, crate::landlock::ALL, &[], &ways, &mut closed).unwrap();
                 written.1.push(ms(at.elapsed()));
                 written.0 = r.added.len();
             }
