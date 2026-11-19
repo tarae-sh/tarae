@@ -7,3 +7,5 @@ hidden by mounts:
 sealed by mounts:
     $ROOT/Cargo.toml
 folders on the way bound over themselves:
+    $ROOT/src
+    $ROOT/src/tls

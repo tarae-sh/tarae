@@ -15158,7 +15158,8 @@ mod tests {
     /// case — nor through a link to it or a copy of it; it sees that it's there; the rule in Rust agrees. On
     /// Linux (Landlock's rules hold the file, not its name) not after a rename or a hard link either, in its
     /// folder or to one that reads — where it's hidden by a mount (7d), the mount holds it: it can't be renamed
-    /// nor linked, and a folder moved takes it along.
+    /// nor linked, nor is a folder on its way moved (each bound over itself:
+    /// `a_keys_name_is_held_against_every_way_it_could_be_freed`).
     #[test]
     fn a_run_cant_read_a_key_named_file() {
         if !keys_tested_here("a_run_cant_read_a_key_named_file") {
@@ -15321,7 +15322,10 @@ mod tests {
 
     /// For real (G33, macOS): a folder holding a file named like a key, found by the walk before the run
     /// (`keyfolders::locked`), isn't moved — into tools' output, into the run's own folder, to a sibling name — nor
-    /// removed; nor is a folder two levels above one, nor the project's root. The keys stay where they were. A folder
+    /// removed; nor is a folder two levels above one, nor the project's root; nor is another folder, a planted key in
+    /// it, renamed onto one or exchanged with it (`renamex_np`'s `RENAME_SWAP`, from this test binary as the run —
+    /// #651's ways, Seatbelt's refusal each: without the lock, `TARAE_TEST_NO_KEY_LOCK=1`, the exchange goes through
+    /// at every level and the rename onto stays refused as not empty). The keys stay where they were, bytes and inode. A folder
     /// holding none moves, beside a locked one or inside it; so does one the run made, a new key in it, read below
     /// tools' output then (the walk didn't see it: the cost, as Linux's). A key runs can't write — a protected name,
     /// `.npmrc` — locks its folder all the same (G33's review: the lock is about reads). The file the user opened
@@ -15350,6 +15354,11 @@ mod tests {
             keyfolders::locked(p)
         };
         let p = policy(Vec::new());
+        // (the break-once: no folder locked — every refused row moves)
+        let p = match std::env::var_os("TARAE_TEST_NO_KEY_LOCK") {
+            Some(_) => Policy { key_folders: Default::default(), ..p },
+            None => p,
+        };
         let (config, locked) = (root.join("config"), &p.key_folders.folders);
         // Every row runs and what failed is gathered, said once at the end: a row failing for its own reason hides
         // none after it.
@@ -15357,6 +15366,44 @@ mod tests {
         for f in [&root, &config, &root.join("deep"), &root.join("deep/er"), &root.join("sub")] {
             if !locked.contains(f) {
                 failed.push(format!("not locked: {f:?}"));
+            }
+        }
+        // (#651's ways on macOS, first — the rows below move the project itself in the break-once: another folder, a
+        // planted key at the same place in it, renamed onto each folder on the way — `rename` — and exchanged with it
+        // — `renamex_np`'s `RENAME_SWAP`, which no common tool has — from this test binary as the run under the real
+        // profile; its own words say the call was made. The key's bytes and inode as they were)
+        let exe = std::env::current_exe().unwrap();
+        let stamp = |f: &Path| {
+            use std::os::unix::fs::MetadataExt;
+            Some((std::fs::read_to_string(f).ok()?, std::fs::metadata(f).ok()?.ino()))
+        };
+        let key = root.join("deep/er/Server.PEM");
+        let ways =
+            [(&config, config.join(".env")), (&root.join("deep/er"), key.clone()), (&root.join("deep"), key)];
+        let mut n = 0;
+        for (way, file) in &ways {
+            let before = stamp(file);
+            let tries = [
+                ("another renamed onto it", "TARAE_TEST_RENAME", "rename:"),
+                ("exchanged", "TARAE_TEST_EXCHANGE", "renamex_np:"),
+            ];
+            for (how, var, call) in tries {
+                n += 1;
+                let (w, rel) = (way.display(), file.strip_prefix(way).unwrap());
+                let planted = PathBuf::from(format!("{w}.other{n}")).join(rel);
+                let script = format!(
+                    "mkdir -p '{}' && printf planted > '{}' && {var}='{w}.other{n}:{w}' '{}' --exact \
+                     sandbox::tests::a_run_exchanges_two_folders --ignored --test-threads=1",
+                    planted.parent().unwrap().display(),
+                    planted.display(),
+                    exe.display()
+                );
+                let (ok, out, err) = sh_under(&p, &root, &script);
+                let (now, said) = (stamp(file), out + &err);
+                if ok || now != before || !said.contains(call) {
+                    let said = said.lines().find(|l| l.contains("rename")).unwrap_or(said.trim());
+                    failed.push(format!("{} {how}: the key now {now:?}: {said}", way.display()));
+                }
             }
         }
         let own = p.run.as_ref().unwrap().path().display().to_string();
@@ -15370,7 +15417,12 @@ mod tests {
             "mv deep/er deep/er2".into(),
             format!("mv '{r}' '{own}/project'"),
             "mv sub target/sub".into(),
-        ] {
+        ]
+        // (the break-once leaves the project where it is: the rows after would have no folder to run in)
+        .into_iter()
+        .filter(|s| {
+            !(s.starts_with(&format!("mv '{r}'")) && std::env::var_os("TARAE_TEST_NO_KEY_LOCK").is_some())
+        }) {
             let (ok, _, err) = sh_under(&p, &root, &script);
             if ok || !err.contains(KEY_DENIED) {
                 failed.push(format!("refused, ran: {script}: {}", err.trim()));
@@ -16415,7 +16467,10 @@ mod tests {
     /// For real, where keys are hidden by mounts (7d): the run can't take a mount back — not by unmounting it
     /// (lazily too), remounting it writable, mounting over it, nor from a user and mount namespace it makes itself
     /// (where it holds every capability): it has none in its own, Landlock refuses a confined process every mount
-    /// call, and in a namespace it makes the mounts come locked. After each try the key is still refused.
+    /// call, and in a namespace it makes the mounts come locked. After each try the key is still refused. The
+    /// namespace's tries reach the mount: `-Um --propagation unchanged` (`-r`'s root map is a write to
+    /// `/proc/self/uid_map` a run can't make, and `unshare`'s own change of propagation a mount call Landlock refuses —
+    /// either stops before the mount), its words then the mount's, never `unshare`'s.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_run_cant_take_a_keys_mount_back() {
@@ -16433,8 +16488,8 @@ mod tests {
             "umount -l .env",
             "mount -o remount,bind,rw .env",
             "mount --bind src/env.rs .env",
-            "unshare -Urm sh -c 'umount -l .env && cat .env'",
-            "unshare -Urm sh -c 'mount -o remount,bind,rw .env && chmod 644 .env && cat .env'",
+            "unshare -Um --propagation unchanged sh -c 'umount -l .env && cat .env'",
+            "unshare -Um --propagation unchanged sh -c 'mount -o remount,bind,rw .env && chmod 644 .env && cat .env'",
         ] {
             let script = format!("{undo} && echo UNDONE; cat .env");
             let (ok, out, err) = sh_under(&p, &root, &script);
@@ -16443,6 +16498,7 @@ mod tests {
                 "{undo}: {out} {err}"
             );
             assert!(err.contains(KEY_DENIED), "{undo}: still refused after — {err}");
+            assert!(!err.contains("unshare:"), "{undo}: stopped before the mount — {err}");
         }
         std::fs::remove_dir_all(&t).ok();
     }
@@ -17247,10 +17303,13 @@ mod tests {
     /// `./name` and `/proc/self/cwd/name` from the pinned folder, by `../name` and `/proc/self/cwd/../name` from the one
     /// below — goes through the pins and what was made through them: a sealed name (`build.rs`) isn't written, a key
     /// at a seal's pinned folder (`.env` beside `tool/x/build.rs`, beside `sub/.claude`) isn't read, nor a kept file
-    /// from its own folder (#651's pin). Entered before them (the break-once, `TARAE_TEST_CHDIR_FIRST=1`), the folder
-    /// stays on the mount below the pin, where none of those are. And no pin is the run's `/`, the project's root or a
-    /// write place — each strictly below one — so no root a run holds is below a pin. A row whose run didn't start is a
-    /// failure, never a refusal; every row runs, what got through said once at the end.
+    /// from its own folder (#651's pin), nor a key two folders down from its own folder, in the project (`cfg/sub/.env`)
+    /// or outside it in a place runs write (`writes/a/b/id_rsa`) — each folder on its way pinned (#651's wider gap).
+    /// Entered before them (the break-once, `TARAE_TEST_CHDIR_FIRST=1`), the folder stays on the mount below the pin,
+    /// where none of those are. And no pin is the run's `/`, the project's root or a write place — each strictly below
+    /// one, the keys' outside below a write place — so no root a run holds is below a pin. A row whose run didn't start
+    /// is a failure, never a refusal; every row runs, what got through said once at the end. The keys' folders' pins
+    /// are rows too (`TARAE_TEST_NO_KEY_PINS=1` takes them out; the keys stay hidden by their own covers).
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_run_enters_its_folder_only_after_its_mounts() {
@@ -17264,25 +17323,51 @@ mod tests {
         let kube = writes.join("kind/kubeconfig");
         let (sealed, beside_seal, beside_folder) =
             (root.join("tool/x/build.rs"), root.join("tool/x/.env"), root.join("sub/.env"));
-        for f in [&sealed, &beside_seal, &beside_folder, &root.join("sub/.claude/settings.json"), &kube] {
+        // (a key two folders down, in the project and outside it in the write place: each folder on its way pinned)
+        let (deep, outside) = (root.join("cfg/sub/.env"), writes.join("a/b/id_rsa"));
+        for f in [
+            &sealed,
+            &beside_seal,
+            &beside_folder,
+            &root.join("sub/.claude/settings.json"),
+            &kube,
+            &deep,
+            &outside,
+        ] {
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, FAKE).unwrap();
         }
         // (the folders below the pinned ones, each with a file the run reads: it started there)
-        let belows = [root.join("tool/x/src"), root.join("sub/below"), writes.join("kind/below")];
+        let belows = [
+            root.join("tool/x/src"),
+            root.join("sub/below"),
+            writes.join("kind/below"),
+            root.join("cfg/sub/below"),
+            writes.join("a/b/below"),
+        ];
         for b in &belows {
             std::fs::create_dir_all(b).unwrap();
             std::fs::write(b.join("notes.txt"), "notes\n").unwrap();
         }
         let reads = Reads { home: Some(home), kept: vec![kube.clone()], ..Reads::default() };
-        let env = Env { root: root.clone(), reads, run_env: run_env_here(), ..Env::default() };
-        let p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
+        let env = Env {
+            root: root.clone(),
+            reads,
+            key_places: vec![writes.clone()],
+            run_env: run_env_here(),
+            ..Env::default()
+        };
+        let mut p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
+        // (its own key place only: the temp folders hold other tests' keys while the suite runs — a thousand of them
+        // fill the room before any folder, which `a_monorepos_keys_folders_are_held_as_room_is_left` tests)
+        p.key_places.retain(|k| *k == writes);
         if skipped_for_mounts(&p, test, true) {
             return;
         }
         let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
         let Some(Ok(confine)) = &c.confine else { panic!("{test}: not confined: {:?}", c.confine) };
         let (tier, cv) = (confine.tier(), &confine.covers);
+        let mut failed: Vec<String> = Vec::new();
         // (what each row stands on: the seals, their pins, the keys and the kept file hidden, its folder pinned)
         let has = |v: &[linux::Cover], f: &Path| v.iter().any(|c| c.path == f);
         for (what, v, f) in [
@@ -17295,15 +17380,37 @@ mod tests {
             ("hidden", &cv.keys, beside_seal.clone()),
             ("hidden", &cv.keys, beside_folder.clone()),
             ("hidden", &cv.kept, kube.clone()),
+            ("hidden", &cv.keys, deep.clone()),
+            ("hidden", &cv.loose, outside.clone()),
         ] {
             assert!(has(v, &f), "{tier}: {} {what}: {cv:?}", f.display());
         }
-        // (no pin is `/`, the project's root or a write place: each strictly below one of them)
+        // (the keys' folders pinned: rows, so the no-pins break says each and the rows after still run)
+        for (v, f) in [
+            (&cv.pins, root.join("cfg")),
+            (&cv.pins, root.join("cfg/sub")),
+            (&cv.loose_pins, writes.join("a")),
+            (&cv.loose_pins, writes.join("a/b")),
+        ] {
+            if !has(v, &f) {
+                failed.push(format!("a key's folder not pinned: {}", f.strip_prefix(&t).unwrap().display()));
+            }
+        }
+        // (no pin is `/`, the project's root or a write place: each strictly below one of them — the keys' outside
+        // below a write place)
+        let below = |pin: &Path, w: &PathBuf| pin.starts_with(w) && pin != w.as_path();
         for pin in &cv.pins {
-            let below = |w: &PathBuf| pin.path.starts_with(w) && pin.path != *w;
             assert!(
-                pin.path != Path::new("/") && (below(&root) || p.write.iter().any(below)),
+                pin.path != Path::new("/")
+                    && (below(&pin.path, &root) || p.write.iter().any(|w| below(&pin.path, w))),
                 "{tier}: a pin that's a root: {}",
+                pin.path.display()
+            );
+        }
+        for pin in &cv.loose_pins {
+            assert!(
+                p.write.iter().any(|w| below(&pin.path, w)),
+                "{tier}: a key's folder pinned outside the write places, or one of them: {}",
                 pin.path.display()
             );
         }
@@ -17313,12 +17420,25 @@ mod tests {
             None => Vec::new(),
         };
         let started = |err: &str| !err.contains("tarae's sandbox couldn't start it");
-        let mut failed: Vec<String> = Vec::new();
         let rows = [
             ("a sealed name written", root.join("tool/x"), &belows[0], "build.rs", true),
             ("a key beside a sealed name read", root.join("tool/x"), &belows[0], ".env", false),
             ("a key beside a sealed folder read", root.join("sub"), &belows[1], ".env", false),
             ("a kept file read from its own folder", writes.join("kind"), &belows[2], "kubeconfig", false),
+            (
+                "a project key read from its own pinned folder",
+                root.join("cfg/sub"),
+                &belows[3],
+                ".env",
+                false,
+            ),
+            (
+                "a key outside read from its own pinned folder",
+                writes.join("a/b"),
+                &belows[4],
+                "id_rsa",
+                false,
+            ),
         ];
         for (what, pinned, below, name, write) in &rows {
             let ways = [
@@ -17346,8 +17466,10 @@ mod tests {
                 failed.push(format!("not started in {}: {out} {}", b.display(), err.trim()));
             }
         }
-        if std::fs::read_to_string(&sealed).ok().as_deref() != Some(FAKE) {
-            failed.push("the sealed name not as it was".into());
+        for f in [&sealed, &deep, &outside] {
+            if std::fs::read_to_string(f).ok().as_deref() != Some(FAKE) {
+                failed.push(format!("not as it was: {}", f.strip_prefix(&t).unwrap().display()));
+            }
         }
         assert!(
             failed.is_empty(),
@@ -17522,29 +17644,228 @@ mod tests {
         }
     }
 
-    /// A run's helper (#651): this test binary as a sandboxed run, exchanging the two folders `TARAE_TEST_EXCHANGE`
-    /// names (`a:b`) by `renameat2`'s `RENAME_EXCHANGE`, which no common tool has. Fails where the kernel refuses;
-    /// does nothing without the variable.
+    /// For real, on Linux in tier own (#651's wider gap, #634's table): a key's name is held against every way a run
+    /// could free it — a key in the project and one outside it in a place runs write, each two folders below the
+    /// project's root or that place, at each of the two folders on its way: renamed away and made anew, another
+    /// renamed onto it, the two exchanged (`a_run_exchanges_two_folders`), emptied and removed, and from a user and
+    /// mount namespace the run makes itself, its pin unmounted first. Each refused; the key's bytes and inode as they
+    /// were — what the user's own tools read later. (A run started in a pinned folder, reading its key from there:
+    /// `a_run_enters_its_folder_only_after_its_mounts`.) Each row on a fixture of its own: one way through spoils the
+    /// next run (its covers find the key moved — ESTALE, it doesn't start), and a row whose run didn't start is a
+    /// failure, never a refusal. Break-once: `TARAE_TEST_NO_KEY_PINS=1`.
     #[cfg(not(target_os = "macos"))]
     #[test]
-    #[ignore = "a run's helper: a_kept_places_name_is_held_against_every_way_it_could_be_freed starts it"]
+    fn a_keys_name_is_held_against_every_way_it_could_be_freed() {
+        use std::os::unix::fs::MetadataExt;
+        let test = "a_keys_name_is_held_against_every_way_it_could_be_freed";
+        if !keys_tested_here(test) {
+            return;
+        }
+        // (a key in the project and one outside it, two folders down)
+        let fixture = || {
+            let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-keys-held");
+            let t = profile_path(&s);
+            let (root, g) = (t.join("project"), t.join("granted"));
+            for f in ["project/cfg/sub/.env", "project/cfg/sub/notes.txt", "granted/a/b/id_rsa"] {
+                std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+                std::fs::write(t.join(f), FAKE).unwrap();
+            }
+            let mut p = Policy::for_project(&Env {
+                root: root.clone(),
+                key_places: vec![g.clone()],
+                write: vec![g.display().to_string()],
+                run_env: run_env_here(),
+                ..Env::default()
+            });
+            // (its own key place only: the temp folders hold other tests' keys while the suite runs — a thousand of
+            // them fill the room before any folder, which `a_monorepos_keys_folders_are_held_as_room_is_left` tests)
+            p.key_places.retain(|k| *k == g);
+            let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
+            (s, root, g, p, c)
+        };
+        let (_s, root, g, p, c) = fixture();
+        if skipped_for_mounts(&p, test, true) {
+            return;
+        }
+        let Some(Ok(confine)) = &c.confine else { panic!("{test}: not confined: {:?}", c.confine) };
+        let tier = confine.tier();
+        let exe = std::env::current_exe().unwrap();
+        let stamp = |f: &Path| Some((std::fs::read_to_string(f).ok()?, std::fs::metadata(f).ok()?.ino()));
+        let started = |err: &str| !err.contains("tarae's sandbox couldn't start it");
+        // Every row runs and what got through is gathered, said once at the end: one row's failure hides none after it
+        let mut failed: Vec<String> = Vec::new();
+        let hows = [
+            "renamed away",
+            "another renamed onto it",
+            "exchanged",
+            "emptied and removed",
+            "from a namespace of its own",
+        ];
+        for (kind, level, how) in (0..2).flat_map(|k| (1..3).flat_map(move |l| hows.map(|h| (k, l, h)))) {
+            let (_s, root, g, _, c) = fixture();
+            let file = if kind == 0 { root.join("cfg/sub/.env") } else { g.join("a/b/id_rsa") };
+            let way = file.ancestors().nth(level).unwrap();
+            let (w, rel) = (way.display(), file.strip_prefix(way).unwrap());
+            let plant = |at: &Path| {
+                let f = at.join(rel);
+                format!("mkdir -p '{}' && echo planted > '{}'", f.parent().unwrap().display(), f.display())
+            };
+            let other = PathBuf::from(format!("{w}.other"));
+            let o = other.display();
+            let script = match how {
+                "renamed away" => format!("mv '{w}' '{w}.away' && {}", plant(way)),
+                "another renamed onto it" => format!("{} && mv -T '{o}' '{w}'", plant(&other)),
+                "exchanged" => format!(
+                    "{} && TARAE_TEST_EXCHANGE='{o}:{w}' '{}' --exact sandbox::tests::a_run_exchanges_two_folders \
+                     --ignored --test-threads=1",
+                    plant(&other),
+                    exe.display()
+                ),
+                "emptied and removed" => {
+                    format!("find '{w}' -mindepth 1 -delete; rmdir '{w}' && {}", plant(way))
+                }
+                _ => format!(
+                    "unshare -Um --propagation unchanged sh -c \"umount -l '{w}'; mv '{w}' '{w}.ns' && {}\"",
+                    plant(way)
+                ),
+            };
+            let before = stamp(&file);
+            assert_eq!(before.as_ref().map(|(b, _)| b.as_str()), Some(FAKE), "{tier}: the fixture");
+            let (ok, out, err) = sh_confined(&c, &root, &script);
+            let now = stamp(&file);
+            if ok || now != before || !started(&err) {
+                let said = format!("{out} {err}").replace('\n', " ");
+                let at = way.strip_prefix(root.parent().unwrap()).unwrap().display();
+                failed.push(format!("{at} {how}: the key now {now:?}: {}", said.trim()));
+            }
+        }
+        let pinned: Vec<&PathBuf> =
+            confine.covers.pins.iter().chain(&confine.covers.loose_pins).map(|c| &c.path).collect();
+        for way in [root.join("cfg"), root.join("cfg/sub"), g.join("a"), g.join("a/b")] {
+            if !pinned.contains(&&way) {
+                failed.push(format!("not pinned: {}", way.display()));
+            }
+        }
+        assert!(failed.is_empty(), "{test}, {tier}: {} rows failed:\n{}", failed.len(), failed.join("\n"));
+    }
+
+    /// For real, on Linux in tier own (#651's wider gap): a made-up monorepo of `n` packages, each with an `.env` — how
+    /// many of the folders on the way to its keys a run's mounts hold (`packages/` and one a package: `n + 1`, after
+    /// the `n` keys, in `COVERS_MAX`), outermost first; past the room each said by count, the room then full, its key
+    /// hidden all the same; and what a run's start takes then, the fastest of three, beside
+    /// `many_keys_are_hidden_at_once`'s. No key place outside the project is walked: while the suite runs, other
+    /// tests' keys in the temp folders (`many_keys_are_hidden_at_once`'s thousand) would take the room first, by
+    /// when each runs. No real project is read.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_monorepos_keys_folders_are_held_as_room_is_left() {
+        let test = "a_monorepos_keys_folders_are_held_as_room_is_left";
+        if !keys_tested_here(test) {
+            return;
+        }
+        for n in [10, 100, 500, 1000] {
+            let s = crate::scratch::Scratch::new(&format!("sb-monorepo-{n}"));
+            let root = profile_path(&s).join("project");
+            for i in 0..n {
+                let at = root.join(format!("packages/p{i:04}"));
+                std::fs::create_dir_all(&at).unwrap();
+                std::fs::write(at.join(".env"), FAKE).unwrap();
+                std::fs::write(at.join("index.js"), "").unwrap();
+            }
+            let mut p = key_policy(&root);
+            p.key_places.clear();
+            if n == 10 && skipped_for_mounts(&p, test, true) {
+                return;
+            }
+            let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
+            let Some(Ok(confine)) = &c.confine else { panic!("{test}: {n}: {:?}", c.confine) };
+            let cv = &confine.covers;
+            let held: Vec<&PathBuf> =
+                cv.pins.iter().map(|c| &c.path).filter(|d| d.starts_with(&root)).collect();
+            let unheld = cv.unheld.iter().filter(|(d, _)| d.starts_with(&root)).count();
+            assert_eq!(cv.keys.len(), n, "{n}: every key hidden");
+            assert_eq!(held.len() + unheld, n + 1, "{n}: every folder held or said");
+            let used = cv.keys.len()
+                + cv.loose.len()
+                + cv.kept.len()
+                + cv.seals.len()
+                + cv.pins.len()
+                + cv.loose_pins.len();
+            assert!(
+                cv.unheld.is_empty() || used == linux::COVERS_MAX,
+                "{n}: past the room, the room full: {used}"
+            );
+            assert!(
+                match n {
+                    1000 => unheld > 0,
+                    _ => unheld == 0,
+                },
+                "{n}: {unheld} past the room"
+            );
+            assert_eq!(
+                held.first().map(|d| d.as_path()),
+                Some(root.join("packages").as_path()),
+                "{n}: outermost first"
+            );
+            let said = linux::covers_said(confine);
+            let counted = format!("{} folders on the way to those files aren't bound", cv.unheld.len());
+            assert_eq!(said.contains(&counted), !cv.unheld.is_empty(), "{n}: {said}");
+            let runs = (0..3).map(|_| {
+                let at = std::time::Instant::now();
+                let ran = sh_under(&p, &root, "cat packages/p0000/.env");
+                (at.elapsed(), ran)
+            });
+            let (took, (ok, out, err)) = runs.min_by_key(|(took, _)| *took).unwrap();
+            assert!(!ok && !out.contains(FAKE) && err.contains(KEY_DENIED), "{n}: {out} {err}");
+            // (written past libtest's capture: the numbers are what this test is for)
+            let line = format!(
+                "{test}: {n} packages — {n} keys, {} folders held, {unheld} not (besides: {} keys outside, {} of \
+                 their folders held); a run's start {took:?}\n",
+                held.len(),
+                cv.loose.len(),
+                cv.loose_pins.len()
+            );
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        }
+    }
+
+    /// A run's helper (#651): this test binary as a sandboxed run, exchanging the two folders `TARAE_TEST_EXCHANGE`
+    /// names (`a:b`) — `renameat2`'s `RENAME_EXCHANGE` on Linux, `renamex_np`'s `RENAME_SWAP` on macOS, which no
+    /// common tool has — or renaming the first onto the second, `TARAE_TEST_RENAME` (`rename`: macOS's `mv` has no
+    /// `-T`). Fails where the kernel refuses, its words naming the call (`rename…:`); does nothing without either.
+    #[test]
+    #[ignore = "a run's helper: the tests of a held name start it"]
     fn a_run_exchanges_two_folders() {
-        let Some(v) = std::env::var_os("TARAE_TEST_EXCHANGE") else { return };
+        let (v, swap) = match (std::env::var_os("TARAE_TEST_EXCHANGE"), std::env::var_os("TARAE_TEST_RENAME"))
+        {
+            (Some(v), _) => (v, true),
+            (None, Some(v)) => (v, false),
+            (None, None) => return,
+        };
         let v = v.into_string().unwrap();
         let (a, b) = v.split_once(':').expect("a:b");
         let (a, b) = (std::ffi::CString::new(a).unwrap(), std::ffi::CString::new(b).unwrap());
         // SAFETY: two C strings that live through the call.
-        let r = unsafe {
-            libc::syscall(
-                libc::SYS_renameat2,
-                libc::AT_FDCWD,
-                a.as_ptr(),
-                libc::AT_FDCWD,
-                b.as_ptr(),
-                libc::RENAME_EXCHANGE,
-            )
+        let (r, call) = unsafe {
+            match swap {
+                #[cfg(not(target_os = "macos"))]
+                true => (
+                    libc::syscall(
+                        libc::SYS_renameat2,
+                        libc::AT_FDCWD,
+                        a.as_ptr(),
+                        libc::AT_FDCWD,
+                        b.as_ptr(),
+                        libc::RENAME_EXCHANGE,
+                    ) as i32,
+                    "renameat2",
+                ),
+                #[cfg(target_os = "macos")]
+                true => (libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP), "renamex_np"),
+                false => (libc::rename(a.as_ptr(), b.as_ptr()), "rename"),
+            }
         };
-        assert_eq!(r, 0, "renameat2: {}", std::io::Error::last_os_error());
+        assert_eq!(r, 0, "{call}: {}", std::io::Error::last_os_error());
     }
 
     /// A kept place's fixture for #651's holes: in its own write place `writes` (made) under `t`, the kept entry at

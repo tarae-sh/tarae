@@ -473,7 +473,7 @@ Kept:
   `chown`, `chflags` or the ACL calls (`setattrlist(2)` sets mode and group all the same, G34; not their
   extended attributes nor times: neither changes what a reader gets nor who may read it, and `cp` copies a
   template's attributes onto the new one; their reads stay closed) — by name, as their reads; a folder above
-  one the walk before the run found isn't renamed or removed either (G33). A new one is made (`cp .env.example .env`),
+  one the walk before the run found isn't renamed, renamed onto, exchanged or removed either (G33). A new one is made (`cp .env.example .env`),
   written through the open that made it, then closed as one found: a key a run made earlier in that run can't be rewritten or
   removed (Linux's mounts hide only what its walk found before the run, so there that waits for the next run). The
   run's own folder (`TMPDIR`) is free; the file you open from the run's panel is written again where runs write,
@@ -502,8 +502,16 @@ Kept:
 - Linux: no way around it through a link, a rename, another mount, another process's root or folder, or the run's
   own working folder: where keys are hidden by mounts its child enters that folder only after them, so a key beside
   a protected name or a kept file isn't read from its own folder either, by `./`, `../` or `/proc/self/cwd/`; and it
-  holds no descriptor from before them.
+  holds no descriptor from before them. In tier own, nor by moving a folder on its way and making a file at its name,
+  which your own tools would read later: each folder between the project's root — or the place runs write holding
+  one outside it — and a key hidden is bound over itself for the run (renamed, renamed onto, exchanged, emptied and
+  removed, from a namespace of its own: Device or resource busy), in the room a run's mounts take after the seals, the
+  kept places and the keys themselves, outermost first; past it the key stays hidden and the report counts the
+  folders not held, and why.
   test: `sandbox::tests::a_run_enters_its_folder_only_after_its_mounts` ·
+  `sandbox::tests::a_keys_name_is_held_against_every_way_it_could_be_freed` ·
+  `sandbox::tests::a_monorepos_keys_folders_are_held_as_room_is_left` ·
+  `sandbox::linux::tests::the_keys_folders_are_held_outermost_first_as_room_is_left` ·
   `sandbox::tests::a_hard_link_to_a_key_made_earlier_is_closed_too` ·
   `sandbox::tests::a_key_reached_through_another_mount_is_closed_there` ·
   `sandbox::tests::a_run_reaches_no_key_through_another_process_root` ·
@@ -522,8 +530,9 @@ Kept:
   too: found afresh before each run, at most 20,000 entries looked through (`linux::WALK_MAX`) — the places no run
   writes (other checkouts, read grants) first, so filling `/tmp` can't hide those from the walk — and hidden by a
   mount of the run's own as the project's are ([D-i](design/sandbox-keeper.md#decisions)) — so, as the project's,
-  the run can't write, remove or rename one (read-only, busy: an `rm -rf` of a folder in `/tmp` holding one
-  fails, as it does on macOS since B1; so does a test regenerating one with `>`); the run's report names it, says it's
+  the run can't write, remove or rename one, nor move a folder on its way from the place (read-only, busy: an
+  `rm -rf` of a folder in `/tmp` holding one fails, as it does on macOS since B1; so does a test regenerating one
+  with `>`); the run's report names it, says it's
   hidden, that the run's panel lets runs use that file only and that once the user removes it the next run's walk
   finds it gone (`sandbox::hidden_keys_said`); one gone or replaced by another file between the walk and the run's
   mount is skipped, which the run's child says before its exec — the report names a replaced one as readable and

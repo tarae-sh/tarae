@@ -117,6 +117,9 @@ pub struct Run {
     /// The folders between the project and those it binds over themselves first, writable, outermost first
     /// (`linux::Covers::pins`).
     pub pins: Vec<Covered>,
+    /// The folders between the place runs write holding one of `loose` and it, bound over themselves after `pins`,
+    /// outermost first (`linux::Covers::loose_pins`): one gone or swapped since is left, as its key is.
+    pub loose_pins: Vec<Covered>,
 }
 
 /// A file a run's child mounts `Run.shut` over: where (a real path), and the file the walk found there.
@@ -276,6 +279,7 @@ pub fn encode(msg: &Msg) -> Result<Vec<u8>, Refused> {
             list(&mut b, &r.loose.iter().map(Covered::item).collect::<Vec<_>>())?;
             list(&mut b, &r.seals.iter().map(Covered::item).collect::<Vec<_>>())?;
             list(&mut b, &r.pins.iter().map(Covered::item).collect::<Vec<_>>())?;
+            list(&mut b, &r.loose_pins.iter().map(Covered::item).collect::<Vec<_>>())?;
             valid_run(r)?;
         }
         Msg::Signal { id, sig } => {
@@ -362,7 +366,7 @@ fn valid_run(r: &Run) -> Result<(), Refused> {
         return Err(Refused("an environment entry without '='"));
     }
     // (the child takes them as they are: absolute, each a C string; the shut file with covers, and only then; the
-    // shut folder only with the shut file)
+    // shut folder only with the shut file; the loose keys' folders only with loose keys)
     let absolute = |s: &[u8]| s.first() == Some(&b'/') && !nul(s);
     let shut = match (&r.shut, r.covers.is_empty() && r.loose.is_empty()) {
         (None, true) => true,
@@ -374,9 +378,11 @@ fn valid_run(r: &Run) -> Result<(), Refused> {
         (Some(d), Some(_)) => absolute(&d.path),
         (Some(_), None) => false,
     };
+    let all = r.covers.iter().chain(&r.loose).chain(&r.seals).chain(&r.pins).chain(&r.loose_pins);
     if !shut
         || !shut_dir
-        || r.covers.iter().chain(&r.loose).chain(&r.seals).chain(&r.pins).any(|c| !absolute(&c.path))
+        || (r.loose.is_empty() && !r.loose_pins.is_empty())
+        || all.clone().any(|c| !absolute(&c.path))
     {
         return Err(Refused("a covered or sealed file or the shut file not an absolute path"));
     }
@@ -488,6 +494,7 @@ pub fn decode(b: &[u8], fds: usize) -> Result<Msg, Refused> {
                 loose: r.list()?.iter().map(|c| Covered::of_item(c)).collect::<Result<_, _>>()?,
                 seals: r.list()?.iter().map(|c| Covered::of_item(c)).collect::<Result<_, _>>()?,
                 pins: r.list()?.iter().map(|c| Covered::of_item(c)).collect::<Result<_, _>>()?,
+                loose_pins: r.list()?.iter().map(|c| Covered::of_item(c)).collect::<Result<_, _>>()?,
             };
             valid_run(&run)?;
             Msg::Run(Box::new(run))
@@ -681,6 +688,14 @@ mod tests {
                 },
                 pins: match net {
                     RunNet::Own => vec![Covered { dev: 3, ino: 40, path: b"/tmp/project/crates".to_vec() }],
+                    _ => Vec::new(),
+                },
+                // (with the loose key, on the own network's only — with it and without)
+                loose_pins: match (held, net) {
+                    (true, RunNet::Own) => vec![
+                        Covered { dev: 2, ino: 41, path: b"/tmp/granted/a".to_vec() },
+                        Covered { dev: 2, ino: 1 << 37, path: b"/tmp/granted/a/b".to_vec() },
+                    ],
                     _ => Vec::new(),
                 },
             }))

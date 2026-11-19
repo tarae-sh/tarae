@@ -1265,8 +1265,8 @@ fn landlocks_rules_are_pinned() {
     }
     pinned("sandbox_landlock.txt", &out);
     // 7d: where the run's child has a mount namespace of its own, the closed keys are hidden by mounts (`Covers`)
-    // and the protected names sealed by them (compat B9) — the project is one rule: its rules and what's mounted
-    // over, one ABI
+    // and the protected names sealed by them (compat B9), the folders on the way to each bound over themselves (#651's
+    // wider gap: `src`, `src/tls` for the deep key) — the project is one rule: its rules and what's mounted over, one ABI
     let r = landlock::Ruleset::written(6).unwrap();
     // (its mount table: the project on the one mount of its filesystem)
     let table = Some("22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n".to_string());

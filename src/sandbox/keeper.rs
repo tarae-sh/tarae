@@ -1159,6 +1159,11 @@ impl Keeper {
                 .flat_map(|c| &c.pins)
                 .map(|s| channel::Covered { dev: s.dev, ino: s.ino, path: bytes(s.path.as_os_str()) })
                 .collect(),
+            loose_pins: covers
+                .iter()
+                .flat_map(|c| &c.loose_pins)
+                .map(|s| channel::Covered { dev: s.dev, ino: s.ino, path: bytes(s.path.as_os_str()) })
+                .collect(),
         };
         let stdin = open_null(libc::O_RDONLY)?;
         let (out_r, out_w) = io::pipe()?;
@@ -2576,6 +2581,7 @@ struct Covering {
     loose: Vec<(CString, u64, u64)>,
     seals: Vec<(CString, u64, u64)>,
     pins: Vec<(CString, u64, u64)>,
+    loose_pins: Vec<(CString, u64, u64)>,
     uid_map: CString,
     gid_map: CString,
     last_cap: libc::c_ulong,
@@ -2622,6 +2628,7 @@ impl Covering {
             loose: run.loose.iter().map(|k| (c(&k.path), k.dev, k.ino)).collect(),
             seals: run.seals.iter().map(|s| (c(&s.path), s.dev, s.ino)).collect(),
             pins: run.pins.iter().map(|s| (c(&s.path), s.dev, s.ino)).collect(),
+            loose_pins: run.loose_pins.iter().map(|s| (c(&s.path), s.dev, s.ino)).collect(),
             uid_map: c(format!("{uid} {uid} 1\n").as_bytes()),
             gid_map: c(format!("{gid} {gid} 1\n").as_bytes()),
             last_cap,
@@ -2770,6 +2777,15 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
         }
         for (path, dev, ino) in &c.seals {
             seal(path, *dev, *ino, true)?;
+        }
+        // (the folders on the way to the keys outside the project, each bound over itself as `pins` are — where every
+        // program writes: one gone or swapped since the walk is left, as a loose key is, and so is what it held, as
+        // that key's own check below finds — its path through what's there now isn't the file the walk found)
+        for (path, dev, ino) in &c.loose_pins {
+            match seal(path, *dev, *ino, false) {
+                Ok(()) | Err(libc::ENOENT | libc::ENOTDIR | libc::ELOOP | libc::ESTALE) => {}
+                Err(e) => return Err(e),
+            }
         }
         // (the keys outside the project, `loose` — D-i: where every program writes, `/tmp`: one gone since the walk,
         // or another file at its name now, is left — a key made since, found by the next run's walk; the run starts,
