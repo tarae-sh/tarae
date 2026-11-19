@@ -447,6 +447,38 @@ fn the_screens_blank_last_rows_are_lines_too() {
     assert_eq!(t.parser.screen().scrollback(), 0, "the bottom: the screen as it is");
 }
 
+/// What `clear` erased never comes back (#638, the halil take): a clone's line and a seed's scrolled off, then
+/// `clear` (`\e[3J\e[H\e[2J`, macOS's), and an alternate-screen program run and quit three times with the panel
+/// resized while it ran. Neither the wheel nor the view mode shows a line from before the `clear`: the view's
+/// scrolloff margin over the prompt reached into the scrollback, and vt100 had kept the scrollback through `3J`.
+#[test]
+fn what_clear_erased_never_comes_back() {
+    let (mut ed, _sent) = term(Config::default(), 0);
+    print(&mut ed, "$ git clone ../board\r\n");
+    for i in 0..40 {
+        print(&mut ed, &format!("seed {i}\r\n"));
+    }
+    print(&mut ed, "$ clear\r\n\x1b[3J\x1b[H\x1b[2J$ ");
+    for (w, h) in [(100, 30), (W, 44), (W, H)] {
+        print(&mut ed, "cargo run -q -- board\r\n\x1b[?1049h\x1b[H\x1b[2Jthe board");
+        // (the panel another size while it runs)
+        crate::term::render(&mut ed, &mut Vec::new(), w, h).unwrap();
+        print(&mut ed, "\x1b[?1049l$ ");
+    }
+    let before = |s: &str| s.contains("git clone") || s.contains("seed");
+    ed.terminal_scroll_by(10);
+    let shown = frame(&mut ed);
+    assert!(!before(&shown), "the wheel shows no past from before it:\n{shown}");
+    feed(&mut ed, "<C-\\>");
+    let shown = frame(&mut ed);
+    assert!(shown.contains("● view") && shown.contains("cargo run"), "{shown}");
+    assert!(!before(&shown), "its view mode, landing on the prompt:\n{shown}");
+    feed(&mut ed, "gg");
+    let text = view(&ed).doc().text.to_string();
+    assert!(!before(&text), "nothing before it to go back to:\n{text}");
+    assert_eq!(view(&ed).made.back, 0, "no scrollback");
+}
+
 /// `C-\` in its view mode goes to the code whatever is selected — the round's next stop; `esc` collapses first.
 #[test]
 fn ctrl_backslash_leaves_with_a_selection_too() {

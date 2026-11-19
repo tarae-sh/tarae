@@ -22,7 +22,7 @@ use crate::key::{Code, Key};
 use crate::workspace::Here;
 
 pub struct Terminal {
-    pub parser: vt100::Parser,
+    pub parser: vt100::Parser<Erases>,
     /// Showing in the bottom panel (hidden, it keeps running).
     pub visible: bool,
     /// What runs (`zsh`, `claude`).
@@ -63,6 +63,52 @@ pub struct Terminal {
     size: (u16, u16),
     /// Its process group's leader (`setsid`) — hung up when it goes.
     pid: u32,
+}
+
+/// The terminal's parser: `vt100`, with what it leaves undone done by its callbacks (`Erases`).
+pub(crate) fn parser(rows: u16, cols: u16, scrollback: usize) -> vt100::Parser<Erases> {
+    vt100::Parser::new_with_callbacks(rows, cols, scrollback, Erases { scrollback })
+}
+
+/// `CSI 3 J` (xterm's "erase saved lines", and DECSED's `CSI ? 3 J`) empties the scrollback, as xterm,
+/// libghostty-vt and the terminals people know do. vt100 0.16 ignores it, and `clear` sends it first (macOS's:
+/// `\e[3J\e[H\e[2J`), so what had scrolled off before a `clear` stayed in the past that the view mode and the wheel
+/// show (#638). The alternate screen has no past of its own: there it erases nothing (libghostty-vt erases the
+/// active screen's history, and the alternate screen has none).
+pub struct Erases {
+    scrollback: usize,
+}
+
+impl vt100::Callbacks for Erases {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        if c == 'J'
+            && matches!(i1, None | Some(b'?'))
+            && i2.is_none()
+            && matches!(params, [[3]])
+            && !screen.alternate_screen()
+        {
+            *screen = without_past(screen, self.scrollback);
+        }
+    }
+}
+
+/// The screen as it is, its scrollback gone. vt100 can't drop the scrollback, so a fresh screen of the same size is
+/// given this one's state: its cells, cursor, styles and input modes. What vt100 doesn't give back starts afresh, as
+/// after a reset: a scroll region, origin mode, a cursor saved by DECSC.
+fn without_past(screen: &mut vt100::Screen, scrollback: usize) -> vt100::Screen {
+    let (rows, cols) = screen.size();
+    // (the state is written from the rows in sight: the screen's own)
+    screen.set_scrollback(0);
+    let mut fresh = vt100::Parser::new(rows, cols, scrollback);
+    fresh.process(&screen.state_formatted());
+    fresh.screen().clone()
 }
 
 impl Terminal {
@@ -442,7 +488,7 @@ fn spawn(
     });
     let title = Path::new(&argv[0]).file_name().map_or(argv[0].clone(), |n| n.to_string_lossy().into_owned());
     Ok(Terminal {
-        parser: vt100::Parser::new(rows, cols, 5000),
+        parser: parser(rows, cols, 5000),
         visible: true,
         title,
         exited: None,
@@ -902,7 +948,7 @@ pub(crate) fn stand_in(
     ed.terminal_generation += 1;
     ed.workspace.terminal_run = ed.terminal_generation;
     ed.workspace.terminal = Some(Terminal {
-        parser: vt100::Parser::new(rows, cols, scrollback),
+        parser: parser(rows, cols, scrollback),
         visible: true,
         title: "sh".into(),
         exited: None,
@@ -1912,5 +1958,43 @@ mod tests {
         assert_eq!(ed.workspace.viewer.zoom, None, "back to the code: it ended");
         draw(&mut ed);
         assert_eq!(ed.screen.slot().h, small);
+    }
+
+    /// `CSI 3 J` empties the scrollback (#638: vt100 ignored it, and `clear`'s lines came back in the view mode), at
+    /// its place in the output, though a read cut it in two; the screen, its cursor and the program's input modes
+    /// stay; what scrolls off afterwards is kept again; in the alternate screen it erases nothing.
+    #[test]
+    fn erase_saved_lines_empties_the_scrollback() {
+        let mut p = super::parser(4, 20, 100);
+        let past = |p: &mut vt100::Parser<super::Erases>| {
+            let s = p.screen_mut();
+            s.set_scrollback(usize::MAX);
+            let n = s.scrollback();
+            s.set_scrollback(0);
+            n
+        };
+        // (bracketed paste and application cursor keys asked for, as a shell does)
+        p.process(b"\x1b[?2004h\x1b[?1h");
+        for i in 0..10 {
+            p.process(format!("old {i}\r\n").as_bytes());
+        }
+        p.process(b"$ kept");
+        assert_eq!(past(&mut p), 7);
+        // `3J` alone: the past goes, the screen stays as it was
+        p.process(b"\x1b[3");
+        p.process(b"J");
+        assert_eq!(past(&mut p), 0, "read in two, it's still one sequence");
+        let s = p.screen();
+        assert_eq!(s.contents(), "old 7\nold 8\nold 9\n$ kept");
+        assert_eq!(s.cursor_position(), (3, 6));
+        assert!(s.bracketed_paste() && s.application_cursor(), "the input modes stay");
+        // what follows the sequence in the same read lands after it: rows that scroll off are kept again
+        p.process(b"\x1b[?3J\x1b[H\x1b[2Jnew 1\r\nnew 2\r\nnew 3\r\nnew 4\r\nnew 5");
+        assert_eq!(past(&mut p), 1, "DECSED's form too, then the row that scrolled off after it");
+        assert_eq!(p.screen().contents(), "new 2\nnew 3\nnew 4\nnew 5");
+        // in the alternate screen: the main screen's past is left alone
+        p.process(b"\x1b[?1049hfull\x1b[3J\x1b[?1049l");
+        assert_eq!(past(&mut p), 1);
+        assert_eq!(p.screen().contents(), "new 2\nnew 3\nnew 4\nnew 5");
     }
 }
