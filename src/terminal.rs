@@ -1050,7 +1050,7 @@ mod tests {
             return;
         }
         let scratch = crate::scratch::Scratch::new("terminal-question-split");
-        let fifo = fifo_in(&scratch);
+        let fifo = fifo_in(&scratch, "go");
         let script = format!(
             "exec bash -c 'stty -icanon -echo; printf \"asked\\033[\"; read -r _ < \"{0}\"; printf c; \
              IFS= read -r -d c _; echo ANSWERED; sleep 30'",
@@ -1304,9 +1304,11 @@ mod tests {
         ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains(s))
     }
 
-    /// A FIFO in `dir` a test's program reads a line from to go on (`read -r _ < fifo`).
-    fn fifo_in(dir: &std::path::Path) -> std::path::PathBuf {
-        let fifo = dir.join("go");
+    /// A FIFO `name` in `dir` a test's program reads a line from to go on (`read -r _ < fifo`) — once: `let_go`'s
+    /// writer is open a moment after its line, and a second read that opens the FIFO in that moment takes the
+    /// writer's close for its end of file and goes on without a go of its own (#639). A go each, a FIFO each.
+    fn fifo_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let fifo = dir.join(name);
         let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
         // SAFETY: a NUL-ended path of the test's own folder.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", std::io::Error::last_os_error());
@@ -1342,7 +1344,7 @@ mod tests {
             return;
         }
         let scratch = crate::scratch::Scratch::new("terminal-drag");
-        let fifo = fifo_in(&scratch);
+        let fifo = fifo_in(&scratch, "go");
         let script = format!(
             "printf 'hello world\\nsecond line\\nend'; read -r _ < '{}'; printf '\\nmore\\n'; sleep 30",
             fifo.display()
@@ -1617,28 +1619,30 @@ mod tests {
             return;
         }
         let scratch = crate::scratch::Scratch::new("terminal-question-held");
-        let fifo = fifo_in(&scratch);
+        // (a FIFO for each go: the question waits for the test's last go, never for the one before's close)
+        let [start, batch, ask] = ["start", "batch", "ask"].map(|n| fifo_in(&scratch, n));
         let first = if split {
-            format!("printf first-; read -r _ < \"{0}\"; echo batch", fifo.display())
+            format!("printf first-; read -r _ < \"{}\"; echo batch", batch.display())
         } else {
             "echo first-batch".into()
         };
         let script = format!(
-            "exec bash -c 'read -r _ < \"{0}\"; stty -icanon -echo; {first}; read -r _ < \"{0}\"; \
+            "exec bash -c 'read -r _ < \"{}\"; stty -icanon -echo; {first}; read -r _ < \"{}\"; \
              printf \"\\033[c\"; IFS= read -r -d c _; echo ANSWERED; sleep 30'",
-            fifo.display()
+            start.display(),
+            ask.display()
         );
         let mut ed = run_until(&script, |ed| ed.workspace.terminal.is_some());
         ed.handle_key(Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false });
         assert!(crate::view::terminal_viewed(&ed));
-        let_go(&fifo);
+        let_go(&start);
         fn term(ed: &Editor) -> &Terminal {
             ed.workspace.terminal.as_ref().unwrap()
         }
         wait(&mut ed, |ed| term(ed).came());
         assert!(term(&ed).came(), "the first batch held while viewed");
         if split {
-            let_go(&fifo);
+            let_go(&batch);
         }
         // The reader holds nothing back: all the program wrote before its question is held (its last byte the
         // newline), so the question is the reader's next read. `came()` alone isn't that: a batch read after the
@@ -1656,7 +1660,7 @@ mod tests {
         assert!(whole(&ed), "all of it held, nothing at a go-ahead: {held:?}");
         assert_eq!(term(&ed).answered(), 0);
         // The question, in the reader's next batch — read while the last one's go-ahead is kept back
-        let_go(&fifo);
+        let_go(&ask);
         wait(&mut ed, |ed| term(ed).answered() > 0);
         assert_eq!(term(&ed).answered(), 1, "answered as it was read");
         assert!(term(&ed).holding() && !shows(&ed, "ANSWERED"), "while the view still holds");
@@ -1677,7 +1681,7 @@ mod tests {
             return;
         }
         let scratch = crate::scratch::Scratch::new("terminal-end-held");
-        let fifo = fifo_in(&scratch);
+        let fifo = fifo_in(&scratch, "go");
         let script = format!(
             "read -r _ < '{}'; (trap '' HUP; sleep 8) & echo first-words; sleep 0.3; echo last-words; exit 3",
             fifo.display()
@@ -1709,7 +1713,7 @@ mod tests {
             return;
         }
         let scratch = crate::scratch::Scratch::new("terminal-replaced-held");
-        let fifo = fifo_in(&scratch);
+        let fifo = fifo_in(&scratch, "go");
         let script = format!(
             "trap '' HUP; read -r _ < '{}'; (trap '' HUP; sleep 14) & echo old-a; sleep 0.3; echo old-b; sleep 1.5; exit 5",
             fifo.display()
