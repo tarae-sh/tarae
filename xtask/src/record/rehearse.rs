@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use super::hands::{self, code};
 use super::take::{self, TAKE_SIZE};
-use super::{Spec, record, toolchain};
+use super::{AfterKeys, Spec, record, toolchain};
 use crate::scenes::{self, docshots::Bg};
 use crate::{Result, root, shot};
 
@@ -122,7 +122,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         out: take_dir.clone(),
         outer: None,
         keys: Vec::new(),
-        quit_after_keys: false,
+        after_keys: AfterKeys::Stay,
         ui: Some(live.state.clone()),
         cwd: Some(cwd.clone()),
         hands: Some(take_dir.clone()),

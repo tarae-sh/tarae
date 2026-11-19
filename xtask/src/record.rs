@@ -11,7 +11,9 @@
 //!   resize later changes nothing inside. `--keys` plays a key script into it beside whatever you type (`keys.rs`);
 //!   `--state` is the state home whose `tarae/ui/<pid>.sock` gives the landmarks (default `XDG_STATE_HOME`, else
 //!   `~/.local/state`); `--headless` takes it with no terminal shown (nothing answers tarae's questions: its theme from
-//!   `TARAE_BACKGROUND`). While it runs, the driver's hands reach it by a way in of its own (`hands.rs`): a socket in a
+//!   `TARAE_BACKGROUND`). A headless take's key script is the whole take: run out with the command still up, the take
+//!   stands `SETTLE` more, then ends as a shot ends tarae — said on stderr with how long it waited, and in `take.json`
+//!   — unless the hands reached it (then it's theirs to end, said). While it runs, the driver's hands reach it by a way in of its own (`hands.rs`): a socket in a
 //!   folder made new for the take, said as it starts and named in `DIR/way-in`, gone when it ends.
 //! - `record type --to WHERE [--send] WORDS`, `record key [--to WHERE] KEY …`, `record wait WHAT`, `record state`,
 //!   `record mark WORDS`, `record chapter WORDS` — the hands, through that way in (`hands.rs`).
@@ -31,7 +33,8 @@
 //!
 //! A take, `DIR`:
 //! - `take.json` — the size, the command, when it started (Unix ms), how long it ran (ms), its exit, its byte counts,
-//!   the waits its key script missed.
+//!   the waits its key script missed, and `ended_after_keys_ms` where the recorder ended it, its keys run out (how
+//!   long it stood still up first; else null).
 //! - `screen.bin` — the terminal's output as the pty gave it, chunk by chunk: records of `[u64 µs since the start]
 //!   [u8 whose][u32 length][bytes]`, little-endian (`put`, `read_log`), `whose` 0.
 //! - `keys.bin` — the input, the same records, `whose` 1 the terminal (your keys and its answers) or 2 the key script.
@@ -131,16 +134,9 @@ pub fn run(args: &[String]) -> Result<()> {
     let ui = state.or_else(state_home);
     let mut cmd = Command::new(program);
     cmd.args(&command[1..]);
-    let spec = Spec {
-        size,
-        out: out.clone(),
-        outer,
-        keys,
-        quit_after_keys: false,
-        ui,
-        cwd,
-        hands: Some(out.clone()),
-    };
+    // (headless, nobody else is at its keys: a script that ran out without a quit would hold the take for good, #650)
+    let after_keys = if outer.is_none() { AfterKeys::End(SETTLE) } else { AfterKeys::Stay };
+    let spec = Spec { size, out: out.clone(), outer, keys, after_keys, ui, cwd, hands: Some(out.clone()) };
     let taken = record(spec, cmd)?;
     eprintln!("{}", taken.said(&out));
     Ok(())
@@ -181,16 +177,31 @@ impl Outer {
     }
 }
 
+/// How long a headless take stands once its key script ran out with the command still up, before the recorder ends it
+/// (`AfterKeys::End`): what a script wants watched after its last key it says with `@N` or `@?text`.
+const SETTLE: Duration = Duration::from_secs(10);
+
+/// What a take does once its key script ran out (a take with none: nothing).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AfterKeys {
+    /// Nothing: it runs until the command ends (a shown take: you're at the keys).
+    Stay,
+    /// tarae quit at once, as a shot quits it (`keys::quit`).
+    Quit,
+    /// After standing this long still up, said on stderr and quit as a shot quits it — unless the hands reached the
+    /// take (`ran_out`): a headless take's, nobody else at its keys.
+    End(Duration),
+}
+
 /// What a take is: its size (columns, rows), where it's kept, the terminal it's shown in (None: headless), the key
-/// script played into it, whether tarae is quit when the script ends (`:q!`, as a shot quits it — else the take runs
-/// until the command ends), the state home whose socket gives the landmarks (None: none watched), the folder the
-/// command starts in (None: this one), and where the hands' way in is made (None: no way in).
+/// script played into it and what's done when it runs out, the state home whose socket gives the landmarks (None: none
+/// watched), the folder the command starts in (None: this one), and where the hands' way in is made (None: no way in).
 pub(crate) struct Spec {
     pub(crate) size: (u16, u16),
     pub(crate) out: PathBuf,
     pub(crate) outer: Option<Outer>,
     pub(crate) keys: Vec<keys::Step>,
-    pub(crate) quit_after_keys: bool,
+    pub(crate) after_keys: AfterKeys,
     pub(crate) ui: Option<PathBuf>,
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) hands: Option<PathBuf>,
@@ -202,6 +213,8 @@ pub(crate) struct Spec {
 pub(crate) struct Taken {
     pub(crate) ms: u64,
     pub(crate) exit: Option<i32>,
+    /// Where the recorder ended it, its keys run out (`AfterKeys::End`): how long it stood still up first (ms).
+    pub(crate) ended_after_keys: Option<u64>,
     pub(crate) screen_bytes: u64,
     pub(crate) key_bytes: u64,
     pub(crate) events: u64,
@@ -223,6 +236,12 @@ impl Taken {
             self.events,
             self.exit.map_or("by a signal".into(), |c| c.to_string()),
         );
+        if let Some(ms) = self.ended_after_keys {
+            s += &format!(
+                "\nrecord: ended by the recorder — its keys ran out and the command stood {} still up",
+                crate::cut::run_duration(Duration::from_millis(ms))
+            );
+        }
         for m in &self.missed {
             s += &format!("\nrecord: missed — {m}");
         }
@@ -446,11 +465,14 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         }
         None => None,
     };
+    let stopped = Arc::new(AtomicBool::new(false));
+    let hub = Arc::new(hands::Hub::default());
     let script = match spec.keys.is_empty() {
         true => None,
         false => {
             let to = master.try_clone().map_err(|e| format!("pty: {e}"))?;
-            let (tx, seen, steps, quit) = (tx.clone(), seen.clone(), spec.keys, spec.quit_after_keys);
+            let (tx, seen, hub, steps, after) =
+                (tx.clone(), seen.clone(), hub.clone(), spec.keys, spec.after_keys);
             Some(
                 std::thread::Builder::new()
                     .name("record-keys".into())
@@ -462,17 +484,20 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
                             let _ = tx.send(Log::Key(at, SCRIPT, bytes.to_vec()));
                         };
                         let missed = keys::play(&steps, &mut send, &seen);
-                        if quit {
-                            keys::quit(&mut send, &seen, pid);
-                        }
-                        missed
+                        let ended = match after {
+                            AfterKeys::Stay => None,
+                            AfterKeys::Quit => {
+                                keys::quit(&mut send, &seen, pid);
+                                None
+                            }
+                            AfterKeys::End(settle) => ran_out(settle, &seen, &hub, &mut send, pid),
+                        };
+                        (missed, ended)
                     })
                     .map_err(|e| format!("the key script: {e}"))?,
             )
         }
     };
-    let stopped = Arc::new(AtomicBool::new(false));
-    let hub = Arc::new(hands::Hub::default());
     let ui_sock = spec.ui.as_ref().map(|state| state.join("tarae/ui").join(format!("{pid}.sock")));
     let watcher = match &ui_sock {
         Some(sock) => {
@@ -525,7 +550,7 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         let _ = std::fs::remove_file(out.join(hands::WAY_IN));
         drop(w);
     }
-    let missed = script.map(|t| t.join().unwrap_or_default()).unwrap_or_default();
+    let (missed, ended_after_keys) = script.map(|t| t.join().unwrap_or_default()).unwrap_or_default();
     if let Some(t) = watcher {
         let _ = t.join();
     }
@@ -535,6 +560,7 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
     let taken = Taken {
         ms,
         exit: status.code(),
+        ended_after_keys: ended_after_keys.map(|d| d.as_millis() as u64),
         screen_bytes: counts.0,
         key_bytes: counts.1,
         events: counts.2,
@@ -551,10 +577,43 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         "exit": taken.exit, "shown": spec.outer.is_some(),
         "cwd": spec.cwd.as_ref().map(|d| d.display().to_string()), "screen_bytes": taken.screen_bytes,
         "key_bytes": taken.key_bytes, "events": taken.events, "landmarks": taken.landmarks, "missed": taken.missed,
+        "ended_after_keys_ms": taken.ended_after_keys,
     });
     let p = out.join("take.json");
     std::fs::write(&p, format!("{about:#}\n")).map_err(|e| format!("{}: {e}", p.display()))?;
     Ok(taken)
+}
+
+/// A headless take's keys ran out (`AfterKeys::End`): once it stood `settle` with the command still up, said on stderr
+/// with how long it waited and ended as a shot ends tarae (`keys::quit`: esc, `:q!`, a kill of the take's own child
+/// only where that didn't end it) — how long it waited. None where the command ended first, or where the hands reached
+/// the take: a driver is there and its pauses aren't the script's, so it's said and left for them to end.
+fn ran_out(
+    settle: Duration,
+    seen: &Seen,
+    hub: &hands::Hub,
+    send: &mut dyn FnMut(&[u8]),
+    pid: u32,
+) -> Option<Duration> {
+    let from = Instant::now();
+    if !seen.pause(settle) {
+        return None;
+    }
+    let waited = from.elapsed();
+    let ago = crate::cut::run_duration(waited);
+    if hub.reached() {
+        eprintln!(
+            "record: the keys ran out {ago} ago and the command is still up — the hands reached the take, so it runs \
+             until they quit it"
+        );
+        return None;
+    }
+    eprintln!(
+        "record: the keys ran out {ago} ago and the command is still up — ending the take as a shot ends tarae (esc, \
+         :q!); a script that wants more watched ends with @N or @?text"
+    );
+    keys::quit(send, seen, pid);
+    Some(waited)
 }
 
 /// A take's logs, open for the worker.

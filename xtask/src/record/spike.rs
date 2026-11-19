@@ -22,7 +22,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use super::{Outer, Spec, Taken, keys, record};
+use super::{AfterKeys, Outer, Spec, Taken, keys, record};
 use crate::scenes::{self, docshots::Bg};
 use crate::shot::{self, FRAME_END, PAD};
 use crate::{Result, root, video};
@@ -122,7 +122,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         out: dir.clone(),
         outer: None,
         keys: keys::of_keys(SPIKE_KEYS)?,
-        quit_after_keys: true,
+        after_keys: AfterKeys::Quit,
         ui: Some(live.state.clone()),
         cwd: None,
         hands: None,
@@ -240,7 +240,7 @@ fn still_at(
         out: dir.clone(),
         outer: None,
         keys: keys::of_keys(keys)?,
-        quit_after_keys: true,
+        after_keys: AfterKeys::Quit,
         ui: None,
         cwd: None,
         hands: None,
@@ -452,7 +452,7 @@ fn bench_recorded(bin: &Path, me: &Path, size: (u16, u16), dir: &Path) -> Result
         out: dir.to_path_buf(),
         outer: Some(outer),
         keys: Vec::new(),
-        quit_after_keys: false,
+        after_keys: AfterKeys::Stay,
         ui: Some(live.state.clone()),
         cwd: None,
         hands: None,

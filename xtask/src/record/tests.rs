@@ -61,7 +61,7 @@ fn sh(script: &str) -> Command {
 }
 
 fn spec(out: PathBuf, size: (u16, u16), outer: Option<Outer>, keys: Vec<Step>) -> Spec {
-    Spec { size, out, outer, keys, quit_after_keys: false, ui: None, cwd: None, hands: None }
+    Spec { size, out, outer, keys, after_keys: AfterKeys::Stay, ui: None, cwd: None, hands: None }
 }
 
 /// A terminal of `cols`×`rows` for a take to be shown in: the test's end, and the take's.
@@ -381,6 +381,56 @@ fn a_key_script_is_played_in_order_waiting_on_the_screen() {
         "{:?}",
         String::from_utf8_lossy(&screen)
     );
+}
+
+/// #650: a headless take's key script ran out with no quit and its command stays up — a stand-in that never ends on
+/// its own, only on a shot's `:q!` (as tarae does). Past the settle (passed in: no wall time) the recorder ends it as
+/// a shot ends tarae and marks the take so; never the take that waits for good.
+#[test]
+fn a_headless_take_whose_keys_ran_out_with_it_still_up_is_ended_and_said() {
+    let dir = Scratch::new("xtask-record-ran-out");
+    let take = dir.join("take");
+    let cmd = sh(r#"printf up; while read -r l; do case "$l" in *:q!*) printf bye; exit 0;; esac; done"#);
+    let mut s = spec(take.clone(), (80, 24), None, keys::of_keys(&["@?up", "hi"]).unwrap());
+    s.after_keys = AfterKeys::End(Duration::from_millis(50));
+    // (on a thread: broken, the take would wait for good — the test fails at the shared patience instead, and its
+    // stand-in ends with the pty when the run does)
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tx.send(record(s, cmd)));
+    let taken = rx.recv_timeout(crate::PATIENCE).expect("the take still up, its keys run out").unwrap();
+    assert!(taken.ended_after_keys.is_some_and(|ms| ms >= 50), "{taken:?}");
+    assert_eq!(taken.exit, Some(0), "ended by the quit, not a kill: {taken:?}");
+    assert!(taken.said(&take).contains("ended by the recorder — its keys ran out"), "{}", taken.said(&take));
+    let keys = bytes_of(&read_log(&take.join("keys.bin")).unwrap(), SCRIPT);
+    assert_eq!(keys, b"hi\x1b:q!\r");
+    let about: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(take.join("take.json")).unwrap()).unwrap();
+    assert!(about["ended_after_keys_ms"].as_u64().is_some_and(|ms| ms >= 50), "{about}");
+}
+
+/// #650: where the hands reached the take, its key script's end is said and the take left to them — nothing sent.
+#[test]
+fn a_take_the_hands_reached_isnt_ended_when_its_keys_run_out() {
+    let (seen, hub) = (Seen::default(), hands::Hub::default());
+    hub.reach();
+    // (the take's child, a stand-in of the test's own in a session of its own: broken, a quit's kill lands on it only)
+    let mut child = Command::new("sleep");
+    child.arg("600").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        child.pre_exec(|| shot::cvt(libc::setsid()).map(|_| ()));
+    }
+    let mut child = child.spawn().unwrap();
+    let mut sent = Vec::new();
+    // (anything sent ends the screen at once: broken, the quit goes no further than its words)
+    let mut send = |b: &[u8]| {
+        sent.extend_from_slice(b);
+        seen.set(None, true);
+    };
+    let ended = ran_out(Duration::from_millis(10), &seen, &hub, &mut send, child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!((ended, sent), (None, Vec::new()));
 }
 
 #[test]

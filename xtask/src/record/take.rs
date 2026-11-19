@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 
 use super::hands::{self, code};
 use super::toolchain;
-use super::{Outer, Spec, check, parse_size, record};
+use super::{AfterKeys, Outer, Spec, check, parse_size, record};
 use crate::scenes::{self, docshots::Bg};
 use crate::{Result, root, shot};
 
@@ -362,7 +362,7 @@ pub(super) fn take(args: &[String]) -> Result<()> {
         out: out.clone(),
         outer: Some(outer),
         keys: Vec::new(),
-        quit_after_keys: false,
+        after_keys: AfterKeys::Stay,
         ui: Some(state),
         cwd: Some(cwd),
         hands: Some(out.clone()),
@@ -622,7 +622,7 @@ pub(super) fn dry(args: &[String]) -> Result<()> {
         out: take.clone(),
         outer: None,
         keys: Vec::new(),
-        quit_after_keys: false,
+        after_keys: AfterKeys::Stay,
         ui: Some(live.state.clone()),
         cwd: Some(live.setup.cwd.clone()),
         hands: Some(take.clone()),

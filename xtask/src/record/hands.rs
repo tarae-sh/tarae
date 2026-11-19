@@ -207,6 +207,8 @@ struct HubNow {
     asked: Option<Instant>,
     /// For each `wait turn [SESSION]`, when it last held: a turn's end is returned once.
     turns_taken: Vec<(Option<String>, Instant)>,
+    /// Whether a hand of this user's ever reached the take: a driver's, which a key script's end doesn't end.
+    reached: bool,
     ended: bool,
 }
 
@@ -232,6 +234,16 @@ impl Hub {
 
     fn ended(&self) -> bool {
         self.lock().ended
+    }
+
+    /// A hand of this user's reached the take.
+    pub(crate) fn reach(&self) {
+        self.lock().reached = true;
+    }
+
+    /// Whether a hand ever reached the take (`record::ran_out`).
+    pub(crate) fn reached(&self) -> bool {
+        self.lock().reached
     }
 
     fn sent(&self, at: Instant) {
@@ -350,6 +362,7 @@ pub(crate) fn serve(listener: &UnixListener, stop: &OwnedFd, ctx: &Arc<Ctx>) {
         if !ours(&s) {
             continue;
         }
+        ctx.hub.reach();
         let ctx = ctx.clone();
         match std::thread::Builder::new().name("record-hand".into()).spawn(move || hand(&s, &ctx)) {
             Ok(t) => hands.push(t),

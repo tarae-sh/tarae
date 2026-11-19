@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use tarae_testkit::scratch::Scratch;
 
 use super::*;
-use crate::record::{Outer, Spec, TERMINAL, read_log, record};
+use crate::record::{AfterKeys, Outer, Spec, TERMINAL, read_log, record};
 
 /// A made-up state: the keys in `region` (taking `takes`), `prompt` up where given, the cards given.
 fn state(region: &str, takes: &str, prompt: Option<&str>, cards: Value) -> Value {
@@ -404,7 +404,7 @@ fn the_way_in_is_its_users_alone_its_keys_and_marks_land_and_it_goes_with_the_ta
         out: take.clone(),
         outer: Some(outer),
         keys: Vec::new(),
-        quit_after_keys: false,
+        after_keys: AfterKeys::Stay,
         ui: None,
         cwd: Some(cwd.clone()),
         hands: Some(dir.path().to_path_buf()),
