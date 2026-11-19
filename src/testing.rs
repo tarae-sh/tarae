@@ -696,6 +696,7 @@ impl Editor {
         let run_id = policy.map(|p| p.run_id);
         let mut cmd = crate::sandbox::command(policy, &argv[0], &argv[1..]);
         cmd.current_dir(&target.cwd);
+        fixture_target(&mut cmd, &target.cwd);
         crate::task::color_off(&mut cmd);
         // (Claude's: the prefix its containers are named from, stopped with it — `containers.rs`)
         let claudes = acts == crate::spawn::Acts::Claude;
@@ -877,6 +878,18 @@ impl Editor {
         });
         None
     }
+}
+
+/// The cargo `cmd` starts in `root` — a test's fixture — builds into the fixture's own `target/`: in a test build the
+/// environment's `CARGO_TARGET_DIR` is put over (the test binary's, which a fixture's cargo would inherit: CI's
+/// container names root's `/target`, which a test run as a user can't open — `failed to open:
+/// /target/debug/.cargo-lock` — and a desktop's may be the very target the tests were built in). Outside tests
+/// nothing: the user's environment stands.
+pub(crate) fn fixture_target(cmd: &mut std::process::Command, root: &Path) {
+    #[cfg(test)]
+    cmd.env("CARGO_TARGET_DIR", root.join("target"));
+    #[cfg(not(test))]
+    let _ = (cmd, root);
 }
 
 /// Tests that run a real cargo in a temp project: its build goes inside the project (`target/build`) —

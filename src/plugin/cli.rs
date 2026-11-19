@@ -585,6 +585,7 @@ fn test_in(dir: &Path, host: &str, out: &mut impl Write) -> anyhow::Result<usize
     let mut cargo = std::process::Command::new("cargo");
     cargo.args(["test", "--workspace", "--no-fail-fast", "--target", host]).current_dir(dir);
     cargo.env("CARGO_TERM_COLOR", "never").stdout(write.try_clone()?).stderr(write);
+    crate::testing::fixture_target(&mut cargo, dir);
     let mut child = cargo.spawn().context("running cargo test")?;
     drop(cargo);
     let text = std::io::read_to_string(read)?;
@@ -605,7 +606,8 @@ fn test_in(dir: &Path, host: &str, out: &mut impl Write) -> anyhow::Result<usize
         failures += errors.len().max(1);
     }
     // Then each plugin as tarae loads it
-    let build = std::process::Command::new("cargo")
+    let mut build = std::process::Command::new("cargo");
+    build
         .args([
             "build",
             "--release",
@@ -616,9 +618,9 @@ fn test_in(dir: &Path, host: &str, out: &mut impl Write) -> anyhow::Result<usize
             "json-diagnostic-short",
         ])
         .current_dir(dir)
-        .env("CARGO_TERM_COLOR", "never")
-        .output()
-        .context("running cargo build")?;
+        .env("CARGO_TERM_COLOR", "never");
+    crate::testing::fixture_target(&mut build, dir);
+    let build = build.output().context("running cargo build")?;
     let json = String::from_utf8_lossy(&build.stdout);
     if !build.status.success() {
         // (the compiler's errors; else cargo's own — a manifest, a lock, a dependency)
@@ -763,12 +765,13 @@ fn dev_round(
     name: &str,
     source: &Path,
 ) -> anyhow::Result<Result<PathBuf, Failed>> {
-    let build = std::process::Command::new("cargo")
+    let mut build = std::process::Command::new("cargo");
+    build
         .args(["build", "--release", "--target", TARGET, "--color", "always"])
         .args(["--message-format", "json-diagnostic-rendered-ansi"])
-        .current_dir(dir)
-        .output()
-        .context("running cargo")?;
+        .current_dir(dir);
+    crate::testing::fixture_target(&mut build, dir);
+    let build = build.output().context("running cargo")?;
     // Where cargo put it (a target dir or lib name of the plugin's own included)
     let json = String::from_utf8_lossy(&build.stdout);
     match artifact(&json).filter(|_| build.status.success()) {
@@ -941,11 +944,10 @@ mod tests {
     #[ignore = "network: CI's network job runs it"]
     fn the_bundled_plugins_pass_their_own_tests() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin-sdk");
-        let sdk = std::process::Command::new("cargo")
-            .args(["test", "--features", "test", "--target", &host().unwrap()])
-            .current_dir(root.join("sdk"))
-            .output()
-            .unwrap();
+        let mut sdk = std::process::Command::new("cargo");
+        sdk.args(["test", "--features", "test", "--target", &host().unwrap()]).current_dir(root.join("sdk"));
+        crate::testing::fixture_target(&mut sdk, &root.join("sdk"));
+        let sdk = sdk.output().unwrap();
         let said = String::from_utf8_lossy(&sdk.stdout);
         assert!(sdk.status.success(), "the SDK's tests: {said}{}", String::from_utf8_lossy(&sdk.stderr));
         let dirs: Vec<PathBuf> =
