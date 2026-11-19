@@ -27,6 +27,7 @@
 //! (ABI 9) and its UDP bind and send to an address (ABI 10), granted nowhere (`landlock::handled_net`,
 //! `UNGRANTED`): tarae makes those calls for it.
 
+use std::collections::HashSet;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -1639,17 +1640,52 @@ pub struct Walked {
     pub failed: Vec<(PathBuf, String)>,
 }
 
-/// The keys found outside the project (`outside_keys`, D-i) placed in a run's mounts, in the walk's order: hidden
-/// while `room` lasts (`COVERS_MAX` past the project's keys, seals, pins and its keys' folders), each as it is now (`Cover::of`); left
-/// open and said why where another mount of its filesystem reaches it (`through`: there it would be read — the
-/// project's keys make the run's mounts give way instead, `elsewhere`) or past the room. One gone since the walk is
-/// in neither: nothing's there to hide or to say.
+/// Where the keys outside the project went in a run's mounts (`place_outside`).
+#[derive(Debug, Default)]
+struct Placed {
+    /// Hidden, each as it is now (`Cover::of`).
+    loose: Vec<Cover>,
+    /// The folders on the way to those, bound over themselves (`Covers.loose_pins`), outermost first.
+    ways: Vec<Cover>,
+    /// The folders on the way to a hidden key not bound, and why (`Covers.unheld`): its key hidden all the same.
+    unheld: Vec<(PathBuf, String)>,
+    /// Left readable, and why (`Outside.open`).
+    open: Vec<(PathBuf, String)>,
+}
+
+/// The keys found outside the project (`outside_keys`, D-i) placed in a run's mounts key by key, in `found`'s order
+/// (`outside_order`, rule 3): each takes its cover and the folders on its way (`outside_way`; those `held` already
+/// take no room) together, before any key after it takes anything — the design session's 2026-11-19 19:46. A flood
+/// in a place runs write is newer than a real key there, so it can't take that key's folders: covers first and
+/// folders after left the real key hidden with its folder free to move aside, a file then made at its name.
+///
+/// Per key: its cover and its folders while `room` lasts (`COVERS_MAX` past the project's keys, seals, pins and its
+/// keys' folders); else its cover alone, its folders said (`unheld`, by count in the report); else left open, said —
+/// as where another mount of its filesystem reaches it (`through`: there it would be read — the project's keys make
+/// the run's mounts give way instead, `elsewhere`). One gone since the walk is in no list: nothing's there to hide or
+/// to say.
+///
+/// Not all or none, where #651's "never one without the other" holds for the kept entries and rule 1 for the
+/// project's keys: those have Landlock behind them when their mounts are withheld (a kept entry stays a hole in its
+/// write place's grant; the project's key folders are closed, (a′)). A key outside has nothing behind it — not
+/// covered is readable — so hidden with a folder a run can move aside is the lesser harm.
 fn place_outside(
     found: Vec<PathBuf>,
     mut room: usize,
+    writes: &[PathBuf],
+    seals: &[Cover],
+    held: &[Cover],
     through: impl Fn(&Path) -> Option<PathBuf>,
-) -> (Vec<Cover>, Vec<(PathBuf, String)>) {
-    let (mut loose, mut open) = (Vec::new(), Vec::new());
+) -> Placed {
+    let mut held: HashSet<PathBuf> = held.iter().map(|c| c.path.clone()).collect();
+    let past_ways = format!("past the {} mounts a run takes", crate::features::thousands(COVERS_MAX as u64));
+    let mut out = Placed::default();
+    // (the break-once: the old order back — every key's cover first, the flood's too, then the folders as room is left)
+    let ways_last = false;
+    #[cfg(test)]
+    let ways_last = ways_last || std::env::var_os("TARAE_TEST_OUTSIDE_WAYS_LAST").is_some();
+    let mut waiting: Vec<Cover> = Vec::new();
+    let mut said: HashSet<PathBuf> = HashSet::new();
     for k in found {
         let why = match (through(&k), room) {
             (Some(at), _) => {
@@ -1657,16 +1693,71 @@ fn place_outside(
             }
             (None, 0) => format!("past the {COVERS_MAX} files a run's mounts hide"),
             (None, _) => {
-                if let Some(cover) = Cover::of(&k) {
-                    loose.push(cover);
-                    room -= 1;
+                let Some(cover) = Cover::of(&k) else { continue };
+                let way: Vec<Cover> =
+                    outside_way(&k, writes, seals).into_iter().filter(|w| !held.contains(&w.path)).collect();
+                room -= 1;
+                out.loose.push(cover);
+                if ways_last {
+                    waiting.extend(way);
+                } else if way.len() <= room {
+                    room -= way.len();
+                    held.extend(way.iter().map(|w| w.path.clone()));
+                    out.ways.extend(way);
+                } else {
+                    // (a part of the way holds nothing: one folder left free moves aside with the key)
+                    for w in way {
+                        if said.insert(w.path.clone()) {
+                            out.unheld.push((w.path, past_ways.clone()));
+                        }
+                    }
                 }
                 continue;
             }
         };
-        open.push((k, why));
+        out.open.push((k, why));
     }
-    (loose, open)
+    crate::sorting::by_key(&mut waiting, |w| (w.path.components().count(), w.path.clone()));
+    for w in waiting {
+        if held.contains(&w.path) || said.contains(&w.path) {
+            continue;
+        }
+        if room == 0 {
+            said.insert(w.path.clone());
+            out.unheld.push((w.path, past_ways.clone()));
+            continue;
+        }
+        room -= 1;
+        held.insert(w.path.clone());
+        out.ways.push(w);
+    }
+    // (outermost first, as the child binds them)
+    crate::sorting::by_key(&mut out.ways, |w| (w.path.components().count(), w.path.clone()));
+    out
+}
+
+/// The folders between the outermost of `writes` holding the key `k` outside the project and it, outermost first,
+/// each as it is now — none where no place runs write holds it (runs can't move what holds it); one at or below a
+/// seal left out (read-only), and one that isn't a folder now (its key's own check in the child finds the change).
+fn outside_way(k: &Path, writes: &[PathBuf], seals: &[Cover]) -> Vec<Cover> {
+    use std::os::unix::fs::MetadataExt;
+    let Some(anchor) =
+        writes.iter().filter(|w| k.starts_with(w) && w.as_path() != k).min_by_key(|w| w.components().count())
+    else {
+        return Vec::new();
+    };
+    let mut way: Vec<Cover> = k
+        .ancestors()
+        .skip(1)
+        .take_while(|a| *a != anchor && a.starts_with(anchor))
+        .filter(|a| !seals.iter().any(|s| a.starts_with(&s.path)))
+        .filter_map(|a| {
+            let m = a.symlink_metadata().ok().filter(|m| m.file_type().is_dir())?;
+            Some(Cover { path: a.to_path_buf(), dev: m.dev(), ino: m.ino() })
+        })
+        .collect();
+    way.reverse();
+    way
 }
 
 /// The most files named like keys a run's child hides by mounts (7d, `Covers`): past it, they're closed as 7b closes
@@ -1757,8 +1848,8 @@ pub struct Covers {
     /// keys are: one gone or swapped by the run's start fails it.
     pub pins: Vec<Cover>,
     /// The folders between the place runs write holding a key of `loose` and it, bound over themselves as `pins` are,
-    /// last in the room, after the keys outside (`key_ways`) — one gone or swapped since the walk is left, as its key
-    /// is.
+    /// outermost first; each key's taken with its cover, before a key after it takes any room (`place_outside`) — one
+    /// gone or swapped since the walk is left, as its key is.
     pub loose_pins: Vec<Cover>,
     /// The folders on the way to a hidden key not bound over themselves, and why (past the room): its key stays
     /// hidden, and the report counts them (`covers_said`).
@@ -1975,51 +2066,35 @@ impl Covers {
 
 /// What takes the room a run's mounts have left after the project's keys, the seals and the kept entries, in
 /// `confine_in`'s order (the room's order, the design session's 2026-11-19): the folders on the way to the project's
-/// keys (`key_ways`), the keys outside (`place_outside`), the folders on the way to those (`key_ways`) — what's
-/// outside the project never takes room from what's inside it.
+/// keys (`key_ways`), then the keys outside, each with the folders on its way (`place_outside`) — what's outside
+/// the project never takes room from what's inside it.
 enum Step {
     Ways,
     Outside,
-    OutsideWays,
 }
 
-/// The folders on the way to the keys hidden (#651's wider gap, #634's table): between the project's `root` and each
-/// of `keys`, and between the outermost of `writes` holding one of `loose` and it (none holding it: runs can't move
-/// what holds it), each as it is now — after the seals and the kept entries: the project's first, then those outside
-/// (the room's order: `confine_in` places the keys outside between the two), each kind outermost first, each once,
-/// those bound already left out (`pinned`, and one at or below a seal: read-only). The project's (strict, as its keys
-/// are) and those outside (left in the child where gone or swapped, as their keys);
-/// past `room`, each with why (its key stays hidden). One that isn't a folder now isn't bound and isn't said: its key's
-/// own check in the child finds the change (strict: the run fails; loose: left, said).
+/// The folders on the way to the project's keys (#651's wider gap, #634's table): between the project's `root` and
+/// each of `keys`, each as it is now — after the seals and the kept entries, before the keys outside (the room's
+/// order), outermost first, each once, those bound already left out (`pinned`, and one at or below a seal:
+/// read-only); strict, as its keys are. Past `room`, each with why (its key stays hidden). One that isn't a folder now
+/// isn't bound and isn't said: its key's own check in the child finds the change (the run fails).
 fn key_ways(
     root: &Path,
-    writes: &[PathBuf],
     keys: &[Cover],
-    loose: &[Cover],
     pinned: &[Cover],
     seals: &[Cover],
     mut room: usize,
-) -> (Vec<Cover>, Vec<Cover>, Vec<(PathBuf, String)>) {
+) -> (Vec<Cover>, Vec<(PathBuf, String)>) {
     use std::os::unix::fs::MetadataExt;
-    let outermost = |k: &Path| {
-        writes.iter().filter(|w| k.starts_with(w) && w.as_path() != k).min_by_key(|w| w.components().count())
-    };
-    let mut folders: Vec<(&Path, bool)> = Vec::new();
-    for (k, strict) in keys.iter().map(|k| (k, true)).chain(loose.iter().map(|k| (k, false))) {
-        let Some(anchor) = (if strict { Some(root) } else { outermost(&k.path).map(PathBuf::as_path) })
-        else {
-            continue;
-        };
-        let way = k.path.ancestors().skip(1).take_while(|a| *a != anchor && a.starts_with(anchor));
-        folders.extend(way.map(|a| (a, strict)));
+    let mut folders: Vec<&Path> = Vec::new();
+    for k in keys {
+        folders.extend(k.path.ancestors().skip(1).take_while(|a| *a != root && a.starts_with(root)));
     }
-    folders.retain(|(a, _)| {
-        !pinned.iter().any(|q| q.path == *a) && !seals.iter().any(|s| a.starts_with(&s.path))
-    });
-    crate::sorting::by_key(&mut folders, |(a, strict)| (!strict, a.components().count(), a.to_path_buf()));
-    folders.dedup_by(|x, y| x.0 == y.0);
-    let (mut strict, mut lenient, mut unheld) = (Vec::new(), Vec::new(), Vec::new());
-    for (a, s) in folders {
+    folders.retain(|a| !pinned.iter().any(|q| q.path == *a) && !seals.iter().any(|s| a.starts_with(&s.path)));
+    crate::sorting::by_key(&mut folders, |a| (a.components().count(), a.to_path_buf()));
+    folders.dedup();
+    let (mut strict, mut unheld) = (Vec::new(), Vec::new());
+    for a in folders {
         let Ok(m) = a.symlink_metadata() else { continue };
         if !m.file_type().is_dir() {
             continue;
@@ -2031,10 +2106,9 @@ fn key_ways(
             continue;
         }
         room -= 1;
-        let cover = Cover { path: a.to_path_buf(), dev: m.dev(), ino: m.ino() };
-        if s { strict.push(cover) } else { lenient.push(cover) }
+        strict.push(Cover { path: a.to_path_buf(), dev: m.dev(), ino: m.ino() });
     }
-    (strict, lenient, unheld)
+    (strict, unheld)
 }
 
 /// The protected names (`There.protected`) that are there in the project at `root` — tests'.
@@ -2585,11 +2659,11 @@ pub(super) fn confine_in(
             // before any key outside it: those are in places every program writes (`/tmp` is anyone's), so a
             // thousand key-named files there would otherwise take the room from what's inside the project — the
             // room's order, the design session's 2026-11-19)
-            let steps = [Step::Ways, Step::Outside, Step::OutsideWays];
+            let steps = [Step::Ways, Step::Outside];
             // (the break-once: the old order back — the keys outside take room before the project's keys' folders)
             #[cfg(test)]
             let steps = match std::env::var_os("TARAE_TEST_OUTSIDE_FIRST") {
-                Some(_) => [Step::Outside, Step::Ways, Step::OutsideWays],
+                Some(_) => [Step::Outside, Step::Ways],
                 None => steps,
             };
             let mut outside_found: Vec<PathBuf> =
@@ -2622,20 +2696,19 @@ pub(super) fn confine_in(
                 );
                 match step {
                     Step::Ways => {
-                        let (s, _, past) = key_ways(&p.root, &p.write, &c.keys, &[], &pins, &seals, room);
+                        let (s, past) = key_ways(&p.root, &c.keys, &pins, &seals, room);
                         strict = s;
                         unheld.extend(past);
                     }
                     Step::Outside => {
-                        let (loose, open) = place_outside(std::mem::take(&mut outside_found), room, through);
-                        outside.covered = loose.iter().map(|k| k.path.clone()).collect();
-                        outside.open = open;
-                        c.loose.extend(loose);
-                    }
-                    Step::OutsideWays => {
-                        let (_, l, past) = key_ways(&p.root, &p.write, &[], &c.loose, &pins, &seals, room);
-                        lenient = l;
-                        unheld.extend(past);
+                        let found = std::mem::take(&mut outside_found);
+                        let held: Vec<Cover> = pins.iter().chain(&strict).cloned().collect();
+                        let placed = place_outside(found, room, &p.write, &seals, &held, through);
+                        outside.covered = placed.loose.iter().map(|k| k.path.clone()).collect();
+                        outside.open = placed.open;
+                        c.loose.extend(placed.loose);
+                        lenient = placed.ways;
+                        unheld.extend(placed.unheld);
                     }
                 }
             }
@@ -4054,31 +4127,27 @@ mod tests {
             .iter()
             .map(|k| cover(&root.join(k)))
             .collect();
-        let loose = vec![cover(&w.join("x/y/id_rsa")), cover(&ro.join("z/id_rsa"))];
         let (pinned, seals) = (vec![cover(&root.join("pinned"))], vec![cover(&root.join("sealed"))]);
-        let writes = vec![w.clone(), w.join("x")];
         let paths = |v: &[Cover]| v.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
-        let (strict, lenient, unheld) = key_ways(&root, &writes, &keys, &loose, &pinned, &seals, 100);
+        let (strict, unheld) = key_ways(&root, &keys, &pinned, &seals, 100);
         assert_eq!(
             paths(&strict),
             ["a", "a/b", "a/c", "pinned/e"].map(|d| root.join(d)),
             "the project's, outermost first, each once; a seal's and one pinned left out; `f` not a folder"
         );
-        assert_eq!(paths(&lenient), [w.join("x"), w.join("x/y")], "from the outermost place writing it");
         assert!(unheld.is_empty(), "{unheld:?}");
         let past = |u: &[(PathBuf, String)]| u.iter().map(|(d, _)| d.clone()).collect::<Vec<_>>();
-        // (the outside's `x` is shallower than the project's `a/b`, `a/c` and `pinned/e`: it still comes after them)
-        let (strict, lenient, unheld) = key_ways(&root, &writes, &keys, &loose, &pinned, &seals, 3);
+        let (strict, unheld) = key_ways(&root, &keys, &pinned, &seals, 3);
         assert_eq!(paths(&strict), ["a", "a/b", "a/c"].map(|d| root.join(d)), "as room is left");
-        assert!(lenient.is_empty(), "the project's take the room first: {lenient:?}");
-        assert_eq!(past(&unheld), [root.join("pinned/e"), w.join("x"), w.join("x/y")], "past the room, said");
+        assert_eq!(past(&unheld), [root.join("pinned/e")], "past the room, said");
         assert!(unheld.iter().all(|(_, why)| why == "past the 1,024 mounts a run takes"), "{unheld:?}");
-        let (strict, lenient, unheld) = key_ways(&root, &writes, &keys, &loose, &pinned, &seals, 5);
-        assert_eq!(strict.len(), 4, "every one of the project's: {strict:?}");
-        assert_eq!(paths(&lenient), [w.join("x")], "then those outside, outermost first");
-        assert_eq!(past(&unheld), [w.join("x/y")], "past the room, said");
-        let (strict, lenient, unheld) = key_ways(&root, &writes, &keys, &loose, &pinned, &seals, 0);
-        assert!(strict.is_empty() && lenient.is_empty() && unheld.len() == 6, "{unheld:?}");
+        let (strict, unheld) = key_ways(&root, &keys, &pinned, &seals, 0);
+        assert!(strict.is_empty() && unheld.len() == 4, "{unheld:?}");
+        // (the folders outside, from the outermost place writing a key, — none where nothing written holds it)
+        let writes = vec![w.clone(), w.join("x")];
+        let way = outside_way(&w.join("x/y/id_rsa"), &writes, &seals);
+        assert_eq!(paths(&way), [w.join("x"), w.join("x/y")], "from the outermost place writing it");
+        assert!(outside_way(&ro.join("z/id_rsa"), &writes, &seals).is_empty(), "no run moves what holds it");
     }
 
     /// D-i: the walk opens each folder beneath the folder it started at, through no link and on no other mount
@@ -4135,7 +4204,7 @@ mod tests {
         let gone = t.join("gone.pem");
         let through = |k: &Path| (k == reached.as_path()).then(|| PathBuf::from("/mnt/other"));
         let found = vec![a.clone(), gone.clone(), reached.clone(), b.clone(), c.clone()];
-        let (loose, open) = place_outside(found, 2, through);
+        let Placed { loose, open, .. } = place_outside(found, 2, &[], &[], &[], through);
         let hidden: Vec<&Path> = loose.iter().map(|k| k.path.as_path()).collect();
         assert_eq!(
             hidden,
@@ -4150,6 +4219,57 @@ mod tests {
         assert_eq!(said, [(reached.as_path(), reached_why.as_str()), (c.as_path(), past.as_str())]);
         assert!(!open.iter().any(|(k, _)| *k == gone), "gone since the walk: nothing to say");
         std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// The design session's 2026-11-19 19:46: each key outside takes its cover and the folders on its way together,
+    /// before any key after it takes anything (`place_outside`) — so a flood newer than a real key can't leave that
+    /// key's folder free to move aside; a key whose folders don't fit is hidden all the same, its folders counted, none
+    /// bound by part. (`TARAE_TEST_OUTSIDE_WAYS_LAST`, the covers-first order, breaks both.)
+    #[test]
+    fn each_key_outside_takes_its_cover_and_its_folders_together() {
+        let s = crate::scratch::Scratch::new("sb-outside-together");
+        let w = std::fs::canonicalize(&*s).unwrap();
+        let key = |name: &str| {
+            let at = w.join(name);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(&at, "tarae-fake-token").unwrap();
+            at
+        };
+        let (old, shared, deep) = (key("x/y/id_rsa"), key("x/y/id_ed25519"), key("d/e/id_rsa"));
+        let flood: Vec<PathBuf> = (0..3).map(|i| key(&format!("f{i}.pem"))).collect();
+        let writes = vec![w.clone()];
+        let paths = |v: &[Cover]| v.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+        let none = |_: &Path| None;
+        // (the oldest first, then a flood at the place's top; one beside the oldest takes its folders as held)
+        let found = vec![
+            old.clone(),
+            flood[0].clone(),
+            flood[1].clone(),
+            shared.clone(),
+            deep.clone(),
+            flood[2].clone(),
+        ];
+        let placed = place_outside(found, 6, &writes, &[], &[], none);
+        assert_eq!(
+            paths(&placed.loose),
+            [old.clone(), flood[0].clone(), flood[1].clone(), shared.clone()],
+            "key by key: {placed:?}"
+        );
+        assert_eq!(paths(&placed.ways), [w.join("x"), w.join("x/y")], "the oldest's folders with it");
+        assert!(placed.unheld.is_empty(), "nothing hidden with a folder free: {:?}", placed.unheld);
+        let open: Vec<&PathBuf> = placed.open.iter().map(|(k, _)| k).collect();
+        assert_eq!(open, [&deep, &flood[2]], "past the room, said");
+        // (a key whose folders don't fit: hidden all the same, every folder counted — a part of the way holds nothing)
+        let placed = place_outside(vec![old.clone()], 2, &writes, &[], &[], none);
+        assert_eq!(paths(&placed.loose), std::slice::from_ref(&old), "the cover alone: {placed:?}");
+        assert!(placed.ways.is_empty(), "none bound by part: {:?}", placed.ways);
+        let unheld: Vec<&PathBuf> = placed.unheld.iter().map(|(f, _)| f).collect();
+        assert_eq!(unheld, [&w.join("x"), &w.join("x/y")], "counted");
+        assert!(placed.unheld.iter().all(|(_, why)| why == "past the 1,024 mounts a run takes"));
+        // (one already held, the project's: no room for it)
+        let held = vec![Cover { path: w.join("x"), dev: 0, ino: 0 }];
+        let placed = place_outside(vec![old.clone()], 2, &writes, &[], &held, none);
+        assert_eq!(paths(&placed.ways), [w.join("x/y")], "{placed:?}");
     }
 
     /// What finding the files named like keys in the places outside the project costs each run in tier own before it

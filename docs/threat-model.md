@@ -553,7 +553,9 @@ Kept:
   their own (tier own, or unserved with namespaces; not where tarae runs as root) in those places too: found afresh before each run, at most 20,000 entries looked through (`linux::WALK_MAX`) — the places no run
   writes (other checkouts, read grants) first, so filling `/tmp` can't hide those from the walk — and hidden by a
   mount of the run's own as the project's are there ([D-i](design/sandbox-keeper.md#decisions)), the places no run
-  writes first and then the oldest by change time, so a flood pushes out only keys newer than itself — so, as the
+  writes first and then the oldest by change time, so a flood pushes out only keys newer than itself, each key with
+  the folders on its way before a newer one takes anything (one whose folders don't fit is hidden all the same, its
+  folders counted in the report: nothing else stands behind a key outside) — so, as the
   project's in tier own, the run can't write, remove or rename one, nor move a folder on its way from the place (read-only, busy: an
   `rm -rf` of a folder in `/tmp` holding one fails, as it does on macOS since B1; so does a test regenerating one
   with `>`); the run's report names it, says it's

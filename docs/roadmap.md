@@ -150,7 +150,7 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-11-17):
+Under way (2026-11-20):
 
 1. **Agents beside Claude, the main line** (user, 2026-11-13): other agents run in tarae beside Claude — agy and
    Gemini CLI through one adapter on the Agent Client Protocol (ACP), Claude staying on its own wire. Agents are rows
@@ -176,9 +176,16 @@ Under way (2026-11-17):
      the ask rule (L-B1, `3625f68c`), `.agents/` loaded as agy loads it (L-B2, `838e5d19`), hooks run as agy runs them
      and a FIFO among git's files never waited on (L-B3, `a9e7aafb`), a report's arguments by value (L-B4,
      `21985dac`), agy's usage (L-B5, `1db7337c`) and one agent home a project (L-B6, `a6544aee`).
-   - Under way: P4's part C. C.7 measured — lifting the gate adds 198,528 bytes (nothing committed). L1 landed: every
-     start judges its row, a helper held in words on a row that can't be its role (`a28f2035`). L2 — the start's row
-     is the session's, not the config's — can be built: the release budget is set.
+   - Under way: P4's part C. L1 landed: every start judges its row, a helper held in words on a row that can't be its
+     role (`a28f2035`). L2: the gate lifted item by item against C.7's list (198,592 bytes, C.7's measure and 64
+     more), the agy row real, and the start's row the session's — `llm.agent` picks one only for a session that has
+     none, a config change never moves a running session (`98d5d257`, its hold's words `9e85f76c`). L3, the agent's
+     name on screen the session's row's (`4ac2bf3e` … `70c609db`), and the naming landing: a session's words name its
+     agent, every session's say none or "agent", Claude Code's own stay with their reasons (`01b64339`, `2cecf833`,
+     `ccd60499`). The kept rows: every agent's own places, Claude Code's and agy's, kept from every session, read from
+     the rows (`9d18e4c4`). Left, none built: L4 (what an agent can't do said, never silent, with the prompt's
+     measured batch), L5 (its held files on the trust card) and L6 (the threat rows in the docs). The push carries
+     part C whole or none of the lift.
    - Then P5, helpers on any agent, mixed crews, Codex, and tarae's own agent loop on the same seam.
 2. **One list** (user, 2026-11-15): the session list and the flow view become one view, ahead of crews — the flow's
    rows (helpers, many alike folded) and its columns (model, step, cost) go into the session list, one key folding
@@ -193,7 +200,8 @@ Under way (2026-11-17):
    use is still in question. The edit's Z3 is on main: the character's lines, picture cards drawn stroke by stroke and
    the route on the band's rule (`a3e6fb38`, `5458d17f`, `4afda03b`, `1bac7e14`), painting on a tablet at a calm pace
    (`89c9dfc6`), the head-cut fix (`24c331fe`) and the in-between pictures (`fbfef4be`). The brush sound is picked,
-   round 2's `rub` (`61957458`, `8f8748ee`); its landing is being tuned.
+   round 2's `rub` (`61957458`, `8f8748ee`), its landing softened and the brush following the drawing (`f881bc3b`,
+   `dfb227c3`); `xtask cut` draws the same edit list as a Short (`30a468a9`).
 4. **A size pass before the next push** (user, 2026-11-13, #559), done: the map (11-16: 20,321,328 bytes at
    `a28f2035`, the growth all tarae's own code, the top ten modules 70 %); B measured (11-17: `opt-level = "s"`
    −18.6 %, frames +10–15 %, stream events +25 %) and unused; the budget set at 22 / 27 MB (user, 11-17). The size
@@ -201,7 +209,9 @@ Under way (2026-11-17):
 5. **#609, git folders by other names kept from runs** (user, 2026-11-16: "추천대로 고쳐줘", #609 and #610): #609
    done — L1 keeps the folder a `.git` file names, its common folder and where a `.git` folder's links lead as
    `.git` is (`ca0c491a`); L2 the nested checkouts' git folders, and `.repo` a protected name (`7c04a1cb`). #610,
-   a folder a run makes that git takes for a repository: L1 landed (`0d3538ca`), L2 being built.
+   a folder a run makes that git takes for a repository, done in three landings: L1 (`0d3538ca`); L2, the look-alikes
+   a checkout already holds named on a card of their own when it's first opened (`540dcc52`); L3, the offer to make
+   your own git use a bare repository only when named, and `:git-safe-bare` (`6bf50c91`).
 6. **The code tool stays on JS** (user, 2026-11-17): without the Rust compiler's help JS is better, and no design may
    need that compiler on a user's machine (11-16). The Rust-subset measure stopped in its step 0, nothing spent.
    Done: the engine moved to Bellard's original QuickJS (2026-06-04) on the user's choice (11-17), with an
@@ -214,9 +224,26 @@ Under way (2026-11-17):
    the code. Still waiting on the user's go, for their spends: H2's token measure, and web search's second A/B — on
    the questions the first lacked (an error from an unknown host, a tool newer than the model, a decision with no
    address to guess), once `:usage`'s web counts have a week of use.
+8. **The keys in Linux's sandbox, before the push**: what a run can't read, write or move, held where the run's
+   mounts run out. Done: tier own hides a kept folder by a mount and holds every kept entry's way, never one without
+   the other (#634, #651, `1cf98c98`), then the folders on the way to every hidden key (`01f06764`). A run's child
+   enters its working folder only after its mounts, and a run in a kept folder is refused before its start
+   (`da8d4a2a`) — open since the seals' pins, so it went to the public tree by itself ahead of the gated push, its
+   commit message the only notice (`7edb2529` there). The room's order: what's outside the project never takes room
+   from what's inside it (`e846e3bd`). A root tarae's words about keys take its runs' mounts as fact, its tier's word
+   staying own (#646, `56136e41`). Piece (3): a folder on the way to a key is closed where Landlock holds the key, the
+   room's three rules (the project's keys and folders together, neither side taking the other's room, the oldest key
+   outside first), and the sandbox panel's warning line counting the keys outside left open (`2bc57898`). Then each
+   key outside takes its cover and the folders on its way together, oldest first, so a newer flood can't leave its
+   folder free. Left before the push: a run's start in a monorepo of 1,000 packages on Landlock, paid at every run,
+   brought down by a lookup fix in the rules' making. After it: a card before the first run after a hidden key became
+   readable. `:preflight-full` gains two Linux steps — tarae's tests as root and the sandbox's as an ordinary user
+   (`ed25444b`): #646 and #651 showed only in such runs, which CI's runner can't make.
+9. **The memo, taken out**: a workspace's one memo (`space M`), built in four steps, was taken out of tarae on the
+   user's call (`a07c996a`).
 
 The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#done); what's left is the frictions
-(main's `.sb/frictions29.md`, to #612). Open — filed, and no commit on main closing it:
+(main's `.sb/frictions29.md`, to #660). Open — filed, and no commit on main closing it:
 
 - **Of #286–#405**: #293 (build folders regrow; `cargo xtask build-prune` by hand, a way that needs no hand the
   user's call), #317 (an overlap said right on a move's own news), #324 (a base move's card ~19 s late once —
@@ -234,18 +261,19 @@ The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#do
   can't read the machine's load), #511 (`cargo init` fails partway: the manifest's name is protected), #512 (the
   by-design refusal line leads every passed run's output), #530 (a read card for a place with keys doesn't say so),
   #553 (toolchain and registry sources open writable), #555 (a server's root walk outside home climbs to `/`), #556
-  (gopls isn't gated), #576 (a host's yes given mid-run opens cargo's caches only to the next run), #588 (Claude's edit
-  isn't kept from tarae's own state folder when the project holds it), #593 (a read grant's key exception misses a VM
-  tool's SSH key), #596 (a run's proxy variables, with their credential, copied into what the run makes that
-  outlives it), #610 (a run can make a folder a bare-repository look-alike the person's git takes for the
-  repository there — to be fixed as recommended, the user's 11-16, not built) and #611 (Linux's keeper walks the
-  whole project before every run, uncapped).
-- **Cards, reviews and brings**: #600 (a read already on a worker when its session or turn ends raises its card
-  after, its answer going nowhere), #516 (a move in an edit review reads as a loss, then a gain), #529 (a card's cut
+  (gopls isn't gated), #576 (a host's yes given mid-run opens cargo's caches only to the next run), #593 (a read
+  grant's key exception misses a VM tool's SSH key), #596 (a run's proxy variables, with their credential, copied into
+  what the run makes that outlives it), #611 (Linux's keeper walks the whole project before every run, uncapped),
+  #613 (`.repo`'s refusal words are in the sandbox's core) and #621 (an outside card calls cargo's credentials where
+  `CARGO_HOME` moved them a toolchain's own place).
+- **Cards, reviews and brings**: #516 (a move in an edit review reads as a loss, then a gain), #529 (a card's cut
   search pattern has no whole under the pointer), #558 ("same as card#N" says scripts changed that didn't), #565 (a
   library reached from a list's row or a chat link still gets its own code-trust card), #577 (a held card that can't
-  be drawn keeps every key), #579 (the repository card offers to commit build output) and #584 (the session list stays
-  open under a bring started from it).
+  be drawn keeps every key), #579 (the repository card offers to commit build output), #584 (the session list stays
+  open under a bring started from it), #614 (the bring card's `y` runs through to main or stops after the rebase,
+  with no sign which), #618 (guard 4's detail lists the held files twice), #619 (a card's answers at 80 columns lose
+  their words), #623 (the review's high-risk marking, three rough edges) and #658 (a card turned away from comes back
+  one row lower).
 - **The screen and its words**: #495 and #496 (rows cut at 80 inside what they mean), #500 (the chat that opens by
   itself at a turn's end shows the turn's start), #506 (the first `space L` after a send from the floating ask does
   nothing), #507 (a refused bring sends no `bring` event), #509 (the grammar card doesn't say where it downloads
@@ -257,20 +285,26 @@ The polish list (main's `.sb/polish-list.md`): its landings 0–7 are [done](#do
   the code back a line), #590 (a card drawn over a floating pane that has the keys), #591 (two rules for a session's
   short name), #592 (a child gets its parent's colour past six sessions — a question for the user), #594 (the session
   list scrolls and nothing says so), #595 (`:procs` calls tarae's own helper claudes left by a program), #601 (a docked
-  session list can't be sized by keys) and #602 (a list's row in hand, scrolled out of sight, has no mark of where it
-  went).
+  session list can't be sized by keys), #602 (a list's row in hand, scrolled out of sight, has no mark of where it
+  went), #622 (the chat's run row breaks a long path mid-word), #659 (a card's wrapped text can end or start a line on
+  its ` · `) and #660 (the terminal pane drops a program's OSC 52 copy).
 - **The main loop and long waits**: #499 and #501 (a switch to a branch without 5,000 files holds the loop, and the
   state's round trip after it), #571 (five places start claude on the main loop and wait for its exec), #572 (an
   API-billed start looks up the account on the main loop), #608 (`keepclose::read_tip` reads all of `packed-refs` for
-  one line) and #612 (a 200k-line file's first coloured frame ~2.1 s, the row `d98852ea` reports).
-- **Tests and measures**: #503 (an e2e tarae drew no first frame in 120 s under load), #504 (37 % of Claude's runs
-  counted as not run), #532 (the `≈ tokens` estimates assume 4 bytes a token; code measured 2.8), #570 (`tarae state`
-  doesn't say what each language server is doing), #589 (three plugin CLI tests fail in a loaded full run) and #597
-  (two live tests wait for words the screen no longer shows — B's live check waits on its rerun).
+  one line), #612 (a 200k-line file's first coloured frame ~2.1 s, the row `d98852ea` reports) and #653 (quitting can
+  wait ~30 s on a stuck disk with nothing said).
+- **Tests and measures**: #504 (37 % of Claude's runs counted as not run), #532 (the `≈ tokens` estimates assume 4
+  bytes a token; code measured 2.8), #570 (`tarae state` doesn't say what each language server is doing), #589 (three
+  plugin CLI tests fail in a loaded full run), #597 (two live tests wait for words the screen no longer shows — B's
+  live check waits on its rerun), #615 (the memory perf tests measure today's files under the corpus's row names when
+  the tree has no corpus commit), #617 (a card test's keys stayed on the pane after `C-q` under load), #620 (a test
+  passing under the sessions' scratch home fails in tarae's own: the downloaded grammars name a file's language) and
+  #625 (the shared build folder's incremental files fill the disk).
 - **Plugins**: #598 and #599 (the Kubernetes plugin's "not in <context>" for another namespace, and its permissions
   asked all at once).
-- **The videos' tooling and scenes** (xtask): #540, #548, #560, #580, #585 and #603 (the `orchestra-list` scene waits
-  for words main never shows; its fix asked of the one list's L2).
+- **The videos' tooling and scenes** (xtask): #540, #548, #560, #580, #585, #603 (the `orchestra-list` scene waits
+  for words main never shows; its fix asked of the one list's L2), #630 (the Shorts have no chosen loudness — a
+  decision) and #649 (the recorder's key script takes no mouse press).
 
 Closed since 2026-11-06: #383 (`daad97e3`); #398 (`7de7549c`); #401, #402 and #405 (`d35f5260`: what came on its
 own dries once as it lands in sight); #406 (`c523a4ea`); #409 (`e8b35568`); #410 and #411 (`e3f670af`); #412
@@ -281,16 +315,27 @@ own dries once as it lands in sight); #406 (`c523a4ea`); #409 (`e8b35568`); #410
 #459 (`2b9820c8`, `4ccf1e18`); #460 (`29198bea`); #461 (`7d9b6609`, `ccc704f4`); #470 (`bd39a59e`, `60fb5a21`);
 #473 (`1d4828b6`); #474a–c (`84347a47`); #478 (`9979f622`); #479 (`ddfac539`); #480 (`1e327753`); #481
 (`e4205285`); #482 and #484 (`867c6e9b`, `d4f3fd73`); #485 and #489 (`54432122`); #486 (`3ce71fd8`); #488
-(`a289f41a`); #491 (`dd210b6e`); #492 (`e380554a`); #498 (`a2d20b53`); #502 (`e19b55ff`); #508 and #533's part A
+(`a289f41a`); #491 (`dd210b6e`); #492 (`e380554a`); #498 (`a2d20b53`); #502 (`e19b55ff`); #503 (`cfe527be`, `e9cc60e5`: a tarae, host or attach whose exec macOS refused before its first
+answer started once more, a wait saying why tarae ended); #508 and #533's part A
 (`b3b11e69`: a `g d` into std or a dependency served with no card); #513, #514, #515, #518, #524 and #526
 (`f55e79ea`); #517 (`79ad3496`); #519, #520, #522 and #525 (`710b0c0a`, the take's side); #521 (`70a40797`); #528
 (`353f0ab5`); #531 (`43420d68`); #534 and #538 (`e5f621a1`); #535, #536 and #537 (`1cacc632`); #539 (`8d55eb57`);
 #541 and #542 (`c4352147`); #543 and #552 (`69f61f31`); #544 (`745d9906`, `52733aef`); #545, #546, #547 and #550
 (`1a0da371`); #549 (`d4f34ed0`); #551 (`eafec9eb`); #561 and #566 (`a76607e4`); #562, #563 and #564 (`d95e77a9`);
-#567 and #568 (`dc9f012a`); #569 (`1199cbea`); #575 (`b5fee213`); #604 and #606 (`5fa95422`: two tests that failed
+#567 and #568 (`dc9f012a`); #569 (`1199cbea`); #575 (`b5fee213`); #588 and #600 (`98d5d257`: an edit into tarae's
+own state always asks; a read card whose turn ended is answered with no card); #604 and #606 (`5fa95422`: two tests that failed
 under load, the config watch's first look); #605 (`eb2a00c5`, `15026c73`: a tunnel let go with no end said is a
 truncation to the run); #607 (`a9e7aafb`, `36d625a3`, `f4780ad8`: no read of git's files a project controls ever
-waits); #609 (`ca0c491a`, `7c04a1cb`: git's folders by other names kept from runs, nested checkouts' too).
+waits); #609 (`ca0c491a`, `7c04a1cb`: git's folders by other names kept from runs, nested checkouts' too); #610 (`0d3538ca`,
+`540dcc52`, `6bf50c91`); #616 (`1ff40006`); #624 (`bbd133e1`: a setting holding a token its tool doesn't read kept
+from runs); #626 (`ccd60499`); #627, #628 and #629 (`62917021`, `b6eed27a`); #631, #632 and #647 (`f5f486fc`,
+`fda694ad`: a card grows left for its answers whole, their capitals kept, "all your permissions" in the warning
+colour); #633 (`9c5177eb`: a default never covers a place runs never read); #634 and #651 (`1cf98c98`,
+`01f06764`); #635 and #648 (`311aa31e`); #636 and #645 (`f5fd54f5`); #637 (`0ab549f6`: a card no frame has room to
+draw holds no keys); #638 (`acd444bb`); #639 (`d922b755`); #640 (`e3b8fd18`: turning to a card that's drawn never
+makes it vanish); #641 (`cccb8bf9`); #642 and #644 (`dba08739`); #643 (`cb0d700c`); #646 (`56136e41`); #650
+(`cc413b75`); #652 (`0f5fd06b`); #654 (`e3228066`); #655 and #656 (`e5779155`); #657 (`4df58b2d`: a notice of where
+the keys are goes when they next move).
 
 ## Next
 

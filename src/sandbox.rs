@@ -16834,8 +16834,9 @@ mod tests {
     /// its folders' rules' (rule 1, (a′)) and take no mount, so the key outside stays hidden (rule 2) — not read, the
     /// project's key neither written nor its folder swapped. 1,100 at a write place's top, made after the key outside:
     /// that key comes first, the oldest (rule 3), so it stays hidden; the project's keys and folders as before, the
-    /// flood's rest said open. (`TARAE_TEST_PROJECT_TAKES_ALL`, `_KEY_FOLDERS_OPEN`, `_WALK_ORDER`, `_OUTSIDE_FIRST`
-    /// each break it once.)
+    /// flood's rest said open, and it takes its folder with it, before the flood takes anything (the design session's
+    /// 2026-11-19 19:46): that folder isn't moved aside for a file at the key's name. (`TARAE_TEST_PROJECT_TAKES_ALL`,
+    /// `_KEY_FOLDERS_OPEN`, `_WALK_ORDER`, `_OUTSIDE_FIRST`, `_OUTSIDE_WAYS_LAST` each break it once.)
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_flood_on_one_side_of_the_room_opens_nothing_of_the_other() {
@@ -16901,6 +16902,11 @@ mod tests {
                     confine.covers.unheld
                 ));
             }
+            // (the key outside takes its folder with its cover, before the newer flood takes anything)
+            let a = id_rsa.parent().unwrap();
+            if !confine.covers.loose_pins.iter().any(|w| w.path == a) {
+                failed.push(format!("{label}: the key outside's folder unheld: {:?}", confine.covers.unheld));
+            }
             match at {
                 "project" => {
                     let all = confine.covers.keys.is_empty()
@@ -16936,13 +16942,19 @@ mod tests {
                     "swap cfg/sub",
                     "mv cfg/sub cfg/sub.away && mkdir cfg/sub && echo planted > cfg/sub/.env".to_string(),
                 ),
+                (
+                    "swap granted/a",
+                    format!("cd '{}' && mv a a.away && mkdir a && echo planted > a/id_rsa", g.display()),
+                ),
             ] {
                 let (ok, out, err) = sh_confined(&policy(), &root, &script);
-                let key =
-                    std::fs::read_to_string(root.join("cfg/sub/.env")).unwrap_or_else(|_| "gone".into());
-                if ok || out.contains(FAKE) || key != FAKE {
+                let read = |f: &Path| std::fs::read_to_string(f).unwrap_or_else(|_| "gone".into());
+                let (key, outside) = (read(&root.join("cfg/sub/.env")), read(&g.join("a/id_rsa")));
+                if ok || out.contains(FAKE) || key != FAKE || outside != FAKE {
                     let err = err.lines().next().unwrap_or_default();
-                    failed.push(format!("{label}, {what}: ran {ok}, cfg/sub/.env {key:?} — {err}"));
+                    failed.push(format!(
+                        "{label}, {what}: ran {ok}, cfg/sub/.env {key:?}, granted/a/id_rsa {outside:?} — {err}"
+                    ));
                 }
             }
         }
@@ -18224,6 +18236,89 @@ mod tests {
                 confine.key_closed.len(),
                 cv.loose.len(),
                 cv.loose_pins.len()
+            );
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        }
+    }
+
+    /// What a run's start costs in a monorepo, piece (3)'s shapes in an optimized build (the design session's
+    /// 2026-11-19 19:46: a release measure, a report with no budget — Linux's time isn't gated): `n` packages with an
+    /// `.env` each, 100 and 1,000 — by mounts where they fit the project's room (tier own as a user), else by their
+    /// folders' rules, Landlock's ((a′); tier host and root: always). Paid at every run: each run's policy is made anew
+    /// (`policy_from` → `confined`), only the keeper is the session's (warmed first). Split into the project's walk
+    /// (`there`), the rest of the policy's making (the rules added, the room counted, the keeper asked) and the run
+    /// itself (fork, its child's mounts, Landlock, `cat`); medians of 7. Its own empty key place: no flood.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn perf_a_monorepos_start() {
+        if crate::test_results::unoptimized("sandbox::tests::perf_a_monorepos_start") {
+            return;
+        }
+        let test = "perf_a_monorepos_start";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        let median = |mut v: Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        for n in [100, 1000] {
+            let s = crate::scratch::Scratch::new(&format!("sb-perf-monorepo-{n}"));
+            let (root, place) = (profile_path(&s).join("project"), profile_path(&s).join("keys"));
+            std::fs::create_dir_all(&place).unwrap();
+            for i in 0..n {
+                let at = root.join(format!("packages/p{i:04}"));
+                std::fs::create_dir_all(&at).unwrap();
+                std::fs::write(at.join(".env"), FAKE).unwrap();
+                std::fs::write(at.join("index.js"), "").unwrap();
+            }
+            let mut p = Policy::for_project(&Env {
+                root: root.clone(),
+                key_places: vec![place.clone()],
+                run_env: run_env_here(),
+                ..Env::default()
+            });
+            p.key_places.retain(|k| *k == place);
+            let made = || confined(Policy { run: RunDir::new().ok(), ..p.clone() });
+            let warm = made();
+            let Some(Ok(c)) = &warm.confine else { panic!("{test}: {n}: {:?}", warm.confine) };
+            let (rules, mounts, closed, tier) =
+                (c.granted().len(), c.covers.keys.len() + c.covers.pins.len(), c.key_closed.len(), c.tier());
+            let (mut walk, mut policy, mut run) = (Vec::new(), Vec::new(), Vec::new());
+            for _ in 0..7 {
+                let at = std::time::Instant::now();
+                std::hint::black_box(linux::protected_there(&root, &[]));
+                walk.push(ms(at.elapsed()));
+                let at = std::time::Instant::now();
+                let c = made();
+                policy.push(ms(at.elapsed()));
+                let at = std::time::Instant::now();
+                let (ok, out, err) = sh_confined(&c, &root, "cat packages/p0000/.env");
+                run.push(ms(at.elapsed()));
+                assert!(!ok && !out.contains(FAKE) && err.contains(KEY_DENIED), "{n}: {out} {err}");
+            }
+            let (walk, policy, run) = (median(walk), median(policy), median(run));
+            // (one grant over the project around its keys, the rules only written down — no kernel: what making them
+            // costs apart from Landlock's own calls)
+            let keys: Vec<PathBuf> = (0..n).map(|i| root.join(format!("packages/p{i:04}/.env"))).collect();
+            let mut written = (0, Vec::new());
+            for _ in 0..7 {
+                let mut r = crate::landlock::Ruleset::written(crate::landlock::abi().unwrap()).unwrap();
+                let mut closed = Vec::new();
+                let at = std::time::Instant::now();
+                linux::grant_around(&mut r, &root, crate::landlock::ALL, &[], &keys, &mut closed).unwrap();
+                written.1.push(ms(at.elapsed()));
+                written.0 = r.added.len();
+            }
+            let (around_rules, around) = (written.0, median(written.1));
+            // (written past libtest's capture: the numbers are what this test is for)
+            let line = format!(
+                "{test}: {n} packages, tier {tier} — {rules} rules, {mounts} mounts, {closed} folders closed by their \
+                 rules; a run's start {:.1} ms: the policy {policy:.1} ms (of it the project's walk {walk:.1} ms), the \
+                 run {run:.1} ms; one grant over the project around its keys, written down: {around_rules} rules in \
+                 {around:.1} ms; medians of 7\n",
+                policy + run
             );
             let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
         }
