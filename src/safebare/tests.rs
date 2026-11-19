@@ -158,8 +158,14 @@ fn never_is_kept_and_not_asked_again() {
     assert_eq!(cards(&ed), 0);
     assert!(said(&ed, NEVER_SAID), "{:?}", ed.toasts);
     let store = dir.join("state/safe-bare");
-    crate::test_results::settle_until(&mut ed, |_| store.exists());
-    let kept = std::fs::read_to_string(&store).unwrap();
+    // (the write's end, a whole line: the file is there from its open on, before its words — #636)
+    let whole = || std::fs::read_to_string(&store).ok().filter(|s| s.ends_with('\n'));
+    crate::test_results::settle_saying(
+        &mut ed,
+        |_| whole().is_some(),
+        |_| format!("the store holds {:?}", std::fs::read_to_string(&store)),
+    );
+    let kept = whole().unwrap();
     assert!(kept.starts_with("no 20") && kept.ends_with('\n') && kept.lines().count() == 1, "{kept:?}");
     assert!(!dir.join(".gitconfig").exists(), "nothing written to git's config");
     let mut ed = started(&dir);
