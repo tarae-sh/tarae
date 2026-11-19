@@ -162,7 +162,10 @@ Not kept:
   folder takes new files, so a new `build.rs` beside a `Cargo.toml` is made; each folder between the project and a
   protected name is bound over itself too, so it can't be moved away (or removed) with the name inside it and the
   name made anew — a file moved between such a folder and the rest of the project goes as a copy (`EXDEV`)
-  (test: `sandbox::tests::protected_names_are_sealed_and_the_root_takes_new_files`); elsewhere a folder holding a protected
+  (test: `sandbox::tests::protected_names_are_sealed_and_the_root_takes_new_files`). A run's child enters its
+  working folder only after those mounts, by its path through them, so a run started in such a folder or below one
+  reaches a protected name through them by every path form — `./build.rs`, `../build.rs`, `/proc/self/cwd/build.rs`
+  (test: `sandbox::tests::a_run_enters_its_folder_only_after_its_mounts`); elsewhere a folder holding a protected
   name is granted entry by entry, but a folder with none can take a new `Makefile`. While names a run made wait
   for their card, the checkout's language servers are paused (rust-analyzer's check would run a new `build.rs`);
   a server's own file watch may still see one while the run goes. macOS:
@@ -258,8 +261,12 @@ Kept:
   grant.
   test: `sandbox::tests::a_run_cant_read_a_key_named_file` · `sandbox::tests::files_named_like_keys_are_closed_but_the_exceptions` ·
   `sandbox::tests::a_key_inside_a_protected_folder_is_closed` · `sandbox::linux::tests::keys_are_found_where_they_are`
-- Linux: no way around it through a link, a rename, another mount or another process's root.
-  test: `sandbox::tests::a_hard_link_to_a_key_made_earlier_is_closed_too` ·
+- Linux: no way around it through a link, a rename, another mount, another process's root, or the run's own
+  working folder: where keys are hidden by mounts its child enters that folder only after them, so a key beside a
+  protected name isn't read from its own folder either, by `./`, `../` or `/proc/self/cwd/`; and it holds no
+  descriptor from before them.
+  test: `sandbox::tests::a_run_enters_its_folder_only_after_its_mounts` ·
+  `sandbox::tests::a_hard_link_to_a_key_made_earlier_is_closed_too` ·
   `sandbox::tests::a_key_reached_through_another_mount_is_closed_there` ·
   `sandbox::tests::a_run_reaches_no_key_through_another_process_root` ·
   `sandbox::tests::a_key_swapped_after_the_walk_stops_its_run` · `sandbox::tests::a_run_holds_no_descriptor_but_its_stdio`
