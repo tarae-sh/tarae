@@ -629,11 +629,18 @@ impl Term {
         rows: u16,
         pace: Option<Pace>,
     ) -> Term {
-        let mut t = Term::spawn_unready(sb, &sb.work(), args, cols, rows, pace);
-        t.asks = Some(host.pid());
-        let deadline = Instant::now() + t.timeout;
-        while t.poll_for(POLL, |s| s.status().contains("● ")).is_none() {
-            if !t.running() || Instant::now() > deadline {
+        let start = || {
+            let mut t = Term::spawn_unready(sb, &sb.work(), args, cols, rows, pace);
+            t.asks = Some(host.pid());
+            t
+        };
+        let up = |t: &mut Term| t.whole().is_some_and(|s| s.status().contains("● "));
+        let ended = |t: &mut Term| t.exited().and(t.end.as_ref().map(|(_, end)| end.clone()));
+        let what = format!("tarae {args:?} on its pty, before the host's first frame,");
+        let patience = sb.timeout();
+        match first_answer(&EXEC_REFUSALS_RETRIED, &mut io::stderr(), &what, patience, start, up, ended) {
+            Ok(t) => t,
+            Err(mut t) => {
                 let state = t.ended_said();
                 panic!(
                     "no first frame from the host — {state}\n{}\nthe host's output:\n{}",
@@ -642,7 +649,6 @@ impl Term {
                 );
             }
         }
-        t
     }
 
     /// tarae started on its pty and waited for to its first frame — started once more when, before it, tarae ended
@@ -1423,6 +1429,41 @@ fn first_drawn<T>(
     if exec_refused_by_security_policy(&end) { Err(started) } else { Ok(started) }
 }
 
+/// A tarae that ends a test at any end before its first answer (a host's state, an attach's first frame): `start`ed,
+/// then polled until it answers (`up`) or is found ended (`ended`) — started once more when that end was a refused
+/// exec, said and counted as `first_drawn`'s (#459's tally, #503). Err: it ended before it answered — refused twice,
+/// or any other end at once — or it didn't answer within `patience`; the caller fails with its words.
+fn first_answer<T>(
+    count: &AtomicUsize,
+    say: &mut dyn Write,
+    what: &str,
+    patience: Duration,
+    mut start: impl FnMut() -> T,
+    up: impl Fn(&mut T) -> bool,
+    ended: impl Fn(&mut T) -> Option<End>,
+) -> Result<T, T> {
+    let once = || {
+        let mut t = start();
+        let deadline = Instant::now() + patience;
+        loop {
+            if up(&mut t) {
+                return (Ok(t), End::default());
+            }
+            if let Some(end) = ended(&mut t) {
+                return (Err(t), end);
+            }
+            if Instant::now() > deadline {
+                return (Err(t), End::default());
+            }
+            thread::sleep(POLL);
+        }
+    };
+    // (a second refusal comes back Err from `first_drawn` and from the start alike)
+    match first_drawn(count, say, what, once) {
+        Ok(started) | Err(started) => started,
+    }
+}
+
 /// A child's end, in a failure's words: its status and why it ended (`End`'s reason, read before it was reaped);
 /// a refused exec named as #459's.
 fn exited_said(status: &ExitStatus, end: Option<&End>) -> String {
@@ -1566,11 +1607,35 @@ pub struct Host {
     env: Vec<(OsString, OsString)>,
     bin: OsString,
     asked_again: AtomicUsize,
+    /// How it ended before its state answered (`end_of`), once that was found.
+    ended: Option<(ExitStatus, End)>,
 }
 
 impl Sandbox {
-    /// `tarae --host args…` in the work folder, ready once its state socket answers.
+    /// `tarae --host args…` in the work folder, ready once its state socket answers — started once more when, before
+    /// that, it ended with its exec refused (`first_answer`, #503); any other end fails here with its reason.
     pub fn host(&self, args: &[&str]) -> Host {
+        let start = || self.host_unready(args);
+        let ended = |h: &mut Host| {
+            h.ended = end_of(&mut h.child);
+            h.ended.as_ref().map(|(_, end)| end.clone())
+        };
+        let what = format!("tarae --host {args:?}, before its state answered,");
+        let (patience, up) = (self.timeout(), Host::answers);
+        match first_answer(&EXEC_REFUSALS_RETRIED, &mut io::stderr(), &what, patience, start, up, ended) {
+            Ok(h) => h,
+            Err(h) => match &h.ended {
+                Some((st, end)) => {
+                    let state = exited_said(st, Some(end));
+                    panic!("the host ended before its state answered — {state}\n{}", h.output())
+                }
+                None => panic!("the host's state never answered\n{}", h.output()),
+            },
+        }
+    }
+
+    /// `tarae --host args…` spawned, not waited for.
+    fn host_unready(&self, args: &[&str]) -> Host {
         static N: AtomicUsize = AtomicUsize::new(0);
         let out = self.root.join(format!("host-{}.out", N.fetch_add(1, Ordering::Relaxed)));
         let file = File::create(&out).expect("the host's output file");
@@ -1589,16 +1654,15 @@ impl Sandbox {
             cmd.pre_exec(|| cvt(libc::setsid()).map(|_| ()));
         }
         let child = cmd.spawn().expect("spawn tarae --host");
-        let mut h = Host {
+        Host {
             child,
             out,
             timeout: self.timeout(),
             env: self.env(),
             bin: self.bin(),
             asked_again: Default::default(),
-        };
-        h.wait_ready();
-        h
+            ended: None,
+        }
     }
 }
 
@@ -1612,26 +1676,14 @@ impl Host {
         fs::read_to_string(&self.out).unwrap_or_default()
     }
 
-    /// Waits until its state socket answers (a `tarae state` that fails is asked again).
-    fn wait_ready(&mut self) {
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            let ok = tarae(&self.bin)
-                .args(["state", "--json", "--pid", &self.pid().to_string()])
-                .env_clear()
-                .envs(self.env.iter().cloned())
-                .output()
-                .is_ok_and(|o| o.status.success());
-            if ok {
-                return;
-            }
-            if let Some((st, end)) = end_of(&mut self.child) {
-                let state = exited_said(&st, Some(&end));
-                panic!("the host ended before its state answered — {state}\n{}", self.output());
-            }
-            assert!(Instant::now() < deadline, "the host's state never answered\n{}", self.output());
-            thread::sleep(POLL);
-        }
+    /// Whether its state socket answers now (`host`'s wait asks again while it doesn't).
+    fn answers(&mut self) -> bool {
+        tarae(&self.bin)
+            .args(["state", "--json", "--pid", &self.pid().to_string()])
+            .env_clear()
+            .envs(self.env.iter().cloned())
+            .output()
+            .is_ok_and(|o| o.status.success())
     }
 
     pub fn state(&self, args: &[&str]) -> String {
@@ -2349,6 +2401,56 @@ mod tests {
             assert_eq!(run(vec![other, refused()]), (1, Ok("waited on")), "{shown}");
         }
         assert_eq!(run(vec![None, refused()]), (1, Ok("drawn")));
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert_eq!(said.lock().unwrap().iter().filter(|b| **b == b'\n').count(), 2, "one line a retry");
+    }
+
+    /// A host, or an attach, whose exec macOS refused before its first answer is started once more, and only that one
+    /// (#503's follow-up, `first_answer`) — stand-in starts, no real tarae: each start answers (None) or is found
+    /// ended as given at its first poll; any end fails at once, a refused exec's after a second start.
+    #[test]
+    fn a_host_refused_before_its_first_answer_is_started_once_more() {
+        let end =
+            |signal, kernel| End { signal, reason: ExitReason { kernel, said: " — a stand-in".into() } };
+        let refused = || Some(end(Some(libc::SIGKILL), Some((9, 8))));
+        let (count, said) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+        // (a stand-in start: its number, and the end it's found at — None: it answers)
+        type Start = (usize, Option<End>);
+        let shown = |r: &Result<Start, Start>| match r {
+            Ok((n, e)) => format!("Ok({n}, {e:?})"),
+            Err((n, e)) => format!("Err({n}, {e:?})"),
+        };
+        let run = |ends: Vec<Option<End>>| {
+            let mut ends = ends.into_iter();
+            let mut starts = 0;
+            let start = || {
+                starts += 1;
+                (starts, ends.next().expect("no start past the second"))
+            };
+            let up = |s: &mut Start| s.1.is_none();
+            let ended = |s: &mut Start| s.1.clone();
+            let patience = Duration::from_secs(60);
+            shown(&first_answer(&count, &mut *said.lock().unwrap(), "a stand-in", patience, start, up, ended))
+        };
+        assert_eq!(run(vec![refused(), None]), "Ok(2, None)", "refused, then up");
+        let line = String::from_utf8(said.lock().unwrap().clone()).unwrap();
+        let want = "a stand-in ended with SIGKILL — a stand-in — spawned once more (1 in this test binary)\n";
+        assert!(line.starts_with("#459 RETRIED ") && line.ends_with(want), "{line:?}");
+        let twice = format!("Err(2, {:?})", refused());
+        assert_eq!(run(vec![refused(), refused()]), twice, "refused twice: fails as it came");
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        let others = [
+            end(Some(libc::SIGKILL), None),
+            end(Some(libc::SIGKILL), Some((9, 7))),
+            end(Some(libc::SIGTERM), None),
+            end(Some(libc::SIGABRT), Some((9, 8))),
+            end(None, None),
+        ];
+        for other in others {
+            let once = format!("Err(1, {:?})", Some(&other));
+            assert_eq!(run(vec![Some(other), refused()]), once, "any other end: fails at once");
+        }
+        assert_eq!(run(vec![None, refused()]), "Ok(1, None)");
         assert_eq!(count.load(Ordering::Relaxed), 2);
         assert_eq!(said.lock().unwrap().iter().filter(|b| **b == b'\n').count(), 2, "one line a retry");
     }
