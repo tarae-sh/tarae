@@ -17359,7 +17359,7 @@ mod tests {
         };
         let mut p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
         // (its own key place only: the temp folders hold other tests' keys while the suite runs — a thousand of them
-        // fill the room before any folder, which `a_monorepos_keys_folders_are_held_as_room_is_left` tests)
+        // take the room before the folders on the way to its key outside, by when each runs)
         p.key_places.retain(|k| *k == writes);
         if skipped_for_mounts(&p, test, true) {
             return;
@@ -17678,7 +17678,7 @@ mod tests {
                 ..Env::default()
             });
             // (its own key place only: the temp folders hold other tests' keys while the suite runs — a thousand of
-            // them fill the room before any folder, which `a_monorepos_keys_folders_are_held_as_room_is_left` tests)
+            // them take the room before the folders on the way to its key outside, by when each runs)
             p.key_places.retain(|k| *k == g);
             let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
             (s, root, g, p, c)
@@ -17753,9 +17753,12 @@ mod tests {
     /// many of the folders on the way to its keys a run's mounts hold (`packages/` and one a package: `n + 1`, after
     /// the `n` keys, in `COVERS_MAX`), outermost first; past the room each said by count, the room then full, its key
     /// hidden all the same; and what a run's start takes then, the fastest of three, beside
-    /// `many_keys_are_hidden_at_once`'s. No key place outside the project is walked: while the suite runs, other
-    /// tests' keys in the temp folders (`many_keys_are_hidden_at_once`'s thousand) would take the room first, by
-    /// when each runs. No real project is read.
+    /// `many_keys_are_hidden_at_once`'s. The room's order: a flood of files named like keys outside the project, in
+    /// a place runs write — more than the whole room, as `/tmp` can hold (anyone's: a run's, another program's,
+    /// another user's) — takes none of the room from the project's folders: every one that fits is held, and the
+    /// keys outside are the ones left open, said. Its own key place only, so the flood is the same on every run:
+    /// what other tests leave in the temp folders (`many_keys_are_hidden_at_once`'s thousand) and how far the walk
+    /// gets through them changes by when each runs. No real project is read.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_monorepos_keys_folders_are_held_as_room_is_left() {
@@ -17763,6 +17766,13 @@ mod tests {
         if !keys_tested_here(test) {
             return;
         }
+        let fs = crate::scratch::Scratch::new("sb-monorepo-flood");
+        let flood = profile_path(&fs).join("flood");
+        std::fs::create_dir_all(&flood).unwrap();
+        for i in 0..linux::COVERS_MAX {
+            std::fs::write(flood.join(format!("{i}.pem")), FAKE).unwrap();
+        }
+        let past_room = format!("past the {} files a run's mounts hide", linux::COVERS_MAX);
         for n in [10, 100, 500, 1000] {
             let s = crate::scratch::Scratch::new(&format!("sb-monorepo-{n}"));
             let root = profile_path(&s).join("project");
@@ -17772,8 +17782,14 @@ mod tests {
                 std::fs::write(at.join(".env"), FAKE).unwrap();
                 std::fs::write(at.join("index.js"), "").unwrap();
             }
-            let mut p = key_policy(&root);
-            p.key_places.clear();
+            let mut p = Policy::for_project(&Env {
+                root: root.clone(),
+                key_places: vec![flood.clone()],
+                write: vec![flood.display().to_string()],
+                run_env: run_env_here(),
+                ..Env::default()
+            });
+            p.key_places.retain(|k| *k == flood);
             if n == 10 && skipped_for_mounts(&p, test, true) {
                 return;
             }
@@ -17784,6 +17800,12 @@ mod tests {
                 cv.pins.iter().map(|c| &c.path).filter(|d| d.starts_with(&root)).collect();
             let unheld = cv.unheld.iter().filter(|(d, _)| d.starts_with(&root)).count();
             assert_eq!(cv.keys.len(), n, "{n}: every key hidden");
+            assert!(cv.seals.is_empty() && cv.kept.is_empty(), "{n}: none in the fixture: {cv:?}");
+            assert_eq!(
+                held.len(),
+                (n + 1).min(linux::COVERS_MAX - n),
+                "{n}: every folder that fits held, before any key outside"
+            );
             assert_eq!(held.len() + unheld, n + 1, "{n}: every folder held or said");
             let used = cv.keys.len()
                 + cv.loose.len()
@@ -17791,17 +17813,22 @@ mod tests {
                 + cv.seals.len()
                 + cv.pins.len()
                 + cv.loose_pins.len();
-            assert!(
-                cv.unheld.is_empty() || used == linux::COVERS_MAX,
-                "{n}: past the room, the room full: {used}"
-            );
+            assert_eq!(used, linux::COVERS_MAX, "{n}: the room full");
             assert!(
                 match n {
-                    1000 => unheld > 0,
-                    _ => unheld == 0,
+                    1000 => unheld > 0 && cv.loose.is_empty(),
+                    _ => unheld == 0 && !cv.loose.is_empty(),
                 },
-                "{n}: {unheld} past the room"
+                "{n}: {unheld} past the room, {} keys outside hidden",
+                cv.loose.len()
             );
+            let o = &confine.outside;
+            assert_eq!(
+                o.covered.len() + o.open.len(),
+                linux::COVERS_MAX,
+                "{n}: the flood, each hidden or said"
+            );
+            assert!(o.open.iter().all(|(k, why)| k.starts_with(&flood) && *why == past_room), "{n}: {o:?}");
             assert_eq!(
                 held.first().map(|d| d.as_path()),
                 Some(root.join("packages").as_path()),
@@ -17810,6 +17837,10 @@ mod tests {
             let said = linux::covers_said(confine);
             let counted = format!("{} folders on the way to those files aren't bound", cv.unheld.len());
             assert_eq!(said.contains(&counted), !cv.unheld.is_empty(), "{n}: {said}");
+            assert!(
+                said.contains(&format!("stays readable: {past_room}.")),
+                "{n}: the outside's said: {said}"
+            );
             let runs = (0..3).map(|_| {
                 let at = std::time::Instant::now();
                 let ran = sh_under(&p, &root, "cat packages/p0000/.env");

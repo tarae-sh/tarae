@@ -505,9 +505,11 @@ Kept:
   holds no descriptor from before them. In tier own, nor by moving a folder on its way and making a file at its name,
   which your own tools would read later: each folder between the project's root — or the place runs write holding
   one outside it — and a key hidden is bound over itself for the run (renamed, renamed onto, exchanged, emptied and
-  removed, from a namespace of its own: Device or resource busy), in the room a run's mounts take after the seals, the
-  kept places and the keys themselves, outermost first; past it the key stays hidden and the report counts the
-  folders not held, and why.
+  removed, from a namespace of its own: Device or resource busy), in the room a run's mounts take after the
+  project's keys, the seals and the kept places: the project's folders before any key outside it, the folders to
+  those outside last, each outermost first — so files named like keys where every program writes (`/tmp`, anyone's)
+  never take the room from the project's; past it the key stays hidden and the report counts the folders not held,
+  and why.
   test: `sandbox::tests::a_run_enters_its_folder_only_after_its_mounts` ·
   `sandbox::tests::a_keys_name_is_held_against_every_way_it_could_be_freed` ·
   `sandbox::tests::a_monorepos_keys_folders_are_held_as_room_is_left` ·
