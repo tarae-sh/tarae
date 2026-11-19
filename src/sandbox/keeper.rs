@@ -1132,7 +1132,13 @@ impl Keeper {
                 .filter(|c| !c.keys.is_empty() || !c.loose.is_empty() || !kept_sent(c).is_empty())
                 .and_then(|c| c.shut.as_ref())
                 .map(|s| channel::Covered { dev: s.dev, ino: s.ino, path: bytes(s.path.as_os_str()) }),
-            // (#633: the kept files in a place runs write, strict as the keys — one gone or swapped since fails the run)
+            // (#634: the shut folder, with a kept folder to cover)
+            shut_dir: covers
+                .filter(|c| !kept_sent(c).is_empty())
+                .and_then(|c| c.shut_dir.as_ref())
+                .map(|s| channel::Covered { dev: s.dev, ino: s.ino, path: bytes(s.path.as_os_str()) }),
+            // (#633: the kept files in a place runs write, strict as the keys — one gone or swapped since fails the run;
+            // #634: and folders)
             covers: covers
                 .iter()
                 .flat_map(|c| c.keys.iter().chain(kept_sent(c)))
@@ -2543,11 +2549,12 @@ struct Exec {
 }
 
 /// What a run's child needs to hide the files named like keys (7d, `linux::Covers`; `cover`) and seal the project's
-/// protected entries (B9): the shut file (with keys only), each file and what it was (device, inode), each sealed
-/// entry and what it was, its own user namespace's id maps (the keeper's ids, the user's — D5) and the last
-/// capability to drop.
+/// protected entries (B9): the shut file (with keys only) and the shut folder (with a kept folder, #634), each file
+/// and what it was (device, inode), each sealed entry and what it was, its own user namespace's id maps (the keeper's
+/// ids, the user's — D5) and the last capability to drop.
 struct Covering {
     shut: Option<(CString, u64, u64)>,
+    shut_dir: Option<(CString, u64, u64)>,
     keys: Vec<(CString, u64, u64)>,
     loose: Vec<(CString, u64, u64)>,
     seals: Vec<(CString, u64, u64)>,
@@ -2593,6 +2600,7 @@ impl Covering {
             .unwrap_or(63);
         Some(Covering {
             shut,
+            shut_dir: run.shut_dir.as_ref().map(|s| (c(&s.path), s.dev, s.ino)),
             keys: run.covers.iter().map(|k| (c(&k.path), k.dev, k.ino)).collect(),
             loose: run.loose.iter().map(|k| (c(&k.path), k.dev, k.ino)).collect(),
             seals: run.seals.iter().map(|s| (c(&s.path), s.dev, s.ino)).collect(),
@@ -2700,9 +2708,10 @@ unsafe fn seal(path: &std::ffi::CStr, dev: u64, ino: u64, read_only: bool) -> Re
 /// 7d: a run's child hides `c`'s files named like keys — and seals the project's protected entries (`seal`, B9)
 /// — in a user and mount namespace of its own (`unshare`: it
 /// holds every capability there, the keeper none), its ids mapped to themselves; each key opened through no link
-/// (`openat2`) and checked to be the file tarae found (device, inode; a regular file) — moved or swapped since, it
-/// fails (`ESTALE`); a copy of the shut file's mount (opened through no link, the file tarae checked — else
-/// `ESTALE` too), read-only, no set-user-ID, devices nor programs, moved onto
+/// (`openat2`) and checked to be the file tarae found (device, inode; a regular file — or, among the strict ones, a
+/// folder: a kept folder, #634) — moved or swapped since, it fails (`ESTALE`); a copy of the shut file's mount —
+/// the shut folder's over a folder, a mount taking its target's type (opened through no link, the one tarae checked —
+/// else `ESTALE` too) — read-only, no set-user-ID, devices nor programs, moved onto
 /// what it opened (so onto that file wherever it went since); then every capability dropped for good. The
 /// mounts in it, made in this namespace, aren't locked; what takes them back from a run is that it has no
 /// capability, and Landlock refuses a confined process every mount and unmount; in a namespace a run makes, they
@@ -2775,8 +2784,13 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
                 libc::unlink(gone.as_ptr());
             }
             let mut st: libc::stat = std::mem::zeroed();
-            let same = libc::fstat(key, &mut st) == 0
-                && st.st_mode & libc::S_IFMT == libc::S_IFREG
+            let got = libc::fstat(key, &mut st) == 0;
+            // (#634: a strict one that's a folder is a kept folder — the shut folder goes over it; a loose key is a
+            // file only)
+            let folder = got && loose.is_none() && st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+            let kind = if folder { libc::S_IFDIR } else { libc::S_IFREG };
+            let same = got
+                && st.st_mode & libc::S_IFMT == kind
                 && (st.st_dev as u64, st.st_ino as u64) == (*dev, *ino);
             if !same {
                 libc::close(key);
@@ -2786,9 +2800,10 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
                 }
                 return Err(libc::ESTALE);
             }
-            // (the shut file through no link, and only the one tarae checked — swapped since, it fails as a key does)
+            // (the shut file — or folder — through no link, and only the one tarae checked: swapped since, it fails as a
+            // key does)
             let flags = OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | libc::AT_SYMLINK_NOFOLLOW as libc::c_uint;
-            let Some((shut_at, shut_dev, shut_ino)) = &c.shut else {
+            let Some((shut_at, shut_dev, shut_ino)) = (if folder { &c.shut_dir } else { &c.shut }) else {
                 libc::close(key);
                 return Err(libc::EINVAL);
             };
@@ -2801,7 +2816,7 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
             let tree = tree as libc::c_int;
             let mut st: libc::stat = std::mem::zeroed();
             let same = libc::fstat(tree, &mut st) == 0
-                && st.st_mode & libc::S_IFMT == libc::S_IFREG
+                && st.st_mode & libc::S_IFMT == kind
                 && (st.st_dev as u64, st.st_ino as u64) == (*shut_dev, *shut_ino);
             if !same {
                 libc::close(tree);

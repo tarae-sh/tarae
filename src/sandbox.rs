@@ -16936,10 +16936,10 @@ mod tests {
     /// For real, on Linux in every tier (#633): a kept place inside a place runs write — a kubeconfig `KUBECONFIG`
     /// put in a temp folder, a cloud CLI's folder there (`CLOUDSDK_CONFIG`) — is neither read nor written, while
     /// what's beside it is both; the report names the place that takes no new entry for it (`Confine.shut_kept`).
-    /// Where its runs have no mounts of their own both are left out of that grant as of `/`'s; in tier own the file
-    /// is hidden by a mount (`a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own`) and the folder still
-    /// left out (its shut folder is frictions29 #634) — the place shut for it. Before: read and written through the
-    /// write grant. Its break-once: `TARAE_TEST_KEPT_IN_WRITES=1`.
+    /// Where its runs have no mounts of their own both are left out of that grant as of `/`'s — the place shut for
+    /// them; in tier own both are hidden by mounts
+    /// (`a_kept_file_or_folder_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own`, #634) and no place is shut.
+    /// Before: read and written through the write grant. Its break-once: `TARAE_TEST_KEPT_IN_WRITES=1`.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_kept_place_in_a_place_runs_write_is_closed() {
@@ -16965,8 +16965,8 @@ mod tests {
             ..Env::default()
         });
         let c = confined(Policy { write: vec![writes.clone()], run: RunDir::new().ok(), ..p });
-        let (tier, shut) = match &c.confine {
-            Some(Ok(c)) => (c.tier(), c.shut_kept.clone()),
+        let (tier, shut, mounted) = match &c.confine {
+            Some(Ok(c)) => (c.tier(), c.shut_kept.clone(), c.covers.kept.len()),
             other => panic!("{test}: not confined: {other:?}"),
         };
         for f in &closed {
@@ -16982,64 +16982,341 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&kube).unwrap(), FAKE, "{tier}: the kept file as it was");
         let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{0}' && echo y >> '{0}'", open.display()));
         assert!(ok && out == FAKE, "{tier}: beside it, read and written: {err}");
-        assert_eq!(shut, [writes], "{tier}: the place that takes no new entry for it");
+        // (both hidden by mounts of the run's own, or neither: then the place that takes no new entry for them)
+        match mounted {
+            2 => assert!(shut.is_empty(), "{tier}: no place shut: {shut:?}"),
+            0 => assert_eq!(shut, [writes], "{tier}: the place that takes no new entry for them"),
+            n => panic!("{tier}: {n} of the two kept places hidden by mounts"),
+        }
     }
 
-    /// For real, on Linux in tier own (#633): a kept file in a place runs write — a kubeconfig `KUBECONFIG` put in a
-    /// temp folder — is hidden by a mount of the run's own (`Covers.kept`): not read, written, moved nor removed, and
-    /// as it was after, while a new file is made and read back beside it and in the write place itself — the folders
-    /// on its way take new entries, no place said shut. A key in the project gives the runs their mounts whatever
-    /// becomes of the kept file's: the skip (`skipped_for_mounts`) goes by those. Its break-once:
-    /// `TARAE_TEST_NO_KEPT_COVERS=1` (a hole again: no new file there) and `TARAE_TEST_KEPT_OFF_THE_WIRE=1` (the
-    /// cover never sent: the file read through the write place's grant).
+    /// For real, on Linux in tier own (#633, #634): a kept file and a kept folder in a place runs write — a kubeconfig
+    /// `KUBECONFIG` put in a temp folder, a cloud CLI's folder there (`CLOUDSDK_CONFIG`) — are hidden by mounts of the
+    /// run's own (`Covers.kept`; the folder under the shut folder): the file not read, written, moved nor removed; the
+    /// folder not listed, read in, written in, moved nor removed; both as they were after. The folders on their way are
+    /// pinned (`Covers.pins`): one moved away, a new one made at its name and the kept entry written there anew, is
+    /// refused, the real one as it was — what the user's own tools read later. A new file is made and read back
+    /// beside each and in the write place itself: the folders on their way take new entries, no place said shut. A
+    /// key in the project gives the runs their mounts whatever becomes of the kept places': the skip
+    /// (`skipped_for_mounts`) goes by those. Its break-once: `TARAE_TEST_NO_KEPT_COVERS=1` (a hole again: no new file
+    /// there), `TARAE_TEST_KEPT_OFF_THE_WIRE=1` (the covers never sent: read through the write place's grant) and
+    /// `TARAE_TEST_NO_KEPT_PINS=1` (a folder on the way moved away and the name taken).
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own() {
-        let test = "a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own";
+    fn a_kept_file_or_folder_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own() {
+        let test = "a_kept_file_or_folder_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own";
         if !keys_tested_here(test) {
             return;
         }
         let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-mounted");
         let t = profile_path(&s);
         let (home, root, writes) = (t.join("home"), t.join("home/project"), t.join("writes"));
-        let kube = writes.join("kind/kubeconfig");
-        for f in [&kube, &root.join(".env")] {
+        let (kube, gcloud) = (writes.join("kind/kubeconfig"), writes.join("cfg/gcloud"));
+        let state = gcloud.join("state.txt");
+        for f in [&kube, &state, &root.join(".env")] {
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, FAKE).unwrap();
         }
-        let reads = Reads { home: Some(home), kept: vec![kube.clone()], ..Reads::default() };
+        let reads = Reads { home: Some(home), kept: vec![kube.clone(), gcloud.clone()], ..Reads::default() };
         let env = Env { root: root.clone(), reads, run_env: run_env_here(), ..Env::default() };
         let p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
         if skipped_for_mounts(&p, test, true) {
             return;
         }
         let c = confined(Policy { run: RunDir::new().ok(), ..p });
-        let (tier, shut, hidden) = match &c.confine {
+        let (tier, shut, hidden, pinned) = match &c.confine {
             Some(Ok(c)) => {
                 let hidden: Vec<PathBuf> = c.covers.kept.iter().map(|k| k.path.clone()).collect();
-                (c.tier(), c.shut_kept.clone(), hidden)
+                let pinned: Vec<PathBuf> = c.covers.pins.iter().map(|k| k.path.clone()).collect();
+                // (said: hidden, and the folders on the way to them held as the seals' are)
+                let said = linux::covers_said(c);
+                let held = "not renamed or removed (Device or resource busy) — and neither is a folder on the way \
+                            to them, each bound over itself; the folders around them take new files as usual.";
+                assert!(said.contains(held), "{said}");
+                (c.tier(), c.shut_kept.clone(), hidden, pinned)
             }
             other => panic!("{test}: not confined: {other:?}"),
         };
-        let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", kube.display()));
-        assert!(!ok && !out.contains(FAKE) && err.contains(KEY_DENIED), "{tier}: read: {out} {err}");
-        let k = kube.display();
+        let (k, g) = (kube.display(), gcloud.display());
+        for read in [format!("cat '{k}'"), format!("ls '{g}'"), format!("cat '{}'", state.display())] {
+            let (ok, out, err) = sh_confined(&c, &root, &read);
+            assert!(!ok && !out.contains(FAKE) && err.contains(KEY_DENIED), "{tier}: `{read}`: {out} {err}");
+        }
         let changes = [
             ("written", format!("echo x >> '{k}'")),
             ("moved", format!("mv '{k}' '{k}.moved'")),
             ("removed", format!("rm -f '{k}'")),
+            ("written in", format!("echo x > '{g}/new.txt'")),
+            ("moved", format!("mv '{g}' '{g}.moved'")),
+            ("removed", format!("rm -rf '{g}'")),
         ];
         for (what, script) in &changes {
             let (ok, _, err) = sh_confined(&c, &root, script);
-            assert!(!ok, "{tier}: {what}: {err}");
+            assert!(!ok, "{tier}: {what}: `{script}`: {err}");
+        }
+        // (a folder on the way moved away, the kept entry with it, and made anew at its name: refused — pinned)
+        let swaps = [
+            (writes.join("kind"), format!("echo planted > '{k}'")),
+            (writes.join("cfg"), format!("mkdir '{g}' && echo planted > '{}'", state.display())),
+        ];
+        for (way, plant) in &swaps {
+            let script = format!("mv '{0}' '{0}.away' && mkdir '{0}' && {plant}", way.display());
+            let (ok, _, err) = sh_confined(&c, &root, &script);
+            assert!(!ok, "{tier}: its folder moved away and the name taken: `{script}`: {err}");
         }
         assert_eq!(std::fs::read_to_string(&kube).unwrap(), FAKE, "{tier}: the kept file as it was");
-        for n in [writes.join("new.txt"), writes.join("kind/new.txt")] {
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), FAKE, "{tier}: the kept folder as it was");
+        let news = [writes.join("new.txt"), writes.join("kind/new.txt"), writes.join("cfg/new.txt")];
+        for n in news {
             let (ok, out, err) = sh_confined(&c, &root, &format!("echo y > '{0}' && cat '{0}'", n.display()));
-            assert!(ok && out.trim() == "y", "{tier}: a new file beside it, {}: {err}", n.display());
+            assert!(ok && out.trim() == "y", "{tier}: a new file beside them, {}: {err}", n.display());
         }
-        assert!(shut.is_empty(), "{tier}: no place shut for it: {shut:?}");
-        assert_eq!(hidden, [kube], "{tier}: hidden by a mount");
+        assert!(shut.is_empty(), "{tier}: no place shut for them: {shut:?}");
+        assert_eq!(hidden, [kube, gcloud], "{tier}: hidden by mounts");
+        for way in [writes.join("kind"), writes.join("cfg")] {
+            assert!(pinned.contains(&way), "{tier}: {} pinned: {pinned:?}", way.display());
+        }
+    }
+
+    /// For real, on Linux in tier own (#651): a kept place's name is held against every way a run could free it — a
+    /// kept file and a kept folder, each two folders below the place runs write, at each of the two folders on its
+    /// way: that folder renamed away and made anew, another folder renamed onto it, the two exchanged (`renameat2`'s
+    /// `RENAME_EXCHANGE`, from this test binary as the run — `a_run_exchanges_two_folders`), emptied and removed, and
+    /// from a user and mount namespace the run makes itself, its pin unmounted first (the mounts come locked in a
+    /// namespace it makes — `umount`: Invalid argument — and Landlock refuses a confined process every mount call:
+    /// still a mount point, busy). Each
+    /// refused; the kept bytes and inode as they were — what the user's own tools read later. Its break-once:
+    /// `TARAE_TEST_NO_KEPT_PINS=1`.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_kept_places_name_is_held_against_every_way_it_could_be_freed() {
+        use std::os::unix::fs::MetadataExt;
+        let test = "a_kept_places_name_is_held_against_every_way_it_could_be_freed";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-held");
+        let t = profile_path(&s);
+        let (home, root, writes) = (t.join("home"), t.join("home/project"), t.join("writes"));
+        let (kube, gcloud) = (writes.join("up/kind/kubeconfig"), writes.join("top/cfg/gcloud"));
+        let state = gcloud.join("state.txt");
+        for f in [&kube, &state, &root.join(".env")] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, FAKE).unwrap();
+        }
+        let reads = Reads { home: Some(home), kept: vec![kube.clone(), gcloud.clone()], ..Reads::default() };
+        let env = Env { root: root.clone(), reads, run_env: run_env_here(), ..Env::default() };
+        let p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
+        if skipped_for_mounts(&p, test, true) {
+            return;
+        }
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let tier = match &c.confine {
+            Some(Ok(c)) => c.tier(),
+            other => panic!("{test}: not confined: {other:?}"),
+        };
+        let exe = std::env::current_exe().unwrap();
+        let stamp = |f: &Path| Some((std::fs::read_to_string(f).ok()?, std::fs::metadata(f).ok()?.ino()));
+        // (a break-once's: one way at one level only — `how@1` the folder holding the entry, `how@2` the one above)
+        let only = std::env::var("TARAE_TEST_FREE_ONLY").ok();
+        let mut n = 0;
+        for (entry, file) in [(&kube, &kube), (&gcloud, &state)] {
+            let before = stamp(file);
+            assert_eq!(before.as_ref().map(|(b, _)| b.as_str()), Some(FAKE), "{tier}: the fixture");
+            for (level, way) in entry.ancestors().skip(1).take(2).enumerate() {
+                n += 1;
+                let (w, rel) = (way.display(), file.strip_prefix(way).unwrap());
+                let other = PathBuf::from(format!("{w}.other{n}"));
+                let plant = |at: &Path| {
+                    let f = at.join(rel);
+                    format!(
+                        "mkdir -p '{}' && echo planted > '{}'",
+                        f.parent().unwrap().display(),
+                        f.display()
+                    )
+                };
+                let o = other.display();
+                let tries = [
+                    ("renamed away", format!("mv '{w}' '{w}.away{n}' && {}", plant(way))),
+                    ("another renamed onto it", format!("{} && mv -T '{o}' '{w}'", plant(&other))),
+                    (
+                        "exchanged",
+                        format!(
+                            "{} && TARAE_TEST_EXCHANGE='{o}:{w}' '{}' --exact \
+                             sandbox::tests::a_run_exchanges_two_folders --ignored --test-threads=1",
+                            plant(&other),
+                            exe.display()
+                        ),
+                    ),
+                    (
+                        "emptied and removed",
+                        format!("find '{w}' -mindepth 1 -delete; rmdir '{w}' && {}", plant(way)),
+                    ),
+                    // (`--propagation unchanged`: `unshare`'s own change of it is a mount call Landlock refuses, and
+                    // `-r`'s map a write to `/proc/self/uid_map` the run can't make — either stops before the pin)
+                    (
+                        "from a namespace of its own",
+                        format!(
+                            "unshare -Um --propagation unchanged sh -c \"umount -l '{w}'; mv '{w}' '{w}.ns{n}' && {}\"",
+                            plant(way)
+                        ),
+                    ),
+                ];
+                for (how, script) in &tries {
+                    if only.as_ref().is_some_and(|o| *o != format!("{how}@{}", level + 1)) {
+                        continue;
+                    }
+                    let (ok, out, err) = sh_confined(&c, &root, script);
+                    let now = stamp(file);
+                    assert!(
+                        !ok && now == before,
+                        "{tier}: {} {how}: the kept bytes and inode now {now:?}; `{script}`: {out} {err}",
+                        way.display()
+                    );
+                }
+            }
+        }
+    }
+
+    /// A run's helper (#651): this test binary as a sandboxed run, exchanging the two folders `TARAE_TEST_EXCHANGE`
+    /// names (`a:b`) by `renameat2`'s `RENAME_EXCHANGE`, which no common tool has. Fails where the kernel refuses;
+    /// does nothing without the variable.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    #[ignore = "a run's helper: a_kept_places_name_is_held_against_every_way_it_could_be_freed starts it"]
+    fn a_run_exchanges_two_folders() {
+        let Some(v) = std::env::var_os("TARAE_TEST_EXCHANGE") else { return };
+        let v = v.into_string().unwrap();
+        let (a, b) = v.split_once(':').expect("a:b");
+        let (a, b) = (std::ffi::CString::new(a).unwrap(), std::ffi::CString::new(b).unwrap());
+        // SAFETY: two C strings that live through the call.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                a.as_ptr(),
+                libc::AT_FDCWD,
+                b.as_ptr(),
+                libc::RENAME_EXCHANGE,
+            )
+        };
+        assert_eq!(r, 0, "renameat2: {}", std::io::Error::last_os_error());
+    }
+
+    /// A kept place's fixture for #651's holes: in its own write place `writes` (made) under `t`, the kept entry at
+    /// `kept` there; the policy a run in the project at `root` gets with that place. A key in the project gives its
+    /// runs their mounts.
+    #[cfg(not(target_os = "macos"))]
+    fn kept_in_a_place(t: &Path, root: &Path, writes: &Path, kept: &Path) -> Policy {
+        std::fs::create_dir_all(writes).unwrap();
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join(".env"), FAKE).unwrap();
+        let reads = Reads { home: Some(t.join("home")), kept: vec![kept.to_path_buf()], ..Reads::default() };
+        let env = Env { root: root.to_path_buf(), reads, run_env: run_env_here(), ..Env::default() };
+        Policy { write: vec![writes.to_path_buf()], ..Policy::for_project(&env) }
+    }
+
+    /// What a confined policy did with the kept place in `writes`: hidden by mounts, the places said shut for it, and
+    /// the pins in `writes`.
+    #[cfg(not(target_os = "macos"))]
+    fn kept_fate(c: &Policy, writes: &Path) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+        let Some(Ok(c)) = &c.confine else { panic!("not confined: {:?}", c.confine) };
+        let hidden = c.covers.kept.iter().map(|k| k.path.clone()).collect();
+        let pins = c.covers.pins.iter().map(|k| k.path.clone()).filter(|k| k.starts_with(writes)).collect();
+        (hidden, c.shut_kept.clone(), pins)
+    }
+
+    /// For real, on Linux in tier own (#651): a kept place whose folders on the way can't all be pinned isn't hidden by
+    /// a mount — it goes back to the hole, its place said shut as before (`shut_kept`), none of its way pinned: a link
+    /// on its way (a folder swapped for a link to it after the policy was made — the path as kept isn't its real one),
+    /// one that isn't a file or a folder (a FIFO: no mount takes it; below an entry that's there, only a link can stand
+    /// on the way), and one whose way is past the room a run's mounts take (`COVERS_MAX`: a chain of folders deeper
+    /// than it). Reached through another mount: `a_kept_place_reached_through_another_mount_stays_a_hole`.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_kept_place_whose_way_cant_all_be_pinned_stays_a_hole() {
+        let test = "a_kept_place_whose_way_cant_all_be_pinned_stays_a_hole";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-unpinned");
+        let t = profile_path(&s);
+        let root = t.join("home/project");
+        // (a link on the way: `x` moved and a link to it put at its name since)
+        let wl = t.join("writes-link");
+        let through = wl.join("x/kind/kubeconfig");
+        std::fs::create_dir_all(through.parent().unwrap()).unwrap();
+        std::fs::write(&through, FAKE).unwrap();
+        // (not a file nor a folder)
+        let wf = t.join("writes-fifo");
+        let fifo = wf.join("x/kind/kubeconfig");
+        std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+        let at = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a C string that lives through the call.
+        assert_eq!(unsafe { libc::mkfifo(at.as_ptr(), 0o600) }, 0, "{}", std::io::Error::last_os_error());
+        // (past the room: more folders on its way than a run's mounts take)
+        let wd = t.join("writes-deep");
+        let deep = (0..=linux::COVERS_MAX).fold(wd.clone(), |d, _| d.join("d")).join("kubeconfig");
+        std::fs::create_dir_all(deep.parent().unwrap()).unwrap();
+        std::fs::write(&deep, FAKE).unwrap();
+        let cases =
+            [("a link on its way", &wl, &through), ("a FIFO", &wf, &fifo), ("past the room", &wd, &deep)];
+        let first = kept_in_a_place(&t, &root, &wl, &through);
+        if skipped_for_mounts(&first, test, true) {
+            return;
+        }
+        std::fs::rename(wl.join("x"), wl.join("x2")).unwrap();
+        std::os::unix::fs::symlink("x2", wl.join("x")).unwrap();
+        for (why, writes, kept) in cases {
+            let p = kept_in_a_place(&t, &root, writes, kept);
+            let c = confined(Policy { run: RunDir::new().ok(), ..p });
+            let (hidden, shut, pins) = kept_fate(&c, writes);
+            assert!(hidden.is_empty() && pins.is_empty(), "{why}: hidden {hidden:?}, pinned {pins:?}");
+            assert_eq!(shut, std::slice::from_ref(writes), "{why}: its place said shut, as a hole");
+        }
+    }
+
+    /// For real, on Linux in tier own (#651): a kept file reached through another mount of its filesystem — its place
+    /// bound a second time, made in a user and mount namespace of the test binary's own before its exec, as a desktop's
+    /// would be there already — isn't hidden by a mount nor its way pinned: it goes back to the hole, its place said
+    /// shut. The run happens in that namespace (`a_kept_place_reached_through_another_mount_inside`).
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_kept_place_reached_through_another_mount_stays_a_hole() {
+        let test = "a_kept_place_reached_through_another_mount_stays_a_hole";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-elsewhere");
+        let t = profile_path(&s);
+        let (root, writes, second) = (t.join("home/project"), t.join("writes"), t.join("second"));
+        let kube = writes.join("x/kind/kubeconfig");
+        std::fs::create_dir_all(kube.parent().unwrap()).unwrap();
+        std::fs::write(&kube, FAKE).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        if skipped_for_mounts(&kept_in_a_place(&t, &root, &writes, &kube), test, true) {
+            return;
+        }
+        let inside = "sandbox::tests::a_kept_place_reached_through_another_mount_inside";
+        let env = [("TARAE_TEST_ROOT", t.as_os_str())];
+        let said =
+            with_a_second_bind(inside, Some((&writes, &second)), &env).unwrap_or_else(|e| panic!("{e}"));
+        assert!(said.contains("1 passed"), "{said}");
+    }
+
+    /// `a_kept_place_reached_through_another_mount_stays_a_hole`'s run, in its namespace (`TARAE_TEST_ROOT`: its
+    /// scratch folder); nothing without it.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    #[ignore = "run by a_kept_place_reached_through_another_mount_stays_a_hole in its namespace"]
+    fn a_kept_place_reached_through_another_mount_inside() {
+        let Some(t) = std::env::var_os("TARAE_TEST_ROOT").map(PathBuf::from) else { return };
+        let (root, writes) = (t.join("home/project"), t.join("writes"));
+        let p = kept_in_a_place(&t, &root, &writes, &writes.join("x/kind/kubeconfig"));
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let (hidden, shut, pins) = kept_fate(&c, &writes);
+        assert!(hidden.is_empty() && pins.is_empty(), "hidden {hidden:?}, pinned {pins:?}");
+        assert_eq!(shut, [writes], "its place said shut, as a hole");
     }
 
     /// For real, on Linux in every tier (#633): a new file refused in a place runs write because a kept place in it

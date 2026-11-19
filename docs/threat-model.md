@@ -366,10 +366,15 @@ Kept:
   answer you gave covers it, as before. A kept place holding the project doesn't close the project. tarae's `search`
   of a folder holding one leaves it out — hits and name — and ends with one line naming it, hits or none; an agent's
   own Grep of that folder asks. Runs: macOS's profile denies a kept place after its write allows (measured: a
-  kubeconfig in `/private/tmp` and in `$TMPDIR` refused, both folders writable). Linux: in tier own a kept file in a
-  place runs write is hidden by a mount of the run's own (unread, unwritten, not renamed or removed) and the folders
-  around it take new files; in the tiers without mounts — and in tier own for a kept folder or one not there yet —
-  it's left out of the write grant, as of `/`'s read grant: on Linux without mounts of the run's own a place is kept
+  kubeconfig in `/private/tmp` and in `$TMPDIR` refused, both folders writable). Linux: in tier own a kept file or
+  folder in a place runs write is hidden by a mount of the run's own (unread, unwritten, not renamed or removed —
+  Device or resource busy; a folder under an empty one nobody may open) and neither is a folder on the way to it,
+  each bound over itself, so a run can't move one away — renamed, renamed onto, exchanged, emptied and removed, from a
+  namespace of its own — and make a new kept place at its name (#634, #651; open from #633 until then); the folders
+  around it take new files as usual. Never hidden without its way held: in the tiers without mounts — and in tier own
+  for one not there yet, a link or something not a file or folder on its way, a way past the room a run's mounts take,
+  or one reached through another mount — it's left out of the write grant, as of `/`'s read grant: on Linux without
+  mounts of the run's own a place is kept
   only by being left out of its folder's rule, so the folders between it and the write place take no new entry, and a
   refusal there names the folder, the kept place and its variable. Each run's `$TMPDIR` is a folder of its own on
   every platform, outside every such place, so only a tool that writes a hard-coded `/tmp` meets that cost — the JVM
@@ -390,7 +395,10 @@ Kept:
   `caps::tests::an_answer_holding_a_kept_place_stays_in_the_store` ·
   `sandbox::tests::a_kept_file_in_a_temp_folder_stays_unread_under_the_real_profile` (shown, macOS) ·
   `sandbox::tests::a_kept_place_in_a_place_runs_write_is_closed` (shown, Linux) ·
-  `sandbox::tests::a_kept_file_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own` (shown, Linux) ·
+  `sandbox::tests::a_kept_file_or_folder_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own` (shown, Linux) ·
+  `sandbox::tests::a_kept_places_name_is_held_against_every_way_it_could_be_freed` (shown, Linux) ·
+  `sandbox::tests::a_kept_place_whose_way_cant_all_be_pinned_stays_a_hole` (shown, Linux) ·
+  `sandbox::tests::a_kept_place_reached_through_another_mount_stays_a_hole` (shown, Linux) ·
   `sandbox::tests::a_refused_new_file_beside_a_kept_place_names_it_and_the_way_out` (shown, Linux)
 
 Not kept:

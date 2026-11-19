@@ -709,7 +709,8 @@ pub fn covers_said(c: &Confine) -> String {
             let (are, them) = if k.len() == 1 { ("is", "it") } else { ("are", "them") };
             format!(
                 " {} {are} kept from every run and hidden by a mount of the run's own: unread, unwritten, not renamed \
-                 or removed; the folders around {them} take new files as usual.",
+                 or removed (Device or resource busy) — and neither is a folder on the way to {them}, each bound \
+                 over itself; the folders around {them} take new files as usual.",
                 tilde(&places)
             )
         }
@@ -1602,6 +1603,9 @@ pub const COVERS_MAX: usize = 1024;
 pub struct Covers {
     /// The shut file, and which file it was when checked (the child mounts only that one).
     pub shut: Option<Cover>,
+    /// The shut folder — empty, mode 0, tarae's, beside the shut file — the child mounts over a kept folder (#634: a
+    /// mount needs its target's type); made only for one (`shut_folder`).
+    pub shut_dir: Option<Cover>,
     pub keys: Vec<Cover>,
     /// The files named like keys outside the project it hides (D-i, `Outside`) — one gone or swapped since the walk
     /// is left and the run starts: where every program writes (`/tmp`) that's no reason to stop it.
@@ -1614,9 +1618,13 @@ pub struct Covers {
     /// are, writable (`Covers::sealed`): each a mount point, so renamed or removed, refused (EBUSY) — else moving
     /// one away would carry its sealed entry with it and leave the name free for a new file.
     pub pins: Vec<Cover>,
-    /// The kept files in a place runs write (#633: `KUBECONFIG=/tmp/kind/kubeconfig`), hidden as `keys` are and as
-    /// strictly — one gone or swapped by the run's start fails it, as its name would be free in a folder taking new
-    /// entries — so the write place's grant stays whole. One not there, or a folder, stays a hole (`Confine.shut_kept`).
+    /// The kept files and folders in a place runs write (#633: `KUBECONFIG=/tmp/kind/kubeconfig`; #634:
+    /// `CLOUDSDK_CONFIG=/tmp/gcloud`), hidden as `keys` are and as strictly — one gone or swapped by the run's start
+    /// fails it, as its name would be free in a folder taking new entries — a folder under `shut_dir`, and the folders
+    /// between the write place and each pinned (`pins`: else one moved away carries it off and frees its name), so the
+    /// write place's grant stays whole. Never one without its pins (#651): one not there, or whose way can't all be
+    /// pinned — a link or something not a folder on it, past the room, it or its way reached through another mount —
+    /// stays a hole (`Confine.shut_kept`).
     pub kept: Vec<Cover>,
 }
 
@@ -1676,6 +1684,30 @@ impl Cover {
         let path = std::fs::canonicalize(k.parent()?).ok()?.join(k.file_name()?);
         Some(Cover { path, dev: m.dev(), ino: m.ino() })
     }
+
+    /// A kept entry `k` as it is now (#634) — a file or a folder, never a link; none where it's gone.
+    fn entry(k: &Path) -> Option<Cover> {
+        use std::os::unix::fs::MetadataExt;
+        let m = k.symlink_metadata().ok().filter(|m| m.file_type().is_file() || m.file_type().is_dir())?;
+        let path = std::fs::canonicalize(k.parent()?).ok()?.join(k.file_name()?);
+        Some(Cover { path, dev: m.dev(), ino: m.ino() })
+    }
+
+    /// The folders between the outermost of `writes` holding `k` (a real path, `entry`'s) and it, outermost first,
+    /// each as it is now — what a run's child binds over themselves for a kept entry (#634) — None where one isn't a
+    /// folder (a link on the way: a mount can't sit on one).
+    fn way_to(k: &Path, writes: &[PathBuf]) -> Option<Vec<Cover>> {
+        use std::os::unix::fs::MetadataExt;
+        let place =
+            writes.iter().filter(|w| k.starts_with(w) && *w != k).min_by_key(|w| w.components().count())?;
+        let mut way = Vec::new();
+        for a in k.ancestors().skip(1).take_while(|a| *a != place.as_path() && a.starts_with(place)) {
+            let m = a.symlink_metadata().ok().filter(|m| m.file_type().is_dir())?;
+            way.push(Cover { path: a.to_path_buf(), dev: m.dev(), ino: m.ino() });
+        }
+        way.reverse();
+        Some(way)
+    }
 }
 
 impl Covers {
@@ -1709,12 +1741,39 @@ impl Covers {
         let keys = keys.iter().filter_map(|k| Cover::of(k)).collect();
         Ok(Covers {
             shut: Some(Cover { path: shut, dev: m.dev(), ino: m.ino() }),
+            shut_dir: None,
             keys,
             loose: Vec::new(),
             seals: Vec::new(),
             pins: Vec::new(),
             kept: Vec::new(),
         })
+    }
+
+    /// The shut folder in `run`'s instance folder, beside the shut file, made the first time (#634): empty, mode 0,
+    /// through no link (`mkdir` makes no link's target) — tarae's, which no run is granted, so nothing but tarae
+    /// writes there; with mode 0 and its mount read-only a run opens, lists and makes nothing in it. Err: it can't
+    /// be made, or what's there isn't one.
+    fn shut_folder(&mut self, run: &Path) -> io::Result<()> {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        if self.shut_dir.is_some() {
+            return Ok(());
+        }
+        let dir = run.parent().ok_or_else(|| io::Error::other("a run's folder in no instance"))?;
+        let at = dir.join("shut-folder");
+        match std::fs::DirBuilder::new().mode(0o000).create(&at) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        let m = at.symlink_metadata()?;
+        // SAFETY: a plain call.
+        let uid = unsafe { libc::geteuid() };
+        if !m.file_type().is_dir() || m.mode() & 0o7777 != 0 || m.uid() != uid || m.nlink() != 2 {
+            return Err(io::Error::other(format!("{} isn't tarae's shut folder", at.display())));
+        }
+        self.shut_dir = Some(Cover { path: at, dev: m.dev(), ino: m.ino() });
+        Ok(())
     }
 
     /// `found` (`There.protected`, real paths) as the entries a run's child seals (B9: each bound read-only over
@@ -1987,14 +2046,14 @@ pub(super) fn confine_in(
     crate::sorting::sort(&mut elsewhere);
     elsewhere.dedup();
     // (#633: a kept file in a place runs write, there now — hidden by a mount as a key is where the run can have one,
-    // strictly (`Covers.kept`), so that place's grant stays whole. One not there, or a folder (its shut folder is
-    // frictions29 #634), stays a hole on every tier: its folders take no new entry, said)
+    // strictly (`Covers.kept`), so that place's grant stays whole; #634: a kept folder too, under the shut folder.
+    // One not there stays a hole on every tier: its folders take no new entry, said)
     let kept_files: Vec<PathBuf> = p
         .reads
         .kept
         .iter()
         .filter(|k| p.write.iter().any(|w| k.starts_with(w) && *k != w))
-        .filter(|k| k.symlink_metadata().is_ok_and(|m| m.file_type().is_file()))
+        .filter(|k| k.symlink_metadata().is_ok_and(|m| m.file_type().is_file() || m.file_type().is_dir()))
         .cloned()
         .collect();
     // (the break-once: no kept file hidden — each a hole again, its folders taking no new entry)
@@ -2199,17 +2258,46 @@ pub(super) fn confine_in(
     let mut kept_hidden: Vec<PathBuf> = Vec::new();
     match covers.as_mut() {
         Some(c) => {
-            // (the kept files first, as room is left: strict, as the project's keys are)
+            // (the kept files and folders first, as room is left: strict, as the project's keys are — each with the
+            // folders between the write place and it pinned as the seals' are, counted in the room: else a run moves
+            // its folder away, the kept entry with it, and makes a new one at its name, which the user's own tools
+            // read later — #634. A folder under the shut folder; one it can't have stays a hole)
             let mut room = COVERS_MAX.saturating_sub(c.keys.len() + seals.len() + pins.len());
             for k in &kept_files {
-                if room == 0 {
-                    break;
+                // (#651: never hidden without every folder on its way pinned — else the hole, said as before: a link on
+                // the way (the path as kept isn't its real path now), something there that isn't a folder, past the
+                // room, or it or a folder on its way reached through another mount of its filesystem)
+                let Some(cover) = Cover::entry(k).filter(|c| c.path == *k) else { continue };
+                let Some(way) = Cover::way_to(k, &p.write) else { continue };
+                let elsewhere = |at: &Path| table.as_ref().is_some_and(|t| !ways_through(t, at).is_empty());
+                if elsewhere(k) || way.iter().any(|w| elsewhere(&w.path)) {
+                    continue;
                 }
-                if let Some(cover) = Cover::of(k) {
-                    c.kept.push(cover);
-                    kept_hidden.push(k.clone());
-                    room -= 1;
+                // (the break-once: no pins for kept entries — a kept file's folder moved away and its name taken)
+                #[cfg(test)]
+                let way = match std::env::var_os("TARAE_TEST_NO_KEPT_PINS") {
+                    Some(_) => Vec::new(),
+                    None => way,
+                };
+                let way: Vec<Cover> =
+                    way.into_iter().filter(|w| !pins.iter().any(|q| q.path == w.path)).collect();
+                if 1 + way.len() > room {
+                    continue;
                 }
+                let folder = k.symlink_metadata().is_ok_and(|m| m.file_type().is_dir());
+                let made = match (folder, &p.run) {
+                    (false, _) => Ok(()),
+                    (true, Some(run)) => c.shut_folder(run.path()),
+                    (true, None) => Err(io::Error::other("it has no folder of its own")),
+                };
+                if let Err(e) = made {
+                    crate::log::line("sandbox", "warning", &format!("{}: no shut folder: {e}", k.display()));
+                    continue;
+                }
+                room -= 1 + way.len();
+                pins.extend(way);
+                c.kept.push(cover);
+                kept_hidden.push(k.clone());
             }
             let outside_found: Vec<PathBuf> =
                 outside_found.into_iter().filter(|f| !kept_hidden.contains(f)).collect();
@@ -2349,9 +2437,6 @@ pub(super) fn confine_in(
         let var = p.reads.kept_vars.iter().find(|(at, _)| at == k).map(|(_, v)| v.clone());
         let unhidden = match (matches!(own.mounts, Some(Ok(()))), k.symlink_metadata()) {
             (false, _) => None,
-            (true, Ok(m)) if m.is_dir() => {
-                Some("a folder: a run's mounts hide a kept file, not yet a folder")
-            }
             (true, Ok(_)) => Some("a run's mounts couldn't hide it here"),
             (true, Err(_)) => Some("not there yet: a mount can't sit on what isn't there"),
         };

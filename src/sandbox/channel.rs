@@ -104,6 +104,9 @@ pub struct Run {
     /// The empty file nobody may open its child mounts over each of `covers` (7d, `linux::Covers`), and the file tarae
     /// checked there — None with none.
     pub shut: Option<Covered>,
+    /// The empty folder nobody may open its child mounts over each folder among `covers` (a kept folder in a place
+    /// runs write, #634: a mount needs its target's type), and the folder tarae checked there — only with `shut`.
+    pub shut_dir: Option<Covered>,
     /// The files named like keys its child hides, in a mount namespace of its own, before its rules.
     pub covers: Vec<Covered>,
     /// Those outside the project (D-i, `linux::Covers::loose`): one gone or swapped since is left, the run started.
@@ -268,6 +271,7 @@ pub fn encode(msg: &Msg) -> Result<Vec<u8>, Refused> {
             let net = NETS.iter().position(|n| *n == r.net).unwrap_or(0) as u8;
             b.extend([net, r.held as u8, r.no_userns as u8, r.ptys as u8, r.mounts as u8]);
             list(&mut b, &r.shut.iter().map(Covered::item).collect::<Vec<_>>())?;
+            list(&mut b, &r.shut_dir.iter().map(Covered::item).collect::<Vec<_>>())?;
             list(&mut b, &r.covers.iter().map(Covered::item).collect::<Vec<_>>())?;
             list(&mut b, &r.loose.iter().map(Covered::item).collect::<Vec<_>>())?;
             list(&mut b, &r.seals.iter().map(Covered::item).collect::<Vec<_>>())?;
@@ -357,14 +361,23 @@ fn valid_run(r: &Run) -> Result<(), Refused> {
     if r.envp.iter().any(|e| !e.contains(&b'=')) {
         return Err(Refused("an environment entry without '='"));
     }
-    // (the child takes them as they are: absolute, each a C string; the shut file with covers, and only then)
+    // (the child takes them as they are: absolute, each a C string; the shut file with covers, and only then; the
+    // shut folder only with the shut file)
     let absolute = |s: &[u8]| s.first() == Some(&b'/') && !nul(s);
     let shut = match (&r.shut, r.covers.is_empty() && r.loose.is_empty()) {
         (None, true) => true,
         (Some(s), false) => absolute(&s.path),
         _ => false,
     };
-    if !shut || r.covers.iter().chain(&r.loose).chain(&r.seals).chain(&r.pins).any(|c| !absolute(&c.path)) {
+    let shut_dir = match (&r.shut_dir, &r.shut) {
+        (None, _) => true,
+        (Some(d), Some(_)) => absolute(&d.path),
+        (Some(_), None) => false,
+    };
+    if !shut
+        || !shut_dir
+        || r.covers.iter().chain(&r.loose).chain(&r.seals).chain(&r.pins).any(|c| !absolute(&c.path))
+    {
         return Err(Refused("a covered or sealed file or the shut file not an absolute path"));
     }
     Ok(())
@@ -465,6 +478,11 @@ pub fn decode(b: &[u8], fds: usize) -> Result<Msg, Refused> {
                     [] => None,
                     [one] => Some(Covered::of_item(one)?),
                     _ => return Err(Refused("more than one shut file")),
+                },
+                shut_dir: match r.list()?.as_slice() {
+                    [] => None,
+                    [one] => Some(Covered::of_item(one)?),
+                    _ => return Err(Refused("more than one shut folder")),
                 },
                 covers: r.list()?.iter().map(|c| Covered::of_item(c)).collect::<Result<_, _>>()?,
                 loose: r.list()?.iter().map(|c| Covered::of_item(c)).collect::<Result<_, _>>()?,
@@ -638,6 +656,12 @@ mod tests {
                 mounts: net == RunNet::Routed,
                 // (covered files on one only — both shapes on the wire)
                 shut: held.then(|| Covered { dev: 9, ino: 1 << 33, path: b"/tmp/i/shut".to_vec() }),
+                // (the shut folder on the own network's only — with the shut file and without a folder to cover)
+                shut_dir: (held && net == RunNet::Own).then(|| Covered {
+                    dev: 9,
+                    ino: 1 << 36,
+                    path: b"/tmp/i/shut-folder".to_vec(),
+                }),
                 covers: match held {
                     true => vec![Covered { dev: 1 << 40, ino: 7, path: b"/tmp/project/.env".to_vec() }],
                     false => Vec::new(),
@@ -748,6 +772,20 @@ mod tests {
         assert!(messages > 1000 && refusals > 10_000, "both kinds of answer: {messages} / {refusals}");
         // Past the longest record, whatever it holds
         assert!(decode(&vec![4u8; MSG_MAX + 1], 0).is_err());
+    }
+
+    /// #634: the shut folder goes only with the shut file and as an absolute path, and a record with one round-trips.
+    #[test]
+    fn the_shut_folder_goes_only_with_the_shut_file() {
+        let Msg::Run(base) = every_kind().swap_remove(2) else { panic!("the own network's run") };
+        assert!(base.shut.is_some() && base.shut_dir.is_some());
+        let b = encode(&Msg::Run(base.clone())).unwrap();
+        assert_eq!(decode(&b, Msg::Run(base.clone()).fds()), Ok(Msg::Run(base.clone())));
+        let alone = Run { shut: None, covers: Vec::new(), loose: Vec::new(), ..(*base).clone() };
+        assert!(encode(&Msg::Run(Box::new(alone))).is_err(), "a shut folder without the shut file");
+        let at = Covered { dev: 1, ino: 2, path: b"i/shut-folder".to_vec() };
+        let relative = Run { shut_dir: Some(at), ..*base };
+        assert!(encode(&Msg::Run(Box::new(relative))).is_err(), "a relative shut folder");
     }
 
     /// A message and its descriptors cross a `SOCK_SEQPACKET` pair as they went in; the descriptors come
