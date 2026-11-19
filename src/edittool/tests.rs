@@ -470,6 +470,52 @@ fn a_folders_change_lands_on_disk_every_way() {
     pump(&mut ed, "the save", |_| read(&tf) == "one\nTWO\n");
 }
 
+/// Piece (3), the way out's sentence (the design session's 2026-11-19: "To add a file there yourself, write it with
+/// `edit`: your edits aren't runs"): where Landlock closes a key's folder to runs — tier host, unserved without
+/// namespaces, a root tarae — a run makes no file in it, and `edit` does, written as made (review at the end). Where
+/// runs take new files there (tier own's mounts) it says it skips itself.
+#[cfg(target_os = "linux")]
+#[test]
+fn edit_makes_a_file_in_a_folder_a_key_closes_to_runs() {
+    let test = "edittool::tests::edit_makes_a_file_in_a_folder_a_key_closes_to_runs";
+    if let Some(why) = crate::landlock::short_of(2) {
+        return crate::test_results::said_skip(&format!("{test} — {why}"));
+    }
+    let (_s, dir) = project("key-folder", &[("cfg/.env", "tarae-fake-token"), ("cfg/app.toml", "a = 1\n")]);
+    let env = crate::sandbox::Env { root: dir.clone(), ..Default::default() };
+    let p = crate::sandbox::Policy {
+        run: crate::sandbox::RunDir::new().ok(),
+        ..crate::sandbox::Policy::for_project(&env)
+    };
+    let p = crate::sandbox::confined(p);
+    let Some(Ok(c)) = &p.confine else { panic!("{:?}", p.confine) };
+    if !c.key_closed.contains(&dir.join("cfg")) {
+        return crate::test_results::said_skip(&format!(
+            "{test} — cfg/ takes new files here (tier {})",
+            c.tier()
+        ));
+    }
+    // (a run: refused)
+    let mut cmd =
+        crate::sandbox::command(Some(&p), "/bin/sh", &["-c".into(), "printf x > cfg/run.toml".into()]);
+    cmd.current_dir(&dir).stdin(std::process::Stdio::null());
+    let s = crate::sandbox::spawn(Some(&p), &cmd).unwrap();
+    let ok = crate::spawn::wait(s.pid).is_ok_and(|st| st.success());
+    assert!(!ok && !dir.join("cfg/run.toml").exists(), "a run made it (tier {})", c.tier());
+    // (`edit`: made)
+    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    let args = json!({"edits": [{"file_path": "cfg/new.toml", "old_string": "", "new_string": "b = 2\n"}]});
+    call(&mut ed, Call::test(91), &args).unwrap();
+    pump(&mut ed, "the answer", |_| answered(91).is_some());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("cfg/new.toml")).ok().as_deref(),
+        Some("b = 2\n"),
+        "{:?}",
+        answered(91)
+    );
+}
+
 /// The change set's card, if up: its id, whose (its chat), and whether it has a move or delete.
 fn change_card(ed: &Editor) -> Option<(u64, crate::refactor::Whose, bool)> {
     ed.offers.iter().find_map(|o| match o.what {

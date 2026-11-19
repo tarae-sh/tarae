@@ -153,9 +153,10 @@ pub struct Confine {
     /// What its run keeps of the nested checkouts' git folders (#609 L2, `gitfolders::nested_kept`): read before
     /// it, so out of the policy's key (D14) — the words read it.
     pub git: super::gitfolders::GitKept,
-    /// The folders a run makes files in but can't read them back until its next run — each holds a file named
-    /// like a key, or one below it (`grant_around`, 7b).
-    pub unread: Vec<PathBuf>,
+    /// The folders a run makes no file in and removes none from, as a protected name's (`closed`), for a file named
+    /// like a key in them or below (`grant_around`, 7b, (a′)) — where Landlock closes the project's keys: the tiers
+    /// without mounts of their own, and tier own's past the project's room (rule 1).
+    pub key_closed: Vec<PathBuf>,
     /// The files named like keys its run's child hides by mounts (7d) — none where they're closed as 7b closes them.
     pub covers: Covers,
     /// Where its runs could have their own mount namespace but the keys are closed as 7b closes them: why.
@@ -227,7 +228,14 @@ impl Confine {
     /// Whether `folder` takes no new entry in its run: one holding a protected name (`closed`) or a mark (`marked`) —
     /// what the report says a refused new file there by.
     pub fn takes_no_new(&self, folder: &Path) -> bool {
-        self.closed.iter().chain(&self.marked).any(|f| f == folder)
+        self.closed.iter().chain(&self.marked).chain(&self.key_closed).any(|f| f == folder)
+    }
+
+    /// Whether `folder` takes no new entry for a file named like a key alone (`key_closed`, not a protected name's
+    /// nor a mark's) — what a refusal there is said by (`KEY_FOLDER_MAKE` …).
+    pub fn key_closes(&self, folder: &Path) -> bool {
+        self.key_closed.iter().any(|f| f == folder)
+            && !self.closed.iter().chain(&self.marked).any(|f| f == folder)
     }
 
     /// Whether `folder` takes no new entry for a kept place below it left out of a write place's grant (#633), and
@@ -295,7 +303,7 @@ impl PartialEq for Confine {
             && self.closed == other.closed
             && self.marked == other.marked
             && self.git == other.git
-            && self.unread == other.unread
+            && self.key_closed == other.key_closed
             && self.covers == other.covers
             && self.split_why == other.split_why
             && self.seal_why == other.seal_why
@@ -601,22 +609,29 @@ fn grant(r: &mut Ruleset, path: &Path, access: u64, holes: &[PathBuf]) -> io::Re
 }
 
 /// What a file's own folder can't give and leave it unread: reading files (and running them — a script is
-/// read by what runs it).
+/// read by what runs it). 7b's old rule gave a key's folder all but these (`TARAE_TEST_KEY_FOLDERS_OPEN`).
+#[cfg(test)]
 const READS_FILES: u64 = landlock::READ_FILE | landlock::EXECUTE;
 
+/// What a folder on the way to a file named like a key keeps of a grant's rights for itself ((a′), the user's
+/// 2026-11-19): its listing, and a folder in it removed once emptied — as a folder holding a protected name (`closed`).
+const KEY_FOLDER_OWN: u64 = landlock::READ_DIR | landlock::REMOVE_DIR;
+
 /// `grant`, and around `keys` too — files a run doesn't read (`There.keys`, 7b): none of them gets a rule, and
-/// each folder on the way down to one gets `access` but `READS_FILES` for itself (listed, written, its entries
-/// made and removed — a folder on the way to a hole gets nothing of its own, as in `grant`) while its other
-/// entries get theirs one by one. Landlock grants only, so that folder's own rule is what a file made in it
-/// later gets: written, not read until the next run's rules (`unread` records each such folder that takes new
-/// files, for the report — `unread_said`).
+/// each folder on the way down to one is closed as a folder holding a protected name is ((a′)): of `access` only
+/// `KEY_FOLDER_OWN` for itself — no entry made, removed or renamed there, nothing written through its rule — while
+/// its other entries get theirs one by one, so a file beside the key is written in place as before. A folder on the
+/// way to a hole gets nothing of its own, as in `grant`. Landlock grants only, and a folder's right reaches every
+/// file below it: given writes, the key in it would be written, removed or replaced (Fact A), and a folder moved
+/// away with it and made again. `closed` records each such folder a grant that makes files reaches, for the report
+/// (`key_closed_said`) and a refusal's words (`Confine::key_closes`).
 pub(super) fn grant_around(
     r: &mut Ruleset,
     path: &Path,
     access: u64,
     holes: &[PathBuf],
     keys: &[PathBuf],
-    unread: &mut Vec<PathBuf>,
+    closed: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     if keys.iter().any(|k| k == path) {
         return Ok(());
@@ -624,11 +639,18 @@ pub(super) fn grant_around(
     if holes.iter().any(|h| path.starts_with(h)) || !keys.iter().any(|k| k.starts_with(path)) {
         return grant(r, path, access, holes);
     }
-    let own = access & !READS_FILES;
+    let own = access & KEY_FOLDER_OWN;
+    // (the break-once: 7b's old rule — the folder's every right but reading files: the key written, removed and
+    // replaced, its folder swapped)
+    #[cfg(test)]
+    let own = match std::env::var_os("TARAE_TEST_KEY_FOLDERS_OPEN") {
+        Some(_) => access & !READS_FILES,
+        None => own,
+    };
     if own != 0 && !holes.iter().any(|h| h.starts_with(path)) {
         match r.allow(path, own) {
-            Ok(true) if own & landlock::MAKE_REG != 0 && !unread.iter().any(|u| u == path) => {
-                unread.push(path.to_path_buf())
+            Ok(true) if access & landlock::MAKE_REG != 0 && !closed.iter().any(|u| u == path) => {
+                closed.push(path.to_path_buf())
             }
             Ok(_) => {}
             Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {}
@@ -637,19 +659,30 @@ pub(super) fn grant_around(
     }
     let Ok(entries) = std::fs::read_dir(path) else { return Ok(()) };
     for e in entries.flatten() {
-        grant_around(r, &e.path(), access, holes, keys, unread)?;
+        grant_around(r, &e.path(), access, holes, keys, closed)?;
     }
     Ok(())
 }
 
-/// What the report says of the folders a file made in can't be read during the run (`grant_around`'s
-/// `unread`) — nothing when there's none.
-pub fn unread_said(unread: &[PathBuf], root: &Path) -> String {
-    const SAID: usize = 6;
-    if unread.is_empty() {
+/// What the report says of the folders closed for a file named like a key in them ((a′), `Confine.key_closed`): a
+/// few, then how many more — the project's own by their paths in it, its root as its top folder — and why Landlock
+/// closes them here (`split_why`, else the tier's: no mounts of the run's own); nothing when there's none.
+pub fn key_closed_said(c: &Confine, root: &Path) -> String {
+    let why = match (&c.split_why, c.tier()) {
+        (Some(why), _) => why.clone(),
+        (None, "") => "its runs have no mounts of their own to hide those files".into(),
+        (None, t) => format!("tier {t}: its runs have no mounts of their own to hide those files"),
+    };
+    key_closed_words(&c.key_closed, &why, root)
+}
+
+/// `key_closed_said`'s sentence of `folders`, closed for `why`.
+fn key_closed_words(folders: &[PathBuf], why: &str, root: &Path) -> String {
+    const SAID: usize = 3;
+    if folders.is_empty() {
         return String::new();
     }
-    let mut names: Vec<String> = unread
+    let mut names: Vec<String> = folders
         .iter()
         .take(SAID)
         .map(|p| match p.strip_prefix(root) {
@@ -658,15 +691,22 @@ pub fn unread_said(unread: &[PathBuf], root: &Path) -> String {
             Err(_) => format!("{}/", crate::allow::tilde(p)),
         })
         .collect();
-    if unread.len() > SAID {
-        names.push(format!("{} more", unread.len() - SAID));
+    if folders.len() > SAID {
+        names.push(format!("{} more", folders.len() - SAID));
     }
+    // (the design session's words, 2026-11-19: "cfg/ and cfg/sub/ each hold …")
+    let named = match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.join(""),
+    };
+    let (hold, them) = match folders.len() {
+        1 => ("holds", "it"),
+        _ => ("each hold", "them"),
+    };
     format!(
-        " A file it makes or replaces in {} (a save by rename, mv over it) can't be read until its next command, \
-         and one it opens there to read and write as it makes it is refused (sed -i's temporary file, mkstemp's): \
-         on Linux a folder holding a file named like a key can't let what's new in it be read and keep that file \
-         closed.",
-        names.join(", ")
+        " {named} {hold} a file named like a key, or a folder that does: here no new file can be made in {them}, and \
+         none removed or moved out. A file already there is written in place as usual, and a folder inside {them} \
+         that holds no such file works as usual ({why})."
     )
 }
 
@@ -696,19 +736,29 @@ pub fn covers_said(c: &Confine) -> String {
     // `outside_said` says them)
     let outside_open = " In the places outside the project it reads (the repository's other checkouts, the temp \
                         folders, what the user let it read or write), a file named like a key is read as any other.";
-    let how = match (c.covers.keys.is_empty() && c.covers.loose.is_empty(), &c.split_why, &c.outside.unsought) {
-        (true, Some(why), unsought) => format!(
+    let (none, loose) = (c.covers.keys.is_empty(), c.covers.loose.is_empty());
+    let how = match (none, none && loose, &c.split_why, &c.outside.unsought) {
+        // (the project's keys closed by their folders' rules — those outside hidden all the same where they can be:
+        // rule 2, piece (3))
+        (true, _, Some(why), unsought) => format!(
             " Files named like keys are closed by their folders' rules in the project, not hidden by mounts of the \
              run's own: {why}.{}",
-            if unsought.is_some() { outside_open } else { "" }
+            match (unsought, c.covers.loose.is_empty()) {
+                (Some(_), _) => outside_open,
+                // (the design session's words, 2026-11-19)
+                (None, false) => " Those outside the project, in the places it reads, are still hidden by a mount of \
+                                   the run's own: each shows as an empty file it can't open (Permission denied), and \
+                                   can't be written, renamed or removed (Device or resource busy).",
+                (None, true) => "",
+            }
         ),
-        (true, None, Some(why)) => format!(
+        (_, true, None, Some(why)) => format!(
             " In the places outside the project it reads (the repository's other checkouts, the temp folders, what \
              the user let it read or write), a file named like a key is read as any other, not hidden by a mount of \
              the run's own: {why}."
         ),
-        (true, None, None) => String::new(),
-        (false, ..) => " Here a file named like a key is hidden by a mount of the run's own: it reads as an empty file \
+        (_, true, None, None) => String::new(),
+        _ => " Here a file named like a key is hidden by a mount of the run's own: it reads as an empty file \
                         it may not open (Permission denied) and can't be written, renamed, removed or replaced (Device \
                         or resource busy) nor linked (Invalid cross-device link) — and neither is a folder on the way \
                         to one, each bound over itself; what's beside it is read and written as usual. One named like \
@@ -1625,6 +1675,54 @@ fn place_outside(
 /// key: its checks against the mount table, its own and the mounts.)
 pub const COVERS_MAX: usize = 1024;
 
+/// The room a run's mounts keep for the keys outside the project, which the project's never take (rule 2, the design
+/// session's 2026-11-19: neither side takes the other's room): what's outside gets this and whatever the project's
+/// keys, their folders and its seals leave. A quarter of the room: the repository's other checkouts hold the project's
+/// own keys again each, and a key in a place runs write takes its folders' pins beside it (two or three under `/tmp`):
+/// a project with four keys, checked out 22 times as this machine's tarae is, leaves ~90 outside. The project keeps
+/// 768: a monorepo of ~380 packages with an `.env` each — past that its keys are Landlock's whole, (a′). The kept
+/// entries and their ways (#633, #634: `Covers.kept`) are counted between the two: after the project's share, which
+/// never passes 768, and before the keys outside — few, fixed by the user's own settings (a variable that moved a
+/// cloud CLI's sign-in), so neither side starves them; they come out of this reserve only by as many as they are.
+pub const OUTSIDE_RESERVE: usize = 256;
+
+/// What the project's keys, the folders on the way to them and its seals may take of a run's mounts (rule 2).
+pub const PROJECT_ROOM: usize = COVERS_MAX - OUTSIDE_RESERVE;
+
+/// Every folder between the project's `root` and each of `keys`, outermost first, each once — what rule 1 counts with
+/// the keys: by mounts all together, or none.
+fn key_folders(root: &Path, keys: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = keys
+        .iter()
+        .flat_map(|k| k.ancestors().skip(1).take_while(|a| *a != root && a.starts_with(root)))
+        .map(Path::to_path_buf)
+        .collect();
+    crate::sorting::by_key(&mut out, |a| (a.components().count(), a.clone()));
+    out.dedup();
+    out
+}
+
+/// The keys found outside the project in the order they take the room (rule 3, the design session's 2026-11-19): those
+/// in places no run writes first (`written` false: other checkouts, read grants — a run can't flood those), then by
+/// change time, oldest first (`changed`: none, last) — no unprivileged call sets a change time back, so a flood pushes
+/// out only keys newer than itself; the walk's order last.
+fn outside_order(
+    found: &mut [PathBuf],
+    written: impl Fn(&Path) -> bool,
+    changed: impl Fn(&Path) -> Option<(i64, i64)>,
+) {
+    let mut keyed: Vec<(bool, (i64, i64), usize)> = found
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (written(k), changed(k).unwrap_or((i64::MAX, i64::MAX)), i))
+        .collect();
+    crate::sorting::sort(&mut keyed);
+    let was = found.to_vec();
+    for (slot, (.., i)) in found.iter_mut().zip(keyed) {
+        *slot = was[i].clone();
+    }
+}
+
 /// The files named like keys hidden from a run by mounts (7d), where its keeper gave the session a user namespace
 /// and tarae doesn't run as root (`confine`): its child makes a user and mount namespace of its own, mounts `shut` — an empty file nobody may open
 /// (mode 0), tarae's — read-only over each, drops every capability, then confines itself (`keeper::child`). So its
@@ -1829,8 +1927,14 @@ impl Covers {
     /// `found` (`There.protected`, real paths) as the entries a run's child seals (B9: each bound read-only over
     /// itself), each as it is now, and the folders between `root` and them it pins (bound over themselves,
     /// outermost first) — Err why not: one that's neither a file nor a folder (a link: a mount can't sit on one),
-    /// a folder on the way that isn't one, or more than `room` mounts in all.
-    fn sealed(root: &Path, found: &[PathBuf], room: usize) -> Result<(Vec<Cover>, Vec<Cover>), String> {
+    /// a folder on the way that isn't one, or more than `room` mounts in all (a folder of `held` not counted: its room
+    /// is taken already — the project's keys' folders, rule 1).
+    fn sealed(
+        root: &Path,
+        found: &[PathBuf],
+        room: usize,
+        held: &[PathBuf],
+    ) -> Result<(Vec<Cover>, Vec<Cover>), String> {
         use std::os::unix::fs::MetadataExt;
         let mut seals = Vec::new();
         for f in found {
@@ -1849,7 +1953,8 @@ impl Covers {
             .collect();
         crate::sorting::by_key(&mut on_the_way, |a| (a.components().count(), a.to_path_buf()));
         on_the_way.dedup();
-        if seals.len() + on_the_way.len() > room {
+        let counted = on_the_way.iter().filter(|a| !held.iter().any(|h| h == *a)).count();
+        if seals.len() + counted > room {
             return Err(format!(
                 "{} protected names and {} folders holding them, past the {room} a run's mounts take",
                 seals.len(),
@@ -1984,10 +2089,10 @@ pub fn confine(
     // (tarae run as root — a container — closes keys as 7b does: `tier::ROOT_NO_MOUNTS`)
     let mounts = super::tier::own_mounts(ns);
     // (#646: what a root tarae's runs lack is said by the whys, never by the tier's word — `own` still)
-    let unmounted = mounts.as_ref().and_then(|m| m.as_ref().err()).map(|why| {
-        use super::guarantees::{ROOT_UNMOUNTED, ROOT_UNMOUNTED_BRIEF};
-        (format!("{ROOT_UNMOUNTED}: {why}"), ROOT_UNMOUNTED_BRIEF)
-    });
+    let unmounted = mounts
+        .as_ref()
+        .and_then(|m| m.as_ref().err())
+        .map(|why| format!("{}: {why}", super::guarantees::ROOT_UNMOUNTED));
     // (the mount table its runs see: the keeper's — a run's own namespace is a copy of it — read where it's made)
     let at = keeper.map_or("/proc/self/mountinfo".to_string(), |k| format!("/proc/{}/mountinfo", k.pid));
     let own = Own { ptys: ptys.as_deref(), mounts, table: std::fs::read_to_string(at).ok() };
@@ -2004,11 +2109,9 @@ pub fn confine(
             (Some(a), Some(b)) => Some(format!("{a}{sep}{b}")),
             (a, b) => a.or(b),
         };
-        let short =
-            joined(probed.and_then(|p| p.short.clone()), unmounted.as_ref().map(|u| u.0.clone()), "; ");
-        let brief =
-            joined(probed.and_then(|p| p.brief.clone()), unmounted.as_ref().map(|u| u.1.into()), " · ");
-        super::guarantees::Guarantees::landlock(super::guarantees::Found {
+        let short = joined(probed.and_then(|p| p.short.clone()), unmounted.clone(), "; ");
+        let brief = probed.and_then(|p| p.brief.clone());
+        let g = super::guarantees::Guarantees::landlock(super::guarantees::Found {
             ns,
             served: c.serve.clone(),
             abi: c.abi,
@@ -2021,7 +2124,24 @@ pub fn confine(
             bridged: k.bridge.is_ok(),
         })
         .asking(p.asks_hosts)
-        .listing(!p.egress.any)
+        .listing(!p.egress.any);
+        // (the panel's one warning line, the design session's 2026-11-19: a root tarae's runs hide nothing outside —
+        // no count then, none was looked for — else the keys outside its run leaves readable, and why)
+        match unmounted {
+            Some(_) => g.with_root_unmounted(),
+            None => {
+                use super::guarantees::{KEYS_ELSEWHERE, KEYS_PAST_ROOM};
+                let open = &c.outside.open;
+                let past = open.iter().any(|(_, w)| w.starts_with("past the "));
+                let through = open.iter().any(|(_, w)| w.contains("through another mount"));
+                let why: Vec<&str> = [(past, KEYS_PAST_ROOM), (through, KEYS_ELSEWHERE)]
+                    .iter()
+                    .filter(|w| w.0)
+                    .map(|w| w.1)
+                    .collect();
+                g.with_keys_open(open.len(), &why)
+            }
+        }
     });
     Ok(Confine { no_userns, guarantees, ptys, ..c })
 }
@@ -2179,19 +2299,49 @@ pub(super) fn confine_in(
         None => kept_files,
     };
     // (7d: hidden by mounts in the run's own mount namespace where it can have one — its folders whole then; else
-    // split as 7b, and where mounts could have been, why not)
+    // closed as 7b and (a′), and where mounts could have been, why not. Rule 1 (the design session's 2026-11-19): the
+    // project's keys are hidden only with every folder on their way, all within the project's room (`PROJECT_ROOM`) —
+    // else all of them closed by their folders' rules, never part by part; and rule 2: then they take no mount, the
+    // keys outside keep every one)
+    let ways_of_keys = key_folders(&p.root, &keys);
+    // (the break-once of rule 1: the keys counted alone — hidden while their folders past the room aren't)
+    let counted = ways_of_keys.len();
+    #[cfg(test)]
+    let counted = match std::env::var_os("TARAE_TEST_KEYS_ALONE") {
+        Some(_) => 0,
+        None => counted,
+    };
+    let project_why: Option<String> = match (keys.is_empty(), elsewhere.first()) {
+        (true, _) => None,
+        (false, Some(other)) => Some(format!(
+            "{} reaches them through another mount of their filesystem (closed there too)",
+            other.display()
+        )),
+        (false, None) if keys.len() + counted > PROJECT_ROOM => Some(format!(
+            "{} files named like keys and {} folders on the way to them, past the {} mounts a run gives the \
+             project",
+            crate::features::thousands(keys.len() as u64),
+            crate::features::thousands(ways_of_keys.len() as u64),
+            crate::features::thousands(PROJECT_ROOM as u64)
+        )),
+        (false, None) => None,
+    };
+    // (the break-once of rule 2: the project's keys past the room take the run's mounts with them — every key outside
+    // left open, as before)
+    let project_takes_all = false;
+    #[cfg(test)]
+    let project_takes_all = project_takes_all
+        || (std::env::var_os("TARAE_TEST_PROJECT_TAKES_ALL").is_some() && project_why.is_some());
+    let hidden_keys: &[PathBuf] = if project_why.is_none() { &keys } else { &[] };
     let decided: Option<Result<Covers, String>> =
-        match (&own.mounts, keys.is_empty() && outside_found.is_empty() && kept_files.is_empty()) {
+        match (&own.mounts, hidden_keys.is_empty() && outside_found.is_empty() && kept_files.is_empty()) {
             (None, _) | (_, true) => None,
             (Some(Err(why)), false) => Some(Err(why.clone())),
-            (Some(Ok(())), false) => Some(match (&own.table, elsewhere.first(), &p.run) {
-                (None, _, _) => Err("the mount table its commands see couldn't be read".to_string()),
-                (_, Some(other), _) => Err(format!(
-                    "{} reaches them through another mount of their filesystem (closed there too)",
-                    other.display()
-                )),
-                (_, None, None) => Err("it has no folder of its own".to_string()),
-                (_, None, Some(run)) => Covers::of(&keys, run.path()).map_err(|e| e.to_string()),
+            (Some(Ok(())), false) => Some(match (&own.table, &p.run) {
+                (None, _) => Err("the mount table its commands see couldn't be read".to_string()),
+                (_, None) => Err("it has no folder of its own".to_string()),
+                _ if project_takes_all => Err(project_why.clone().unwrap_or_default()),
+                (_, Some(run)) => Covers::of(hidden_keys, run.path()).map_err(|e| e.to_string()),
             }),
         };
     let (covers, why_not) = match decided {
@@ -2200,8 +2350,13 @@ pub(super) fn confine_in(
         None => (None, None),
     };
     // (the project's keys split as 7b only where it has some: those outside are only left open, each said why)
-    let split_why = why_not.clone().filter(|_| !keys.is_empty());
-    match covers.is_some() {
+    let split_why = project_why.clone().or(why_not.clone()).filter(|_| !keys.is_empty());
+    // (the folders on the way to the project's keys hidden, their room taken before the seals': rule 1)
+    let held_ways: Vec<PathBuf> = match covers.is_some() && project_why.is_none() {
+        true => ways_of_keys,
+        false => Vec::new(),
+    };
+    match covers.is_some() && project_why.is_none() {
         true => keys.clear(),
         // (each key's paths through other mounts closed as it is: every folder on the way to it there gets its rule
         // without reading files — never a hole, which would take what's below it from the run, the project and `/`
@@ -2241,14 +2396,14 @@ pub(super) fn confine_in(
         Some(_) => Vec::new(),
         None => ways_in,
     };
-    let mut unread: Vec<PathBuf> = Vec::new();
+    let mut key_closed: Vec<PathBuf> = Vec::new();
     let mut grant = |r: &mut Ruleset, path: &Path, access: u64, holes: &[PathBuf]| {
         let more: Vec<&PathBuf> = ways_in.iter().filter(|w| !path.starts_with(w)).collect();
         match more.is_empty() {
-            true => grant_around(r, path, access, holes, &keys, &mut unread),
+            true => grant_around(r, path, access, holes, &keys, &mut key_closed),
             false => {
                 let holes: Vec<PathBuf> = holes.iter().chain(more).cloned().collect();
-                grant_around(r, path, access, &holes, &keys, &mut unread)
+                grant_around(r, path, access, &holes, &keys, &mut key_closed)
             }
         }
     };
@@ -2296,12 +2451,14 @@ pub(super) fn confine_in(
         (Some(Ok(())), None, _) => Err("the mount table its commands see couldn't be read".into()),
         (Some(Ok(())), _, None) => Err("it has no folder of its own".into()),
         (Some(Ok(())), Some(table), Some(_)) => {
-            let room = COVERS_MAX.saturating_sub(covers.as_ref().map_or(0, |c| c.keys.len()));
+            // (the project's: within its room, after its keys and their folders — rule 2)
+            let room =
+                PROJECT_ROOM.saturating_sub(covers.as_ref().map_or(0, |c| c.keys.len()) + held_ways.len());
             match found.iter().find_map(|f| ways_through(table, f).into_iter().next()) {
                 Some((other, _)) => {
                     Err(format!("{} reaches them through another mount of their filesystem", other.display()))
                 }
-                None => Covers::sealed(&p.root, &found, room),
+                None => Covers::sealed(&p.root, &found, room, &held_ways),
             }
         }
     };
@@ -2346,15 +2503,17 @@ pub(super) fn confine_in(
         let anchor = holding.min_by_key(|w| w.components().count()).unwrap_or(o);
         let through =
             table.as_ref().and_then(|t| names.iter().find_map(|f| ways_through(t, f).into_iter().next()));
-        let room =
-            COVERS_MAX.saturating_sub(covers.as_ref().map_or(0, |c| c.keys.len()) + seals.len() + pins.len());
+        // (as the project's: within its room)
+        let held = held_ways.iter().filter(|h| !pins.iter().any(|q| q.path == **h)).count();
+        let room = PROJECT_ROOM
+            .saturating_sub(covers.as_ref().map_or(0, |c| c.keys.len()) + held + seals.len() + pins.len());
         let tried = match (&cant, through) {
             (Some(why), _) => Err(why.clone()),
             (None, Some((other, _))) => Err(Some(format!(
                 "{} reaches one of them through another mount of its filesystem",
                 other.display()
             ))),
-            (None, None) => Covers::sealed(anchor, names, room).map_err(Some),
+            (None, None) => Covers::sealed(anchor, names, room, &[]).map_err(Some),
         };
         match tried {
             Ok((s, on_the_way)) => {
@@ -2382,7 +2541,9 @@ pub(super) fn confine_in(
             // folders between the write place and it pinned as the seals' are, counted in the room: else a run moves
             // its folder away, the kept entry with it, and makes a new one at its name, which the user's own tools
             // read later — #634. A folder under the shut folder; one it can't have stays a hole)
-            let mut room = COVERS_MAX.saturating_sub(c.keys.len() + seals.len() + pins.len());
+            // (after the project's keys' folders too, which `Step::Ways` pins below: their room is theirs — rule 1)
+            let held = held_ways.iter().filter(|h| !pins.iter().any(|q| q.path == **h)).count();
+            let mut room = COVERS_MAX.saturating_sub(c.keys.len() + held + seals.len() + pins.len());
             for k in &kept_files {
                 // (#651: never hidden without every folder on its way pinned — else the hole, said as before: a link on
                 // the way (the path as kept isn't its real path now), something there that isn't a folder, past the
@@ -2433,6 +2594,19 @@ pub(super) fn confine_in(
             };
             let mut outside_found: Vec<PathBuf> =
                 outside_found.into_iter().filter(|f| !kept_hidden.contains(f)).collect();
+            // (rule 3: what no run writes first, then the oldest — a flood in `/tmp` pushes out only what's newer)
+            let writes = p.write_places();
+            let changed = |k: &Path| {
+                use std::os::unix::fs::MetadataExt;
+                k.symlink_metadata().ok().map(|m| (m.ctime(), m.ctime_nsec()))
+            };
+            // (the break-once: the walk's order alone — a flood at a write place's top first)
+            let walked = false;
+            #[cfg(test)]
+            let walked = walked || std::env::var_os("TARAE_TEST_WALK_ORDER").is_some();
+            if !walked {
+                outside_order(&mut outside_found, |k| writes.iter().any(|w| k.starts_with(w)), changed);
+            }
             let through =
                 |k: &Path| table.as_ref().and_then(|t| ways_through(t, k).into_iter().next()).map(|w| w.0);
             let (mut strict, mut lenient, mut unheld) = (Vec::new(), Vec::new(), Vec::new());
@@ -2476,17 +2650,9 @@ pub(super) fn confine_in(
             c.unheld = unheld;
         }
         None => {
-            // (the project's keys reached through another mount: its runs have no mounts of their own then — those
-            // outside left open, said so; the project's "closed there too" is theirs only)
-            let why = match (elsewhere.first(), why_not) {
-                (Some(other), _) => format!(
-                    "the project's own files named like keys are reached through another mount ({}), so its runs \
-                     have no mounts of their own to hide it",
-                    crate::allow::tilde(other)
-                ),
-                (None, Some(why)) => why,
-                (None, None) => "its run has no mounts of its own".into(),
-            };
+            // (no mounts at all for this run: those outside left open, said why — never for the project's keys, which
+            // then take none: rule 2)
+            let why = why_not.unwrap_or_else(|| "its run has no mounts of its own".into());
             outside.open = outside_found.into_iter().map(|k| (k, why.clone())).collect();
         }
     }
@@ -2632,7 +2798,7 @@ pub(super) fn confine_in(
         true => Kept::none(),
         false => Kept::of(&[found.as_slice(), &split_names].concat()),
     };
-    crate::sorting::sort(&mut unread);
+    crate::sorting::sort(&mut key_closed);
     // (the folders a mark alone leaves without a rule of their own: said as the closed ones are — #609)
     let places: Vec<PathBuf> = std::iter::once(p.root.clone())
         .chain(p.write.iter().cloned())
@@ -2654,7 +2820,7 @@ pub(super) fn confine_in(
         closed,
         marked,
         git: nested,
-        unread,
+        key_closed,
         covers: Covers { seals, pins, ..covers.unwrap_or_default() },
         split_why,
         seal_why,
@@ -3232,9 +3398,9 @@ mod tests {
     /// protected name too (`.cargo/credentials`, a hook's key in `.git`), but in tools' output, in `.git/objects`
     /// (not walked), the data's exceptions, a folder or a link so named, the one the user opened; no protected
     /// name looked for below one; and the rules around them (`grant_around`): none for the file, each folder on
-    /// the way down all but reading files for itself (so it takes new files it can't read: `unread`), everything
-    /// else whole — and a folder holding a protected name nothing of its own, as before. A read grant gives those
-    /// folders their listing only, and takes no new file.
+    /// the way down closed as a protected name's ((a′): listed, a folder in it removed once emptied — no new file,
+    /// none removed, nothing written through it: `key_closed`), everything else whole — and a folder holding a
+    /// protected name nothing of its own, as before. A read grant gives those folders their listing only.
     #[test]
     fn keys_are_found_where_they_are() {
         let held = crate::scratch::Scratch::new("keys-found");
@@ -3268,19 +3434,19 @@ mod tests {
         // The project's grant: around the protected names and the keys
         let mut r = Ruleset::written(3).unwrap();
         let all = landlock::ALL & landlock::handled(3);
-        let mut unread = Vec::new();
-        grant_around(&mut r, &dir, all, &holes, &found, &mut unread).unwrap();
+        let mut closed = Vec::new();
+        grant_around(&mut r, &dir, all, &holes, &found, &mut closed).unwrap();
         let rule = |r: &Ruleset, f: &str| r.added.iter().find(|(p, _)| *p == dir.join(f)).map(|(_, a)| *a);
         for f in ["", ".env", "src/tls/server.KEY", ".cargo", ".git", "Cargo.toml"] {
             assert_eq!(rule(&r, f), None, "{f:?}");
         }
         for f in ["src", "src/tls"] {
-            assert_eq!(rule(&r, f), Some(all & !READS_FILES), "{f}");
+            assert_eq!(rule(&r, f), Some(landlock::READ_DIR | landlock::REMOVE_DIR), "{f}");
         }
         for f in ["src/main.rs", "src/tls/ca.pub", ".env.example", "node_modules", "open", "named.pem"] {
             assert!(rule(&r, f).is_some_and(|a| a & landlock::READ_FILE != 0), "{f}: whole");
         }
-        assert_eq!(unread, at(&["src", "src/tls"]));
+        assert_eq!(closed, at(&["src", "src/tls"]));
         // A read grant: the folders on the way listed, nothing taken
         let (mut r, mut unread) = (Ruleset::written(3).unwrap(), Vec::new());
         grant_around(&mut r, &dir, READ, &[], &found, &mut unread).unwrap();
@@ -3371,7 +3537,7 @@ mod tests {
             let all = c.granted().iter().filter(|(p, _)| p == at).map(|(_, a)| *a);
             all.reduce(|a, b| a | b)
         };
-        assert!(c.covers.keys.is_empty(), "no mounts: {:?}", c.covers);
+        assert!(c.covers.keys.is_empty(), "the project's keys hidden by no mount: {:?}", c.covers);
         assert_eq!(c.elsewhere, [PathBuf::from("/")]);
         assert!(c.split_why.as_deref().is_some_and(|w| w.starts_with("/ reaches them")), "{:?}", c.split_why);
         // The project and the system still granted
@@ -3389,22 +3555,12 @@ mod tests {
             );
         }
         assert!(rule(&real.join("src")).is_some_and(|a| a & landlock::READ_FILE != 0), "beside it, read");
-        // The key outside: left open, said why in its own words — nothing closes it there
-        let why: Vec<&str> = c
-            .outside
-            .open
-            .iter()
-            .filter(|(k, _)| *k == outside.join("id_rsa"))
-            .map(|w| w.1.as_str())
-            .collect();
-        assert!(
-            why.len() == 1
-                && why[0]
-                    .starts_with("the project's own files named like keys are reached through another mount"),
-            "{:?}",
-            c.outside
-        );
-        assert!(!why[0].contains("closed there too") && c.outside.covered.is_empty(), "{why:?}");
+        // The key outside: hidden all the same — the project's keys, closed by their folders' rules, take no mount
+        // from it (rule 2, piece (3))
+        // (its scratch is in a temp folder, a key place too: other tests' keys may be there beside it)
+        let id_rsa = std::fs::canonicalize(outside.join("id_rsa")).unwrap();
+        assert!(c.outside.covered.contains(&id_rsa), "{:?}", c.outside);
+        assert!(!c.outside.open.iter().any(|(k, _)| *k == id_rsa), "{:?}", c.outside);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -4039,20 +4195,68 @@ mod tests {
         std::fs::remove_dir_all(&t).ok();
     }
 
-    /// What the report says of the folders new files can't be read in (7b): each, the project's own as its top
-    /// folder, one outside it by its path — a few, then how many more — and that a file replaced there is one
-    /// too, and one opened to read and write as it's made is refused; nothing when there's none.
+    /// What the report says of the folders closed for a key in them ((a′)): each, the project's own by its path in
+    /// it and its root as its top folder, one outside it by its path — three, then how many more — that they take
+    /// no new file and lose none, what still goes, and why; nothing when there's none.
     #[test]
-    fn the_folders_new_files_go_unread_in_are_said() {
+    fn the_folders_closed_for_a_key_are_said() {
         let root = Path::new("/w/p");
-        assert_eq!(unread_said(&[], root), "");
-        let said = unread_said(&[root.to_path_buf(), root.join("deep/er"), PathBuf::from("/tmp")], root);
-        let want = " A file it makes or replaces in the project's top folder, deep/er/, /tmp/ (a save by rename, \
-                    mv over it) can't be read until its next command, and one it opens there to read and write as \
-                    it makes it is refused (sed -i's temporary file, mkstemp's)";
-        assert!(said.starts_with(want), "{said}");
+        assert_eq!(key_closed_words(&[], "why", root), "");
+        let why = "tier host: its runs have no mounts of their own to hide those files";
+        let said =
+            key_closed_words(&[root.to_path_buf(), root.join("cfg/sub"), PathBuf::from("/tmp")], why, root);
+        let want = " the project's top folder, cfg/sub/ and /tmp/ each hold a file named like a key, or a folder that \
+                    does: here no new file can be made in them, and none removed or moved out. A file already there \
+                    is written in place as usual, and a folder inside them that holds no such file works as usual \
+                    (tier host: its runs have no mounts of their own to hide those files).";
+        assert_eq!(said, want);
+        let one = key_closed_words(&[root.join("cfg")], why, root);
+        let one_want = " cfg/ holds a file named like a key, or a folder that does: here no new file can be made in it, \
+                        and none removed or moved out. A file already there is written in place as usual, and a \
+                        folder inside it that holds no such file works as usual (";
+        assert!(one.starts_with(one_want), "{one}");
+        let two = key_closed_words(&[root.join("cfg"), root.join("cfg/sub")], why, root);
+        assert!(two.starts_with(" cfg/ and cfg/sub/ each hold"), "{two}");
         let many: Vec<PathBuf> = (0..8).map(|i| root.join(format!("d{i}"))).collect();
-        assert!(unread_said(&many, root).contains("d5/, 2 more (a save"), "{}", unread_said(&many, root));
+        let said = key_closed_words(&many, why, root);
+        assert!(said.starts_with(" d0/, d1/, d2/ and 5 more each hold"), "{said}");
+    }
+
+    /// Rule 1's count: every folder between the project's root and each key, outermost first, each once, the root
+    /// and the keys not among them.
+    #[test]
+    fn the_folders_on_the_way_to_the_projects_keys_are_counted_once() {
+        let root = Path::new("/w/p");
+        let keys =
+            [root.join(".env"), root.join("cfg/sub/.env"), root.join("cfg/.env"), root.join("a/b/c/k.pem")];
+        let at = |fs: &[&str]| fs.iter().map(|f| root.join(f)).collect::<Vec<_>>();
+        assert_eq!(key_folders(root, &keys), at(&["a", "cfg", "a/b", "cfg/sub", "a/b/c"]));
+        assert!(key_folders(root, &[root.join(".env")]).is_empty());
+    }
+
+    /// Rule 3: the keys outside take the room in places no run writes first, then the oldest change first — a flood
+    /// in `/tmp` made after a real key never comes before it, wherever the walk met it; none known, last; the walk's
+    /// order between equals.
+    #[test]
+    fn the_keys_outside_take_the_room_oldest_first_after_what_no_run_writes() {
+        let p = |s: &str| PathBuf::from(s);
+        let mut found =
+            vec![p("/tmp/f0.pem"), p("/tmp/f1.pem"), p("/tmp/a/id_rsa"), p("/c/.env"), p("/tmp/gone.pem")];
+        let times = |k: &Path| match k.to_str()? {
+            "/tmp/f0.pem" | "/tmp/f1.pem" => Some((200, 5)),
+            "/tmp/a/id_rsa" => Some((100, 0)),
+            "/c/.env" => Some((300, 0)),
+            _ => None,
+        };
+        outside_order(&mut found, |k| k.starts_with("/tmp"), times);
+        assert_eq!(
+            found,
+            [p("/c/.env"), p("/tmp/a/id_rsa"), p("/tmp/f0.pem"), p("/tmp/f1.pem"), p("/tmp/gone.pem")]
+        );
+        // (by the nanosecond, within a second)
+        let mut found = vec![p("/tmp/new"), p("/tmp/old")];
+        outside_order(&mut found, |_| true, |k| Some((7, if k.ends_with("old") { 1 } else { 2 })));
+        assert_eq!(found, [p("/tmp/old"), p("/tmp/new")]);
     }
 
     /// What rights on a folder holding a protected name give, the kernel asked (its entries granted one by
@@ -5180,13 +5384,10 @@ mod tests {
             said,
             [
                 format!(
-                    "making {} — a folder holding protected names takes no new files on Linux",
+                    "making {} — a folder holding protected names takes no new files here",
                     shown(&s.root.join("Cargo.toml.bak"))
                 ),
-                format!(
-                    "removing {} — a folder holding protected names keeps its files on Linux",
-                    shown(&lib)
-                ),
+                format!("removing {} — a folder holding protected names keeps its files here", shown(&lib)),
                 "signalling process 4242 — outside the run's own processes".to_string(),
             ]
         );
@@ -5416,7 +5617,7 @@ mod tests {
         let lock = crate::sandbox::home_shown(&lock.display().to_string());
         assert_eq!(
             said,
-            [format!("removing {lock} — a folder holding protected names keeps its files on Linux")]
+            [format!("removing {lock} — a folder holding protected names keeps its files here")]
         );
     }
 
@@ -5962,7 +6163,7 @@ mod tests {
         let bak = shown(&s.root.join("Cargo.toml.bak"));
         assert_eq!(
             seen[0].plain(),
-            format!("making {bak} — a folder holding protected names takes no new files on Linux")
+            format!("making {bak} — a folder holding protected names takes no new files here")
         );
         assert_eq!(seen[0].process, "the run");
         let mut alone = vec![in_root];
@@ -5970,9 +6171,7 @@ mod tests {
         let root = shown(&s.root);
         assert_eq!(
             alone[0].plain(),
-            format!(
-                "making a new file in {root} — a folder holding protected names takes no new files on Linux"
-            )
+            format!("making a new file in {root} — a folder holding protected names takes no new files here")
         );
         let mut outside = vec![Denial {
             process: "the run".into(),

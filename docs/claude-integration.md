@@ -1841,7 +1841,7 @@ macOS (Seatbelt). A test keeps this table equal to the code:
   Otherwise what a command was refused is read from its own error lines, and Claude's result says that's
   where it came from, and why: `Permission denied` on a path the rules keep, or on a new file in a folder
   that holds a protected name (Landlock's own rule — `making Cargo.toml.bak — a folder holding protected names
-  takes no new files on Linux`), and from ABI 6 a `kill` refused with `Operation not permitted` (a process
+  takes no new files here`), and from ABI 6 a `kill` refused with `Operation not permitted` (a process
   outside the command's own).
 - **Connections are tarae's to make.** A command's calls that name an address — connecting, binding, sending
   to an address — wait for tarae, which reads the address once, decides on its own copy with the rules above
@@ -1943,11 +1943,13 @@ macOS (Seatbelt). A test keeps this table equal to the code:
   earlier, tools' output too) are closed one of two ways, said in Claude's result. Where the session's commands have
   a user namespace (tier own, or unserved with namespaces) and tarae doesn't run as root, each command hides them by mounts of its own: a key
   reads as an empty file it may not open, and can't be written, renamed, removed, replaced or linked; everything
-  beside it works as usual — `sed -i`, a save by rename. Up to 1,024 keys (a run costs about 0.07 ms more a key,
-  measured on Debian 12). Otherwise — no namespaces, past 1,024 keys, or **tarae run as root** (a dev container: the
-  kernel lets a namespace map root only with a capability nothing of tarae's keeps) — their folders are closed
-  around them: a file made or replaced beside a key is read only from Claude's next command, and `sed -i` there
-  fails. The same when another mount of the key's filesystem reaches it — a second bind of the workspace, toolbox's
+  beside it works as usual — `sed -i`, a save by rename. Up to 768 keys and folders on their way together (a run
+  costs about 0.07 ms more a key, measured on Debian 12; the other 256 of a run's 1,024 mounts are kept for keys
+  outside the project). Otherwise — no namespaces, past that, or **tarae run as root** (a dev container: the
+  kernel lets a namespace map root only with a capability nothing of tarae's keeps) — every folder on the way to a
+  key is closed as one holding a protected name is: it takes no new file and loses none (`cp .env.example .env`
+  there is refused, `sed -i` there fails), a file in it is written in place, a folder in it without a key goes once
+  emptied. The same when another mount of the key's filesystem reaches it — a second bind of the workspace, toolbox's
   `/run/host`, a btrfs top level, `/` for a project seen through a bind — and the key's way through that mount is
   closed as its own (the kernel's rules follow files, not paths, so a mount over one path alone wouldn't keep it).
   So is everything else a command doesn't read — your home folder, the places kept from reads, the settings read

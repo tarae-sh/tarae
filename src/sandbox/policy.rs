@@ -1082,7 +1082,7 @@ impl Policy {
                  writable.{userns}{}{}{}{}",
                 linux::made_said(&c.made, &self.root),
                 linux::kept_said(&c.kept, &self.root),
-                linux::unread_said(&c.unread, &self.root),
+                linux::key_closed_said(c, &self.root),
                 linux::covers_said(c)
             );
             return Some((net, notes));
@@ -1537,7 +1537,8 @@ impl Policy {
             let folder = PathBuf::from(&d.target);
             // (a kept place's refusal names its file on its target's first line — `linux::KeptWay::denial`)
             let named = said.iter().position(|s| {
-                ["file-entry-make", "file-write*", EITHER, super::KEPT_MAKE].contains(&s.op.as_str())
+                ["file-entry-make", super::KEY_FOLDER_MAKE, "file-write*", EITHER, super::KEPT_MAKE]
+                    .contains(&s.op.as_str())
                     && Path::new(s.target.lines().next().unwrap_or_default()).parent()
                         == Some(folder.as_path())
             });
@@ -1547,6 +1548,7 @@ impl Policy {
                     (d.op, d.target) = (s.op, s.target);
                 }
                 (None, Some(kept)) => *d = kept,
+                (None, None) if self.key_closes(&folder) => d.op = super::KEY_FOLDER_MAKE_IN.into(),
                 (None, None) if self.closed_holds(&folder) => d.op = "file-entry-make-in".into(),
                 (None, None) => d.op = "file-write*".into(),
             }
@@ -1586,6 +1588,17 @@ impl Policy {
         #[cfg(target_os = "linux")]
         if let Some(Ok(c)) = &self.confine {
             return c.takes_no_new(folder);
+        }
+        let _ = folder;
+        false
+    }
+
+    /// Linux: whether `folder` takes no new entry for a file named like a key alone ((a′),
+    /// `linux::Confine::key_closes`) — a refusal there said by that, not as a protected name's.
+    pub(super) fn key_closes(&self, folder: &Path) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(c)) = &self.confine {
+            return c.key_closes(folder);
         }
         let _ = folder;
         false
@@ -1631,6 +1644,15 @@ impl Policy {
                     // (#633: a folder a kept place below it closes — said by it, its way out)
                     match real.parent().and_then(|d| c.kept_closing(d)) {
                         Some(way) => out.push(way.denial(SEEN_IN_OUTPUT, op, Some(real.as_path()))),
+                        // ((a′): a folder closed for a key alone says so)
+                        None if real.parent().is_some_and(|d| c.key_closes(d)) => {
+                            let op = match op {
+                                "file-entry-remove" => super::KEY_FOLDER_REMOVE,
+                                "file-entry-move" => super::KEY_FOLDER_MOVE,
+                                _ => super::KEY_FOLDER_MAKE,
+                            };
+                            out.push(Denial { process: SEEN_IN_OUTPUT.into(), op: op.into(), target })
+                        }
                         None if real.parent().is_some_and(|d| c.takes_no_new(d)) => {
                             out.push(Denial { process: SEEN_IN_OUTPUT.into(), op: op.into(), target })
                         }

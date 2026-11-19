@@ -324,8 +324,11 @@ pub struct Head {
     pub pairs: Vec<(&'static str, String)>,
     pub fold: &'static [&'static str],
     pub faint: Option<String>,
-    /// `faint` in fewer words, said instead where one of its parts is wider than a row (the sandbox panel's root line).
-    pub faint_narrow: Option<String>,
+    /// The one line saying something is open, under the pairs (`▲ …`, drawn as a card's warning line: the warning
+    /// colour, wrapped under its words) — and in fewer words, said instead where it's wider than a row (the sandbox
+    /// panel's: a root tarae's, the keys outside left readable).
+    pub warn: Option<String>,
+    pub warn_narrow: Option<String>,
     pub then: Option<String>,
     pub note: Option<String>,
 }

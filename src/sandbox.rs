@@ -419,7 +419,8 @@ impl Guard {
         if !passed && b.total == 0 && o.total == 0 && !refused.is_empty() {
             let target = p.from().display().to_string();
             if p.cwd.is_some() && p.closed_holds(p.from()) && only(&["permission denied"]) {
-                o.add(Denial { process: SEEN_IN_OUTPUT.into(), op: LIKELY_MADE.into(), target });
+                let op = if p.key_closes(p.from()) { KEY_FOLDER_LIKELY } else { LIKELY_MADE };
+                o.add(Denial { process: SEEN_IN_OUTPUT.into(), op: op.into(), target });
             } else if p.cwd.is_some()
                 && p.sealed()
                 && only(&["read-only file system", "device or resource busy"])
@@ -566,8 +567,14 @@ impl Guard {
         let mut moved: Vec<Vec<String>> = vec![Vec::new(); p.moved_homes.len()];
         let refused_port = &crate::sandboxpack::get().refused_port;
         let (mut entries, mut signals, mut looks, mut attaches) = (false, false, false, false);
+        let mut key_entries = false;
         let (mut sealed, mut mounts, mut userns) = (false, false, false);
         for d in seen {
+            // ((a′): a folder closed for a key alone — its own way out)
+            if d.op.starts_with("file-entry-") && d.op.ends_with("-key") {
+                key_entries = true;
+                continue;
+            }
             if d.op.starts_with("file-entry-") {
                 entries = true;
                 continue;
@@ -867,6 +874,16 @@ impl Guard {
                  the ones it has (Landlock's rules are on what's there; what a build makes there is made \
                  first). For a file of your own, make it in a folder without one — the run's own folder \
                  ($TMPDIR) always is; for one the build needs there, tell the user.\n",
+            );
+        }
+        if key_entries {
+            s.push_str(
+                "Here a folder holding a file named like a key, and each folder above it up to the project's top, \
+                 takes no new files and keeps the ones it has: the key isn't hidden by a mount of the run's own here, \
+                 so its folder's rule is what keeps it. A file already there is still written in place. To add a file \
+                 there yourself, write it with `edit`: your edits aren't runs. A command that has to make files there \
+                 can't: have it write to another folder ($TMPDIR always works), or tell the user. For a key the \
+                 project needs there (`cp .env.example .env`), tell the user.\n",
             );
         }
         // (Linux: Landlock's scope keeps signals in; macOS: Seatbelt's `same-sandbox` keeps signals and looks
@@ -2932,6 +2949,18 @@ const SEALED_LIKELY: &str = "sealed-likely";
 /// Linux (#633): a new file, a removal or a move refused in a folder a kept place below it closes — one left out of
 /// a write place's grant (`linux::KeptWay::denial`: its target the file, the folder, its words and the write place).
 /// No grant opens it.
+/// Linux, where Landlock closes the project's keys ((a′): the tiers without mounts of their own, tier own's past the
+/// project's room): a new file, a removal or a move refused in a folder holding a file named like a key, or one below
+/// it, and nothing protected (`linux::Confine::key_closes`) — said by that; `_IN` where Landlock's record names the
+/// folder alone, `_LIKELY` a failed run's naming nothing where it ran (`LIKELY_MADE`'s).
+pub(crate) const KEY_FOLDER_MAKE: &str = "file-entry-make-key";
+pub(crate) const KEY_FOLDER_REMOVE: &str = "file-entry-remove-key";
+pub(crate) const KEY_FOLDER_MOVE: &str = "file-entry-move-key";
+pub(crate) const KEY_FOLDER_MAKE_IN: &str = "file-entry-make-in-key";
+const KEY_FOLDER_LIKELY: &str = "file-entry-make-likely-key";
+/// What those refusals say after what was tried (`plain_in`).
+const KEY_FOLDER_TAKES: &str = "a folder holding a file named like a key takes no new files here";
+const KEY_FOLDER_KEEPS: &str = "a folder holding a file named like a key keeps its files here";
 pub(crate) const KEPT_MAKE: &str = "kept-entry-make";
 pub(crate) const KEPT_REMOVE: &str = "kept-entry-remove";
 pub(crate) const KEPT_MOVE: &str = "kept-entry-move";
@@ -3080,27 +3109,29 @@ impl Denial {
                 format!("linking {}", t.rsplit_once(" /").map_or(t.as_str(), |(s, _)| s))
             }
             // (Linux: Landlock's own rule, and its signal scope — `landlock_said_in`)
-            "file-entry-make" => {
-                format!("making {t} — a folder holding protected names takes no new files on Linux")
-            }
+            "file-entry-make" => format!("making {t} — a folder holding protected names takes no new files here"),
             "file-entry-remove" => {
-                format!("removing {t} — a folder holding protected names keeps its files on Linux")
+                format!("removing {t} — a folder holding protected names keeps its files here")
             }
-            "file-entry-move" => {
-                format!("moving {t} — a folder holding protected names keeps its files on Linux")
-            }
+            "file-entry-move" => format!("moving {t} — a folder holding protected names keeps its files here"),
             "file-entry-make-in" => {
-                format!(
-                    "making a new file in {t} — a folder holding protected names takes no new files on Linux"
-                )
+                format!("making a new file in {t} — a folder holding protected names takes no new files here")
             }
+            KEY_FOLDER_MAKE => format!("making {t} — {KEY_FOLDER_TAKES}"),
+            KEY_FOLDER_REMOVE => format!("removing {t} — {KEY_FOLDER_KEEPS}"),
+            KEY_FOLDER_MOVE => format!("moving {t} — {KEY_FOLDER_KEEPS}"),
+            KEY_FOLDER_MAKE_IN => format!("making a new file in {t} — {KEY_FOLDER_TAKES}"),
+            KEY_FOLDER_LIKELY => format!(
+                "likely making a new file in {t}, where it ran — its output names nothing refused, but \
+                 {KEY_FOLDER_TAKES}"
+            ),
             "file-make-in" => format!("making a new file in {t}"),
             MOUNT_OP if t.is_empty() => "mounting or unmounting — no command in the sandbox does".into(),
             MOUNT_OP => format!("mounting or unmounting at {t} — no command in the sandbox does"),
             USERNS_OP => "making or joining a user namespace — refused on this system".into(),
             LIKELY_MADE => format!(
                 "likely making a new file in {t}, where it ran — its output names nothing refused, but a folder \
-                 holding protected names takes no new files on Linux"
+                 holding protected names takes no new files here"
             ),
             SEALED_LIKELY => format!(
                 "likely changing, moving or removing a protected name, from {t} where it ran — its output names \
@@ -15215,8 +15246,11 @@ mod tests {
             assert!(!ok && !out.contains("tarae-fake-token") && err.contains(KEY_DENIED), "{f}: {out} {err}");
             assert!(!p.reads_allow(&root.join(f)), "{f}: the rule in Rust");
         }
-        let (ok, out, err) = sh_under(&p, &root, "test -f .env && ln -s .env l && cat l; cp .env c; cat c");
-        assert!(!ok && !out.contains("tarae-fake-token") && root.join("l").exists(), "{out} {err}");
+        // (the link and the copy in `src/`, which holds no key: where Landlock closes the keys, the top takes no new
+        // entry — (a′))
+        let script = "test -f .env && ln -s ../.env src/l && cat src/l; cp .env src/c; cat src/c";
+        let (ok, out, err) = sh_under(&p, &root, script);
+        assert!(!ok && !out.contains("tarae-fake-token") && root.join("src/l").exists(), "{out} {err}");
         #[cfg(not(target_os = "macos"))]
         for script in [
             "ln deep/er/Server.PEM src/h; cat src/h",
@@ -15901,56 +15935,197 @@ mod tests {
         std::fs::remove_dir_all(&t).ok();
     }
 
-    /// For real, on Linux (7b): a file a run makes in a folder holding a file named like a key — that folder's
-    /// own rule, all but reading files (Landlock grants only: a rule that let the new file be read would let the
-    /// key be) — is written but can't be read until the next run, whose rules give it its own; in a folder
-    /// holding none it's read at once. So is one it replaces there — a new file under the old name, a save by
-    /// rename's — though it was read before; and a file opened to read and write as it's made there (`sed -i`'s
-    /// temporary, `mkstemp`) is refused, so `sed -i` changes nothing. The report names those folders, says all
-    /// three.
+    /// For real, on Linux where Landlock closes the project's keys — tiers host and unserved, a root tarae ((a′), the
+    /// user's 2026-11-19, Fact A of `.sb/piece3-plan.md`): a key at the top, one level down and two, in a git checkout
+    /// ("typical") and a project with no protected name at its top ("bare"), is neither written (`>`), removed, nor
+    /// replaced by a rename from its folder or another — its bytes and inode as they were; nor is a folder on its way
+    /// moved away and made again with a key of the run's at its name, beside or into another folder, nor emptied and
+    /// made again. What it costs, as measured (colima, tier host): no new file and no removal beside a key, `sed -i`
+    /// there (refused already); `cargo clean`, `npm ci`'s removal, `rm -rf` of a folder with no key in it (beside a key
+    /// too), a checkout through a git folder copied out, and a write in place go on. The report names those folders and
+    /// why; a refusal there says it by the key, a new file at a checkout's top by its protected names.
+    /// (`TARAE_TEST_KEY_FOLDERS_OPEN=1` breaks it once: 7b's old rule, the keys planted and gone.)
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn a_file_made_or_replaced_beside_a_key_is_read_from_the_next_run() {
-        let test = "a_file_made_or_replaced_beside_a_key_is_read_from_the_next_run";
+    fn a_keys_folder_takes_no_new_file_and_loses_none_where_landlock_holds_it() {
+        use std::os::unix::fs::MetadataExt;
+        let test = "a_keys_folder_takes_no_new_file_and_loses_none_where_landlock_holds_it";
         if !keys_tested_here(test) {
             return;
         }
-        let (t, root) = key_files("later");
-        let p = key_policy(&root);
-        if skipped_for_mounts(&p, test, false) {
-            return std::fs::remove_dir_all(&t).unwrap_or_default();
+        const KEYS: [&str; 3] = [".env", "cfg/.env", "cfg/sub/.env"];
+        let fixture = |typical: bool| {
+            let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-keyfolders");
+            let root = profile_path(&s).join("project");
+            let mut files: Vec<(&str, &str)> = vec![
+                (".env", FAKE),
+                ("cfg/.env", FAKE),
+                ("cfg/sub/.env", FAKE),
+                ("cfg/app.toml", "a = 1\n"),
+                ("cfg/tmp/x", "x\n"),
+                ("src/main.rs", "fn main() {}\n"),
+                ("build/out.o", "o\n"),
+                ("target/debug/x", "o\n"),
+                ("node_modules/a/index.js", "x\n"),
+                ("dropme/f.txt", "f\n"),
+            ];
+            if typical {
+                files.extend([
+                    (
+                        "Cargo.toml",
+                        "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+                    ),
+                    ("Cargo.lock", "version = 4\n\n[[package]]\nname = \"p\"\nversion = \"0.1.0\"\n"),
+                    ("package.json", "{\"name\":\"p\",\"version\":\"1.0.0\"}\n"),
+                    (".gitignore", ".env\ntarget/\nbuild/\nnode_modules/\n"),
+                ]);
+            }
+            for (f, text) in &files {
+                std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+                std::fs::write(root.join(f), text).unwrap();
+            }
+            // (its repository made in a temp scratch of its own — beside the build is inside tarae's clone — and its
+            // `.git` copied in: a branch `other` without `dropme/`)
+            if typical {
+                let gs = crate::scratch::Scratch::new("sb-keyfolders-git");
+                for (f, text) in &files {
+                    std::fs::create_dir_all(gs.join(f).parent().unwrap()).unwrap();
+                    std::fs::write(gs.join(f), text).unwrap();
+                }
+                let g = |a: &[&str]| crate::gitrepo::fixture_git(&gs, a);
+                g(&["init", "-q", "-b", "main"]);
+                g(&["add", "-A"]);
+                g(&["commit", "-q", "-m", "one"]);
+                g(&["checkout", "-q", "-b", "other"]);
+                g(&["rm", "-r", "-q", "dropme"]);
+                g(&["commit", "-q", "-m", "two"]);
+                g(&["checkout", "-q", "main"]);
+                let st = Command::new("cp").arg("-a").arg(gs.join(".git")).arg(&root).status().unwrap();
+                assert!(st.success());
+            }
+            let p = key_policy(&root);
+            (s, root, p)
+        };
+        let stamp = |f: &Path| Some((std::fs::read_to_string(f).ok()?, std::fs::metadata(f).ok()?.ino()));
+        let state = |root: &Path, rel: &str| match std::fs::symlink_metadata(root.join(rel)) {
+            Err(_) => "gone".to_string(),
+            Ok(m) if m.is_dir() => match std::fs::read_dir(root.join(rel)).map(|d| d.count()).unwrap_or(0) {
+                0 => "empty".into(),
+                _ => "there".into(),
+            },
+            Ok(_) => std::fs::read_to_string(root.join(rel)).unwrap_or_default().trim().to_string(),
+        };
+        // Fact A's twelve and the five swaps: refused, every key as it was
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for k in KEYS {
+            rows.push((format!("> {k}"), format!("printf planted > {k}")));
+            rows.push((format!("rm {k}"), format!("rm -f {k}")));
+            rows.push((
+                format!("mv over {k}, same folder"),
+                format!("printf planted > {k}.new && mv -f {k}.new {k}"),
+            ));
+            rows.push((
+                format!("mv over {k}, from src/"),
+                format!("printf planted > src/x && mv -f src/x {k}"),
+            ));
         }
-        let script = "printf made > new.txt && printf made > src/new.txt && cat src/new.txt && cat new.txt";
-        let (ok, out, err) = sh_under(&p, &root, script);
-        assert!(!ok && out == "made" && err.contains(KEY_DENIED), "{out} {err}");
-        assert_eq!(std::fs::read_to_string(root.join("new.txt")).unwrap(), "made", "written");
-        let (ok, out, err) = sh_under(&p, &root, "cat new.txt");
-        assert!(ok && out == "made", "the next run: {err}");
-        // Replaced by a rename over it, read just before: not read again in that run
-        let script = "cat .env.example && printf replaced > t && mv t .env.example && cat .env.example";
-        let (ok, out, err) = sh_under(&p, &root, script);
-        assert!(!ok && out == "tarae-fake-token" && err.contains(KEY_DENIED), "{out} {err}");
-        let (ok, out, err) = sh_under(&p, &root, "cat .env.example");
-        assert!(ok && out == "replaced", "the next run: {out} {err}");
-        // `sed -i`: its temporary file, opened to read and write as it's made, is refused — the file stays as it was
-        let (ok, _, err) = sh_under(&p, &root, "sed -i s/fake/replaced/ id_ed25519.pub");
-        assert!(!ok && err.contains("temporary file") && err.contains(KEY_DENIED), "{err}");
-        let (ok, out, err) = sh_under(&p, &root, "cat id_ed25519.pub");
-        assert!(ok && out == "tarae-fake-token", "unchanged: {out} {err}");
-        let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
-        let (_, notes) = c.linux_said().unwrap_or_else(|| panic!("{:?}", c.confine));
-        let said = "A file it makes or replaces in the project's top folder, deep/, deep/er/ (a save by rename, mv \
-                    over it) can't be read until its next command, and one it opens there to read and write as it \
-                    makes it is refused (sed -i's temporary file, mkstemp's): on Linux a folder holding a file \
-                    named like a key can't let what's new in it be read";
-        assert!(notes.contains(said), "{notes}");
-        // (root in a user namespace: why not mounts, said — 7d)
-        let namespaced = matches!(&c.confine, Some(Ok(c)) if c.keeper.as_ref().is_some_and(|k| k.ns.user));
-        // SAFETY: a plain call.
-        let root = unsafe { libc::geteuid() } == 0;
-        let why = "not hidden by mounts of the run's own: tarae runs as root";
-        assert_eq!(notes.contains(why), namespaced && root, "{notes}");
-        std::fs::remove_dir_all(&t).ok();
+        for (l, s) in [
+            ("swap cfg (mv cfg cfg.away)", "mv cfg cfg.away && mkdir -p cfg && echo planted > cfg/.env"),
+            ("swap cfg (mv cfg src/)", "mv cfg src/cfg.away && mkdir -p cfg && echo planted > cfg/.env"),
+            (
+                "swap cfg/sub (mv in cfg)",
+                "mv cfg/sub cfg/sub.away && mkdir -p cfg/sub && echo planted > cfg/sub/.env",
+            ),
+            (
+                "swap cfg/sub (mv to src/)",
+                "mv cfg/sub src/sub.away && mkdir -p cfg/sub && echo planted > cfg/sub/.env",
+            ),
+            ("cfg emptied, removed, made", "rm -rf cfg; mkdir -p cfg && echo planted > cfg/.env"),
+        ] {
+            rows.push((l.into(), s.into()));
+        }
+        let mut failed: Vec<String> = Vec::new();
+        let mut tier = String::new();
+        for typical in [true, false] {
+            let kind = if typical { "typical" } else { "bare" };
+            for (label, script) in &rows {
+                let (_s, root, p) = fixture(typical);
+                if skipped_for_mounts(&p, test, false) {
+                    return;
+                }
+                let before: Vec<_> = KEYS.iter().map(|k| stamp(&root.join(k))).collect();
+                let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
+                if let Some(Ok(c)) = &c.confine {
+                    tier = c.tier().to_string();
+                }
+                let (ok, _, err) = sh_confined(&c, &root, script);
+                let after: Vec<_> = KEYS.iter().map(|k| stamp(&root.join(k))).collect();
+                if ok || after != before {
+                    let err = err.lines().last().unwrap_or_default();
+                    failed.push(format!("{kind}, {label}: ran {ok}, keys {after:?} — {err}"));
+                }
+            }
+        }
+        // What it costs, in the typical project (each `(what, script, whether it goes, the path, what's left)`)
+        let npm = "find node_modules -mindepth 1 -maxdepth 1 -exec rm -rf {} +";
+        let checkout =
+            "cp -a .git \"$TMPDIR/g\" && git --git-dir=\"$TMPDIR/g\" --work-tree=. checkout -q other";
+        for (label, script, goes, at, left) in [
+            ("cargo clean", "env -u CARGO_TARGET_DIR cargo clean", true, "target", "gone"),
+            ("npm ci's removal (ci.js: each entry inside)", npm, true, "node_modules", "empty"),
+            ("rm -rf node_modules", "rm -rf node_modules", true, "node_modules", "gone"),
+            ("git checkout, its .git", "git checkout -q other", false, "dropme", "there"),
+            ("git checkout, the git folder copied out", checkout, true, "dropme", "gone"),
+            ("rm -rf build/", "rm -rf build/", true, "build", "gone"),
+            ("rm -rf src/", "rm -rf src/", true, "src", "gone"),
+            ("rm -rf cfg/tmp, beside a key", "rm -rf cfg/tmp", true, "cfg/tmp", "gone"),
+            ("a new file beside a key", "printf x > cfg/new.toml", false, "cfg/new.toml", "gone"),
+            ("a new file at the top", "printf x > new.txt", false, "new.txt", "gone"),
+            ("sed -i beside a key", "sed -i s/1/2/ cfg/app.toml", false, "cfg/app.toml", "a = 1"),
+            ("rm beside a key", "rm cfg/app.toml", false, "cfg/app.toml", "a = 1"),
+            ("a write in place beside a key", "printf 'a = 3' > cfg/app.toml", true, "cfg/app.toml", "a = 3"),
+        ] {
+            let (_s, root, p) = fixture(true);
+            let (ok, _, err) = sh_under(&p, &root, script);
+            let now = state(&root, at);
+            if ok != goes || now != left {
+                let err = err.lines().last().unwrap_or_default();
+                failed.push(format!("cost, {label}: ran {ok}, {at} {now} — {err}"));
+            }
+        }
+        assert!(
+            failed.is_empty(),
+            "{test}, tier {tier}: {} rows failed:\n{}",
+            failed.len(),
+            failed.join("\n")
+        );
+        // Said: the folders, why, and a refusal there by the key — at a checkout's top by its protected names
+        for (typical, named) in [
+            (true, "cfg/ and cfg/sub/ each hold"),
+            (false, "the project's top folder, cfg/ and cfg/sub/ each hold"),
+        ] {
+            let (_s, _root, p) = fixture(typical);
+            let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
+            let (_, notes) = c.linux_said().unwrap_or_else(|| panic!("{:?}", c.confine));
+            let said = format!(
+                "{named} a file named like a key, or a folder that does: here no new file can be made in them, and \
+                 none removed or moved out."
+            );
+            assert!(notes.contains(&said) && !notes.contains("until its next command"), "{notes}");
+            let refused =
+                c.landlock_said_in("/bin/sh: 1: cannot create cfg/new.toml: Permission denied", false);
+            assert_eq!(
+                refused.iter().map(|d| d.op.as_str()).collect::<Vec<_>>(),
+                [KEY_FOLDER_MAKE],
+                "{refused:?}"
+            );
+            assert!(refused[0].plain().contains(KEY_FOLDER_TAKES), "{}", refused[0].plain());
+            let removed = c.landlock_said_in("rm: cannot remove 'cfg/app.toml': Permission denied", false);
+            assert_eq!(removed.iter().map(|d| d.op.as_str()).collect::<Vec<_>>(), [KEY_FOLDER_REMOVE]);
+            let top = c.landlock_said_in("/bin/sh: 1: cannot create new.txt: Permission denied", false);
+            let top: Vec<&str> = top.iter().map(|d| d.op.as_str()).collect();
+            assert_eq!(top, [if typical { "file-entry-make" } else { KEY_FOLDER_MAKE }]);
+        }
     }
 
     /// Linux: whether a run under `p` here has the files named like keys hidden by mounts (7d: its keeper in a user
@@ -16587,9 +16762,10 @@ mod tests {
         std::fs::remove_dir_all(&t).ok();
     }
 
-    /// For real, where keys are hidden by mounts (7d): `COVERS_MAX` of them are, each — what that costs a run, said
-    /// against the same project closing no key (`keys: None`: each key's checks and its mount); one more and they're
-    /// closed by their folders' rules (7b), the report saying so.
+    /// For real, where keys are hidden by mounts (7d): as many as the project's room holds with the folders on their
+    /// way (`PROJECT_ROOM`, rule 1) are, each — what that costs a run, said against the same project closing no key
+    /// (`keys: None`: each key's checks and its mount); one more and they're all closed by their folders' rules (7b,
+    /// (a′)), the report saying so.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn many_keys_are_hidden_at_once() {
@@ -16612,37 +16788,165 @@ mod tests {
             runs.min_by_key(|(took, _)| *took).unwrap()
         };
         std::fs::create_dir_all(root.join("k")).unwrap();
-        // (the project's own two, deep and at the top, are hidden too)
-        for i in 0..linux::COVERS_MAX - 2 {
+        // (the project's own two, deep and at the top, are hidden too, and the folders on the way: deep, deep/er, k)
+        let hidden = linux::PROJECT_ROOM - 3;
+        for i in 0..hidden - 2 {
             std::fs::write(root.join(format!("k/{i}.pem")), "tarae-fake-token").unwrap();
         }
         let script = "cat src/env.rs >/dev/null; cat k/0.pem";
         let (none, _) = timed(&Policy { keys: None, ..p.clone() }, script);
         let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
         let Some(Ok(c)) = &c.confine else { panic!("{:?}", c.confine) };
-        assert_eq!(c.covers.keys.len(), linux::COVERS_MAX);
+        assert_eq!(c.covers.keys.len(), hidden);
+        assert!(
+            c.covers.unheld.is_empty() && c.key_closed.is_empty(),
+            "{:?} {:?}",
+            c.covers.unheld,
+            c.key_closed
+        );
         let (many, (ok, out, err)) = timed(&p, script);
         assert!(!ok && !out.contains("tarae-fake-token") && err.contains(KEY_DENIED), "{out} {err}");
-        let (_, (ok, out, err)) = timed(&p, &format!("cat k/{}.pem", linux::COVERS_MAX - 3));
+        let (_, (ok, out, err)) = timed(&p, &format!("cat k/{}.pem", hidden - 3));
         assert!(
             !ok && !out.contains("tarae-fake-token") && err.contains(KEY_DENIED),
             "the last: {out} {err}"
         );
-        let per = many.saturating_sub(none) / linux::COVERS_MAX as u32;
+        let per = many.saturating_sub(none) / hidden as u32;
         // (written past libtest's capture: the number is what this test is for)
         let said = format!(
-            "{test}: the same run closing no key {none:?}, hiding {} {many:?} — {per:?} a key\n",
-            linux::COVERS_MAX
+            "{test}: the same run closing no key {none:?}, hiding {hidden} {many:?} — {per:?} a key\n"
         );
         let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
-        // One past: the folders' rules
+        // One past: every one of them the folders' rules', none hidden — never part by part (rule 1)
         std::fs::write(root.join("k/past.pem"), "tarae-fake-token").unwrap();
         let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
         let Some(Ok(c)) = &c.confine else { panic!("{:?}", c.confine) };
-        assert!(c.covers.keys.is_empty() && c.unread.contains(&root.join("k")), "{:?}", c.unread);
+        assert!(c.covers.keys.is_empty() && c.key_closed.contains(&root.join("k")), "{:?}", c.key_closed);
+        assert!(c.split_why.as_deref().is_some_and(|w| w.contains("past the 768")), "{:?}", c.split_why);
         let (ok, out, err) = sh_under(&p, &root, "cat k/past.pem");
         assert!(!ok && !out.contains("tarae-fake-token") && err.contains(KEY_DENIED), "past: {out} {err}");
         std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// For real, in tier own (piece (3)'s floods, `.sb/piece3-floods-own.txt`): a run fills one side of the room a run's
+    /// mounts have with empty files named like keys, and the next run still holds the other side whole — the room's
+    /// rules, the design session's 2026-11-19. 1,025 in the project's top: its keys past the project's room are all
+    /// its folders' rules' (rule 1, (a′)) and take no mount, so the key outside stays hidden (rule 2) — not read, the
+    /// project's key neither written nor its folder swapped. 1,100 at a write place's top, made after the key outside:
+    /// that key comes first, the oldest (rule 3), so it stays hidden; the project's keys and folders as before, the
+    /// flood's rest said open. (`TARAE_TEST_PROJECT_TAKES_ALL`, `_KEY_FOLDERS_OPEN`, `_WALK_ORDER`, `_OUTSIDE_FIRST`
+    /// each break it once.)
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_flood_on_one_side_of_the_room_opens_nothing_of_the_other() {
+        use std::os::unix::fs::MetadataExt;
+        let test = "a_flood_on_one_side_of_the_room_opens_nothing_of_the_other";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let mut failed: Vec<String> = Vec::new();
+        for (label, at, n) in [
+            ("1,025 in the project's top", "project", 1025),
+            ("1,100 at a write place's top", "granted", 1100),
+        ] {
+            let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-flood");
+            let t = profile_path(&s);
+            let (root, g) = (t.join("project"), t.join("granted"));
+            for f in ["project/cfg/sub/.env", "project/src/main.rs", "granted/a/id_rsa"] {
+                std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+                std::fs::write(t.join(f), FAKE).unwrap();
+            }
+            let policy = || {
+                let mut p = Policy::for_project(&Env {
+                    root: root.clone(),
+                    key_places: vec![g.clone()],
+                    write: vec![g.display().to_string()],
+                    run_env: run_env_here(),
+                    ..Env::default()
+                });
+                p.key_places.retain(|k| *k == g);
+                confined(Policy { run: RunDir::new().ok(), ..p })
+            };
+            if skipped_for_mounts(&policy(), test, true) {
+                return;
+            }
+            // (the key outside older than the flood by its change time, whatever the clock's grain: rule 3 goes by it)
+            let ctime = |f: &Path| std::fs::metadata(f).map(|m| (m.ctime(), m.ctime_nsec())).unwrap();
+            let mark = t.join("mark");
+            loop {
+                std::fs::write(&mark, "").unwrap();
+                if ctime(&mark) > ctime(&g.join("a/id_rsa")) {
+                    break;
+                }
+                crate::event::sleep(std::time::Duration::from_millis(1));
+            }
+            let script = format!(
+                "cd '{}' && i=0; while [ $i -lt {n} ]; do : > f$i.pem; i=$((i+1)); done",
+                t.join(at).display()
+            );
+            let (ok, _, err) = sh_confined(&policy(), &root, &script);
+            assert!(ok, "{label}: the flood made — {err}");
+            let c = policy();
+            let Some(Ok(confine)) = &c.confine else { panic!("{label}: {:?}", c.confine) };
+            let id_rsa = std::fs::canonicalize(g.join("a/id_rsa")).unwrap();
+            if !confine.covers.loose.iter().any(|k| k.path == id_rsa) {
+                failed.push(format!(
+                    "{label}: the key outside not hidden — open {:?}",
+                    confine.outside.open.len()
+                ));
+            }
+            if !confine.covers.unheld.iter().all(|(f, _)| !f.starts_with(&root)) {
+                failed.push(format!(
+                    "{label}: a folder of the project's keys unheld: {:?}",
+                    confine.covers.unheld
+                ));
+            }
+            match at {
+                "project" => {
+                    let all = confine.covers.keys.is_empty()
+                        && confine.key_closed.contains(&root.join("cfg/sub"))
+                        && confine.split_why.as_deref().is_some_and(|w| w.contains("past the 768"));
+                    if !all {
+                        failed.push(format!("{label}: not all the folders' rules': {:?}", confine.split_why));
+                    }
+                    // (said: the project's by its folders' rules and why, those outside still hidden)
+                    let said = linux::covers_said(confine);
+                    let why = "past the 768 mounts a run gives the project.";
+                    let outside = "Those outside the project, in the places it reads, are still hidden by a mount of \
+                                   the run's own: each shows as an empty file it can't open (Permission denied), and \
+                                   can't be written, renamed or removed (Device or resource busy).";
+                    if !said.contains(why) || !said.contains(outside) {
+                        failed.push(format!("{label}: said — {said}"));
+                    }
+                }
+                _ => {
+                    let flood_open = confine.outside.open.iter().filter(|(k, _)| k.starts_with(&g)).count();
+                    if confine.covers.keys.len() != 1 || flood_open == 0 {
+                        failed.push(format!(
+                            "{label}: keys {} hidden, {flood_open} open",
+                            confine.covers.keys.len()
+                        ));
+                    }
+                }
+            }
+            for (what, script) in [
+                ("read granted/a/id_rsa", format!("cat '{}'", g.join("a/id_rsa").display())),
+                ("write cfg/sub/.env", "printf planted > cfg/sub/.env".to_string()),
+                (
+                    "swap cfg/sub",
+                    "mv cfg/sub cfg/sub.away && mkdir cfg/sub && echo planted > cfg/sub/.env".to_string(),
+                ),
+            ] {
+                let (ok, out, err) = sh_confined(&policy(), &root, &script);
+                let key =
+                    std::fs::read_to_string(root.join("cfg/sub/.env")).unwrap_or_else(|_| "gone".into());
+                if ok || out.contains(FAKE) || key != FAKE {
+                    let err = err.lines().next().unwrap_or_default();
+                    failed.push(format!("{label}, {what}: ran {ok}, cfg/sub/.env {key:?} — {err}"));
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{test}: {} rows failed:\n{}", failed.len(), failed.join("\n"));
     }
 
     /// For real, where a run has a mount namespace of its own (compat B9): the project's protected names are each
@@ -17801,14 +18105,14 @@ mod tests {
         assert!(failed.is_empty(), "{test}, {tier}: {} rows failed:\n{}", failed.len(), failed.join("\n"));
     }
 
-    /// For real, on Linux in tier own (#651's wider gap): a made-up monorepo of `n` packages, each with an `.env` — how
-    /// many of the folders on the way to its keys a run's mounts hold (`packages/` and one a package: `n + 1`, after
-    /// the `n` keys, in `COVERS_MAX`), outermost first; past the room each said by count, the room then full, its key
-    /// hidden all the same; and what a run's start takes then, the fastest of three, beside
-    /// `many_keys_are_hidden_at_once`'s. The room's order: a flood of files named like keys outside the project, in
-    /// a place runs write — more than the whole room, as `/tmp` can hold (anyone's: a run's, another program's,
-    /// another user's) — takes none of the room from the project's folders: every one that fits is held, and the
-    /// keys outside are the ones left open, said. Its own key place only, so the flood is the same on every run:
+    /// For real, on Linux in tier own (#651's wider gap, piece (3)'s rules): a made-up monorepo of `n` packages, each
+    /// with an `.env` — its `n` keys hidden with every folder on their way (`packages/` and one a package: `n + 1`),
+    /// outermost first, where all fit the project's room (`PROJECT_ROOM`); else none hidden, each folder on the way
+    /// closed by its rules ((a′)) and no mount taken (rules 1 and 2); never a folder of the project's unheld; and what a
+    /// run's start takes then, the fastest of three, beside `many_keys_are_hidden_at_once`'s. The room's order: a
+    /// flood of files named like keys outside the project, in a place runs write — more than the whole room, as `/tmp`
+    /// can hold (anyone's: a run's, another program's, another user's) — takes none of the room from the project's,
+    /// and gets what the project leaves: the keys outside past it the ones left open, said. Its own key place only, so the flood is the same on every run:
     /// what other tests leave in the temp folders (`many_keys_are_hidden_at_once`'s thousand) and how far the walk
     /// gets through them changes by when each runs. No real project is read.
     #[cfg(not(target_os = "macos"))]
@@ -17851,14 +18155,30 @@ mod tests {
             let held: Vec<&PathBuf> =
                 cv.pins.iter().map(|c| &c.path).filter(|d| d.starts_with(&root)).collect();
             let unheld = cv.unheld.iter().filter(|(d, _)| d.starts_with(&root)).count();
-            assert_eq!(cv.keys.len(), n, "{n}: every key hidden");
+            let fits = 2 * n < linux::PROJECT_ROOM;
             assert!(cv.seals.is_empty() && cv.kept.is_empty(), "{n}: none in the fixture: {cv:?}");
-            assert_eq!(
-                held.len(),
-                (n + 1).min(linux::COVERS_MAX - n),
-                "{n}: every folder that fits held, before any key outside"
-            );
-            assert_eq!(held.len() + unheld, n + 1, "{n}: every folder held or said");
+            assert_eq!(unheld, 0, "{n}: no folder of the project's unheld (rule 1)");
+            match fits {
+                true => {
+                    assert_eq!(cv.keys.len(), n, "{n}: every key hidden");
+                    assert_eq!(held.len(), n + 1, "{n}: with every folder on their way");
+                    assert!(confine.key_closed.is_empty(), "{n}: {:?}", confine.key_closed);
+                }
+                false => {
+                    assert!(
+                        cv.keys.is_empty() && held.is_empty(),
+                        "{n}: none hidden past the project's room"
+                    );
+                    for d in [root.clone(), root.join("packages"), root.join("packages/p0000")] {
+                        assert!(
+                            confine.key_closed.contains(&d),
+                            "{n}: {} closed: {:?}",
+                            d.display(),
+                            confine.split_why
+                        );
+                    }
+                }
+            }
             let used = cv.keys.len()
                 + cv.loose.len()
                 + cv.kept.len()
@@ -17866,32 +18186,27 @@ mod tests {
                 + cv.pins.len()
                 + cv.loose_pins.len();
             assert_eq!(used, linux::COVERS_MAX, "{n}: the room full");
-            assert!(
-                match n {
-                    1000 => unheld > 0 && cv.loose.is_empty(),
-                    _ => unheld == 0 && !cv.loose.is_empty(),
-                },
-                "{n}: {unheld} past the room, {} keys outside hidden",
-                cv.loose.len()
-            );
             let o = &confine.outside;
+            assert!(cv.loose.len() >= linux::OUTSIDE_RESERVE, "{n}: the keys outside keep their reserve");
             assert_eq!(
                 o.covered.len() + o.open.len(),
                 linux::COVERS_MAX,
                 "{n}: the flood, each hidden or said"
             );
             assert!(o.open.iter().all(|(k, why)| k.starts_with(&flood) && *why == past_room), "{n}: {o:?}");
-            assert_eq!(
-                held.first().map(|d| d.as_path()),
-                Some(root.join("packages").as_path()),
-                "{n}: outermost first"
-            );
+            if fits {
+                assert_eq!(
+                    held.first().map(|d| d.as_path()),
+                    Some(root.join("packages").as_path()),
+                    "{n}: outermost first"
+                );
+            }
             let said = linux::covers_said(confine);
-            let counted = format!("{} folders on the way to those files aren't bound", cv.unheld.len());
-            assert_eq!(said.contains(&counted), !cv.unheld.is_empty(), "{n}: {said}");
-            assert!(
+            assert!(!said.contains("on the way to those files aren't bound"), "{n}: {said}");
+            assert_eq!(
                 said.contains(&format!("stays readable: {past_room}.")),
-                "{n}: the outside's said: {said}"
+                !o.open.is_empty(),
+                "{n}: {said}"
             );
             let runs = (0..3).map(|_| {
                 let at = std::time::Instant::now();
@@ -17902,9 +18217,11 @@ mod tests {
             assert!(!ok && !out.contains(FAKE) && err.contains(KEY_DENIED), "{n}: {out} {err}");
             // (written past libtest's capture: the numbers are what this test is for)
             let line = format!(
-                "{test}: {n} packages — {n} keys, {} folders held, {unheld} not (besides: {} keys outside, {} of \
-                 their folders held); a run's start {took:?}\n",
+                "{test}: {n} packages — {} of {n} keys hidden, {} folders held, {} closed by their rules (besides: {} \
+                 keys outside hidden, {} of their folders held); a run's start {took:?}\n",
+                cv.keys.len(),
                 held.len(),
+                confine.key_closed.len(),
                 cv.loose.len(),
                 cv.loose_pins.len()
             );

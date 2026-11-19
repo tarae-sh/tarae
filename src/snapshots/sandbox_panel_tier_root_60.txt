@@ -5,7 +5,7 @@
 02  │ ›                                                  0/0 │
 03  │ ────────────────────────────────────────────────────── │
 04  │  tier own  loopback its own  shared nothing            │
-05  │  as root: keys outside the project stay readable       │
+05  │  ▲ as root: keys outside the project stay readable     │
 06  │                                                        │
 07  │  the sandbox blocked nothing in that run               │
 08  │                                                        │
@@ -55,7 +55,7 @@
 02  a A                                                  fff a
 03  a ffffffffffffffffffffffffffffffffffffffffffffffffffffff a
 04  a  BBBB fff  BBBBBBBB fff fff  BBBBBB fffffff            a
-05  a  ff fffff ffff fffffff fff fffffff ffff ffffffff       a
+05  a  w ww wwwww wwww wwwwwww www wwwwwww wwww wwwwwwww     a
 06  a                                                        a
 07  a  fff fffffff fffffff fffffff ff ffff fff               a
 08  a                                                        a
@@ -76,4 +76,4 @@
 23  a TTTTTT   DDDDD ffffff  ffff ffffff  DDD fffff       TTT
 ## legend
 bg: 
-fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  w=warning  B=bold

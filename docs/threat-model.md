@@ -477,13 +477,17 @@ Kept:
   template's attributes onto the new one; their reads stay closed) — by name, as their reads; a folder above
   one the walk before the run found isn't renamed, renamed onto, exchanged or removed either (G33). A new one is made (`cp .env.example .env`),
   written through the open that made it, then closed as one found: a key a run made earlier in that run can't be rewritten or
-  removed (Linux's mounts hide only what its walk found before the run, so there that waits for the next run). The
+  removed (on Linux, tier own's mounts hide only what its walk found before the run, so there that waits for the next
+  run; in tiers host and unserved and where tarae runs as root a folder holding a key, or one below it, takes no new
+  file and loses none, so a key isn't made there at all, and one found isn't written, removed or replaced). The
   run's own folder (`TMPDIR`) is free; the file you open from the run's panel is written again where runs write,
   never in home nor inside a protected name. Recovery never keeps a file named like a key, so this is what keeps a
   `.env` a run would truncate or remove.
   test: `sandbox::tests::a_run_cant_change_a_key_named_file_but_makes_a_new_one` ·
   `sandbox::tests::a_key_named_file_is_changed_by_no_run_but_where_the_user_opened_it` ·
-  `blocked::tests::a_key_named_files_change_refused_offers_that_file`
+  `blocked::tests::a_key_named_files_change_refused_offers_that_file` ·
+  `sandbox::tests::a_keys_folder_takes_no_new_file_and_loses_none_where_landlock_holds_it` (Linux, the tiers without
+  mounts)
 - **A masked variable** (`llm.sandbox-secrets`, your own config only — P2): the run holds a sentinel (`fake_value_…`,
   as long as the real value from 20 bytes on), never the value — not through `llm.sandbox-env` nor a card's real-value
   grant, which a masked name never takes. The real value is only in tarae's memory, the session's registry its proxy
@@ -511,8 +515,22 @@ Kept:
   removed, from a namespace of its own: Device or resource busy), in the room a run's mounts take after the
   project's keys, the seals and the kept places: the project's folders before any key outside it, the folders to
   those outside last, each outermost first — so files named like keys where every program writes (`/tmp`, anyone's)
-  never take the room from the project's; past it the key stays hidden and the report counts the folders not held,
-  and why.
+  never take the room from the project's; past it a key outside stays hidden and the report counts the folders not
+  held, and why. The project's keys are hidden only with every folder on their way, all within the project's share
+  of the room (768 of the 1,024: the keys outside keep 256 it never takes) — else none of them is, and each is held
+  as in the tiers without mounts, below, taking no mount from the keys outside; never part by part. The kept places
+  and their ways are counted between the two shares, after the project's (never past 768) and before the keys
+  outside: few, fixed by your own settings, so neither side starves them.
+  In tiers host and unserved without namespaces, where tarae runs as root, and in tier own where the project's keys
+  don't all fit its share or another mount reaches one: each folder from the project's root down to a key is closed
+  as a folder holding a protected name is — it takes no new file and loses none, so a key isn't written, removed or
+  replaced, nor its folder moved away and made again, nor emptied and made again; a file beside the key is written in
+  place, and a folder in it with no key goes once emptied (`cargo clean`, `rm -rf build/`) (the user's 2026-11-19). A
+  setup script's `cp .env.example .env` there is refused; Claude's edit tool isn't a run, and this rule doesn't
+  touch it.
+  test: `sandbox::tests::a_keys_folder_takes_no_new_file_and_loses_none_where_landlock_holds_it` (host, unserved,
+  root) · `sandbox::tests::a_flood_on_one_side_of_the_room_opens_nothing_of_the_other` (own) ·
+  `sandbox::tests::many_keys_are_hidden_at_once` (own)
   test: `sandbox::tests::a_run_enters_its_folder_only_after_its_mounts` ·
   `sandbox::tests::a_keys_name_is_held_against_every_way_it_could_be_freed` ·
   `sandbox::tests::a_monorepos_keys_folders_are_held_as_room_is_left` ·
@@ -534,8 +552,9 @@ Kept:
   a key outside the project by its name. Linux's runs close them in the project, and where they have mounts of
   their own (tier own, or unserved with namespaces; not where tarae runs as root) in those places too: found afresh before each run, at most 20,000 entries looked through (`linux::WALK_MAX`) — the places no run
   writes (other checkouts, read grants) first, so filling `/tmp` can't hide those from the walk — and hidden by a
-  mount of the run's own as the project's are ([D-i](design/sandbox-keeper.md#decisions)) — so, as the project's,
-  the run can't write, remove or rename one, nor move a folder on its way from the place (read-only, busy: an
+  mount of the run's own as the project's are there ([D-i](design/sandbox-keeper.md#decisions)), the places no run
+  writes first and then the oldest by change time, so a flood pushes out only keys newer than itself — so, as the
+  project's in tier own, the run can't write, remove or rename one, nor move a folder on its way from the place (read-only, busy: an
   `rm -rf` of a folder in `/tmp` holding one fails, as it does on macOS since B1; so does a test regenerating one
   with `>`); the run's report names it, says it's
   hidden, that the run's panel lets runs use that file only and that once the user removes it the next run's walk
@@ -600,14 +619,14 @@ Not kept:
   root): Landlock only grants, so a name can't be closed inside a granted folder; in the project its folders are
   granted entry by entry around each key (`linux::there`), outside they aren't. With them (tier own, unserved with
   namespaces) a run hides those found before it, but not: one made while it runs (found before the next);
-  one past the 20,000 entries looked through (the folders not reached named in its report); one past the 1,024 a
-  run's mounts hide, the project's and its protected names' first (named); one another mount of its filesystem
+  one past the 20,000 entries looked through (the folders not reached named in its report); one past the room a
+  run's mounts keep for them — 256 of the 1,024 and whatever the project's keys, their folders and its seals leave —
+  the newest by change time first (named, and counted on the sandbox panel); one another mount of its filesystem
   reaches (named); one on another filesystem mounted below such a place, which the walk doesn't enter (a hung NFS
   or sshfs mount would hold every run — named); one in a place on a filesystem that can hang (NFS, SMB/CIFS, 9p,
   Ceph, GlusterFS, AFS, any FUSE — `linux::CAN_HANG`), not walked for the same reason (named); one in a folder the walk couldn't open or read — swapped for a link since it was listed, an
   error of its own (named; not a folder the user may not open, which the run can't read either); one in a read grant inside a place runs write, which they could
-  fill past the cap themselves; every key outside where the project's own keys are reached through another mount
-  (the run then has no mounts of its own — said); a hard link to one under another name (outside the project only names are looked at); one known
+  fill past the cap themselves; a hard link to one under another name (outside the project only names are looked at); one known
   only by what's in it; one a run going at the same time moves, with a folder holding it, while the next looks for
   it or before its mounts are made (the walk doesn't see it there, or its mount finds it gone and the run starts —
   where every program writes, `/tmp`, a key gone mustn't stop it). The other way round, as a cost rather than a
@@ -943,7 +962,7 @@ Not kept:
 | Tier | When | What it means |
 |---|---|---|
 | own | unprivileged user namespaces work, and tarae serves a run's sockets (at Yama's `ptrace_scope` 2 too) | the session's own processes, loopback, IPC, `/dev/shm`, terminals; where `/proc` is masked (Docker's default) no PID namespace: processes shared (command lines, priority); tarae run as root (a container): no mounts of the run's own — files named like keys, protected names and kept places closed by their folders' rules as in host, keys outside the project open, said in the tier's why |
-| host | no user namespaces (Ubuntu's restriction without tarae's profile; a container), sockets served | files and signals kept; loopback this machine's, other sessions' sockets refused; processes, SysV IPC, `/dev/shm` shared |
+| host | no user namespaces (Ubuntu's restriction without tarae's profile; a container), sockets served | files and signals kept; files named like keys closed in the project by their folders' rules — a folder holding one takes no new file and loses none — and open outside it; loopback this machine's, other sessions' sockets refused; processes, SysV IPC, `/dev/shm` shared |
 | unserved | tarae can't serve a run's sockets (Yama 3, Yama 2 without the session's namespaces, inside another seccomp listener — WSL2's port tracker in its mirrored and Consomme networking, `pidfd_getfd` refused), with the session's namespaces or none | no port of this machine's, no unix socket; with the namespaces the network beyond only through tarae's proxy, by the run's token (the bridge), and its own loopback, IPC, `/dev/shm`, terminals; without, no socket at all and those shared |
 
 Yama's `ptrace_scope` 2 asks for `CAP_SYS_PTRACE` in a run's user namespace, and tarae holds every capability in

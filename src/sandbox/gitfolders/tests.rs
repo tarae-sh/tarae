@@ -421,7 +421,7 @@ fn a_folder_on_a_git_folders_way_says_why_it_takes_no_new_file() {
         let tmp = Some(profile_path(&std::env::temp_dir()));
         let run_env = run_env_of(&Here::now(), &crate::llm::LlmConfig::default());
         let p = confined(Policy { run: RunDir::new().ok(), ..policy_of(Env { tmp, run_env, ..env() }) });
-        let why = "a folder holding protected names takes no new files on Linux";
+        let why = "a folder holding protected names takes no new files here";
         // (from the output, as `sh` says it)
         let line = format!("sh: {}: Permission denied", t.join("deep/new").display());
         let said = p.said_in_output(&[(true, line)], &[]);

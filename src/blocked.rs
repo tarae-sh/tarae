@@ -834,7 +834,8 @@ const NO_RUN_YET: &str = "no sandboxed run yet in this session";
 
 /// The panel's state line (9e; the user's decision 14: here and `:procs`, never the status line): what the session's
 /// last sandboxed run was kept apart from and shared (`Guarantees::panel_pairs`, folded by `Guarantees::FOLD` when
-/// narrow), why not the top tier in a few words faint under it (`Guarantees::brief`; the whole `why` is the report's
+/// narrow), the one line saying something is open as a card's warning line under it (`Guarantees.warning`: a root
+/// tarae's, the keys outside left readable), why not the top tier in a few words faint under that (`Guarantees::brief`; the whole `why` is the report's
 /// and `tarae state`'s), and under that how the tier would go up (9f, `Guarantees::hint_brief`: the profile's).
 fn head(g: &crate::sandbox::guarantees::Guarantees) -> crate::picker::Head {
     use crate::sandbox::guarantees::Guarantees;
@@ -842,7 +843,8 @@ fn head(g: &crate::sandbox::guarantees::Guarantees) -> crate::picker::Head {
         pairs: g.panel_pairs(),
         fold: Guarantees::FOLD,
         faint: g.brief.clone(),
-        faint_narrow: g.brief_narrow(),
+        warn: g.warning.as_ref().map(|w| format!("▲ {}", w.wide)),
+        warn_narrow: g.warning.as_ref().map(|w| format!("▲ {}", w.narrow)),
         then: g.hint_brief(),
         note: None,
     }

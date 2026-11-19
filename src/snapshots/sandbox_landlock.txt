@@ -25,6 +25,8 @@ ABI 3: handles files 0x07fff · network 0x0 · scopes 0x0
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
+    0x0018 $ROOT/src
+    0x0018 $ROOT/src/tls
     0x4006 /dev/full
     0x4006 /dev/null
     0x4006 /dev/tty
@@ -32,8 +34,6 @@ ABI 3: handles files 0x07fff · network 0x0 · scopes 0x0
     0x4007 $ROOT/.env.example
     0x4007 $ROOT/go.mod
     0x4007 $ROOT/src/tls/opened.key
-    0x7ffa $ROOT/src
-    0x7ffa $ROOT/src/tls
     0x7fff $BASE/tmp
     0x7fff $HOME/.cache/tarae/run-homes/go-build/$KEY
     0x7fff $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
@@ -69,6 +69,8 @@ ABI 4: handles files 0x07fff · network 0x3 · scopes 0x0
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
+    0x0018 $ROOT/src
+    0x0018 $ROOT/src/tls
     0x4006 /dev/full
     0x4006 /dev/null
     0x4006 /dev/tty
@@ -76,8 +78,6 @@ ABI 4: handles files 0x07fff · network 0x3 · scopes 0x0
     0x4007 $ROOT/.env.example
     0x4007 $ROOT/go.mod
     0x4007 $ROOT/src/tls/opened.key
-    0x7ffa $ROOT/src
-    0x7ffa $ROOT/src/tls
     0x7fff $BASE/tmp
     0x7fff $HOME/.cache/tarae/run-homes/go-build/$KEY
     0x7fff $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
@@ -113,6 +113,8 @@ ABI 6: handles files 0x0ffff · network 0x3 · scopes 0x3
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
+    0x0018 $ROOT/src
+    0x0018 $ROOT/src/tls
     0xc006 /dev/full
     0xc006 /dev/null
     0xc006 /dev/tty
@@ -120,8 +122,6 @@ ABI 6: handles files 0x0ffff · network 0x3 · scopes 0x3
     0xc007 $ROOT/.env.example
     0xc007 $ROOT/go.mod
     0xc007 $ROOT/src/tls/opened.key
-    0xfffa $ROOT/src
-    0xfffa $ROOT/src/tls
     0xffff $BASE/tmp
     0xffff $HOME/.cache/tarae/run-homes/go-build/$KEY
     0xffff $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
@@ -157,6 +157,8 @@ ABI 9: handles files 0x1ffff · network 0x3 · scopes 0x3
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
+    0x0018 $ROOT/src
+    0x0018 $ROOT/src/tls
     0xc006 /dev/full
     0xc006 /dev/null
     0xc006 /dev/tty
@@ -164,8 +166,6 @@ ABI 9: handles files 0x1ffff · network 0x3 · scopes 0x3
     0xc007 $ROOT/.env.example
     0xc007 $ROOT/go.mod
     0xc007 $ROOT/src/tls/opened.key
-    0xfffa $ROOT/src
-    0xfffa $ROOT/src/tls
     0xffff $BASE/tmp
     0xffff $HOME/.cache/tarae/run-homes/go-build/$KEY
     0xffff $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
@@ -201,6 +201,8 @@ ABI 10: handles files 0x1ffff · network 0xf · scopes 0x3
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
+    0x0018 $ROOT/src
+    0x0018 $ROOT/src/tls
     0xc006 /dev/full
     0xc006 /dev/null
     0xc006 /dev/tty
@@ -208,8 +210,6 @@ ABI 10: handles files 0x1ffff · network 0xf · scopes 0x3
     0xc007 $ROOT/.env.example
     0xc007 $ROOT/go.mod
     0xc007 $ROOT/src/tls/opened.key
-    0xfffa $ROOT/src
-    0xfffa $ROOT/src/tls
     0xffff $BASE/tmp
     0xffff $HOME/.cache/tarae/run-homes/go-build/$KEY
     0xffff $HOME/.cache/tarae/run-homes/golangci-lint/$KEY

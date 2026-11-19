@@ -1298,6 +1298,10 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/linux.rs", "in fn confine_in: way", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: (strict, lenient) = match std::env::var_os(\"TARAE_", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: steps", SEAM),
+    ("src/sandbox/linux.rs", "in fn confine_in: counted", SEAM),
+    ("src/sandbox/linux.rs", "in fn confine_in: project_takes_all", SEAM),
+    ("src/sandbox/linux.rs", "in fn confine_in: walked", SEAM),
+    ("src/sandbox/linux.rs", "in fn grant_around: own", SEAM),
     (
         "src/sandbox/linux.rs",
         "in fn kept_closing: if std::env::var_os(\"TARAE_TEST_KEPT_UNSAID\").is_s",

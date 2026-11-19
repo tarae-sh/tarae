@@ -7511,8 +7511,9 @@ fn host_restricted() -> crate::sandbox::guarantees::Guarantees {
 /// 9e: the sandbox panel's state line (`space m s`) — the session's last run's sandbox as key hints over the list,
 /// a fallback's why faint under it, and (9f) where tarae's AppArmor profile would give commands namespaces of their own, that and where its
 /// step is, on rows of its own; at 60 columns the least important parts folded (`Guarantees::FOLD`); before any
-/// sandboxed run, said so in its place; a root tarae's tier own says what its runs lack under it (#646). Nothing
-/// blocked: the list says so where its first row would be. With
+/// sandboxed run, said so in its place; a root tarae's tier own says what its runs lack under it (#646), and the keys
+/// outside the project a run left readable are counted under it, with why (piece (3), the design session's 2026-11-19)
+/// — each as a card's warning line, `▲` and the warning colour, in fewer words at 60. Nothing blocked: the list says so where its first row would be. With
 /// `TARAE_FRAMES_DIR` set, each in both themes (`.sb/shots-9e.sh` draws them).
 #[test]
 fn snapshot_sandbox_panel_tier() {
@@ -7539,15 +7540,16 @@ fn snapshot_sandbox_panel_tier() {
             "tarae runs as root, and the kernel lets a namespace map root only with a capability nothing of tarae's \
              keeps"
         )),
-        brief: Some(crate::sandbox::guarantees::ROOT_UNMOUNTED_BRIEF.into()),
         ..top_found()
-    });
+    })
+    .with_root_unmounted();
     for (w, h) in [(120, 30), (60, 24)] {
         let scenes = [
             ("fallback", Some(unserved_docker_default())),
             ("hint", Some(host_restricted())),
             ("top", Some(top.clone())),
             ("root", Some(root.clone())),
+            ("open", Some(top.clone().with_keys_open(78, &[crate::sandbox::guarantees::KEYS_PAST_ROOM]))),
             ("empty", None),
         ];
         for (name, g) in scenes {

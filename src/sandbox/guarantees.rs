@@ -256,6 +256,8 @@ pub struct Guarantees {
     pub brief: Option<String>,
     /// How the tier would go up — the profile's (9f, `Found.hint`); None elsewhere, and on macOS.
     pub hint: Option<Hint>,
+    /// The panel's one line saying something is open (`with_root_unmounted`, `with_keys_open`) — None: nothing is.
+    pub warning: Option<Warning>,
     /// The ptys a run holds at a time where it opens only those it makes (`ptys::POOL`).
     pool: Option<usize>,
 }
@@ -290,16 +292,32 @@ pub struct Found {
 /// words, `tier::ROOT_NO_MOUNTS` after them (`linux::confine`).
 pub const ROOT_UNMOUNTED: &str = "its runs have no mounts of their own";
 
-/// The same in the sandbox panel's few words (`brief`) — what it costs the person, the mechanism the why's (the
-/// design session, 2026-11-19).
-pub const ROOT_UNMOUNTED_BRIEF: &str =
+/// The same as the sandbox panel's warning line (`Warning`, `with_root_unmounted`) — what it costs the person, the
+/// mechanism the why's (the design session, 2026-11-19).
+pub const ROOT_UNMOUNTED_WARNING: &str =
     "tarae runs as root: files named like keys outside the project stay readable";
 
-/// The same where the panel is narrow (`brief_narrow`).
+/// The same where the panel is narrow.
 pub const ROOT_UNMOUNTED_NARROW: &str = "as root: keys outside the project stay readable";
 
-/// A `brief` part's fewer words, for a narrow panel (`Guarantees::brief_narrow`).
-const NARROW: &[(&str, &str)] = &[(ROOT_UNMOUNTED_BRIEF, ROOT_UNMOUNTED_NARROW)];
+/// The sandbox panel's count of the keys outside the project its run left readable (the design session's
+/// 2026-11-19; `with_keys_open`): after the count, wide — then why, where one is — and where it's narrow, no why.
+const KEYS_OPEN: &str = "files named like keys outside the project stay readable";
+const KEYS_OPEN_NARROW: &str = "keys outside the project stay readable";
+
+/// Why those keys stay readable, after the count: past the room a run's mounts have (`linux::COVERS_MAX`), or
+/// another mount of their filesystem reaching them.
+pub const KEYS_PAST_ROOM: &str = "past the 1,024 a run hides";
+pub const KEYS_ELSEWHERE: &str = "reached through another mount";
+
+/// The sandbox panel's one line saying something is open (the design session's 2026-11-19): drawn as a card's warning
+/// line is, `▲` and the warning colour (`blocked::head`, `term::head_rows`) — its words wide, and where the panel is
+/// narrow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Warning {
+    pub wide: String,
+    pub narrow: String,
+}
 
 /// The loopback of a run served without a network namespace of its own (host): this machine's — another
 /// session's socket on it refused (step 8).
@@ -435,6 +453,7 @@ impl Guarantees {
             why: (!why.is_empty()).then(|| why.join("; ")),
             brief: (!brief.is_empty()).then(|| brief.join(" · ")),
             hint: f.hint.map(|h| Hint::of(tier, &h.place)),
+            warning: None,
             pool,
         }
     }
@@ -466,6 +485,7 @@ impl Guarantees {
             why: None,
             brief: None,
             hint: None,
+            warning: None,
             pool: None,
         }
     }
@@ -481,16 +501,26 @@ impl Guarantees {
         Guarantees { listed: listed && self.network && !self.asks, ..self }
     }
 
-    /// `brief` with each part that has fewer words in them (`NARROW`) — what a narrow panel says, where a part is
-    /// wider than its row. None: no part has.
-    pub fn brief_narrow(&self) -> Option<String> {
-        let brief = self.brief.as_deref()?;
-        let parts: Vec<&str> = brief.split(" · ").collect();
-        let narrow = |p: &str| NARROW.iter().find(|(w, _)| *w == p).map(|(_, n)| *n);
-        parts
-            .iter()
-            .any(|p| narrow(p).is_some())
-            .then(|| parts.iter().map(|p| narrow(p).unwrap_or(p)).collect::<Vec<_>>().join(" · "))
+    /// A root tarae's runs have no mounts of their own (#646): the keys outside the project stay readable, the
+    /// panel's warning line.
+    pub fn with_root_unmounted(self) -> Guarantees {
+        let warning = Warning { wide: ROOT_UNMOUNTED_WARNING.into(), narrow: ROOT_UNMOUNTED_NARROW.into() };
+        Guarantees { warning: Some(warning), ..self }
+    }
+
+    /// Its run's `n` keys outside the project left readable (`linux::Outside.open`) and why (`KEYS_PAST_ROOM`,
+    /// `KEYS_ELSEWHERE`; none said where it's neither), the panel's warning line — none: as it was.
+    pub fn with_keys_open(self, n: usize, why: &[&str]) -> Guarantees {
+        if n == 0 {
+            return self;
+        }
+        let n = crate::features::thousands(n as u64);
+        let wide = std::iter::once(format!("{n} {KEYS_OPEN}")).chain(why.iter().map(|w| w.to_string()));
+        let warning = Warning {
+            wide: wide.collect::<Vec<_>>().join(" · "),
+            narrow: format!("{n} {KEYS_OPEN_NARROW}"),
+        };
+        Guarantees { warning: Some(warning), ..self }
     }
 
     /// Its tier — None: Seatbelt's (no tiers).

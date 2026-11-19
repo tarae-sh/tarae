@@ -11344,6 +11344,12 @@ fn draw_picker(
                     spans
                 }
                 HeadRow::Faint(said) => vec![said.clone().span(faint)],
+                // (as a card's warning line: the warning colour, its words at the card's strength)
+                HeadRow::Warn(said) => {
+                    let warn =
+                        Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg).or(card.fg), ..card };
+                    vec![said.clone().span(warn)]
+                }
                 HeadRow::Air => Vec::new(),
             };
             for (i, s) in spans.iter().enumerate() {
@@ -24691,13 +24697,16 @@ fn fold_hints(pairs: &[(&'static str, String)], fold: &[&str], width: usize) -> 
 }
 
 /// A list head's rows (`Picker.head`) in `lw` cells (its text from the list's column, `PAD_R` before the edge): the
-/// pairs' row, folded to fit, then the faint words over at most `HEAD_FAINT` rows — broken between their ` · ` parts,
+/// pairs' row, folded to fit, then the warning (`Head.warn`, as a card's warning line, two rows at most), then the faint
+/// words over at most `HEAD_FAINT` rows — broken between their ` · ` parts,
 /// a part too long for a row between its words — `…` at the end of the last when there's more; then the way on
 /// (`Head.then`) the same way from a row of its own, over at most `HEAD_THEN`; then the list's state (`Head.note`) a
 /// row of air below, cut to one row.
 enum HeadRow {
     Pairs(Vec<(&'static str, String)>),
     Faint(Fit),
+    /// A row of `Head.warn`, in the warning colour.
+    Warn(Fit),
     Air,
 }
 
@@ -24709,6 +24718,23 @@ fn head_rows(h: &crate::picker::Head, lw: usize) -> Vec<HeadRow> {
     let mut out = Vec::new();
     if !h.pairs.is_empty() {
         out.push(HeadRow::Pairs(fold_hints(&h.pairs, h.fold, room)));
+    }
+    // (the warning: its fewer words where it's wider than a row, wrapped under its words past `▲` as a card's are —
+    // two rows at most)
+    let warn = match (&h.warn, &h.warn_narrow) {
+        (Some(w), Some(n)) if w.width() > room => Some(n),
+        (w, _) => w.as_ref(),
+    };
+    if let Some(w) = warn {
+        let rows = card_rows(w, room);
+        let cut = rows.len() > 2;
+        for (i, r) in rows.into_iter().take(2).enumerate() {
+            let r = match cut && i == 1 {
+                true => crate::whole::fit(&format!("{r} …"), room),
+                false => crate::whole::fit(&r, room),
+            };
+            out.push(HeadRow::Warn(r));
+        }
     }
     // (`sep` between what's on a row: ` · ` between parts, a space between a long part's words)
     let add = |rows: &mut Vec<Fit>, piece: &str, sep: &str, joins: bool| match rows.last_mut() {
@@ -24738,13 +24764,7 @@ fn head_rows(h: &crate::picker::Head, lw: usize) -> Vec<HeadRow> {
         }
         rows.into_iter().map(HeadRow::Faint)
     };
-    // (a part wider than a row: its fewer words, where it has them)
-    let wide = h.faint.as_deref().is_some_and(|f| f.split(" · ").any(|p| p.width() > room));
-    let faint = match (wide, &h.faint_narrow) {
-        (true, Some(n)) => Some(n.as_str()),
-        _ => h.faint.as_deref(),
-    };
-    out.extend(broken(faint, HEAD_FAINT));
+    out.extend(broken(h.faint.as_deref(), HEAD_FAINT));
     out.extend(broken(h.then.as_deref(), HEAD_THEN));
     if let Some(note) = &h.note {
         out.extend([HeadRow::Air, HeadRow::Faint(crate::whole::fit(note, room))]);

@@ -1224,7 +1224,8 @@ fn the_goldens_are_the_stand_ins_whatever_the_host_holds() {
 /// the machine's) — what Linux enforces, from the same policy — for the ABIs that change what's handled:
 /// each one's handled rights, then its rules. Written down, not made: any kernel pins every ABI. Its project
 /// holds files named like keys (7b): one at the top, one deep, one opened (`allow::Grant::Key`) and an exception
-/// — no rule for the closed ones, their folders all but reading files.
+/// — no rule for the closed ones, their folders closed as a protected name's ((a′): listed, a folder in them removed
+/// once emptied, `0x0018`).
 #[cfg(target_os = "linux")]
 #[test]
 fn landlocks_rules_are_pinned() {
