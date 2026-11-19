@@ -44,6 +44,10 @@ steps = [
   { name = "fmt", cmd = "cargo fmt --all --check" },
   { name = "clippy", cmd = "cargo clippy --workspace --all-targets -- -D warnings" },
   { name = "clippy linux", cmd = "cargo xtask linux --no-skip clippy" },
+  # tarae's tests as root under user namespaces: #646 (a root tarae's words about keys) showed only so — CI isn't root
+  { name = "test linux root", cmd = "cargo xtask linux --no-skip --userns test --bin tarae", full = true },
+  # the sandbox's tests as an ordinary user under user namespaces: #651 (a kept file's folders) showed only so — CI can't
+  { name = "sandbox linux user", cmd = "cargo xtask linux --no-skip --userns test --as-user -- sandbox::", full = true },
   { name = "clippy bundled", cmd = "cargo clippy --workspace --all-targets --features bundled-grammars -- -D warnings", full = true },
   { name = "test", cmd = "cargo test --workspace" },
   { name = "test bundled", cmd = "cargo test --workspace --features bundled-grammars", full = true },

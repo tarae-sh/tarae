@@ -1530,6 +1530,8 @@ mod tests {
     /// Here Linux's clippy is `cargo xtask linux --no-skip clippy` (#257): CI's clippy job is Linux's already, so it
     /// stands for no line of CI's of its own — but the container runs exactly CI's clippy lines (`--locked`, `-D
     /// warnings` as CI's `RUSTFLAGS` gives them), read in xtask's script.
+    /// `:preflight-full`'s two Linux test steps (`LINUX_ONLY_HERE`) stand for no line of CI's: they run as root under
+    /// user namespaces, or as an ordinary user there — runs CI's unprivileged runner can't make (#646, #651).
     /// A step with an `if:` names its command on the line after (`run: …`).
     /// An ignored test a step runs by name is CI's network job's too — but this Mac's own (`THIS_MACS`, each with its
     /// reason): CI has no macOS job, so a test only macOS runs is `:preflight-full`'s alone.
@@ -1628,6 +1630,14 @@ mod tests {
             expected.remove("cargo xtask linux --no-skip clippy"),
             "Linux's clippy at every landing: {ours:?}"
         );
+        // (on purpose: root under user namespaces, and a user there — CI's runner is neither)
+        const LINUX_ONLY_HERE: &[&str] = &[
+            "cargo xtask linux --no-skip --userns test --bin tarae",
+            "cargo xtask linux --no-skip --userns test --as-user -- sandbox::",
+        ];
+        for step in LINUX_ONLY_HERE {
+            assert!(expected.remove(*step), "{step}: a step of `:preflight-full`'s: {ours:?}");
+        }
         assert_eq!(
             set(ran),
             expected,

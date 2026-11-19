@@ -39,13 +39,18 @@ crate built in a sandboxed run (macOS's sandbox and cargo's cache warm — CI ha
 (#533: a live test with the real rust-analyzer and rustup, about 2.5 minutes; where either is missing it passes with a
 note saying so). Linux's
 clippy is `cargo xtask linux clippy` in Docker — CI's clippy job, both its lines, on the pinned toolchain; where Docker
-isn't reachable it fails saying so (`--no-skip`), never a pass:
+isn't reachable it fails saying so (`--no-skip`), never a pass. `:preflight-full` runs two more Linux steps in Docker,
+under user namespaces (`--userns`): tarae's whole test binary as root, and the sandbox's tests as an ordinary user
+(`--as-user`) — #646 (a root tarae's words about keys) and #651 (a kept file's folders) showed only in such runs, and
+CI, not root, can't catch them; without Docker, or with its disk past 90 %, they too are not run, never a pass:
 
 <!-- the checks: the same as .tarae.toml's [preflight] and CI's jobs — a test keeps them so (preflight.rs) -->
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask linux --no-skip clippy
+cargo xtask linux --no-skip --userns test --bin tarae
+cargo xtask linux --no-skip --userns test --as-user -- sandbox::
 cargo clippy --workspace --all-targets --features bundled-grammars -- -D warnings
 cargo test --workspace
 cargo test --workspace --features bundled-grammars
