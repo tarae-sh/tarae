@@ -64,7 +64,7 @@ fn run(choices: Choices) -> Vec<String> {
     };
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &raised, &ended), check, print);
     sim.at_end(|| {
-        assert!(crate::cards::wait_written(Duration::from_secs(5)));
+        assert!(crate::cards::wait_written(crate::test_results::PATIENCE));
         let entries = record(dir.path());
         for id in raised.borrow().iter() {
             let mine: Vec<&Value> = entries.iter().filter(|e| e["card"] == *id).collect();

@@ -924,8 +924,12 @@ pub fn read_record(dir: &Path) -> Vec<Value> {
 /// The record's writes on a worker not done yet — tarae's way out waits for them (`wait_written`).
 pub(crate) static WRITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The most tarae's way out waits for the record's writes.
+/// The most tarae's way out waits for the record's writes. In tests the shared patience (#652): a test reads the
+/// record after `cards_flush`, so it waits on the writes landing, never on the quit's second under a loaded run.
+#[cfg(not(test))]
 const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(test)]
+const QUIT_WAIT: std::time::Duration = crate::test_results::PATIENCE;
 
 /// Waits until the record's writes under way are done, at most `max` — false: some still weren't.
 pub fn wait_written(max: std::time::Duration) -> bool {

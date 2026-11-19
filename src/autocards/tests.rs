@@ -78,7 +78,7 @@ fn verdict(ed: &mut Editor, card: u64, word: &str) {
 }
 
 fn record(dir: &Scratch) -> Vec<Value> {
-    assert!(crate::cards::wait_written(Duration::from_secs(5)));
+    assert!(crate::cards::wait_written(crate::test_results::PATIENCE));
     crate::cards::read_record(dir.path())
 }
 
@@ -731,7 +731,7 @@ fn every_message_sent_is_typed_or_composed() {
 }
 
 fn written_in(ed: &Editor) -> Vec<Value> {
-    assert!(crate::cards::wait_written(Duration::from_secs(5)));
+    assert!(crate::cards::wait_written(crate::test_results::PATIENCE));
     crate::cards::read_record(ed.cards_dir.as_ref().unwrap())
 }
 

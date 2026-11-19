@@ -1080,6 +1080,12 @@ const RUN_PATH: &[&str] = &[
 const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/cards.rs", r#"in fn logged: LOGGED.with(|l| l.borrow_mut().push(format!("{leve"#, RECORD),
     (
+        "src/cards.rs",
+        "const QUIT_WAIT:: a test build's twin",
+        "the end's wait for the record's writes, the shared patience for 1 s (#652): compat judges the record once they've \
+         landed, as a quit on a sound disk does — a disk slower than 1 s isn't what it measures",
+    ),
+    (
         "src/editor.rs",
         "in fn with_root: allow_path",
         "stays off: no stored grants — an entry says its settings",

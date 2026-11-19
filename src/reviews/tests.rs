@@ -56,7 +56,7 @@ fn settle_until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 
 /// The record as written: every entry, and the files' text whole.
 fn record(dir: &Path) -> (Vec<Value>, String) {
-    assert!(crate::cards::wait_written(Duration::from_secs(5)), "the record's writes ended");
+    assert!(crate::cards::wait_written(crate::test_results::PATIENCE), "the record's writes ended");
     let mut text = String::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         if e.path().extension().is_some_and(|x| x == "jsonl") {
@@ -780,7 +780,7 @@ fn a_link_at_the_records_folder_is_refused() {
     crate::llm::review_focus(&mut ed);
     frame(&mut ed);
     feed(&mut ed, "a");
-    assert!(crate::cards::wait_written(Duration::from_secs(5)), "the record's writes ended");
+    assert!(crate::cards::wait_written(crate::test_results::PATIENCE), "the record's writes ended");
     let there: Vec<_> = std::fs::read_dir(&elsewhere).unwrap().flatten().map(|e| e.file_name()).collect();
     assert!(there.is_empty(), "written through the link: {there:?}");
     assert!(!key_path(&dir.join(DIR)).exists(), "no key made");

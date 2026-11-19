@@ -297,8 +297,12 @@ impl Saver {
 }
 
 /// How long quitting waits for saves still being written (a network drive can be slow; a hung one isn't
-/// waited for forever — the quit is refused, the saves go on).
+/// waited for forever — the quit is refused, the saves go on). In tests the shared patience (#652): a test reads
+/// the disk after `flush_saves`, so it waits on the saves landing, never on the quit's 10 s under a loaded run.
+#[cfg(not(test))]
 const QUIT_WAIT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const QUIT_WAIT: Duration = crate::test_results::PATIENCE;
 
 /// A run waiting this long for its saves says so (`after_saves`) — a usual save is a few ms, never seen.
 const SAY_WAITING: Duration = Duration::from_secs(1);

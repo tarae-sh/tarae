@@ -2111,27 +2111,39 @@ mod tests {
         until_said(&mut ed, "not kept yet");
         crate::storewrite::hold(&store, None);
         assert!(kept_has(&store, "demo"), "its write failed");
-        assert_eq!(ed.plugin_approvals_quit(perm::QUIT_WAIT), Vec::<String>::new());
+        // (the shared patience, not `QUIT_WAIT`: the quit's write landing is what's checked, not its second — #652)
+        assert_eq!(ed.plugin_approvals_quit(crate::test_results::PATIENCE), Vec::<String>::new());
         assert!(!kept_has(&store, "demo"), "the quit's write");
     }
 
-    /// …and a write held for good is named within the quit's bound, the store as it was.
+    /// …and a write held for good is named within the quit's bound — the wait said as it was given, the store as it
+    /// was. No stopwatch (#652; it failed under a full run's load): the write never lands, so the quit coming back
+    /// at all is the bound kept — a quit that waited on the writer would never come back, and the shared patience
+    /// fails that (it lets the write go: the quit then says nothing). How long the bound is on the clock is the
+    /// kernel's timer, judged on no runner.
     #[test]
     fn a_write_held_at_quit_is_named_within_the_bound() {
         let reads = crate::scratch::Scratch::new("plugins-quit-held-reads");
         let (_s, mut ed, _dir, store) = approved_kept("quit-held", &reads);
         crate::storewrite::hold(&store, Some(0));
         ed.plugin_revoke("demo").unwrap();
-        let t = Instant::now();
-        let said = ed.plugin_approvals_quit(perm::QUIT_WAIT);
-        let took = t.elapsed();
+        let (back, patience) = std::sync::mpsc::channel::<()>();
+        let held = store.clone();
+        crate::event::thread("test-patience", move || {
+            let out = std::sync::mpsc::RecvTimeoutError::Timeout;
+            if patience.recv_timeout(crate::test_results::PATIENCE) == Err(out) {
+                crate::storewrite::hold(&held, None);
+            }
+        });
+        // (its own wait, not `QUIT_WAIT`: what it says is the one passed)
+        let said = ed.plugin_approvals_quit(std::time::Duration::from_millis(30));
+        drop(back);
         assert_eq!(
             said,
-            ["tarae: not written before quitting (1.0s waited): plugin demo: permissions taken back"]
+            ["tarae: not written before quitting (30ms waited): plugin demo: permissions taken back"],
+            "named at its bound — nothing said: it waited on the writer until the patience let the write go"
         );
-        // (the bound, and room for a loaded runner to wake — never the test's patience)
-        assert!(took < perm::QUIT_WAIT * 3, "took {took:?}");
-        assert!(kept_has(&store, "demo"));
+        assert!(kept_has(&store, "demo"), "the store as it was");
         crate::storewrite::hold(&store, None);
     }
 
