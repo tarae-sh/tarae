@@ -762,7 +762,7 @@ fn start_tests(
         For::User(_) => ride.trace.clone(),
     };
     // (Claude's tests, the user's run of them again too — as `task_start_for` has Claude's command)
-    ed.test_start_guarded(target, guard, trace, crate::spawn::Acts::Claude);
+    let refused = ed.test_start_guarded(target, guard, trace, crate::spawn::Acts::Claude);
     match ed.workspace.test_run.as_mut().filter(|_| ed.test_generation != before) {
         Some(r) => {
             let claudes = matches!(who, For::Claude(_));
@@ -777,7 +777,7 @@ fn start_tests(
             true
         }
         None => {
-            fail(ed, who, ride.joined, format!("couldn't start {program}"));
+            fail(ed, who, ride.joined, refused.unwrap_or_else(|| format!("couldn't start {program}")));
             false
         }
     }
@@ -3744,8 +3744,8 @@ fn run_start(ed: &mut Editor, who: For, cmd: String, cwd: PathBuf, guard: Option
     match ed.task_start_for(task, who, guard, ride) {
         Ok(()) => true,
         Err(back) => {
-            let (who, ride) = *back;
-            fail(ed, who, ride.joined, "couldn't start sh".into());
+            let (who, ride, refused) = *back;
+            fail(ed, who, ride.joined, refused.unwrap_or_else(|| "couldn't start sh".into()));
             false
         }
     }

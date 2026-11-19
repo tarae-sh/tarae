@@ -7042,6 +7042,54 @@ fn lock_held() -> std::sync::MutexGuard<'static, Option<(PathBuf, Held)>> {
     STARTED_HELD.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A run refused before its start (`spawn_as`, `kept_cwd`): its words, what Claude's call is answered with as they are
+/// — a refusal by design, told apart from a start that failed (`StartRefused::of`).
+#[derive(Debug)]
+pub struct StartRefused(pub String);
+
+impl std::fmt::Display for StartRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StartRefused {}
+
+impl StartRefused {
+    /// The refusal's words, where `e` is one (`spawn_as`'s) — None: another failure.
+    pub fn of(e: &std::io::Error) -> Option<&str> {
+        e.get_ref()?.downcast_ref::<StartRefused>().map(|r| r.0.as_str())
+    }
+}
+
+/// Why a run under `p` may not start in `real` (its folder, a real path), in `linux::KeptWay::said`'s form — a folder
+/// at or below a place kept from every run (`Reads::kept`), but in the run's own places where one holds them (a
+/// checkout in `~/.claude/worktrees`: `Reads::kept_holds`, the profile's own rule, so a run there starts as before).
+/// None: it may. On every platform and tier, before anything starts: in tier own the kept folder is under the empty
+/// one nobody may open, so its child's `chdir` would fail with a bare errno; elsewhere it'd start and read nothing
+/// there.
+pub fn kept_cwd(p: &Policy, real: &Path) -> Option<String> {
+    let own = p.own_places();
+    let kept = p
+        .reads
+        .kept
+        .iter()
+        .filter(|k| real.starts_with(k) && !own.iter().any(|o| o.starts_with(k) && real.starts_with(o)))
+        .min_by_key(|k| k.components().count())?;
+    let var = p.reads.kept_vars.iter().find(|(at, _)| at == kept).map(|(_, v)| format!(" (${v})"));
+    let (folder, kept_at, var) =
+        (crate::allow::tilde(real), crate::allow::tilde(kept), var.unwrap_or_default());
+    let then = "Run it from another folder.";
+    Some(match real == kept.as_path() {
+        true => format!(
+            "tarae's sandbox didn't start it: its folder {kept_at}{var} is kept from every run. {then}"
+        ),
+        false => format!(
+            "tarae's sandbox didn't start it: its folder {folder} is in {kept_at}{var}, kept from every run. {then}"
+        ),
+    })
+}
+
 /// Starts `cmd` (made by `command`) in a session of its own (`spawn::setsid`) — on Linux forked by the session's
 /// keeper (`keeper::Keeper::start`: its rules and the seccomp filter its own, and tarae's supervisor deciding
 /// what it reaches by address — the main loop waits for its start only); elsewhere the sandbox is in the
@@ -7053,6 +7101,23 @@ pub fn spawn_as(
     cmd: &Command,
     acts: crate::spawn::Acts,
 ) -> std::io::Result<crate::spawn::Spawned> {
+    // (its folder kept from every run: refused before anything starts — no keeper's request, no broker, no child.
+    // Real: tarae's callers give real folders already (`tools::run_cwd`, the root), so this is the start's own lookup)
+    if let Some(p) = policy {
+        let dir = match cmd.get_current_dir() {
+            Some(d) => std::path::absolute(d)?,
+            None => p.root.clone(),
+        };
+        let real = std::fs::canonicalize(&dir).unwrap_or(dir);
+        // (the break-once: unchecked — the run goes on to its start there)
+        #[cfg(test)]
+        let checked = std::env::var_os("TARAE_TEST_KEPT_CWD_UNCHECKED").is_none();
+        #[cfg(not(test))]
+        let checked = true;
+        if checked && let Some(why) = kept_cwd(p, &real) {
+            return Err(std::io::Error::other(StartRefused(why)));
+        }
+    }
     #[cfg(target_os = "linux")]
     if let Some(p) = policy {
         let c = match &p.confine {
@@ -17177,6 +17242,286 @@ mod tests {
         }
     }
 
+    /// For real, on Linux in tier own (the chdir landing): a run's child enters its working folder only after its mounts.
+    /// Started in a folder bound over itself (`Covers::pins`) or in one below it, a name looked up from there — by
+    /// `./name` and `/proc/self/cwd/name` from the pinned folder, by `../name` and `/proc/self/cwd/../name` from the one
+    /// below — goes through the pins and what was made through them: a sealed name (`build.rs`) isn't written, a key
+    /// at a seal's pinned folder (`.env` beside `tool/x/build.rs`, beside `sub/.claude`) isn't read, nor a kept file
+    /// from its own folder (#651's pin). Entered before them (the break-once, `TARAE_TEST_CHDIR_FIRST=1`), the folder
+    /// stays on the mount below the pin, where none of those are. And no pin is the run's `/`, the project's root or a
+    /// write place — each strictly below one — so no root a run holds is below a pin. A row whose run didn't start is a
+    /// failure, never a refusal; every row runs, what got through said once at the end.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_run_enters_its_folder_only_after_its_mounts() {
+        let test = "a_run_enters_its_folder_only_after_its_mounts";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-chdir");
+        let t = profile_path(&s);
+        let (home, root, writes) = (t.join("home"), t.join("home/project"), t.join("writes"));
+        let kube = writes.join("kind/kubeconfig");
+        let (sealed, beside_seal, beside_folder) =
+            (root.join("tool/x/build.rs"), root.join("tool/x/.env"), root.join("sub/.env"));
+        for f in [&sealed, &beside_seal, &beside_folder, &root.join("sub/.claude/settings.json"), &kube] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, FAKE).unwrap();
+        }
+        // (the folders below the pinned ones, each with a file the run reads: it started there)
+        let belows = [root.join("tool/x/src"), root.join("sub/below"), writes.join("kind/below")];
+        for b in &belows {
+            std::fs::create_dir_all(b).unwrap();
+            std::fs::write(b.join("notes.txt"), "notes\n").unwrap();
+        }
+        let reads = Reads { home: Some(home), kept: vec![kube.clone()], ..Reads::default() };
+        let env = Env { root: root.clone(), reads, run_env: run_env_here(), ..Env::default() };
+        let p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
+        if skipped_for_mounts(&p, test, true) {
+            return;
+        }
+        let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
+        let Some(Ok(confine)) = &c.confine else { panic!("{test}: not confined: {:?}", c.confine) };
+        let (tier, cv) = (confine.tier(), &confine.covers);
+        // (what each row stands on: the seals, their pins, the keys and the kept file hidden, its folder pinned)
+        let has = |v: &[linux::Cover], f: &Path| v.iter().any(|c| c.path == f);
+        for (what, v, f) in [
+            ("sealed", &cv.seals, sealed.clone()),
+            ("sealed", &cv.seals, root.join("sub/.claude")),
+            ("pinned", &cv.pins, root.join("tool")),
+            ("pinned", &cv.pins, root.join("tool/x")),
+            ("pinned", &cv.pins, root.join("sub")),
+            ("pinned", &cv.pins, writes.join("kind")),
+            ("hidden", &cv.keys, beside_seal.clone()),
+            ("hidden", &cv.keys, beside_folder.clone()),
+            ("hidden", &cv.kept, kube.clone()),
+        ] {
+            assert!(has(v, &f), "{tier}: {} {what}: {cv:?}", f.display());
+        }
+        // (no pin is `/`, the project's root or a write place: each strictly below one of them)
+        for pin in &cv.pins {
+            let below = |w: &PathBuf| pin.path.starts_with(w) && pin.path != *w;
+            assert!(
+                pin.path != Path::new("/") && (below(&root) || p.write.iter().any(below)),
+                "{tier}: a pin that's a root: {}",
+                pin.path.display()
+            );
+        }
+        // (the break-once's way to the run's child: in its environment)
+        let first: Vec<(&str, &str)> = match std::env::var_os("TARAE_TEST_CHDIR_FIRST") {
+            Some(_) => vec![("TARAE_TEST_CHDIR_FIRST", "1")],
+            None => Vec::new(),
+        };
+        let started = |err: &str| !err.contains("tarae's sandbox couldn't start it");
+        let mut failed: Vec<String> = Vec::new();
+        let rows = [
+            ("a sealed name written", root.join("tool/x"), &belows[0], "build.rs", true),
+            ("a key beside a sealed name read", root.join("tool/x"), &belows[0], ".env", false),
+            ("a key beside a sealed folder read", root.join("sub"), &belows[1], ".env", false),
+            ("a kept file read from its own folder", writes.join("kind"), &belows[2], "kubeconfig", false),
+        ];
+        for (what, pinned, below, name, write) in &rows {
+            let ways = [
+                (pinned, format!("./{name}")),
+                (pinned, format!("/proc/self/cwd/{name}")),
+                (*below, format!("../{name}")),
+                (*below, format!("/proc/self/cwd/../{name}")),
+            ];
+            for (at, path) in ways {
+                let script = match write {
+                    true => format!("echo planted > '{path}'"),
+                    false => format!("cat '{path}'"),
+                };
+                let (ok, out, err) = sh_confined_env(&c, at, &script, &first);
+                if ok || out.contains(FAKE) || !started(&err) {
+                    let from = at.strip_prefix(&t).unwrap().display();
+                    failed.push(format!("{what} — from {from} by {path}: {} {}", out.trim(), err.trim()));
+                }
+            }
+        }
+        // (each run started where it was asked to: a file below the pinned folder read by its own name)
+        for b in &belows {
+            let (ok, out, err) = sh_confined_env(&c, b, "cat notes.txt", &first);
+            if !ok || out != "notes\n" {
+                failed.push(format!("not started in {}: {out} {}", b.display(), err.trim()));
+            }
+        }
+        if std::fs::read_to_string(&sealed).ok().as_deref() != Some(FAKE) {
+            failed.push("the sealed name not as it was".into());
+        }
+        assert!(
+            failed.is_empty(),
+            "{test}, {tier}: {} rows got through:\n{}",
+            failed.len(),
+            failed.join("\n")
+        );
+    }
+
+    /// The chdir landing's refusal, its rule (`kept_cwd`): a run's folder at a kept place or below it is refused in
+    /// `KeptWay::said`'s form — the variable that put it there when one did, "didn't" (by design), and the next step;
+    /// none elsewhere, and none in the run's own places where a kept place holds them (a checkout in a kept place runs
+    /// at its root and below, as the profile's `kept_holds` lets it).
+    #[test]
+    fn a_runs_folder_in_a_kept_place_is_refused_in_its_words() {
+        let (gcloud, ssh) = (PathBuf::from("/opt/k/gcloud"), PathBuf::from("/opt/k/ssh"));
+        let reads = Reads {
+            kept: vec![gcloud.clone(), ssh.clone()],
+            kept_vars: vec![(gcloud.clone(), "CLOUDSDK_CONFIG".into())],
+            ..Reads::default()
+        };
+        let at = |root: &str| {
+            Policy::for_project(&Env { root: root.into(), reads: reads.clone(), ..Env::default() })
+        };
+        let p = at("/opt/work/p");
+        let then = "Run it from another folder.";
+        assert_eq!(
+            kept_cwd(&p, &gcloud).as_deref(),
+            Some(format!(
+                "tarae's sandbox didn't start it: its folder /opt/k/gcloud ($CLOUDSDK_CONFIG) is kept from every run. {then}"
+            ))
+            .as_deref()
+        );
+        assert_eq!(
+            kept_cwd(&p, &gcloud.join("inner/deeper")).as_deref(),
+            Some(format!(
+                "tarae's sandbox didn't start it: its folder /opt/k/gcloud/inner/deeper is in /opt/k/gcloud \
+                 ($CLOUDSDK_CONFIG), kept from every run. {then}"
+            ))
+            .as_deref()
+        );
+        assert_eq!(
+            kept_cwd(&p, &ssh.join("d")).as_deref(),
+            Some(format!(
+                "tarae's sandbox didn't start it: its folder /opt/k/ssh/d is in /opt/k/ssh, kept from every run. {then}"
+            ))
+            .as_deref()
+        );
+        for free in ["/opt/work/p", "/opt/work/p/src", "/opt/k", "/opt/k/gcloud-other", "/opt/k/sshx"] {
+            assert_eq!(kept_cwd(&p, Path::new(free)), None, "{free}");
+        }
+        // (a checkout inside a kept place: its root and below start; beside it, still refused)
+        let inside = at("/opt/k/gcloud/p");
+        for own in ["/opt/k/gcloud/p", "/opt/k/gcloud/p/src"] {
+            assert_eq!(kept_cwd(&inside, Path::new(own)), None, "{own}");
+        }
+        assert!(kept_cwd(&inside, &gcloud.join("beside")).is_some());
+        assert!(kept_cwd(&inside, &gcloud).is_some());
+    }
+
+    /// The chdir landing's refusal comes before anything starts, on every platform: `spawn_as` answers a run whose
+    /// folder is in a kept place with `StartRefused` — not a keeper's or Seatbelt's failure (the policy here has no
+    /// rules made: past the check, Linux says so; macOS starts `sandbox-exec`) — and no child runs (its marker never
+    /// made). Break-once: `TARAE_TEST_KEPT_CWD_UNCHECKED=1`.
+    #[test]
+    fn a_run_in_a_kept_folder_starts_nothing() {
+        let s = crate::scratch::Scratch::new("sb-kept-cwd-start");
+        let t = profile_path(&s);
+        let (root, kept) = (t.join("project"), t.join("cfg/gcloud"));
+        for d in [root.clone(), kept.join("inner")] {
+            std::fs::create_dir_all(&d).unwrap();
+        }
+        let reads = Reads {
+            kept: vec![kept.clone()],
+            kept_vars: vec![(kept.clone(), "CLOUDSDK_CONFIG".into())],
+            ..Reads::default()
+        };
+        let p = Policy::for_project(&Env { root: root.clone(), reads, ..Env::default() });
+        let marker = t.join("started");
+        for at in [kept.clone(), kept.join("inner")] {
+            let mut cmd =
+                command(Some(&p), "/bin/sh", &["-c".into(), format!("touch '{}'", marker.display())]);
+            cmd.current_dir(&at).stdin(Stdio::null());
+            let want = kept_cwd(&p, &at).expect("refused by the rule");
+            match spawn(Some(&p), &cmd) {
+                Err(e) => assert_eq!(StartRefused::of(&e), Some(want.as_str()), "{}: {e}", at.display()),
+                Ok(s) => {
+                    let ended = crate::spawn::wait(s.pid);
+                    panic!("started in {}: {ended:?}", at.display());
+                }
+            }
+        }
+        assert!(!marker.exists(), "nothing ran");
+        // (another failure isn't told as a refusal)
+        assert_eq!(StartRefused::of(&std::io::Error::other("the sandbox wasn't made for this run")), None);
+    }
+
+    /// For real, on Linux in every tier (the chdir landing): a run whose folder is a kept folder in a place runs write —
+    /// hidden under the empty folder nobody may open in tier own, left out of the write grant elsewhere — or a folder
+    /// below it is refused before its start, in the sandbox's words (`StartRefused`), not its child's failure at
+    /// `chdir` ("couldn't start it — its folder: errno 13"), and nothing runs (its marker, in the write place, never
+    /// made). A project inside a kept place runs as before, at its root and below. Break-once:
+    /// `TARAE_TEST_KEPT_CWD_UNCHECKED=1` (tier own: the child's errno; elsewhere: it starts there).
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_run_in_a_kept_folder_is_refused_before_its_start() {
+        let test = "a_run_in_a_kept_folder_is_refused_before_its_start";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(&beside_the_build(), "sb-kept-cwd");
+        let t = profile_path(&s);
+        let (home, root, writes) = (t.join("home"), t.join("home/project"), t.join("writes"));
+        let (gcloud, held) = (writes.join("cfg/gcloud"), t.join("home/kc/p"));
+        for f in [
+            gcloud.join("inner/state.txt"),
+            root.join(".env"),
+            held.join("notes.txt"),
+            held.join("sub/notes.txt"),
+        ] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, if f.ends_with("notes.txt") { "notes\n" } else { FAKE }).unwrap();
+        }
+        let reads = Reads {
+            home: Some(home.clone()),
+            kept: vec![gcloud.clone()],
+            kept_vars: vec![(gcloud.clone(), "CLOUDSDK_CONFIG".into())],
+            ..Reads::default()
+        };
+        let env = Env { root: root.clone(), reads, run_env: run_env_here(), ..Env::default() };
+        let p = Policy { write: vec![writes.clone()], ..Policy::for_project(&env) };
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let Some(Ok(confine)) = &c.confine else { panic!("{test}: not confined: {:?}", c.confine) };
+        let tier = confine.tier();
+        let marker = writes.join("started");
+        let (g, then) = (crate::allow::tilde(&gcloud), "Run it from another folder.");
+        let rows = [
+            (gcloud.clone(), format!("its folder {g} ($CLOUDSDK_CONFIG) is kept from every run. {then}")),
+            (
+                gcloud.join("inner"),
+                format!(
+                    "its folder {} is in {g} ($CLOUDSDK_CONFIG), kept from every run. {then}",
+                    crate::allow::tilde(&gcloud.join("inner"))
+                ),
+            ),
+        ];
+        for (at, said) in rows {
+            let want = format!("tarae's sandbox didn't start it: {said}");
+            let mut cmd =
+                command(Some(&c), "/bin/sh", &["-c".into(), format!("touch '{}'", marker.display())]);
+            cmd.current_dir(&at).stdin(Stdio::null());
+            match spawn(Some(&c), &cmd) {
+                Err(e) => assert_eq!(StartRefused::of(&e), Some(want.as_str()), "{tier}: {e}"),
+                Ok(s) => {
+                    let mut err = String::new();
+                    if let Some(mut e) = s.stderr {
+                        let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                    }
+                    let ended = crate::spawn::wait(s.pid);
+                    panic!("{tier}: started in {}: {ended:?} {}", at.display(), err.trim());
+                }
+            }
+        }
+        assert!(!marker.exists(), "{tier}: nothing ran");
+        // A project inside a kept place: its runs start as before, at its root and below
+        let reads = Reads { home: Some(home), kept: vec![t.join("home/kc")], ..Reads::default() };
+        let env = Env { root: held.clone(), reads, run_env: run_env_here(), ..Env::default() };
+        let inside = confined(Policy { run: RunDir::new().ok(), ..Policy::for_project(&env) });
+        for at in [held.clone(), held.join("sub")] {
+            let (ok, out, err) = sh_confined(&inside, &at, "cat notes.txt");
+            assert!(ok && out == "notes\n", "{tier}: in {}: {out} {err}", at.display());
+        }
+    }
+
     /// A run's helper (#651): this test binary as a sandboxed run, exchanging the two folders `TARAE_TEST_EXCHANGE`
     /// names (`a:b`) by `renameat2`'s `RENAME_EXCHANGE`, which no common tool has. Fails where the kernel refuses;
     /// does nothing without the variable.
@@ -17779,8 +18124,10 @@ mod tests {
 
     /// For real, on Linux with a PID namespace of the session's: a run sees only its session's processes —
     /// not its keeper by tarae's number for it, nor tarae — and no process's `/proc/<pid>/root` (its keeper's mount
-    /// namespace holds no mount over a key; another run's has its own) takes it to a key: Landlock keeps a run's
-    /// reach into other processes to its own domain, and the keeper isn't dumpable.
+    /// namespace holds no mount over a key; another run's has its own) takes it to a key, nor its `/proc/<pid>/cwd`
+    /// (the chdir landing: a folder entered outside the run's mounts — the keeper's, tarae's, a stand-in for tarae's
+    /// started in the project, whose `.env` this test itself reads that way — isn't listed, its key not read):
+    /// Landlock keeps a run's reach into other processes to its own domain, and the keeper isn't dumpable.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_run_reaches_no_key_through_another_process_root() {
@@ -17793,13 +18140,31 @@ mod tests {
         let c = confined(Policy { run: RunDir::new().ok(), ..p.clone() });
         let Some(Ok(conf)) = &c.confine else { panic!("{:?}", c.confine) };
         let keeper = conf.keeper.as_ref().map(|k| k.pid);
+        // (outside the run, in the project: its `cwd` leads to the key for whoever may reach it — this test does)
+        let mut stand_in = Command::new("sleep").arg("30").current_dir(&root).spawn().unwrap();
+        let through = format!("/proc/{}/cwd/.env", stand_in.id());
+        assert_eq!(std::fs::read_to_string(&through).unwrap(), "tarae-fake-token", "{through}, from outside");
         let script = format!(
-            "for d in /proc/[0-9]*; do echo \"pid ${{d#/proc/}}\"; cat \"$d/root{}/.env\" 2>/dev/null; done; true",
+            "for d in /proc/[0-9]*; do p=${{d#/proc/}}; echo \"pid $p\"; cat \"$d/root{}/.env\" \"$d/cwd/.env\" \
+             2>/dev/null; ls \"$d/cwd/\" >/dev/null 2>&1 && echo \"cwd $p\"; done; true",
             root.display()
         );
         let (_, out, err) = sh_confined(&c, &root, &script);
+        let _ = stand_in.kill();
+        let _ = stand_in.wait();
         assert!(!out.contains("tarae-fake-token"), "{out} {err}");
         let pids: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("pid ")).collect();
+        // (whose folder it reached: never the keeper's — 1 in a PID namespace —, tarae's nor the stand-in's)
+        let listed: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("cwd ")).collect();
+        let not_its = match conf.keeper.as_ref().is_some_and(|k| k.ns.pid) {
+            true => vec!["1".to_string()],
+            false => [keeper, Some(std::process::id()), Some(stand_in.id())]
+                .iter()
+                .flatten()
+                .map(u32::to_string)
+                .collect(),
+        };
+        assert!(not_its.iter().all(|p| !listed.contains(&p.as_str())), "{not_its:?} listed: {listed:?}");
         if conf.keeper.as_ref().is_some_and(|k| k.ns.pid) {
             let (keeper, tarae) = (keeper.unwrap().to_string(), std::process::id().to_string());
             assert!(pids.contains(&"1"), "its keeper, as 1: {pids:?}");

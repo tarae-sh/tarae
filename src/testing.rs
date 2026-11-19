@@ -674,14 +674,15 @@ impl Editor {
     /// Started now, the saves before it written (`test_start`; Claude's run, `tools::go`): in the sandbox,
     /// unless `guard` says otherwise; `trace` — its way from the ask (else it starts here). `acts`: whose run it
     /// is (Claude's is kept from new user namespaces outside the sandbox too — `spawn::Acts` — and names its
-    /// containers, stopped with it — `containers.rs`).
+    /// containers, stopped with it — `containers.rs`). Some: the sandbox refused its start by design
+    /// (`sandbox::StartRefused`), its words — what Claude's call is answered with.
     pub fn test_start_guarded(
         &mut self,
         target: Target,
         guard: Option<crate::sandbox::Guard>,
         trace: Option<crate::trace::RunTrace>,
         acts: crate::spawn::Acts,
-    ) {
+    ) -> Option<String> {
         let trace = trace.unwrap_or_else(|| crate::trace::RunTrace::new(format!("tests: {}", target.label)));
         trace.step("saved");
         self.workspace.test_last = Some(target.clone());
@@ -715,7 +716,8 @@ impl Editor {
             // (the previous run, if any, stays current — its lines·end still land)
             Err(e) => {
                 trace.end(format!("didn't spawn: {e}"));
-                return self.set_error(format!("test: {}: {e}", argv[0]));
+                self.set_error(format!("test: {}: {e}", argv[0]));
+                return crate::sandbox::StartRefused::of(&e).map(str::to_string);
             }
         };
         trace.step("spawned");
@@ -873,6 +875,7 @@ impl Editor {
             containers,
             ended: Default::default(),
         });
+        None
     }
 }
 

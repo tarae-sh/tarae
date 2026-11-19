@@ -1235,9 +1235,14 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox.rs", "in fn run_folder: given", RUNS),
     ("src/sandbox.rs", "in fn runs_root: if let Some(runs) = &here.runs {", RUNS),
     ("src/sandbox.rs", "in fn spawn_as: held", HOOK),
+    ("src/sandbox.rs", "in fn spawn_as: checked", SEAM),
+    ("src/sandbox.rs", "in fn spawn_as: checked", SEAM),
     ("src/sandbox.rs", "in fn spawn_as: if let Some(held) = held {", HOOK),
     ("src/sandbox/keeper.rs", "in fn born_lo: port_ino", RECORD),
     ("src/sandbox/keeper.rs", "in fn child: if exec.leak {", SEAM),
+    ("src/sandbox/keeper.rs", "in fn child: entered", SEAM),
+    ("src/sandbox/keeper.rs", "in fn child: entered", SEAM),
+    ("src/sandbox/keeper.rs", "in fn child: if exec.chdir_first && libc::chdir(exec.cwd.as_ptr", SEAM),
     (
         "src/sandbox/keeper.rs",
         "in fn child: crate",
@@ -1270,6 +1275,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "none unless the run's project is in the two-deep test's own scratch folder: compat's never are",
     ),
     ("src/sandbox/keeper.rs", "in fn of: leak", SEAM),
+    ("src/sandbox/keeper.rs", "in fn of: chdir_first", SEAM),
     ("src/sandbox/keeper.rs", "in fn there_or_born: if let Some((_, began, go)) = slow {", HOOK),
     ("src/sandbox/keeper.rs", "in fn there_or_born: slow", HOOK),
     (

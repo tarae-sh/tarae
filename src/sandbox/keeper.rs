@@ -2394,7 +2394,10 @@ fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: R
                 fail(Step::Handoff, e);
             }
         }
-        if libc::chdir(exec.cwd.as_ptr()) != 0 {
+        // (the break-once: its folder entered before its mounts, as it was until the chdir landing — a test build's
+        // only)
+        #[cfg(test)]
+        if exec.chdir_first && libc::chdir(exec.cwd.as_ptr()) != 0 {
             fail(Step::Chdir, errno());
         }
         // (7d: before dumpable — a new user namespace's capabilities make it undumpable again; after its stdio, which
@@ -2410,6 +2413,16 @@ fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: R
                 let r = left.record();
                 libc::write(error, r.as_ptr().cast(), r.len());
             }
+        }
+        // (its folder entered only now, by its path through its mounts: entered before them, it'd stay on the mount
+        // below each folder bound over itself (`Covering::pins`), and a name looked up from there — `./`, `..`,
+        // `/proc/self/cwd/` — misses the seals and covers made through that bind: a sealed name written, a key read)
+        #[cfg(test)]
+        let entered = exec.chdir_first;
+        #[cfg(not(test))]
+        let entered = false;
+        if !entered && libc::chdir(exec.cwd.as_ptr()) != 0 {
+            fail(Step::Chdir, errno());
         }
         libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
         libc::prctl(libc::PR_SET_NAME, exec.comm.as_ptr());
@@ -2546,6 +2559,10 @@ struct Exec {
     /// environment holds `TARAE_TEST_LEAK_FD=1`) — what `close_range` must keep from the program.
     #[cfg(test)]
     leak: bool,
+    /// Tests' break-once: its child enters its folder before its mounts, as it did until the chdir landing (its
+    /// environment holds `TARAE_TEST_CHDIR_FIRST=1`).
+    #[cfg(test)]
+    chdir_first: bool,
 }
 
 /// What a run's child needs to hide the files named like keys (7d, `linux::Covers`; `cover`) and seal the project's
@@ -2894,6 +2911,8 @@ impl Exec {
             covers: Covering::of(run),
             #[cfg(test)]
             leak: run.envp.iter().any(|e| e.as_slice() == b"TARAE_TEST_LEAK_FD=1"),
+            #[cfg(test)]
+            chdir_first: run.envp.iter().any(|e| e.as_slice() == b"TARAE_TEST_CHDIR_FIRST=1"),
         })
     }
 }

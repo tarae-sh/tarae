@@ -865,17 +865,18 @@ impl Editor {
     /// waits for its end (or, the user's run of it again, Claude hears it later); in the sandbox, unless
     /// `guard` says otherwise. Its places go to the list only when it's a check or a build
     /// (`tools::is_check`, #28) — a grep of Claude's looking around doesn't replace the user's list. `ride`:
-    /// what goes along to the run (`queued.rs`). Err (who and what rode, back): it didn't start (a run is
-    /// under way, or it couldn't spawn). Saves first: `tools::go` starts it `after_saves`.
+    /// what goes along to the run (`queued.rs`). Err (who and what rode, back, and the sandbox's words where it
+    /// refused the start — `sandbox::StartRefused`): it didn't start (a run is under way, or it couldn't spawn).
+    /// Saves first: `tools::go` starts it `after_saves`.
     pub(crate) fn task_start_for(
         &mut self,
         task: Task,
         who: crate::tools::For,
         guard: Option<crate::sandbox::Guard>,
         ride: crate::queued::Ride,
-    ) -> Result<(), Box<(crate::tools::For, crate::queued::Ride)>> {
+    ) -> Result<(), Box<(crate::tools::For, crate::queued::Ride, Option<String>)>> {
         if self.workspace.task_run.as_ref().is_some_and(|r| r.state == State::Running) {
-            return Err(Box::new((who, ride)));
+            return Err(Box::new((who, ride, None)));
         }
         // (Claude's call's trace goes on — from its ask; the user's run again of it starts here)
         let trace = match &who {
@@ -922,7 +923,7 @@ impl Editor {
             (Some(r), None) if r.warned.iter().any(|w| w.start) => Some((task.cmd.clone(), r.clone())),
             _ => None,
         };
-        self.task_spawn(task, None, policy, feeds, true, &[], trace, None);
+        let refused = self.task_spawn(task, None, policy, feeds, true, &[], trace, None);
         let out = match self.workspace.task_run.as_mut().filter(|_| self.task_generation != before) {
             Some(r) => {
                 // (#610: a command ran in this turn, in the sandbox or not — `safebare::turn_over`)
@@ -941,7 +942,7 @@ impl Editor {
                 r.base = ride.extra.base;
                 Ok(())
             }
-            None => Err(Box::new((who, ride))),
+            None => Err(Box::new((who, ride, refused))),
         };
         if out.is_ok()
             && let Some((cmd, ran)) = at_start
@@ -1002,7 +1003,8 @@ impl Editor {
     /// command of Claude's — without `CDPATH`, so a `cd` lands where `readonly::outside` resolved it (with
     /// it set, `cd src` may go to another `src` on it, and the line read there unasked). `env`: variables it
     /// runs with besides tarae's own. `trace`: its way so far, logged at its end. `input`: what its stdin reads
-    /// (a preflight's key; unsandboxed runs only), else `/dev/null`.
+    /// (a preflight's key; unsandboxed runs only), else `/dev/null`. Some: the sandbox refused its start by design
+    /// (`sandbox::StartRefused`), its words — what Claude's call is answered with.
     #[allow(clippy::too_many_arguments)]
     fn task_spawn(
         &mut self,
@@ -1014,7 +1016,7 @@ impl Editor {
         env: &[(String, String)],
         trace: crate::trace::RunTrace,
         input: Option<String>,
-    ) {
+    ) -> Option<String> {
         // (a configured task's folder is as written — from the root, the root itself when it says none)
         let task = Task { cwd: self.path_of(&task.cwd), ..task };
         let install = after.is_some();
@@ -1060,15 +1062,17 @@ impl Editor {
             Ok(c) => c,
             Err(e) => {
                 trace.end(format!("didn't spawn: {e}"));
+                let refused = crate::sandbox::StartRefused::of(&e).map(str::to_string);
                 if let Some(a) = after {
-                    return self.offer_finished(a.offer, Err(format!("{}: {e}", task.name)));
+                    self.offer_finished(a.offer, Err(format!("{}: {e}", task.name)));
+                    return refused;
                 }
                 self.set_error(format!("{}: {e}", task.name));
                 // (the panel is still free: what waits for it — Claude's own failure says so itself, `tools::fail`)
                 if !claudes {
                     crate::queued::run_next(self);
                 }
-                return;
+                return refused;
             }
         };
         trace.step("spawned");
@@ -1307,6 +1311,7 @@ impl Editor {
             base: None,
             ended: Default::default(),
         });
+        None
     }
 }
 

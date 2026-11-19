@@ -258,7 +258,10 @@ Not kept:
   folder takes new files, so a new `build.rs` beside a `Cargo.toml` is made; each folder between the project and a
   protected name is bound over itself too, so it can't be moved away (or removed) with the name inside it and the
   name made anew — a file moved between such a folder and the rest of the project goes as a copy (`EXDEV`)
-  (test: `sandbox::tests::protected_names_are_sealed_and_the_root_takes_new_files`); elsewhere a folder holding a protected
+  (test: `sandbox::tests::protected_names_are_sealed_and_the_root_takes_new_files`). A run's child enters its
+  working folder only after those mounts, by its path through them, so a run started in such a folder or below one
+  reaches a protected name through them by every path form — `./build.rs`, `../build.rs`, `/proc/self/cwd/build.rs`
+  (test: `sandbox::tests::a_run_enters_its_folder_only_after_its_mounts`); elsewhere a folder holding a protected
   name is granted entry by entry, but a folder with none can take a new `Makefile`. While names a run made wait
   for their card, the checkout's language servers are paused (rust-analyzer's check would run a new `build.rs`);
   a server's own file watch may still see one while the run goes. macOS:
@@ -371,7 +374,13 @@ Kept:
   Device or resource busy; a folder under an empty one nobody may open) and neither is a folder on the way to it,
   each bound over itself, so a run can't move one away — renamed, renamed onto, exchanged, emptied and removed, from a
   namespace of its own — and make a new kept place at its name (#634, #651; open from #633 until then); the folders
-  around it take new files as usual. Never hidden without its way held: in the tiers without mounts — and in tier own
+  around it take new files as usual. A run whose folder is a kept place or a folder below one isn't started, on every
+  platform and tier: tarae refuses it before anything starts, naming the folder, the kept place and its variable —
+  but a project inside a kept place runs there as ever, at its root and below (test:
+  `sandbox::tests::a_runs_folder_in_a_kept_place_is_refused_in_its_words` ·
+  `sandbox::tests::a_run_in_a_kept_folder_starts_nothing` ·
+  `sandbox::tests::a_run_in_a_kept_folder_is_refused_before_its_start` (shown, Linux)). Never hidden without its way
+  held: in the tiers without mounts — and in tier own
   for one not there yet, a link or something not a file or folder on its way, a way past the room a run's mounts take,
   or one reached through another mount — it's left out of the write grant, as of `/`'s read grant: on Linux without
   mounts of the run's own a place is kept
@@ -490,8 +499,12 @@ Kept:
   `sandbox::tests::a_masked_name_is_another_policy_than_its_real_value` ·
   `sandbox::proxy::masked::tests::sentinels_are_as_long_as_their_values_and_kept_with_the_session` ·
   `sandbox::proxy::masked::tests::no_value_in_a_debug`
-- Linux: no way around it through a link, a rename, another mount or another process's root.
-  test: `sandbox::tests::a_hard_link_to_a_key_made_earlier_is_closed_too` ·
+- Linux: no way around it through a link, a rename, another mount, another process's root or folder, or the run's
+  own working folder: where keys are hidden by mounts its child enters that folder only after them, so a key beside
+  a protected name or a kept file isn't read from its own folder either, by `./`, `../` or `/proc/self/cwd/`; and it
+  holds no descriptor from before them.
+  test: `sandbox::tests::a_run_enters_its_folder_only_after_its_mounts` ·
+  `sandbox::tests::a_hard_link_to_a_key_made_earlier_is_closed_too` ·
   `sandbox::tests::a_key_reached_through_another_mount_is_closed_there` ·
   `sandbox::tests::a_run_reaches_no_key_through_another_process_root` ·
   `sandbox::tests::a_key_swapped_after_the_walk_stops_its_run` · `sandbox::tests::a_run_holds_no_descriptor_but_its_stdio`
