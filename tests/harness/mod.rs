@@ -5,7 +5,8 @@
 //! macOS's first-run check of a freshly linked, ad-hoc-signed binary can fail closed under load — the kernel then
 //! refuses the exec — so the prewarm takes that check alone, before the suite's parallel starts.
 //! (`tarae_testkit::firstexec`.) A later exec refused the same way is spawned once more, said and counted
-//! (`once_more_if_exec_refused`), where `tarae state` is asked.
+//! (`once_more_if_exec_refused`), where `tarae state` is asked and where `Term` starts tarae on its pty, before its
+//! first frame (`first_drawn`, #503).
 #![allow(dead_code)]
 
 use std::ffi::{OsStr, OsString};
@@ -567,6 +568,8 @@ pub struct Term {
     asked_again: AtomicUsize,
     /// The tarae `state` asks: an attached client's host (`Term::attach`) — None: this one.
     asks: Option<u32>,
+    /// How tarae ended, once it has (`exited`): its status, and why, read before it was reaped (#503).
+    end: Option<(ExitStatus, End)>,
 }
 
 pub fn cvt(rc: libc::c_int) -> io::Result<libc::c_int> {
@@ -631,17 +634,37 @@ impl Term {
         let deadline = Instant::now() + t.timeout;
         while t.poll_for(POLL, |s| s.status().contains("● ")).is_none() {
             if !t.running() || Instant::now() > deadline {
-                panic!("no first frame from the host\n{}\nthe host's output:\n{}", t.screen(), host.output());
+                let state = t.ended_said();
+                panic!(
+                    "no first frame from the host — {state}\n{}\nthe host's output:\n{}",
+                    t.screen(),
+                    host.output()
+                );
             }
         }
         t
     }
 
+    /// tarae started on its pty and waited for to its first frame — started once more when, before it, tarae ended
+    /// with its exec refused (`first_drawn`, #503).
     fn spawn_with(sb: &Sandbox, cwd: &Path, args: &[&str], cols: u16, rows: u16, pace: Option<Pace>) -> Term {
-        let mut term = Term::spawn_unready(sb, cwd, args, cols, rows, pace);
-        // First frame drawn = raw mode is on — safe to type from here.
-        term.wait_for("the first frame (status line with the mode)", |s| s.status().contains("● normal"));
-        term
+        const FIRST: &str = "the first frame (status line with the mode)";
+        let start = || {
+            let mut term = Term::spawn_unready(sb, cwd, args, cols, rows, pace);
+            // First frame drawn = raw mode is on — safe to type from here.
+            match term.wait_unless(FIRST, |s| s.status().contains("● normal"), start_over) {
+                Ok(_) => (term, End::default()),
+                Err(end) => (term, end),
+            }
+        };
+        let what = format!("tarae {args:?} on its pty, before {FIRST},");
+        match first_drawn(&EXEC_REFUSALS_RETRIED, &mut io::stderr(), &what, start) {
+            Ok(term) => term,
+            Err(mut term) => {
+                let state = term.ended_said();
+                panic!("tarae ended before {FIRST}, started twice — {state}\n{}", term.screen());
+            }
+        }
     }
 
     fn spawn_unready(
@@ -755,6 +778,7 @@ impl Term {
             bin: sb.bin(),
             asked_again: Default::default(),
             asks: None,
+            end: None,
         }
     }
 
@@ -813,7 +837,7 @@ impl Term {
     /// first rows of a frame were judged before the rest were read). A tarae that exited is judged as it left
     /// the screen (one killed mid-frame never ends it).
     fn whole(&mut self) -> Option<Screen> {
-        let running = matches!(self.child.try_wait(), Ok(None));
+        let running = self.exited().is_none();
         let o = lock(&self.out);
         if o.in_frame && running {
             return None;
@@ -825,24 +849,58 @@ impl Term {
 
     /// Polls the screen — each whole frame — until `done` holds. On timeout, panics with the whole screen.
     pub fn wait_for(&mut self, what: &str, done: impl Fn(&Screen) -> bool) -> Screen {
+        match self.wait_unless(what, done, |_| false) {
+            Ok(s) => s,
+            Err(end) => unreachable!("no end is over: {end:?}"),
+        }
+    }
+
+    /// `wait_for`, over early once tarae has ended in a way `over` takes: that end. A tarae that ended any other way
+    /// is waited on, as `wait_for` does (its last bytes may still be on their way), and the timeout's panic says
+    /// why it ended.
+    fn wait_unless(
+        &mut self,
+        what: &str,
+        done: impl Fn(&Screen) -> bool,
+        over: impl Fn(&End) -> bool,
+    ) -> Result<Screen, End> {
         let deadline = Instant::now() + self.timeout;
         loop {
             if let Some(s) = self.whole()
                 && done(&s)
             {
-                return s;
+                return Ok(s);
+            }
+            if let Some((_, end)) = &self.end
+                && over(end)
+            {
+                return Err(end.clone());
             }
             if Instant::now() > deadline {
                 let s = self.screen();
-                let state = match self.child.try_wait() {
-                    Ok(Some(st)) => format!("tarae EXITED ({st})"),
-                    _ => "tarae still running".to_string(),
-                };
+                let state = self.ended_said();
                 let vt = &lock(&self.out).parser_panics;
                 let vt = if vt.is_empty() { String::new() } else { format!(" — vt100 panicked: {vt:?}") };
                 panic!("timed out after {:?} waiting for {what} — {state}{vt}\n{s}", self.timeout);
             }
             thread::sleep(POLL);
+        }
+    }
+
+    /// Whether tarae has ended: its status, or None while it runs. The first time it's seen ended, why is read
+    /// before it's reaped (`end_of`) and kept in `end` — a `try_wait` would reap it first, and the reason with it.
+    fn exited(&mut self) -> Option<ExitStatus> {
+        if self.end.is_none() {
+            self.end = end_of(&mut self.child);
+        }
+        self.end.as_ref().map(|(st, _)| *st)
+    }
+
+    /// How tarae stands, in a failure's words: `exited_said`, or still running.
+    fn ended_said(&mut self) -> String {
+        match self.exited() {
+            Some(st) => exited_said(&st, self.end.as_ref().map(|(_, end)| end)),
+            None => "tarae still running".to_string(),
         }
     }
 
@@ -944,13 +1002,13 @@ impl Term {
     }
 
     pub fn running(&mut self) -> bool {
-        self.child.try_wait().expect("try_wait").is_none()
+        self.exited().is_none()
     }
 
     pub fn wait_exit(&mut self) -> ExitStatus {
         let deadline = Instant::now() + self.timeout;
         loop {
-            if let Some(st) = self.child.try_wait().expect("try_wait") {
+            if let Some(st) = self.exited() {
                 return st;
             }
             if Instant::now() > deadline {
@@ -1283,7 +1341,7 @@ pub fn output_and_end(cmd: &mut Command) -> (std::process::Output, End) {
 
 /// How a child ended, read before it was reaped: the signal that ended it, if one did, and why (`exit_reason_of`) —
 /// kept only for a signal's end.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct End {
     pub signal: Option<i32>,
     pub reason: ExitReason,
@@ -1345,19 +1403,78 @@ fn once_more_counted<T>(
     spawn()
 }
 
+/// Whether the wait for a tarae's first frame is over at `end` before that frame (#503): only when its exec was
+/// refused (`exec_refused_by_security_policy`) — the program never ran, so nothing it would have drawn is on its
+/// way. Any other end is waited on to the patience, as before, and fails there with its reason.
+fn start_over(end: &End) -> bool {
+    exec_refused_by_security_policy(end)
+}
+
+/// `start` — one start of tarae, waited for to its first frame: it, and how that wait ended (`End::default()`:
+/// drawn; else the end it was over at, `start_over`) — started once more when that end was a refused exec, said and
+/// counted as `once_more_counted`'s (#459's tally, #503). Err: the second was refused too, to fail as it came.
+fn first_drawn<T>(
+    count: &AtomicUsize,
+    say: &mut dyn Write,
+    what: &str,
+    start: impl FnMut() -> (T, End),
+) -> Result<T, T> {
+    let (started, end) = once_more_counted(count, say, what, start);
+    if exec_refused_by_security_policy(&end) { Err(started) } else { Ok(started) }
+}
+
+/// A child's end, in a failure's words: its status and why it ended (`End`'s reason, read before it was reaped);
+/// a refused exec named as #459's.
+fn exited_said(status: &ExitStatus, end: Option<&End>) -> String {
+    let why = end.map_or("", |e| e.reason.said.as_str());
+    let refused = if end.is_some_and(exec_refused_by_security_policy) {
+        " — macOS refused its exec (#459)"
+    } else {
+        ""
+    };
+    format!("tarae EXITED ({status}){why}{refused}")
+}
+
+/// `child`'s end once it has ended — its reason read before it's reaped (`ended`, `exit_reason_of`, then `wait`,
+/// as `output_and_end`); None while it runs. One a test reaped itself (`t.child.wait()`) comes with its status
+/// alone: its reason went with it.
+fn end_of(child: &mut Child) -> Option<(ExitStatus, End)> {
+    match waited(child.id()) {
+        Ok(false) => None,
+        Ok(true) => {
+            let reason = exit_reason_of(child.id());
+            let status = child.wait().expect("wait");
+            Some((status, End::of(&status, reason)))
+        }
+        // (no such child: reaped already — `Child` kept its status)
+        Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
+            child.try_wait().ok().flatten().map(|st| (st, End::default()))
+        }
+        Err(_) => None,
+    }
+}
+
 /// Whether child `pid` has ended — left unreaped (`WNOWAIT`): `exit_reason` reads it before `wait` does.
 pub fn ended(pid: u32) -> bool {
+    waited(pid).unwrap_or(false)
+}
+
+/// `ended`, an error when `pid` is no unreaped child of ours (ECHILD: reaped already).
+fn waited(pid: u32) -> io::Result<bool> {
     // SAFETY: a zeroed siginfo_t is one to fill; waitid only looks at our own child, reaping nothing.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
     // SAFETY: as above.
     let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) };
+    if r == -1 {
+        return Err(io::Error::last_os_error());
+    }
     #[cfg(target_os = "macos")]
     let from = info.si_pid;
     // SAFETY: filled by waitid (zero while it runs).
     #[cfg(not(target_os = "macos"))]
     let from = unsafe { info.si_pid() };
-    r == 0 && from == pid as libc::pid_t
+    Ok(from == pid as libc::pid_t)
 }
 
 /// Why ended child `pid` ended, said after its status: macOS keeps an exit reason until it's reaped
@@ -1369,7 +1486,7 @@ pub fn exit_reason(pid: u32) -> String {
 
 /// Why an ended child ended (`exit_reason_of`): the kernel's namespace and code when the kernel ended it, and in
 /// words (`exit_reason`'s).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ExitReason {
     pub kernel: Option<(u32, u64)>,
     pub said: String,
@@ -1508,8 +1625,9 @@ impl Host {
             if ok {
                 return;
             }
-            if let Some(st) = self.child.try_wait().expect("try_wait") {
-                panic!("the host ended before its state answered: {st}\n{}", self.output());
+            if let Some((st, end)) = end_of(&mut self.child) {
+                let state = exited_said(&st, Some(&end));
+                panic!("the host ended before its state answered — {state}\n{}", self.output());
             }
             assert!(Instant::now() < deadline, "the host's state never answered\n{}", self.output());
             thread::sleep(POLL);
@@ -2190,6 +2308,96 @@ mod tests {
         }
         assert_eq!(count.load(Ordering::Relaxed), 2);
         assert_eq!(said.lock().unwrap().iter().filter(|b| **b == b'\n').count(), 2, "one line a retry");
+    }
+
+    /// A tarae whose exec macOS refused before its first frame is started once more, and only that one (#503) —
+    /// stand-in starts, no real tarae: each start's tarae draws (None) or ends as given, and its wait is over at that
+    /// end only as `Term`'s is (`start_over`), else waits on (to fail at its patience, as before).
+    #[test]
+    fn a_tarae_refused_before_its_first_frame_is_started_once_more() {
+        let end =
+            |signal, kernel| End { signal, reason: ExitReason { kernel, said: " — a stand-in".into() } };
+        let refused = || Some(end(Some(libc::SIGKILL), Some((9, 8))));
+        let (count, said) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+        let run = |ends: Vec<Option<End>>| {
+            let (mut ends, mut starts) = (ends.into_iter(), 0);
+            let started = first_drawn(&count, &mut *said.lock().unwrap(), "a stand-in", || {
+                starts += 1;
+                match ends.next().expect("no start past the second") {
+                    None => ("drawn", End::default()),
+                    Some(e) if start_over(&e) => ("ended", e),
+                    Some(_) => ("waited on", End::default()),
+                }
+            });
+            (starts, started)
+        };
+        assert_eq!(run(vec![refused(), None]), (2, Ok("drawn")), "refused, then drawn");
+        let line = String::from_utf8(said.lock().unwrap().clone()).unwrap();
+        let want = "a stand-in ended with SIGKILL — a stand-in — spawned once more (1 in this test binary)\n";
+        assert!(line.starts_with("#459 RETRIED ") && line.ends_with(want), "{line:?}");
+        assert_eq!(run(vec![refused(), refused()]), (2, Err("ended")), "refused twice: fails as it came");
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        let others = [
+            Some(end(Some(libc::SIGKILL), None)),
+            Some(end(Some(libc::SIGKILL), Some((9, 7)))),
+            Some(end(Some(libc::SIGTERM), None)),
+            Some(end(Some(libc::SIGABRT), Some((9, 8)))),
+            Some(end(None, None)),
+        ];
+        for other in others {
+            let shown = format!("{other:?}");
+            assert_eq!(run(vec![other, refused()]), (1, Ok("waited on")), "{shown}");
+        }
+        assert_eq!(run(vec![None, refused()]), (1, Ok("drawn")));
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert_eq!(said.lock().unwrap().iter().filter(|b| **b == b'\n').count(), 2, "one line a retry");
+    }
+
+    /// A wait that finds tarae ended says why (#503): read before it's reaped (`end_of`; here a shell that kills
+    /// itself), and in the failure's words (`exited_said`) — a refused exec named as #459's.
+    #[test]
+    fn a_wait_says_why_tarae_ended() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child =
+            Command::new("/bin/sh").args(["-c", "kill -KILL $$"]).stdin(Stdio::null()).spawn().expect("sh");
+        let deadline = Instant::now() + TIMEOUT;
+        let (st, end) = loop {
+            if let Some(ended) = end_of(&mut child) {
+                break ended;
+            }
+            assert!(Instant::now() < deadline, "the shell never ended");
+            thread::sleep(POLL);
+        };
+        let said = exited_said(&st, Some(&end));
+        assert!(said.starts_with("tarae EXITED (signal: 9 (SIGKILL))"), "{said}");
+        // (macOS keeps a kill's sender; elsewhere nothing is said)
+        let why = if cfg!(target_os = "macos") {
+            said.contains(" — sent by pid") && said.contains("sh")
+        } else {
+            !said.contains(" — ")
+        };
+        assert!(why, "{said}");
+        let again = end_of(&mut child).map(|(st, _)| st);
+        assert_eq!(again, Some(st), "reaped: its status kept");
+
+        let killed = ExitStatus::from_raw(libc::SIGKILL);
+        let reason = |kernel, said: &str| ExitReason { kernel, said: said.into() };
+        let refused = End {
+            signal: Some(libc::SIGKILL),
+            reason: reason(Some((9, 8)), " — ended by the kernel: 9 (namespace 9), code 0x8"),
+        };
+        assert_eq!(
+            exited_said(&killed, Some(&refused)),
+            "tarae EXITED (signal: 9 (SIGKILL)) — ended by the kernel: 9 (namespace 9), code 0x8 — macOS \
+             refused its exec (#459)"
+        );
+        let unsaid =
+            End { signal: Some(libc::SIGKILL), reason: reason(None, " — no exit reason (a stand-in)") };
+        assert_eq!(
+            exited_said(&killed, Some(&unsaid)),
+            "tarae EXITED (signal: 9 (SIGKILL)) — no exit reason (a stand-in)"
+        );
+        assert_eq!(exited_said(&ExitStatus::from_raw(0), None), "tarae EXITED (exit status: 0)");
     }
 
     /// This build's first exec has run, and passed, once a `tarae` is made: asked again, nothing runs (#459; once
