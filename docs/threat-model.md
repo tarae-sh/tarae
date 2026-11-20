@@ -24,12 +24,18 @@ uploads) and to any host you said yes to — to any host at all with `llm.sandbo
 lines and starting environments, and a key whose folder it moves where the lock doesn't hold — in a shared temp folder
 past the walk's reach, or past the lock's cap in a project with more key folders than it (G33).
 
+A session can run on agy, Antigravity's agent, instead of Claude, only when `llm.agent = "agy"` says so (your
+config's, or a project's once you've trusted it), and it goes through the same tools, cards, review and sandbox:
+none of agy's own tools run (§2.w). Two things differ, in plain words: agy updates itself, and its guards were
+measured on one version, 1.5.9 (G38); and after a yes on its card, a project's `.agents/` (hooks, MCP servers,
+plugins) runs as you, outside the sandbox (G39).
+
 ## Who and what this defends against
 
 | | In scope | Why it's a risk |
 |---|---|---|
-| **The model, misled** | Prompt injection in what Claude reads: a repository's files, a dependency's README, a test's output, a web page a command fetched | Claude acts on text it didn't write. Assume any turn may try what a hostile author wants |
-| **A hostile repository** | What arrives with `git clone`/`pull`: build scripts, `.cargo/config.toml`, git hooks, `.claude/settings.json`, `.tarae.toml`, `CLAUDE.md` — and a checkout that came whole (an archive with its `.git`) | Opening it, building it or chatting in it runs or loads those |
+| **The model, misled** | Prompt injection in what the agent (Claude, or agy: §2.w) reads: a repository's files, a dependency's README, a test's output, a web page a command fetched | The agent acts on text it didn't write. Assume any turn may try what a hostile author wants |
+| **A hostile repository** | What arrives with `git clone`/`pull`: build scripts, `.cargo/config.toml`, git hooks, `.claude/settings.json`, `.tarae.toml`, `CLAUDE.md`, `.agents/` (§2.w.5), `AGENTS.md`, `GEMINI.md` — and a checkout that came whole (an archive with its `.git`) | Opening it, building it or chatting in it runs or loads those |
 | **A bug in Claude Code's permission path** | A tool call that skips `can_use_tool`, an update that changes what a flag means | tarae relies on claude asking. Out of scope beyond that: such a bug acts as you, as in any tool that runs claude (§2) |
 
 Out of scope: another local user or root; malware already running as you; a hostile kernel or OS; a tampered tarae
@@ -48,6 +54,9 @@ connections may go (§1.5, the proxy's address rule).
           ├─ tarae's own git, language servers (as you; git's repository commands held)
           └─ your terminal, tasks, preflight (as you: yours)
 ```
+
+A session on agy has the same pieces: agy's process in the claude process's place, tarae's tools reached over the
+bridge (§2.w.7).
 
 | Claude wants to… | It goes through | Kept by |
 |---|---|---|
@@ -1335,6 +1344,402 @@ Not kept:
 Planned: on Linux, the scopes (ABI 6) and the audit (ABI 7) checked live on a 6.12+ kernel — colima's, where the
 live check runs, is ABI 4.
 
+### 2.w Agents beside Claude: agy
+
+A session can run on another agent than Claude: the Antigravity CLI, `agy`, chosen by `llm.agent = "agy"` (a
+session keeps the agent it began on). The safety decision (the user, 2026-11-13): an agent that isn't Claude runs
+with none of its own tools — every read, edit and run is tarae's, through tarae's MCP server, so its cards, its
+review and its sandbox are Claude's own. Four guards hold that: its own tools off by a hook (1), its asks refused
+and its mode kept (2), a tripwire after the fact (3), and what a project can make it load held until you trust it
+(4). While it runs, one watch keeps guards 1 and 4 true. No test starts a real agent: a stand-in plays agy's part,
+as agy was measured to behave.
+test: `agent::acp::tests::a_test_never_starts_a_real_agent`
+
+**Measured** means on agy 1.5.9, macOS, two probes of 2026-11-16 (agy's own model, its tools refused, only harmless
+stand-in tools allowed); a row that says so rests on them, and the stand-in plays what they saw.
+
+**In plain words, two things tarae doesn't keep:**
+- **agy's self-update stays on.** agy updates itself, and tarae neither pins its version nor turns its updater off.
+  Every guard here was measured on 1.5.9: a session on another version says so once a version (`agy 1.6.0: tarae's
+  guards were measured on 1.5.9`) and starts all the same. An update can change how agy reads its hook file or what
+  it calls a tool; between that and agy's first own tool, only the tripwire acts, after the call (2.w.4).
+- **After a yes on its card, what's in the project's `.agents/` — hooks, MCP servers, plugins — runs as you,
+  outside tarae's sandbox**, each time agy starts there. agy runs them itself; no command of Claude's ever runs that
+  way. The card says so in the warning colour before you answer (2.w.5).
+
+#### 2.w.1 Its process
+
+Kept:
+- **Only your config chooses it**: `llm.agent` is the one setting that names an agent, and a project's waits for
+  its trust; the default and any `llm.command` stay Claude's. A session's agent is fixed at its first start, and a
+  config change never moves a running one.
+  test: `agent::tests::only_llm_agent_chooses_a_row` · `agent::tests::every_start_takes_the_sessions_row`
+- **Its own session, no terminal**: started with `POSIX_SPAWN_SETSID`, stdin a pipe: its session, its group, no
+  controlling terminal — a signal to tarae's group doesn't reach it, nor can it or what it starts open `/dev/tty`.
+  Its group is ended with it (SIGKILL to the group, then reaped by pid).
+  test: `agent::acp::tests::the_agent_has_a_session_of_its_own_and_no_terminal` ·
+  `agent::acp::tests::the_agents_group_and_its_bridge_end_with_it`
+- **Its environment**: never Claude Code's keys and settings (`ANTHROPIC_*`, `CLAUDE*`, what a Claude Code session
+  sets), the wikis' tokens, tarae's sockets (`TARAE_UI`, the pty broker, `SSH_AUTH_SOCK`), nor your Google keys
+  (`GEMINI_API_KEY`, `GOOGLE_API_KEY`: agy signs in on its own, and tarae doesn't choose who pays) — removed by name,
+  never cleared. Its descriptor limit is the one tarae started with. agy hands its whole environment to its hooks and
+  its MCP servers (measured), so what's left out of agy's is out of theirs.
+  test: `agent::acp::tests::an_agent_gets_none_of_claudes_keys_tokens_or_tarae_s_sockets` ·
+  `agent::acp::tests::an_agent_gets_none_of_googles_api_keys`
+- **Nothing that moves git's discovery**: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`
+  (git takes it in place of `objects/`, so set, git would accept a `.git` guard 4's chain doesn't),
+  `GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM` are left out, so a git agy runs (measured: one in its
+  own tree read a worktree's `.git`, the main checkout's `HEAD`, `commondir`, refs and objects) finds the repository
+  from its cwd, as guard 4's chain does.
+  test: `agent::acp::tests::an_agent_gets_none_of_the_names_that_move_gits_discovery`
+- **A row with a recipe isn't started around its guards**: a row whose own tools are turned off is refused without
+  the folder its gate made (made only by the gate's job); every ACP row keeps the floor (a recipe, a mode named, its
+  held paths).
+  test: `agent::acp::tests::a_row_with_a_recipe_isnt_started_without_its_folder` ·
+  `agent::tests::every_acp_row_keeps_the_floor`
+- **Its version is said, never refused**: read at its start; one other than the measured 1.5.9, or none given, said
+  once a version in the transcript and the log, the version cut and made plain as a tool's name is.
+  test: `agent::tests::an_agents_other_version_is_said_never_refused` ·
+  `llm::held_tests::an_agents_other_version_is_said_once_a_version`
+
+Measured, no test holds it:
+- **Its stdin's end ends it**: idle, 0.45–1.1 s; mid-turn, during one of tarae's tools, 0.58 s.
+
+Not kept:
+- **It runs as you, not sandboxed** (the user, 2026-11-13), as claude does: what protects is the guards below and the
+  sandbox of the runs it asks tarae for (G38).
+- **Which model it runs is a project's to choose, with no card** (G40): a project's `.tarae.toml` sets
+  `llm.agy-model` as it sets Claude's `llm.model`, so a checkout can pick the dearest model, and on agy's own list a
+  model of another maker's. A cost, not a guard; an open question (#664), said here until it's answered.
+
+#### 2.w.2 Guard 1: its own tools off, the hook
+
+Kept:
+- **A folder of tarae's own**, `agent-homes/<row>/<key>/` in tarae's state folder, made and checked on a worker
+  before every start: the state folder, `agent-homes/`, `<row>/`, `<key>/` and its `config/` each yours, a real
+  folder, nobody else's to write; one that isn't ends the start, said. Never `~/.gemini`.
+  test: `agentgate::tests::a_folder_not_yours_alone_isnt_started_in`
+- **One home a project**: `<key>` is the first 16 hex of the SHA-256 of the trust's place — the repository's common
+  git folder, which its checkouts and every folder in it share; with no repository, the folder's real path (a link
+  to it, the same home). What agy keeps across sessions (conversation summaries, transcripts, its tool cache), read
+  back at every start (measured), never crosses projects. The key is walked from the folder itself, not a file in
+  it, so no name a project puts in its root steers it.
+  test: `agentgate::tests::each_repository_gets_its_own_home`
+- **Its two files the same bytes from every tarae and every start**: the hook file names a constant script beside
+  it, which asks the tarae in `TARAE_AGENT_HOOK`; each written to a new name and renamed over (a link in its place
+  replaced, never written through); one changed since is written again and said.
+  test: `agentgate::tests::a_hook_file_changed_between_starts_is_written_again_and_said`
+- **An edit can't reach them unasked**: anything in tarae's own state or cache folder always asks, as written,
+  through `..` and through a link — in a project that holds the state folder too (closed before the lift).
+  test: `edits::tests::an_edit_into_taraes_own_state_is_protected`
+- **The hook allows only tarae's tools** (`mcp_tarae_<tool>`, something after the prefix); anything else — the
+  prefix alone, another case, no name, junk, past 1 MB — is denied, said. `tarae agent-hook` reads no config, logs
+  nothing of its input, denies on a panic.
+  test: `agent::hook::tests::the_hook_allows_only_taraes_tools` · `agent::hook::tests::a_panic_in_the_hook_is_a_refusal`
+- **The script always answers**: a tarae that won't start, is being rebuilt, fails, says nothing or dies mid-read —
+  the script prints the refusal itself.
+  test: `agent::hook::tests::the_script_asks_tarae_or_refuses`
+- **The hook's command is the script's path, shell-quoted**: agy runs it through a shell (measured: a hook's
+  arguments arrived shell-split, a bare path with a space never ran). Single quotes, `'\''` for a quote, so a path
+  with a space, a quote, `$` or a backtick runs as itself.
+  test: `agent::hook::tests::the_hook_files_command_is_the_scripts_path_shell_quoted`
+- **A hook that fails refuses the call** (measured): a non-zero exit or junk gives `failed`, and the tool doesn't
+  run. One that prints nothing is no decision: agy goes on to its ask, which guard 2 refuses for anything but an
+  offered tarae tool.
+  test: `chat::tests::an_ask_for_anything_but_an_offered_taraes_tool_is_refused`
+- **A hook past its timeout refuses the call** (measured: agy enforces the timeout in seconds, kills the hook and
+  fails the call). tarae's hook names 10 s: a long one costs nothing in safety, a short one would fail tarae's own
+  tools on a loaded machine.
+  test: `agent::acp::tests::a_hook_past_its_timeout_fails_the_call_and_nothing_asks`
+- **Any deny wins** (measured; the project's hooks run first, the git top's down to the cwd's, then tarae's): a
+  project's hook denying where tarae's would allow, and tarae's denying where a project's allowed, both end the call
+  unrun. A trusted project's allow can't lift tarae's deny.
+  test: `agent::acp::standin::the_projects_hooks_run_top_down_before_the_configs_and_a_deny_ends_them` (the
+  stand-in obeying it as measured; tarae's own side is `agent::hook::tests::the_hook_allows_only_taraes_tools`)
+- **End to end on the stand-in, obeying its hook as agy does**: hooks through `sh -c`, the project's before the
+  config's, then the ask. `run_command` denied, a refused row.
+  test: `agent::acp::tests::a_start_makes_the_folder_writes_the_hook_and_an_own_tool_is_denied`
+- **A server named as tarae's in its own `config/`** (agy writes `mcp_config.json` there itself) would pass the hook
+  as tarae's tools: not started while one is there, said; what agy leaves there itself passes.
+  test: `agentgate::tests::a_server_named_as_taraes_in_its_config_isnt_started_with` ·
+  `agentgate::tests::what_agy_leaves_in_its_config_passes`
+
+Not kept:
+- **A failing hook was measured only in front of a stand-in tool**: that `run_command` meets the same `failed` is
+  an assumption (the probes let agy run no tool of its own).
+- **Which shell agy runs a hook's command with isn't known**: `/bin/sh`, or your login shell (`SHELL`). In fish
+  `\\` inside single quotes is an escape, so the quoting isn't exact there for a state folder whose path holds a
+  backslash (tarae's default holds none). The probes don't tell: the hook's parent was agy itself, and the only
+  shell seen was `bash`, which is what macOS's `/bin/sh` runs as.
+- **A self-update of agy's** — the plain-words row above.
+- **Within one project, agy's own memory of earlier conversations may reach later ones**: its summaries are read
+  back at every start, and whether one reaches the model isn't measured; tarae doesn't gate it. Text an earlier
+  session of the same project read (a file, a page) may so come back in a later one.
+- **Nothing prunes a home**: a home a project ever used stays, as agy left it. Measured: 2.68 MB (99 files) after
+  four sessions, 0.56 MB of it `builtin/`, which agy writes into each home. A fresh home's size after one session
+  isn't measured.
+
+#### 2.w.3 Guard 2: its asks refused, its mode kept
+
+Kept:
+- **An ask is allowed once only for an offered tarae tool**, decided before anything reads its input. A tool named
+  `mcp_tarae_<t>`, with `<t>` one tarae offered this session, gets `allow_once`, never `allow_always`, and the call
+  then meets tarae's own gate, as Claude's do. Anything else gets `reject_once`: an own tool, the prefix alone, a
+  tarae name not offered, no name. A stop answers an open ask `cancelled` first. agy 1.5.9 asks for tarae's tools in
+  every mode, `auto` too, every call (measured); 1.5.4 and 1.5.7 asked none. The stand-in plays both.
+  test: `chat::tests::taraes_tool_asked_for_as_agy_1_5_9_asks_runs_once` ·
+  `chat::tests::taraes_tool_runs_once_when_agy_asks_nothing` ·
+  `chat::tests::an_ask_for_anything_but_an_offered_taraes_tool_is_refused` ·
+  `sim::acp::a_turn_on_an_acp_agent_with_a_stop_and_an_ask` ·
+  `agent::acp::tests::a_permission_ask_is_answered_by_its_options_kind` ·
+  `agent::acp::tests::a_stop_cancels_the_turn_and_its_open_ask`
+- **The row's mode, at the start and after**: a session opening in another mode it offers is set to the row's before
+  anything is said or sent; one that won't take it, doesn't offer it, or says no modes ends the start; a mode left
+  midway is set back, and one it won't take back stops it.
+  test: `agent::acp::tests::a_session_in_another_mode_is_set_to_the_rows` ·
+  `agent::acp::tests::a_mode_it_wont_take_ends_the_start` · `agent::acp::tests::a_mode_left_midway_is_set_back`
+- **Never set back without end**: three set-backs in a turn; left once more, the session is stopped, said.
+  test: `agent::acp::tests::a_mode_left_again_and_again_in_a_turn_stops_it`
+- **What agy reports after a refused ask** (measured: each `reject_once` followed at once by `in_progress`, then
+  `failed`, no content). The stand-in reports the same.
+  test: `agent::acp::standin::a_refused_asks_report_is_what_1_5_9_said` ·
+  `chat::tests::an_ask_for_anything_but_an_offered_taraes_tool_is_refused`
+- **The log's ask lines are bounded**: an ask's answer is said once a tool a session, for 64 tools at most — the
+  names are the agent's; past it nothing more is kept or said, and every ask is still answered.
+  test: `agent::acp::tests::the_asks_said_are_so_many_at_most`
+
+Measured, no test holds it:
+- **A mode set takes at once**: answered in ~1 ms, mid-turn too, and echoed back. agy sent no mode change of its own.
+
+Not kept:
+- **What agy reports after an ask answered `cancelled`** (a stop's, or the one wanted not offered) isn't measured:
+  the probes answered every ask `allow_once` or `reject_once`. The stand-in reports it as a refusal. A `completed`
+  report of tarae's with no call through tarae's server still trips (2.w.4), whatever it says.
+- **An allowed ask trusts the tool's name** as far as guard 1 does: a server named as tarae's in `config/` or a held
+  file is refused, so the name can only be tarae's server's.
+
+#### 2.w.4 Guard 3: the tripwire
+
+Kept:
+- **One of its own tools reported `completed` stops it at once** (never at `in_progress`: a refused call goes
+  `in_progress`, then `failed` — measured): its group ended before anything is said, tarae's server let go, its turn
+  ended in tarae's words, its row held until you quit. At `failed` it's a refused row, no trip.
+  test: `agent::acp::tests::a_completed_own_tool_stops_the_session_and_says_it` ·
+  `agent::acp::tests::a_failed_own_tool_is_a_refused_row_not_a_trip` ·
+  `chat::tests::a_tripped_agent_isnt_started_again_until_you_quit` · `sim::acp::an_own_tool_trips_the_session`
+- **A report of tarae's tool that tarae's server never carried trips at the turn's end**; one it carried matches by
+  tool and every argument of the call (the report may hold more), whichever came first, each matched once. Numbers
+  match by value: agy rewrites `1.0` as `1` and a 23-digit integer as a float, in its report and in what the server
+  gets (measured); two integers compare exactly, else as f64.
+  test: `agent::acp::tests::a_report_with_its_numbers_rewritten_matches_its_bridge_call` ·
+  `agent::acp::tests::a_report_with_another_number_still_trips` ·
+  `agent::acp::tests::an_unbridged_taraes_report_trips_at_the_turns_end` ·
+  `agent::acp::tests::a_bridged_call_doesnt_trip_whichever_comes_first`
+- **The tripping tool's name is cut and made plain** (40 characters, no control character or bidi mark) everywhere
+  it's said; a tool named the prefix alone is its own everywhere; a call refused in its first report gets its row
+  and the refusal.
+  test: `agent::acp::tests::a_tripping_tools_name_is_cut_and_made_plain` ·
+  `agent::acp::tests::a_tool_named_the_prefix_alone_is_its_own_and_its_refused_row_shows` ·
+  `agent::acp::tests::a_call_refused_in_its_first_report_gets_its_row_and_the_refused_result`
+- **Its own calls still running are bounded**: kept with no input and their name only as far as it's said, 64 at
+  most — the oldest let go, its `completed` then tripping as one with no name.
+  test: `agent::acp::tests::an_own_call_that_never_ends_keeps_no_input_and_so_many_at_most`
+- **A tripped row holds every start of it until you quit**: every start of an agent asks first — the chat's,
+  `space i`, the commit draft, the reviewer, the cards' reviewer and the web search's helper — and a tripped row's
+  words come before the role's. A start that doesn't ask is a test's failure.
+  test: `agent::tests::a_tripped_row_holds_every_start_of_it` · `agent::tests::every_start_passes_through_held_for` ·
+  `sim::acp::an_own_tool_trips_the_session`
+- **A role its row can't be never reaches its wire**: agy's row is the chat's only; `space i`, a draft, the
+  reviewers and the web search's helper in an agy session are held in their words ("not yet with agy — space i runs
+  on Claude's sessions only"), auto cards off, said once; a start that skipped the hold is refused before anything
+  runs.
+  test: `agent::tests::a_role_its_row_cant_be_never_reaches_its_wire` ·
+  `llm::held_tests::space_i_and_a_draft_are_held_on_a_row_that_can_only_chat` ·
+  `autocards::tests::auto_cards_are_off_said_once_on_an_agent_that_cant_review` ·
+  `autocards::tests::an_agy_session_behind_a_claude_one_starts_no_reviewer`
+
+Not kept:
+- **The tripwire acts after the call**: what the tool did is done. It's the floor under guard 1, never its stand-in.
+- **By value, two integers past 2^53 that round to one f64 match**: only between a call of a tarae tool through
+  tarae's server and a report of the same tool, which is no own tool hidden.
+- **Other sessions of a tripped row keep running** (the user's call): each trips on its own; new starts of the row
+  are held until you quit, every role's (kept above).
+
+#### 2.w.5 Guard 4: what a project makes it load, held until trusted
+
+Kept:
+- **The row's held paths, in every folder from the session's root up to the git top, as one listing**: agy loads
+  `.agents/` from the cwd up to the git top and not above it (measured). They're read on the gate's worker with the
+  folder; no process starts until they're trusted on their card, and a message sent meanwhile waits. The git top is
+  the nearest folder up the root's real path holding a repository's `.git`, a folder or a worktree's file (measured:
+  a worktree's `.git` file is the top — not the folder above it, nor its main checkout); with no `.git` above at all,
+  only the root's is held, which is all agy loads there (measured). Keys are from the top
+  (`mid/.agents/hooks.json`); the links rule, the check for a server named as tarae's and the watch take every held
+  folder in the chain.
+  test: `agenttrust::tests::every_held_folder_up_to_the_git_top_is_one_listing` ·
+  `agenttrust::tests::a_change_in_a_parents_held_file_asks_again` ·
+  `agenttrust::tests::a_worktrees_git_file_is_its_top` ·
+  `agenttrust::tests::with_no_git_top_only_the_roots_is_held` ·
+  `agenttrust::tests::a_parents_held_file_naming_a_server_tarae_refuses_the_start` ·
+  `agentgate::tests::a_file_added_in_a_parents_held_folder_while_it_runs_stops_it` ·
+  `agenttrust::tests::an_untrusted_projects_files_hold_the_agent_and_the_card_names_them` ·
+  `sim::acp::an_untrusted_projects_agent_waits_for_its_card`
+- **One card for the repository, every file named**: the held files join the repository's one trust card beside
+  `.tarae.toml`'s and git's parts, or stand alone. What runs (a hook, an MCP server, a plugin's folder, a workflow,
+  anything not known to be only read) is each its own row and never folded into a count; under them, in the warning
+  colour, "after a yes these run with your permissions, outside tarae's sandbox: hooks, MCP servers, plugins"; a card
+  cut to fit takes `y` only once read to its end. `y` is kept for the repository (its checkouts share it, a
+  folder's carried to the repository made there); `n` holds the agent in this project until you quit, never kept.
+  `:agent-files` shows the card again.
+  test: `repotrust::tests::the_joined_card_names_every_file_and_warns_what_a_yes_runs` ·
+  `repotrust::tests::what_runs_is_never_folded_behind_files_read` ·
+  `repotrust::tests::yes_trusts_every_part_and_starts_the_agent` ·
+  `repotrust::tests::no_holds_every_part_and_the_agent_until_you_quit` ·
+  `repotrust::tests::agent_files_asks_its_part_alone_and_again_after_no` ·
+  `agenttrust::tests::a_yes_starts_it_and_is_kept_for_the_repository` ·
+  `agenttrust::tests::a_no_holds_it_until_you_quit` ·
+  `agenttrust::tests::a_folders_answer_is_carried_to_the_repository_made_there`
+- **The top is the larger of git's answer and a walk to any `.git`**: a repository's `.git` is a folder holding
+  `HEAD`, `objects/` and `refs/` (git's own test) or a file starting `gitdir:`. Where one is above the root, the
+  nearest is the top, and an empty folder, `HEAD` alone, a junk file or a FIFO below it is walked past, as git walks
+  past such a folder; with none, the nearest `.git` of any kind is the top (a walk of agy's own may stop there); with
+  no `.git` at all, the root alone. So the chain holds what either rule loads. A `.git` file is read only after a
+  stat says plain file, opened without waiting and never as a controlling terminal; git's small files on the trust
+  path are never waited on (#607: a FIFO `.git` held the gate's worker for good).
+  test: `agenttrust::tests::a_git_folder_that_is_no_repository_is_not_the_top` ·
+  `agenttrust::tests::with_no_repository_an_empty_git_folder_above_is_the_top` ·
+  `agenttrust::tests::with_no_repository_a_junk_git_file_above_is_the_top` ·
+  `agenttrust::tests::a_tty_named_git_is_never_taken_as_a_terminal` (Linux: macOS never takes a terminal on an
+  open) · `allow::tests::a_fifo_among_gits_files_is_never_waited_on`
+- **A yes is for each file's bytes**: the digest is over (path, its bytes' SHA-256); a byte changed or a file added
+  asks again.
+  test: `agenttrust::tests::a_changed_file_asks_again`
+- **Past what's read, never trusted, said, no card**: a file over 1 MB, more than 256 files, deeper than 8 folders, a
+  FIFO, a file that can't be read — and a folder's entry that can't be read refuses its folder, never dropped from
+  the listing (its file would go unhashed while the agent may still load it).
+  test: `agenttrust::tests::an_unreadable_or_huge_file_is_never_trusted` ·
+  `agenttrust::tests::a_folder_entry_that_cant_be_read_is_never_trusted` (a made listing: the OS's entry errors
+  can't be made on demand)
+- **The links rule**: a link is never read through. It's trusted only as a name for a file the listing holds, keyed
+  by that file's path, so re-pointing it or changing the file asks again. A link out of the held paths, to nothing,
+  to a folder, or past 4 hops: never trusted, said with its name and target.
+  test: `agenttrust::tests::a_link_out_of_the_held_paths_holds_the_agent_and_says_why` ·
+  `agenttrust::tests::a_link_inside_to_a_listed_file_is_trusted_with_it_and_its_change_asks_again` ·
+  `agenttrust::tests::a_dangling_link_or_one_to_a_folder_is_never_trusted`
+- **The `..` refusal**: a `..` anywhere in a link's target is never trusted (the OS takes a `..` after following the
+  part before it, which a lexical resolution can't tell — an absolute target through a link outside the root would
+  read as a listed file).
+  test: `agenttrust::tests::a_dot_dot_in_a_links_target_is_never_trusted`
+- **A held file naming an MCP server as tarae's** is refused whatever is answered: its tools would pass the hook.
+  test: `agenttrust::tests::a_server_named_tarae_is_refused_trusted_or_not`
+
+Not kept:
+- **A trusted project's held code runs outside the sandbox** — the plain-words row above. Its hooks run before
+  tarae's (measured), so a trusted project's hook sees every call's input, tarae's tools' arguments too.
+- **A folder swapped for a link mid-read is read through**: between a look saying "a folder" and its listing, a link
+  put in its place is listed through. It can't end in a trusted start: the files are read again at the start and at
+  the watch's first look, which meet the link and refuse — the same window as the watch's (2.w.6).
+- **A link up to a file in a parent folder is refused** (`sub/to.json -> ../hooks.json`): the price of the `..`
+  refusal; written as a name in its folder or absolutely, it's trusted.
+- **Only `.agents/` is held**: `.gemini/` wasn't loaded in the three shapes tried (Gemini CLI's `settings.json`, a
+  `hooks.json`, an `mcp_config.json`: measured); another shape isn't known. Of its own `config/`, agy loads
+  `mcp_config.json` and not `config/projects/`' files (measured). Plugins weren't tried: their format isn't known, so
+  every file in a plugin's folder counts as running.
+- **How agy finds the top isn't known**: its own walk to the nearest `.git` of any kind, or git's answer (a git runs
+  in its tree). Both measured shapes, a folder and a worktree's file, agree with either. The chain takes the rule
+  that holds under both (kept above). A `.git` git takes that agy's own walk wouldn't isn't known to exist. A `HEAD`
+  that isn't a ref or an object id is taken as git wouldn't (git checks its contents; the chain, that it's a file).
+- **agy's own reads in your home**: under the probe's watch, the only one reported was its sign-in's
+  `~/Library/Application Support/Antigravity/credential-user-scope` (measured; §1.4 keeps it from runs). The watch
+  reported only the places it named, so a read anywhere else isn't listed.
+
+#### 2.w.6 The watch while it runs
+
+Kept:
+- **One watch a running agent** (an `fswatch` thread, as Claude settings' watch): tarae's two files and the held
+  paths — every folder under them as deep as guard 4 reads — looked at whenever they may have changed, and once as
+  it starts, against the digest the start was trusted for. So a change made between the gate's read and the agent
+  loading the files is seen, and so is one made after.
+  test: `agenttrust::tests::a_file_added_while_it_runs_stops_it_and_asks`
+- **A changed hook file stops it**: its bytes, its mode, or not a plain file — stopped as a trip stops it (its group
+  ended at once, its turn ended with the words, nothing it says after read), said once in the transcript and a toast;
+  the next start writes it again, said. What's sent meanwhile waits for the next start.
+  test: `agentgate::tests::a_hook_file_changed_while_it_runs_stops_it`
+- **A held file changed, added (a `git pull`) or gone stops it, and the card asks again** as its end lands; one now
+  past what's ever trusted stops it, said why, no card.
+  test: `agenttrust::tests::a_file_added_while_it_runs_stops_it_and_asks` ·
+  `sim::acp::an_untrusted_projects_agent_waits_for_its_card` (the change during the run, any order)
+- **Bytes, not events**: every start of every tarae renames the same bytes over tarae's two files, and that's no
+  change — two taraes never stop each other's agents; a held file renamed over with its own bytes neither.
+  test: `agentgate::tests::the_same_bytes_renamed_over_its_files_stop_nothing`
+- **The top's `.git` is watched too**: made, replaced, gone or written over in place, the watch looks again; the
+  held files are keyed from the top, so a chain that holds more or less is another digest, and the agent is stopped
+  as for a held file changed, the card asking for the chain as it is now. A `.git` made inside the chain makes agy
+  load less (stopped all the same); the top's `.git` removed or made no repository's widens what agy could load —
+  that is what the stop is for. A `.git` made or removed *above* the top moves nothing and isn't watched, but a
+  repository made above a top that is no repository's moves the top up to it (the next row).
+  test: `agentgate::tests::the_tops_git_written_over_while_it_runs_stops_it`
+
+Not kept:
+- **The watch's window**: from a write until the watch has read it — a burst settles (≥ 50 ms, at most about 0.5 s;
+  a network file system's poll, 0.5 s) — the agent may load what was written, and a file changed and put back within
+  it is never seen. The stop is after.
+- **With no `.git` above, a `.git` made above the root isn't watched** (a `git init` in a parent; likewise a
+  repository made above a top that is no repository's): the chain would reach up to it, and agy could load those
+  folders' `.agents/` if it reads them again; the watch sees it at its backstop look (5 s at most), or sooner at any
+  other wake. Watching every folder up to `/` was judged too much for a case only a parent's `git init` makes.
+- **What agy does with a top that moves mid-session isn't known**: whether it reads `.agents/` again at all in a
+  session isn't measured. The watch stops it on the change either way; between the change and the stop, the watch's
+  window.
+- **It watches the chat's agent only**, the one start the gate opened. The stop ends its group, and agy's MCP
+  children with it (measured: none alive after the group's SIGKILL).
+
+#### 2.w.7 tarae's tools: the bridge
+
+Kept:
+- **The socket**: `agent/<tarae pid>/<n>.sock` in tarae's state folder (its folder 0700 and yours, the socket 0600),
+  outside the project — a sandboxed run can't connect to it; removed with the agent; a dead tarae's folder cleared at
+  the next bind.
+  test: `agent::acp::bridge::tests::the_socket_is_closed_its_own_and_goes_with_the_bridge` ·
+  `agent::acp::bridge::tests::a_dead_taraes_folder_is_cleared_at_the_next_bind` ·
+  `sandbox::tests::claudes_runs_cant_reach_an_agents_bridge`
+- **Three checks a connection, each its own refusal**: the peer is you (`getpeereid`, `SO_PEERCRED`); it runs under
+  this agent (its ancestry holds the agent's pid; one that can't be read is refused); its first line is the start's
+  token (32 random bytes, only in the session's MCP server entry, compared in constant time). One connection is live
+  at a time. The relay is agy's direct child, and one connection a session (measured).
+  test: `agent::acp::bridge::tests::a_peer_is_judged_by_its_user_and_its_ancestry` ·
+  `agent::acp::bridge::tests::a_connection_needs_the_agents_ancestry_and_the_token_and_is_the_one_live` ·
+  `agent::acp::bridge::tests::a_refused_connection_holds_whichever_way_its_close_lands`
+- **Its bounds**: the token line read to 128 bytes and within 5 s, the live slot taken only after it; a live line to
+  16 MB, past it the connection ends.
+  test: `agent::acp::bridge::tests::a_first_line_past_its_bound_is_refused_and_holds_nothing_up` ·
+  `agent::acp::bridge::tests::a_token_that_never_comes_holds_no_thread_and_the_live_one_has_no_bound` ·
+  `agent::acp::bridge::tests::the_live_slot_stays_free_while_a_peer_says_nothing` ·
+  `agent::acp::bridge::tests::a_live_line_past_its_bound_ends_the_connection`
+- **Its reads timed**: macOS can leave a blocking socket read asleep through its peer's end; both sides read again
+  at each timeout, so a dead connection never stays the live one and shuts a restarted server out.
+  test: `agent::acp::bridge::tests::a_connections_end_is_seen_through_a_sleeping_read_and_a_quiet_one_stays` ·
+  `agent::acp::bridge::tests::the_relay_sees_taraes_end_through_a_sleeping_read_and_stays_while_quiet`
+- **A call through it comes up once**, as Claude's MCP calls do, its card and review Claude's own; a read that lands
+  after its turn has ended answers that, with no card (#600).
+  test: `agent::acp::tests::a_call_through_the_bridge_comes_up_once_from_the_bridge` ·
+  `readtool::tests::a_read_that_lands_after_its_turn_asks_no_card`
+
+Not kept:
+- **A process the agent starts that reads the relay's environment has the token**, and runs under the agent: the
+  checks can't tell it from the relay. Its own tools are off (guard 1), and what's held in the project is trusted
+  first (guard 4); what it reaches is tarae's tools, with their cards.
+
+#### 2.w.8 Not measured
+
+- **agy across a self-update**: every measure here is 1.5.9's; what a later version does to the hook, the asks or
+  the reports is unmeasured until it's probed (the version line says so, 2.w).
+- **agy on Linux**: both probes ran on macOS. On Linux the guards are the same code and the stand-in's tests run
+  there, but nothing of agy's own — its hook's shell, its timeout, what it loads, its sign-in's folder (§1.4) — has
+  been seen on Linux.
+- **Gemini CLI**: not a row — `llm.agent` names `claude` or `agy` only, so tarae never starts it, and nothing here
+  was measured on it.
+
 ### 2.x Sessions Claude starts (orchestra)
 
 Every session's chat but a child's can start sessions of its own (`sessions_start`), put words into them
@@ -1584,6 +1989,9 @@ Not Claude's, but a hostile repository reaches them:
 | G35 | macOS: what the read rules close read from a folder's clone — Seatbelt checks `clonefile(2)` of a folder (and `fclonefileat`, `copyfile`'s clone) on its source alone, never as a read of what's in it: a clone of the folder above home, made in the run's own folder, read `~/.ssh` from the copy, and so for every place closed by its place or a file by its name, since the sandbox existed (found in G33's review, measured on tarae's profile, 2026-11-11) | the read rules are by path, and a clone copies a tree without a path inside it being read | closed (2026-11-11): the profile refuses every folder's clone, then allows it only where a run reads everything below — tools' output in the project, the run's own folder, an install, a write folder no place of the key rule holds or is held by (a toolchain's cache: uv's and bun's installs) — and there not a folder holding home, a kept place or a token's settings, nor that place (literal and `subpath` parameters). A file's clone is untouched: its own read is checked (B1). Said by its place, no grant lifts it; a copy (`cp -R`) does what's needed (test: `sandbox::tests::a_clone_of_the_folder_above_home_reads_nothing_of_home`, `sandbox::tests::a_run_cant_clone_a_folder_where_keys_are_closed`, `sandbox::keyfolders::tests::a_folders_clone_is_refused_by_place_and_said_so`) |
 | G36 | The code tool (`llm.code`, off by default) runs model-written JavaScript inside tarae's own process, on tarae-wasm's JIT where the architecture's JIT has been fuzzed: a wrong compile there could reach tarae's memory | the program has to run somewhere, and the engine is pinned and fixed, so what an attacker controls is the paths QuickJS takes through the JIT | narrowed: no imports, a fresh instance each program, the JIT run against the interpreter on a JS corpus for an hour before an architecture uses it, the limits above (§2.z); **aarch64's hour passed clean on this engine** (2026-11-17, so `LIMITS.jit` stays true there): the harness `crates/tarae-wasm/examples/qjs_fuzz.rs`, seeds 10,225,330 to 10,462,761, 237,432 cases compared, 0 differences, and 4,749 controls (the interpreter twice) the same (every reply whole, every trap, and after every step the fuel left — after an out-of-fuel trap too —, the memory's hash and length, and whether a grow was refused), 3,601 s on 8 threads at load mean 42 (other sessions building: 237,432 is a loaded hour's count, not one to compare with a quiet hour's), on the engine `target/quickjs/quickjs.wasm` sha256 `2024e6efcbbeb8ad35c6286e282be9888233290885b3b19313966b1ba7868de2`, the original QuickJS (2026-06-04) built from `xtask/quickjs/pin` (its TAG, SOURCE and IMAGE; the module's sha256 its MODULE); the engine's tests run in `:preflight-full`'s engine step, on this Mac (`TARAE_EXPECT_ENGINE=1`: a missing module, or one not the pin's MODULE, fails them — CI has no module, and they skip there); QuickJS-ng v0.18.0's hour before it (2026-11-12, seeds 10,000,000 to 10,225,329, 225,330 cases, 0 differences) was that engine's; redone with tarae-wasm's crate doc's commands (`--from 10000000 --secs 3600`; `--replay SEED` for one case); **a re-pin of the engine or a change to tarae-wasm's `jit/` means the hour again** on each architecture that runs the JIT, and this row's figures replaced, before it lands (the pin's checklist says so); left open: **x86-64 stays on the interpreter** (`LIMITS.jit` false there) until its own hour on a real x86 machine; left: the runtime and the engine's C, as any interpreter's |
 | G37 | claude shared tarae's session, process group and controlling terminal: `/dev/tty` was your terminal to it, `TIOCSTI` on Linux could type into it, and what it started outlived it | it was started as a plain child (std's spawn) | narrowed (your decision, 2026-11-14): claude starts in a session of its own, its group ended with it (tests: `agent::claude::tests::claude_has_a_session_of_its_own_and_no_terminal`, `agent::claude::tests::what_claude_left_running_ends_with_the_chat_or_its_own_exit`, `restart::tests::taraes_end_leaves_no_claude_behind`); left: the terminal's node is yours, so code running as you can still open it by its path — hygiene, not a wall (§2) |
+| G38 | agy's process runs as you, its self-update on: an update can change how it reads its hook file or what it calls a tool, and every guard was measured on 1.5.9 (§2.w.1, §2.w.2) | as claude runs (G1; the user's decision, 2026-11-13); tarae neither pins agy's version nor turns its updater off | what protects is §2.w's guards: its own tools off by a hook, its asks refused and its mode kept, what a project makes it load held until trusted; another version said once a version, never refused (test: `agent::tests::an_agents_other_version_is_said_never_refused`); the floor is the tripwire, which acts after the call (§2.w.4) |
+| G39 | A trusted project's `.agents/` hooks, MCP servers and plugins run as you, outside the sandbox, each time agy starts there; its hooks run before tarae's and see every call's input, tarae's tools' arguments too (§2.w.5) | agy loads and runs them itself: tarae can hold them, not confine them | held until your yes on the repository's card, which names each one that runs and says so in the warning colour; a byte changed or a file added asks again, and while agy runs, stops it (§2.w.5, §2.w.6); their allow can't lift tarae's hook's deny (§2.w.2) |
+| G40 | Which model a session runs is set by a project's `.tarae.toml` with no card: Claude's `llm.model` and agy's `llm.agy-model` — a checkout can pick the dearest model, and on agy's own list a model of another maker's (§2.w.1) | a cost, not a guard: neither runs anything or loosens one, so neither waits for trust (`llm.web-search-model` does) | open: the user's question (friction #664); said here until it's answered |
 
 ## 5. For a reviewer: where to start
 

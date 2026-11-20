@@ -153,7 +153,10 @@ waves, the status line says only `● follow`. At `editor.motion = "calm"` or `"
 or "Choose Claude's model" in the palette) lists the models your `claude` offers, with the one in use marked
 ([screenshot](screenshots/chat-model.png)). `:effort` sets how hard it thinks, for models that take it. The
 choice applies to the conversation at once, with no restart and no lost context: the next answer comes from the
-new model. It's also saved (`llm.model`, `llm.effort`), so `space i` and later chats use it too.
+new model. It's also saved (`llm.model`, `llm.effort`), so `space i` and later chats use it too. In a session on
+agy, `C-t` lists the models agy's session offers once it has started, and `:model` saves the choice as
+`llm.agy-model` (checked as the session starts; a value agy doesn't offer is said, with the model it runs on);
+`:effort` is refused there, as it sets Claude's sessions only.
 
 Conversations outlive tarae. Each one is kept for its project, and Claude keeps its own memory of it
 (`claude --resume`). A start begins a new conversation. The empty chat offers the latest among its first keys:
@@ -474,7 +477,9 @@ the same values don't ask again, other ones do. `.claude/settings.local.json` is
 while git says it's untracked and ignored. If either file changes while the chat is open, tarae reads it again,
 and a change that needs your answer starts Claude again at once with them held back — mid-turn too, the turn cut
 off — the conversation going on and the card up again (Claude Code itself would otherwise pick up an edited
-helper mid-conversation). `:claude-settings` shows the card again. When the project's `.tarae.toml` or its git's
+helper mid-conversation). `:claude-settings` shows the card again. In a session on agy, `:agent-files` does the
+same for the project's `.agents/` files, and agy isn't started until they're answered ([threat
+model](threat-model.md), §2.w). When the project's `.tarae.toml` or its git's
 own commands wait for their card too, it's one card for the repository, each part answered and kept on its own
 ([configuration](configuration.md)). The chat also only ever starts tarae's
 own MCP server (`--strict-mcp-config`), whatever `llm.args` says, so a project's `.mcp.json` servers don't
@@ -2255,7 +2260,8 @@ Your plan's weekly window joins it only while it presses, in the warning colour,
 
 The cost is what claude reports (`total_cost_usd`): the API price by Claude Code's own table. On a subscription
 that's not what you pay, so it's said as `≈ API` — in the chat's row, the session list — and once at the top of
-`:usage`, with the Claude Code version whose table it is.
+`:usage`, with the Claude Code version whose table it is. A session on agy shows its tokens where the cost would be
+(`12.4k tokens`, here and in the session list): agy reports tokens, not cost, and no limits, as `:usage` says.
 
 - **The weekly limit**: how much of your plan's weekly window is used and when it resets, as claude says it —
   only while it presses: when claude warns or from 80 %; `limit reached` when claude refuses. Below that it isn't
@@ -2347,7 +2353,8 @@ says which the session is on). It first looks for the key's Keychain item, as `$
 there, an error says how to add it and nothing changes. If its Claude is running, it stops and starts again on the
 new billing, continuing the same conversation. The first turn after a switch writes the whole conversation to the
 prompt cache again: the plan's cache and your API organization's aren't shared. While Claude answers, the switch
-is refused; switch after the turn, or stop it with `C-c`. New sessions take `llm.billing` (`"subscription"` by default), and each session
+is refused; switch after the turn, or stop it with `C-c`. In a session on agy, `:session-billing` is refused: agy
+signs in on its own, and tarae doesn't choose who pays. New sessions take `llm.billing` (`"subscription"` by default), and each session
 keeps its own across `:restart` and the next start. The reviewer follows its session unless
 `llm.reviewer-billing` says `"subscription"` or `"api"`. These settings, like `llm.environment-key`, are read
 from your own config only: a project's `.tarae.toml` or `.tarae.local.toml` is refused them, and says so. A
