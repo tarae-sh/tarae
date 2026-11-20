@@ -2178,7 +2178,7 @@ impl Kept {
             });
             let covers = self.children.get(&id).and_then(|c| c.covers.as_ref());
             let at = match (place, covers) {
-                (Some((list, i)), Some(c)) => c.path_at(list, i).to_vec(),
+                (Some((list, i)), Some(c)) => c.named(list, i).to_vec(),
                 _ => Vec::new(),
             };
             let _ = self.say(&Msg::Failed { id, errno, step, at }, &[]);
@@ -2510,9 +2510,7 @@ fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: R
             let mut left = SkipRecord::new();
             let mut at = (CoverAt::Namespace, 0);
             if let Err(e) = cover(c, &mut left, &mut at) {
-                let path = c.path_at(at.0, at.1);
-                let named = if path.is_empty() { at.0.said() } else { path };
-                fail_at(Step::Covers, e, Some((at.0, at.1, named)));
+                fail_at(Step::Covers, e, Some((at.0, at.1, c.named(at.0, at.1))));
             }
             // (what it left of the keys outside the project, said before its exec — none left said too, so tarae
             // knows; `Kept::failure` reads it)
@@ -2752,6 +2750,14 @@ impl Covering {
             CoverAt::ShutFolder => return self.shut_dir.as_ref().map_or(&[][..], |s| s.0.as_bytes()),
         };
         list.get(i as usize).map_or(&[][..], |e| e.0.as_bytes())
+    }
+
+    /// What a refusal at entry `i` of list `at` names: its path where it may (`path_at`), else the list's words
+    /// (`CoverAt::said`: a key outside the project, a folder on its way) — the run's child's line and tarae's
+    /// words of it (`Kept::failure`) alike. Allocates nothing.
+    fn named(&self, at: CoverAt, i: u32) -> &[u8] {
+        let path = self.path_at(at, i);
+        if path.is_empty() { at.said() } else { path }
     }
 }
 
@@ -3435,25 +3441,36 @@ mod tests {
         assert_eq!(skipped_in(4, &failed), None, "a failure isn't a record");
         // A failure at its mounts, with where: said by that entry's path (a seal's, here)
         let (r, w) = io::pipe().unwrap();
-        let covers = Covering {
+        let covering = || Covering {
             shut: None,
             shut_dir: None,
             keys: Vec::new(),
-            loose: Vec::new(),
+            loose: vec![(CString::new("/elsewhere/a/.env").unwrap(), 1, 4)],
             seals: vec![(CString::new("/p/one").unwrap(), 1, 2), (CString::new("/p/.git").unwrap(), 1, 3)],
             pins: Vec::new(),
-            loose_pins: Vec::new(),
+            loose_pins: vec![(CString::new("/elsewhere/a").unwrap(), 1, 5)],
             uid_map: CString::default(),
             gid_map: CString::default(),
             last_cap: 0,
             gone_in_the_window: None,
         };
-        k.children.insert(5, Child { pid: 0, error: Some(r.into()), covers: Some(covers) });
+        k.children.insert(5, Child { pid: 0, error: Some(r.into()), covers: Some(covering()) });
         write(&w, &[Step::Covers.code(), 2, 0, 0, 0, CoverAt::Seal as u8, 1, 0, 0, 0]);
         k.failure(5);
         let at = b"/p/.git".to_vec();
         assert_eq!(heard(), Msg::Failed { id: 5, errno: 2, step: Step::Covers, at });
         assert_eq!(skipped_in(5, &[Step::Covers.code(), 2, 0, 0, 0, 2, 1, 0, 0, 0]), None);
+        // A failure at a key outside the project or a folder on its way: no path (the report only counts those),
+        // said by its list's words — as the child's own line says it (#667: tarae's named nothing)
+        for (id, list) in [(6, CoverAt::Loose), (7, CoverAt::LoosePin)] {
+            let (r, w) = io::pipe().unwrap();
+            k.children.insert(id, Child { pid: 0, error: Some(r.into()), covers: Some(covering()) });
+            write(&w, &[Step::Covers.code(), 2, 0, 0, 0, list as u8, 0, 0, 0, 0]);
+            k.failure(id);
+            let at = list.said().to_vec();
+            assert!(!at.is_empty(), "{list:?}: words of its own");
+            assert_eq!(heard(), Msg::Failed { id, errno: 2, step: Step::Covers, at }, "{list:?}");
+        }
     }
 
     /// The namespaces this system gives a keeper (`tier::get`): every test's keeper is born in them, so each

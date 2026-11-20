@@ -2126,32 +2126,33 @@ impl Covers {
         }
         let dir = run.parent().ok_or_else(|| io::Error::other("a run's folder in no instance"))?;
         let at = dir.join(super::SHUT_FOLDER);
+        // (the record held from before the `mkdir` to after it's checked and noted: two confines at once — two
+        // sessions' first, or a test binary's tests side by side on one instance folder — never see the folder made
+        // by the other before it's recorded)
+        let mut made_here = SHUT_MADE.lock().unwrap_or_else(|e| e.into_inner());
         let made = match std::fs::DirBuilder::new().mode(0o000).create(&at) {
             Ok(()) => true,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
             Err(e) => return Err(e),
         };
         let m = at.symlink_metadata()?;
-        let recorded = {
-            let mut made_here = SHUT_MADE.lock().unwrap_or_else(|e| e.into_inner());
-            if made {
-                made_here.retain(|c| c.path != at);
-                made_here.push(Cover { path: at.clone(), dev: m.dev(), ino: m.ino() });
-            }
-            made_here.iter().find(|c| c.path == at).map(|c| (c.dev, c.ino))
+        let mine = (m.dev(), m.ino());
+        let recorded = match made {
+            true => Some(mine),
+            false => made_here.iter().find(|c| c.path == at).map(|c| (c.dev, c.ino)),
         };
-        let seen = Seen {
-            dir: m.file_type().is_dir(),
-            mode: m.mode(),
-            uid: m.uid(),
-            links: m.nlink(),
-            at: (m.dev(), m.ino()),
-        };
+        let seen =
+            Seen { dir: m.file_type().is_dir(), mode: m.mode(), uid: m.uid(), links: m.nlink(), at: mine };
         // SAFETY: a plain call.
         let uid = unsafe { libc::geteuid() };
         shut_folder_taken(&seen, uid, recorded)
             .map_err(|why| io::Error::other(format!("{} isn't tarae's shut folder: {why}", at.display())))?;
-        self.shut_dir = Some(Cover { path: at, dev: m.dev(), ino: m.ino() });
+        if made {
+            made_here.retain(|c| c.path != at);
+            made_here.push(Cover { path: at.clone(), dev: mine.0, ino: mine.1 });
+        }
+        drop(made_here);
+        self.shut_dir = Some(Cover { path: at, dev: mine.0, ino: mine.1 });
         Ok(())
     }
 
@@ -3498,6 +3499,45 @@ mod tests {
             .map(|(row, ..)| *row)
             .collect();
         assert!(wrong.is_empty(), "judged wrong: {wrong:?}");
+    }
+
+    /// Confines at once on a fresh instance folder — two sessions' first runs, or a test binary's tests side by side
+    /// — each take the shut folder one of them made (#667: with the record taken after the `mkdir`,
+    /// one that found the folder made by another before that one had recorded it was refused, "not the folder tarae
+    /// made there"). Threads released together, over many fresh folders.
+    #[test]
+    fn confines_at_once_each_take_the_shut_folder_one_made() {
+        const THREADS: usize = 8;
+        const FOLDERS: usize = 300;
+        let held = crate::scratch::Scratch::new("shut-race");
+        let dir = held.to_path_buf();
+        let mut refused = Vec::new();
+        for n in 0..FOLDERS {
+            let instance = dir.join(format!("{n}-0"));
+            let run = instance.join("run");
+            std::fs::create_dir_all(&run).unwrap();
+            let go = std::sync::Barrier::new(THREADS);
+            let took: Vec<io::Result<()>> = std::thread::scope(|s| {
+                let each = |_| {
+                    crate::event::scoped(s, "tarae-confine", || {
+                        go.wait();
+                        Covers::default().shut_folder(&run)
+                    })
+                };
+                let started: Vec<_> = (0..THREADS).map(each).collect();
+                started.into_iter().map(|t| t.join().unwrap()).collect()
+            });
+            refused.extend(took.into_iter().filter_map(Result::err).map(|e| format!("folder {n}: {e}")));
+            // (the empty mode-0 folder by name, so the scratch folder can go)
+            let _ = std::fs::remove_dir(instance.join(super::super::SHUT_FOLDER));
+        }
+        assert!(
+            refused.is_empty(),
+            "{} refused of {}, the first: {:?}",
+            refused.len(),
+            THREADS * FOLDERS,
+            refused.first()
+        );
     }
 
     /// On this machine's filesystem: the shut folder `shut_folder` makes is taken, and by every confine after; with
