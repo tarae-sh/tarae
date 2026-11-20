@@ -6944,8 +6944,9 @@ mod tests {
         });
         assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n'], "{}", said(&ed));
         let held = "y waits until .gitignore is staged or undone — the git tab (space g)";
-        let refused = |ed: &mut Editor, how: &str, off: &mut Vec<String>| {
-            let n = ed.messages.len();
+        // (`n`: the messages before the key that's refused — counted before it, so a word said as it's handled is
+        // seen whatever the order)
+        let refused = |ed: &mut Editor, n: usize, how: &str, off: &mut Vec<String>| {
             settle_until(ed, |ed| ed.messages.iter().skip(n).any(|m| m.2.contains("not going on")));
             match card(ed, "feat: conflicts resolved") {
                 None => off.push(format!("{how}: no card back — {}", said(ed))),
@@ -6983,8 +6984,9 @@ mod tests {
         let mut off = Vec::new();
         // `y`, a tracked file changed since the card's last read
         std::fs::write(wt.join(".gitignore"), "target/\nsnap/\n").unwrap();
+        let n = ed.messages.len();
         feed(&mut ed, "y");
-        refused(&mut ed, "y", &mut off);
+        refused(&mut ed, n, "y", &mut off);
         // Undone, and the git tab's read frees it; `m`, the file changed again, then its message's `:w` (the card
         // brought back by hand if `y` left it gone: the trap sees this half too)
         if card(&ed, "feat: conflicts resolved").is_none() {
@@ -6998,8 +7000,9 @@ mod tests {
         settle_until(&mut ed, |ed| ed.in_rebase_message() || says(ed, "the commit's message:"));
         assert!(ed.in_rebase_message(), "{}", said(&ed));
         std::fs::write(wt.join(".gitignore"), "target/\nsnap/\n").unwrap();
+        let n = ed.messages.len();
         feed(&mut ed, ":w<ret>");
-        refused(&mut ed, "m's :w", &mut off);
+        refused(&mut ed, n, "m's :w", &mut off);
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
         off
@@ -7195,7 +7198,8 @@ mod tests {
             off.push(format!("no resolved card in feat: {}", said(&ed)));
             return off;
         }
-        // By hand, in a terminal
+        // By hand, in a terminal (the messages counted before it: what its end brings is later, whatever the order)
+        let n = ed.messages.len();
         git_in(&wt, &["add", "a.txt"]);
         let out = std::process::Command::new("git")
             .arg("-C")
@@ -7206,7 +7210,6 @@ mod tests {
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert!(crate::rebase::under_way(&wt).is_none(), "finished by hand");
-        let n = ed.messages.len();
         let later = move |ed: &Editor, s: &str| ed.messages.iter().skip(n).any(|m| m.2.contains(s));
         let gone = |ed: &Editor| later(ed, "feat: the rebase ended outside tarae");
         if by_y {
@@ -7272,8 +7275,13 @@ mod tests {
         assert!(crate::rebase::under_way(&wt).is_some(), "still stopped");
         // (its repository not kept — `gitrepo`'s list is capped: read on a worker, not refused — and the user
         // in the other session by the time it's read: the abort goes on in feat's, not the one in front)
-        crate::gitrepo::forget(&wt);
+        // (kept from being kept: a git panel's resolve landing late would have the abort start at once, here — #663)
+        let _unkept = crate::gitrepo::unkept(&wt);
         feed(&mut ed, ":rebase-abort<ret>");
+        assert!(
+            !ed.workspace.task_run.as_ref().is_some_and(|r| r.task.name == "rebase --abort"),
+            "its line is read on a worker, not started at once"
+        );
         let feat = ed.workspace.id;
         let main = ed.workspaces.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
         assert!(ed.workspace_switch(main).is_in());
@@ -7308,14 +7316,26 @@ mod tests {
         rebase_asked(&mut ed);
         settle_until(&mut ed, |ed| says(ed, "conflict markers still in") || says(ed, "rebase feat:"));
         assert!(crate::rebase::under_way(&wt).is_some(), "stopped on its conflict: {}", said(&ed));
-        crate::gitrepo::forget(&wt);
+        // (its repository not kept, and kept from being kept: the git panel's refresh resolves the checkout on a
+        // worker as the rebase's files change, and one under way lands whenever it lands — #663: after a
+        // `forget`, at a loaded run's pace past `RACY`, it was kept, the abort started at once and no line was read.
+        // That order made here: what decides the repository older than `RACY`, the refresh's resolve landing late)
+        let _unkept = crate::gitrepo::unkept(&wt);
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        crate::gitrepo::coarse_times_under(&dir, Some(now - 10));
+        crate::gitrepo::repo(&wt).unwrap();
+        let read = ed.rebase_lines_read;
         feed(&mut ed, ":rebase-abort<ret>");
+        assert!(
+            !ed.workspace.task_run.as_ref().is_some_and(|r| r.task.name == "rebase --abort"),
+            "its line is read on a worker, not started at once"
+        );
         let feat = ed.workspace.id;
         let main = ed.workspaces.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
         assert!(ed.workspace_switch(main).is_in());
         // Gone — taken out as nothing in tarae can while it rebases (ending one is refused then)
         ed.workspaces.retain(|s| s.id != feat);
-        let read = ed.rebase_lines_read;
         settle_until(&mut ed, |ed| ed.rebase_lines_read > read);
         assert!(ed.workspace.task_run.is_none(), "nothing started in the session in front");
         assert!(crate::rebase::under_way(&wt).is_some(), "not aborted in someone else's name");

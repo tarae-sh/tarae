@@ -344,6 +344,11 @@ impl Kept {
         if epoch != (self.epoch_now)() {
             return false;
         }
+        // (a test's `unkept` root: resolved, not kept — read with this list's lock held, as `unkept` takes it)
+        #[cfg(test)]
+        if UNKEPT.lock().unwrap_or_else(|e| e.into_inner()).contains(&root) {
+            return true;
+        }
         self.entries.retain(|(k, ..)| *k != root);
         self.entries.push((root, r, epoch));
         let over = self.entries.len().saturating_sub(self.cap);
@@ -395,6 +400,36 @@ pub fn cached(root: &Path) -> Option<Arc<Repo>> {
 pub fn forget(root: &Path) {
     let real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     repos().entries.retain(|(k, ..)| *k != real);
+}
+
+/// Tests: roots whose repository isn't kept while their `Unkept` lives.
+#[cfg(test)]
+static UNKEPT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Tests: `root`'s repository not kept while the guard lives — `forget` that holds: a resolve under way as it's
+/// taken (a git watch's refresh on a worker) lands after it and isn't kept either, so `cached` misses whatever
+/// the order (#663: one that landed after a `forget` made a step meant to be read on a worker start at once).
+#[cfg(test)]
+pub fn unkept(root: &Path) -> Unkept {
+    let real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    // (`repos`' lock first, as `Kept::put` holds it while it reads the list: no put falls between the two)
+    let mut kept = repos();
+    UNKEPT.lock().unwrap_or_else(|e| e.into_inner()).push(real.clone());
+    kept.entries.retain(|(k, ..)| *k != real);
+    Unkept(real)
+}
+
+#[cfg(test)]
+pub struct Unkept(PathBuf);
+
+#[cfg(test)]
+impl Drop for Unkept {
+    fn drop(&mut self) {
+        let mut all = UNKEPT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = all.iter().position(|r| *r == self.0) {
+            all.remove(i);
+        }
+    }
 }
 
 /// The one discovery: from `root`, bare-looking folders refused — and with `ceilings`, never climbing into
