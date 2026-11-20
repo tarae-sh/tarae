@@ -99,6 +99,11 @@ pub const COMMANDS: &[TypedCmd] = &[
         "Look again at what this project's Claude settings run in the chat, and trust them or not",
     ),
     c(
+        &["agent-files"],
+        Arg::None,
+        "Look again at the project files Claude loads that run as you, and trust them or not",
+    ),
+    c(
         &["git-trust"],
         Arg::None,
         "Look again at what this repository's own git settings run, and trust them or not",

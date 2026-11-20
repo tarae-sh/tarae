@@ -115,8 +115,9 @@ fn the_three_waiting_together_are_one_card_and_the_chat_doesnt_wait() {
     assert_eq!(parts(o), ["project-trust", "claude-settings", "git-trust"]);
     assert_eq!((o.title.as_str(), o.rev), (TITLE, 2), "two parts joined it");
     let lines: Vec<&str> = o.question.split('\n').collect();
-    assert!(
-        lines[0].starts_with("repo's settings run commands as you") && lines[0].ends_with("· git joined")
+    assert_eq!(
+        lines[0], "repo's settings run commands as you, even unasked.",
+        "the settings' sentence alone"
     );
     assert!(lines.contains(&"tarae · .tarae.toml"), "{lines:?}");
     assert!(lines.contains(&"  editor.restart-build = \"touch marker\""), "{lines:?}");
@@ -333,7 +334,7 @@ fn a_part_joining_lets_go_of_the_keys() {
     until(&mut ed, "Claude's part", claude_card);
     let o = &ed.offers[0];
     assert_eq!(parts(o), ["project-trust", "claude-settings"]);
-    assert!(o.question.split('\n').next().unwrap().ends_with("· Claude joined"), "{}", o.question);
+    assert!(o.question.split('\n').next().unwrap().ends_with("even unasked."), "{}", o.question);
     ed.card_focus = Some((o.id, o.rev));
     assert!(ed.card_has_keys());
     ed.offer_refused("x isn't an answer here");
@@ -415,6 +416,295 @@ fn another_checkouts_part_stays_its_own_card() {
     ask.config = root.join(".git/modules/sub/config");
     ed.trust_offer(ask.card(&root));
     assert_eq!(kinds(&ed), ["project-trust", "git-trust"]);
+}
+
+// ── The agent's held files (guard 4) as a part: agy's, played by the stand-in's row (`.stand-in/` held) ────────────
+
+/// The stand-in's held files in the checkouts below.
+const AGENT_FILES: [&str; 2] = ["  .stand-in/hooks.json", "  .stand-in/mcp.json"];
+
+/// `checkout`'s, with `files` rules files more than `AGENT_FILES` (`.stand-in/rules/<n>.md`) and the chat's agent the
+/// stand-in's row: it answers its handshake and a turn, and writes what it heard to `heard` in the test's folder. Its
+/// held files, git's commands and tarae's settings each wait; nothing is read yet but tarae's (its card up).
+fn agent_checkout(name: &str, files: usize) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    use crate::agent::acp::standin::{HEARD, SCRIPT};
+    let (s, mut ed, root) = checkout(name, None);
+    let held = root.join(".stand-in");
+    std::fs::create_dir_all(held.join("rules")).unwrap();
+    std::fs::write(held.join("hooks.json"), r#"{"hooks": {}}"#).unwrap();
+    std::fs::write(held.join("mcp.json"), r#"{"mcpServers": {}}"#).unwrap();
+    for n in 0..files {
+        std::fs::write(held.join(format!("rules/{n:02}.md")), "be brief").unwrap();
+    }
+    let script = serde_json::json!([
+        {"expect": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}}},
+        {"expect": "session/new", "result": {"sessionId": "s-1", "modes": {"currentModeId": "default"}}},
+        {"expect": "session/prompt"},
+        {"end_turn": "end_turn"},
+    ]);
+    let dir = s.to_path_buf();
+    std::fs::write(dir.join("script.json"), script.to_string()).unwrap();
+    let path = |p: PathBuf| p.to_string_lossy().into_owned();
+    ed.claude_env = Some(crate::llm::Env::from([
+        (SCRIPT.into(), path(dir.join("script.json"))),
+        (HEARD.into(), path(dir.join("heard"))),
+        ("XDG_STATE_HOME".into(), path(dir.join("state"))),
+    ]));
+    ed.workspace.claude.chat = Some(stand_in_chat());
+    (s, ed, root)
+}
+
+fn stand_in_chat() -> crate::chat::Chat {
+    let mut c = crate::chat::Chat::new();
+    (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+    c
+}
+
+/// The methods the stand-in heard — none: it never started.
+fn heard(s: &crate::scratch::Scratch) -> Vec<String> {
+    let text = std::fs::read_to_string(s.join("heard")).unwrap_or_default();
+    let lines = text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+    lines.filter_map(|v| v["method"].as_str().map(String::from)).collect()
+}
+
+fn agent_card(ed: &Editor) -> bool {
+    ed.offers.iter().any(|o| match &o.what {
+        What::AgentFiles { .. } => true,
+        What::RepoTrust { parts, .. } => parts.iter().any(|p| matches!(p.what, What::AgentFiles { .. })),
+        _ => false,
+    })
+}
+
+/// The agent's files read as its chat would start it (their part joins tarae's card), then git's part as git's watch
+/// finds it.
+fn agent_and_the_rest(ed: &mut Editor, root: &Path) {
+    crate::chat::gate_opened(ed);
+    until(ed, "the agent's part", agent_card);
+    let r = crate::gitrepo::repo(root).unwrap();
+    assert!(ed.git_trust_check(&r), "git's part asked");
+}
+
+fn toasts(ed: &Editor) -> String {
+    ed.toasts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" | ")
+}
+
+fn agent_kept(ed: &Editor, root: &Path) -> State {
+    crate::agenttrust::look(&crate::agent::STAND_IN, root, ed.trust_path.as_deref()).unwrap().state
+}
+
+/// The agent's held files join tarae's and git's parts as its own card would come: one card, the agent's part in
+/// Claude's place — with its session, it waits for the answer, nothing started.
+#[test]
+fn the_agents_files_join_tarae_and_git_in_order() {
+    let (s, mut ed, root) = agent_checkout("agent-joins", 0);
+    crate::chat::gate_opened(&mut ed);
+    until(&mut ed, "the agent's part", agent_card);
+    assert_eq!(parts(&ed.offers[0]), ["project-trust", "agent-files"]);
+    let r = crate::gitrepo::repo(&root).unwrap();
+    assert!(ed.git_trust_check(&r), "git's part asked");
+    assert_eq!(kinds(&ed), ["repo-trust"], "one card");
+    let o = &ed.offers[0];
+    assert_eq!(parts(o), ["project-trust", "agent-files", "git-trust"]);
+    let lines: Vec<&str> = o.question.split('\n').collect();
+    assert_eq!(
+        lines[0], "repo's settings run commands as you, even unasked.",
+        "the settings' sentence alone"
+    );
+    let at =
+        lines.iter().position(|l| *l == "stand-in · it isn't started until you answer").expect("its heading");
+    assert!(lines[..at].contains(&"tarae · .tarae.toml") && lines[at + 4].starts_with("git · "), "{lines:?}");
+    assert!(o.goes_with_workspace() && o.weighty());
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.starting() && !c.running(), "it waits for the answer");
+    assert!(heard(&s).is_empty(), "the agent started: {:?}", heard(&s));
+}
+
+/// The agent's part on the joined card and its own card alone say the same: its subtitle's words, each file by name,
+/// and under them the one `▲` line — that after a yes they run with your permissions, outside tarae's sandbox — in the
+/// warning colour on both.
+#[test]
+fn the_joined_card_names_every_file_and_warns_what_a_yes_runs() {
+    let (_s, mut ed, root) = agent_checkout("agent-names", 0);
+    agent_and_the_rest(&mut ed, &root);
+    let o = &ed.offers[0];
+    let What::RepoTrust { parts, .. } = &o.what else { panic!("{:?}", kinds(&ed)) };
+    let own = &parts[1];
+    let q: Vec<&str> = own.question.split('\n').collect();
+    assert_eq!(q[0], "stand-in isn't started until you answer.");
+    let own_lines: Vec<&str> = own.decided_lines().map(|i| q[i]).collect();
+    assert_eq!(
+        own_lines,
+        [AGENT_FILES[0], AGENT_FILES[1], crate::agenttrust::AFTER_YES],
+        "each file, then the ▲ line"
+    );
+    assert_eq!(
+        crate::agenttrust::AFTER_YES,
+        "▲ after a yes these run with your permissions, outside tarae's sandbox: hooks, MCP servers, plugins"
+    );
+    let warned = |o: &Offer| -> Vec<usize> { o.warnings.iter().flat_map(|r| r.clone()).collect() };
+    assert_eq!(warned(own), [q.len() - 1], "alone: in the warning colour");
+    // (joined: its own card's lines under its heading, the ▲ line still the warning colour's)
+    let lines: Vec<&str> = o.question.split('\n').collect();
+    let at = lines.iter().position(|l| l.starts_with("stand-in · ")).unwrap();
+    assert_eq!(lines[at + 1..at + 1 + own_lines.len()], own_lines[..], "{lines:?}");
+    assert_eq!(warned(o), [at + own_lines.len()], "joined: in the warning colour");
+}
+
+/// Guard 4's fold (sandbox.md, "what runs is never folded"): a repository can't choose what the card shows by sorting
+/// twelve harmless files first. What runs comes first and is never folded — a hook named last, a workflow (running until
+/// measured), a plugin as its folder with its file count — and only rules files fold, the fold saying their kind and
+/// count. On both cards.
+#[test]
+fn what_runs_is_never_folded_behind_files_read() {
+    let (_s, mut ed, root) = agent_checkout("agent-fold", 12);
+    let held = root.join(".stand-in");
+    std::fs::write(held.join("zz-hook.json"), r#"{"hooks": {}}"#).unwrap();
+    std::fs::create_dir_all(held.join("plugins/lint")).unwrap();
+    for f in ["a.js", "b.js"] {
+        std::fs::write(held.join("plugins/lint").join(f), "run()").unwrap();
+    }
+    // (a `.json` among the rules: no rules file — it runs, its own row)
+    std::fs::write(held.join("rules/zz.json"), "{}").unwrap();
+    std::fs::create_dir_all(held.join("workflows")).unwrap();
+    std::fs::write(held.join("workflows/release.md"), "1. Tag it.").unwrap();
+    agent_and_the_rest(&mut ed, &root);
+    let What::RepoTrust { parts, .. } = &ed.offers[0].what else { panic!("{:?}", kinds(&ed)) };
+    let own = &parts[1];
+    let q: Vec<&str> = own.question.split('\n').collect();
+    let own_lines: Vec<&str> = own.decided_lines().map(|i| q[i]).collect();
+    let rules: Vec<String> = (0..6).map(|n| format!("  .stand-in/rules/{n:02}.md")).collect();
+    let mut want = vec![
+        "  .stand-in/hooks.json",
+        "  .stand-in/mcp.json",
+        "  .stand-in/plugins/lint/ (2 files)",
+        "  .stand-in/rules/zz.json",
+        "  .stand-in/workflows/release.md",
+        "  .stand-in/zz-hook.json",
+    ];
+    want.extend(rules.iter().map(String::as_str));
+    want.extend(["  … and 6 more rules files — v shows every one", crate::agenttrust::AFTER_YES]);
+    assert_eq!(own_lines, want, "alone");
+    let joined = ed.offers[0].question.clone();
+    assert!(joined.contains("\n  .stand-in/zz-hook.json\n") && joined.contains(want[12]), "joined: {joined}");
+}
+
+/// A fold hides two or more: with one rules file past the room, it's shown and nothing is folded.
+#[test]
+fn one_file_left_over_is_shown_not_folded() {
+    let (_s, mut ed, _) = agent_checkout("agent-one-over", 11);
+    crate::chat::gate_opened(&mut ed);
+    until(&mut ed, "the agent's part", agent_card);
+    let own = ed.offers.iter().find_map(|o| match &o.what {
+        What::RepoTrust { parts, .. } => parts.iter().find(|p| matches!(p.what, What::AgentFiles { .. })),
+        _ => None,
+    });
+    let own = own.expect("the agent's part");
+    let q: Vec<&str> = own.question.split('\n').collect();
+    let own_lines: Vec<&str> = own.decided_lines().map(|i| q[i]).collect();
+    // (two that run, eleven rules files: one past the twelve rows, shown)
+    assert_eq!(own_lines.len(), 2 + 11 + 1, "{own_lines:?}");
+    assert!(own_lines.contains(&"  .stand-in/rules/10.md"), "{own_lines:?}");
+    assert!(!own_lines.iter().any(|l| l.contains("… and")), "{own_lines:?}");
+}
+
+/// `y` trusts every part, each kept in its own store's entry, and starts the agent: the message that waited goes.
+#[test]
+fn yes_trusts_every_part_and_starts_the_agent() {
+    let (s, mut ed, root) = agent_checkout("agent-yes", 0);
+    agent_and_the_rest(&mut ed, &root);
+    let What::RepoTrust { parts, .. } = ed.offers[0].what.clone() else { panic!("{:?}", kinds(&ed)) };
+    ed.workspace.claude.chat.as_mut().unwrap().input.set("hello");
+    crate::chat::send(&mut ed);
+    assert!(heard(&s).is_empty(), "started before the answer");
+    ed.offer_accept();
+    assert!(ed.offers.is_empty());
+    let said = toasts(&ed);
+    assert!(said.contains("Trusted — this repository's settings apply: tarae's "), "{said}");
+    assert!(said.contains(", stand-in's 2, git's 1"), "{said}");
+    assert_eq!(ed.config.restart_build, "touch marker");
+    until(&mut ed, "the agent's turn", |_| heard(&s).contains(&"session/prompt".to_string()));
+    let text = std::fs::read_to_string(s.join("heard")).unwrap();
+    assert!(text.contains("hello"), "the message that waited: {text}");
+    until(&mut ed, "the agent's kept", |ed| agent_kept(ed, &root) == State::Trusted);
+    let What::GitTrust(a) = &parts[2].what else { panic!() };
+    until(&mut ed, "git's kept", |ed| kept(ed, &a.config, a.digest) == State::Trusted);
+}
+
+/// `n` holds every part back; the agent isn't started in this project until you quit — a chat opened again is held
+/// in those words, no card — and its no is never kept.
+#[test]
+fn no_holds_every_part_and_the_agent_until_you_quit() {
+    let (s, mut ed, root) = agent_checkout("agent-no", 0);
+    agent_and_the_rest(&mut ed, &root);
+    ed.offer_dismiss();
+    assert!(ed.offers.is_empty());
+    let said = toasts(&ed);
+    let words = "Held back — :project-trust, :agent-files, :git-trust to look again · stand-in isn't started in this \
+                 project until you quit";
+    assert!(said.contains(words), "{said}");
+    assert_eq!(ed.config.restart_build, "");
+    ed.workspace.claude.chat = Some(stand_in_chat());
+    crate::chat::gate_opened(&mut ed);
+    let held = crate::agenttrust::held_back("stand-in");
+    until(&mut ed, "held", |ed| {
+        ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == held)
+    });
+    assert!(!agent_card(&ed) && heard(&s).is_empty(), "asked again, or started");
+    assert_eq!(agent_kept(&ed, &root), State::Ask, "never kept");
+}
+
+/// `v`: the agent's own card whole and its detail — every file, why it asks.
+#[test]
+fn v_shows_the_agents_part_whole() {
+    let (_s, mut ed, root) = agent_checkout("agent-view", crate::agenttrust::SHOWN_MAX);
+    agent_and_the_rest(&mut ed, &root);
+    ed.offer_view();
+    let all = ed.doc().text.to_string();
+    assert!(all.contains("── Trust this project's stand-in files?"), "{all}");
+    assert!(all.contains("stand-in loads these from the project by itself"), "{all}");
+    let last = format!("  .stand-in/rules/{:02}.md", crate::agenttrust::SHOWN_MAX - 1);
+    assert!(all.contains(&last) && all.contains(AGENT_FILES[0]), "every file: {all}");
+}
+
+/// `:agent-files` takes the agent's part off the card and asks about it alone, its own card word for word; after an
+/// `n` (the hold until you quit) it asks again, and its `y` starts the agent.
+#[test]
+fn agent_files_asks_its_part_alone_and_again_after_no() {
+    let (s, mut ed, root) = agent_checkout("agent-typed", 0);
+    agent_and_the_rest(&mut ed, &root);
+    let What::RepoTrust { parts: was, .. } = ed.offers[0].what.clone() else { panic!("{:?}", kinds(&ed)) };
+    crate::typed::execute(&mut ed, "agent-files").unwrap();
+    assert_eq!(kinds(&ed), ["repo-trust", "agent-files"]);
+    assert_eq!(parts(&ed.offers[0]), ["project-trust", "git-trust"]);
+    assert_eq!((&ed.offers[1].title, &ed.offers[1].question), (&was[1].title, &was[1].question));
+    // Held back, all of it: asked again by the command, alone
+    ed.offer_dismiss();
+    ed.offer_dismiss();
+    assert!(ed.offers.is_empty() && toasts(&ed).contains(&crate::agenttrust::held_back("stand-in")));
+    crate::typed::execute(&mut ed, "agent-files").unwrap();
+    assert_eq!(kinds(&ed), ["agent-files"]);
+    assert_eq!(ed.offers[0].question, was[1].question);
+    ed.offer_accept();
+    until(&mut ed, "the agent's start", |_| heard(&s).contains(&"session/new".to_string()));
+    until(&mut ed, "the agent's kept", |ed| agent_kept(ed, &root) == State::Trusted);
+    assert!(ed.agent_files_held.is_empty(), "the hold let go");
+    // Asked once trusted: not again here — what takes the yes back, said
+    let e = crate::typed::execute(&mut ed, "agent-files").unwrap_err();
+    assert!(e.starts_with("trusted already — :granted takes the yes back"), "{e}");
+}
+
+/// On Claude's row `:agent-files` is `:claude-settings`: what its project files run as you are its settings — the
+/// same card, alone, out of the repository's; with no chat, the same words.
+#[test]
+fn agent_files_on_claudes_row_asks_about_claudes_settings() {
+    let (_s, mut ed, root) = checkout("claude-typed", None);
+    let none = crate::typed::execute(&mut ed, "agent-files").unwrap_err();
+    assert_eq!(Err(none), ed.claude_settings_ask());
+    all_three(&mut ed, &root);
+    crate::typed::execute(&mut ed, "agent-files").unwrap();
+    assert_eq!(kinds(&ed), ["repo-trust", "claude-settings"]);
+    assert_eq!(parts(&ed.offers[0]), ["project-trust", "git-trust"]);
+    assert_eq!(ed.offers[1].title, crate::claudetrust::TITLE);
 }
 
 /// Keys to the code (the chat opened with them).

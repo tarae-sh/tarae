@@ -188,6 +188,8 @@ pub struct Row {
     /// What a project can make it load that runs as you, in every folder from the project's root up to its git top
     /// (guard 4, `agenttrust.rs`): held until you trust it on a card, the agent not started before. A path ending in `/` is a folder: every file under it.
     pub held: &'static [&'static str],
+    /// How the `held` files show on their card (`agenttrust::question`): which are read, not run, and which run as one.
+    pub held_shown: HeldShown,
     /// The version of it tarae's guards were measured on: another one it says at `initialize` is said once a version,
     /// never refused (`version_said`). None: nothing to compare (Claude's own update says its version).
     pub measured: Option<&'static str>,
@@ -207,6 +209,28 @@ pub struct Row {
     /// `.agents/rules/` and `.gemini/GEMINI.md` not; `CLAUDE.md` wasn't tried).
     pub instructions: &'static [&'static str],
 }
+
+/// How a row's held files show on their card (guard 4: what runs is never folded — sandbox.md, the design session's
+/// reading, 2026-11-20). Paths are from a held path (`rules/`). Every file neither lists counts as running: its own row,
+/// never folded, whatever its name.
+#[derive(Debug, Clone, Copy)]
+pub struct HeldShown {
+    /// Folders whose `.md` files are read, not run, each with the word for them (`rules/`, "rules file") — the only
+    /// files that may fold past `agenttrust::SHOWN_MAX`, the fold saying their kind and count. Any other file there runs.
+    pub read: &'static [(&'static str, &'static str)],
+    /// Folders whose every folder in them is one unit that runs (`plugins/`): one row, its folder and its file count.
+    pub units: &'static [&'static str],
+}
+
+impl HeldShown {
+    /// Nothing held, or nothing told apart: every file its own row.
+    pub const NONE: HeldShown = HeldShown { read: &[], units: &[] };
+}
+
+/// agy's `.agents/` (and the stand-in's, playing it): its rules are markdown it reads. A workflow runs until measured —
+/// steps an agent is told to carry out, nearer a hook than a rule (the design session, 2026-11-20; a probe may move it,
+/// the measure cited). A plugin (format unmeasured: probe 1 didn't try one) is its folder, every file in it counted.
+const AGENTS_SHOWN: HeldShown = HeldShown { read: &[("rules/", "rules file")], units: &["plugins/"] };
 
 /// What an agent keeps in home (`Row.own`).
 #[derive(Debug, Clone, Copy)]
@@ -381,6 +405,7 @@ pub static CLAUDE: Row = Row {
     mode: None,
     // (its own gate is `claudetrust.rs`)
     held: &[],
+    held_shown: HeldShown::NONE,
     measured: None,
     own: Own::Places(&["~/.claude", "~/.claude.json", "~/.claude.json.backup"]),
     instructions: &["CLAUDE.md", "CLAUDE.local.md"],
@@ -405,6 +430,7 @@ pub static AGY: Row = Row {
     own_tools: Some(AGY_TOOLS_OFF),
     mode: Some("default"),
     held: &[".agents/"],
+    held_shown: AGENTS_SHOWN,
     measured: Some("1.5.9"),
     own: Own::Places(&["{user-config}/Antigravity", "~/.antigravity*", "~/.gemini"]),
     instructions: &["AGENTS.md", "GEMINI.md"],
@@ -423,6 +449,7 @@ pub static STAND_IN: Row = Row {
     own_tools: Some(AGY_TOOLS_OFF),
     mode: Some("default"),
     held: &[".stand-in/"],
+    held_shown: AGENTS_SHOWN,
     measured: None,
     own: Own::None("the test binary re-run: it keeps nothing in home"),
     // (as agy's, by its convention's file)
@@ -1230,6 +1257,7 @@ mod tests {
             own_tools,
             mode: Some("default"),
             held: &[],
+            held_shown: super::HeldShown::NONE,
             measured: None,
             own: super::Own::None("a test's"),
         };
@@ -1316,6 +1344,7 @@ mod tests {
             own_tools: Some(super::AGY_TOOLS_OFF),
             mode: Some("default"),
             held: &[],
+            held_shown: super::HeldShown::NONE,
             measured: None,
             own: super::Own::None("a test's"),
         };
@@ -1978,7 +2007,7 @@ mod tests {
     /// `llm::agent_doc` (the session in front's agent, but `CLAUDE_ONLY_COMMANDS`' and `CLAUDE_ONLY_SETTINGS`'): each
     /// must be a doc of `cmdline::COMMANDS`, `commands::COMMANDS`, `commands::TYPED_IN_PALETTE` or `settings::SETTINGS`
     /// (read from the tables, so a status line can't hide as a doc), and as many as listed.
-    const AGENT_DOC_FILES: &[(&str, usize)] = &[("cmdline.rs", 18), ("commands.rs", 17), ("settings.rs", 25)];
+    const AGENT_DOC_FILES: &[(&str, usize)] = &[("cmdline.rs", 19), ("commands.rs", 17), ("settings.rs", 25)];
 
     /// A doc as the walk compares it: its whitespace out (a literal's line breaks and their indent).
     fn squashed(s: &str) -> String {

@@ -1,14 +1,15 @@
-//! One card for a repository's trust (sandbox UX piece I): when more than one of a checkout's three waits —
-//! tarae's own settings (`trust.rs`), its Claude settings (`claudetrust.rs`), its git's own commands
-//! (`gittrust.rs`) — they're one card, each part under a heading with the lines its own card shows. `y` trusts
-//! each, `n` holds each back, `v` shows each whole.
+//! One card for a repository's trust (sandbox UX piece I): when more than one of a checkout's four waits —
+//! tarae's own settings (`trust.rs`), its Claude settings (`claudetrust.rs`) or the files its session's agent holds
+//! (`agenttrust.rs`, guard 4 — the two never share a session), its git's own commands (`gittrust.rs`) — they're one
+//! card, each part under a heading with the lines its own card shows. `y` trusts each, `n` holds each back, `v` shows
+//! each whole. A part's lines are its own card's, its warning lines in the warning colour: the agent's keeps what runs
+//! never folded and its `▲` line (`agenttrust::AFTER_YES`) — never only a count.
 //!
 //! Nothing waits for it: each part is still found on its own worker when it's found, and its card goes up at
 //! once (the chat starts held back beside it, git runs with its commands held); one found while another of the
-//! checkout's waits unanswered joins that card, which settles again before a `y` counts (`rev`), saying
-//! faintly which part came. Each answer is kept in its part's own store as its own card keeps it, so a later
+//! checkout's waits unanswered joins that card, which settles again before a `y` counts (`rev`). Each answer is kept in its part's own store as its own card keeps it, so a later
 //! change asks about that part alone, on its own card, word for word as ever. A part asked alone (`:project-trust`,
-//! `:claude-settings`, `:git-trust`) or no longer asking leaves the card; one left is its own card again. A git
+//! `:claude-settings`, `:agent-files`, `:git-trust`) or no longer asking leaves the card; one left is its own card again. A git
 //! value too long to show is never trusted: `y` holds git's part back, as its own card's only answer does.
 
 use std::path::Path;
@@ -25,16 +26,17 @@ fn named(w: &What) -> Option<(&'static str, &'static str)> {
     match w {
         What::ProjectTrust { .. } => Some(("tarae", ":project-trust")),
         What::ClaudeSettings { .. } => Some(("Claude", ":claude-settings")),
+        What::AgentFiles { shown, .. } => Some((*shown, ":agent-files")),
         What::GitTrust(_) => Some(("git", ":git-trust")),
         _ => None,
     }
 }
 
-/// Where a part stands on the card: tarae's, Claude's, git's.
+/// Where a part stands on the card: tarae's, Claude's or the agent's (a session has one of the two), git's.
 fn order(o: &Offer) -> u8 {
     match o.what {
         What::ProjectTrust { .. } => 0,
-        What::ClaudeSettings { .. } => 1,
+        What::ClaudeSettings { .. } | What::AgentFiles { .. } => 1,
         _ => 2,
     }
 }
@@ -48,13 +50,14 @@ fn same(a: &What, b: &What) -> bool {
 }
 
 /// Whether a part is about the checkout at `root` (a session's, its real path): tarae's file in it or above,
-/// Claude's its session's own, git's the repository it's in — a submodule's stays a card of its own.
+/// Claude's and the agent's files its session's own, git's the repository it's in — a submodule's stays a card of its
+/// own.
 fn of_checkout(ed: &Editor, root: &Path, w: &What) -> bool {
     match w {
         What::ProjectTrust { .. } => {
             ed.project_trust.as_ref().and_then(|p| p.file.parent()).is_some_and(|d| root.starts_with(d))
         }
-        What::ClaudeSettings { .. } => true,
+        What::ClaudeSettings { .. } | What::AgentFiles { .. } => true,
         What::GitTrust(a) => root.starts_with(&a.place),
         _ => false,
     }
@@ -71,28 +74,23 @@ fn heading(root: &Path, part: &Offer, project: Option<&Path>) -> String {
     match &part.what {
         What::ProjectTrust { .. } => format!("tarae · {}", project.map_or(".tarae.toml".into(), shown)),
         What::ClaudeSettings { .. } => "Claude · it started with these held back".into(),
+        // (Claude's words, but what's true of it: held back is not started — no flag keeps it from loading them)
+        What::AgentFiles { shown, .. } => format!("{shown} · it isn't started until you answer"),
         What::GitTrust(a) => format!("git · {} — they run {}", shown(&a.config), a.when()),
         _ => String::new(),
     }
 }
 
 /// The card for `parts` (each its own card, in order) — one part: that part's own card, as it is.
-fn card(
-    root: &Path,
-    mut parts: Vec<Offer>,
-    joined: Option<&str>,
-    project: Option<&Path>,
-    repo: bool,
-) -> Offer {
+fn card(root: &Path, mut parts: Vec<Offer>, project: Option<&Path>, repo: bool) -> Offer {
     if parts.len() == 1 {
         return parts.remove(0);
     }
     // (git's part is a repository's; else tarae's file's place says it)
     let repo = repo || parts.iter().any(|p| matches!(p.what, What::GitTrust(_)));
     let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into());
-    let joined = joined.map(|j| format!(" · {j} joined")).unwrap_or_default();
     let first = format!(
-        "{} settings run commands as you, even unasked.{joined}",
+        "{} settings run commands as you, even unasked.",
         crate::workspace::possessive(&crate::trust::visible_line(&name))
     );
     let mut lines = vec![first, String::new()];
@@ -101,11 +99,15 @@ fn card(
     let start = lines.len();
     for p in &parts {
         lines.push(heading(root, p, project));
-        // (the lines its own card decides on, as they are there)
+        // (the lines its own card decides on, as they are there — its warnings in the warning colour)
         let q: Vec<&str> = p.question.split('\n').collect();
-        lines.extend(
-            p.decided_lines().filter(|&i| p.decides(i)).filter_map(|i| q.get(i)).map(|l| l.to_string()),
-        );
+        for i in p.decided_lines().filter(|&i| p.decides(i)) {
+            let Some(l) = q.get(i) else { continue };
+            if p.warnings.iter().any(|w| w.contains(&i)) {
+                warnings.push(lines.len()..lines.len() + 1);
+            }
+            lines.push(l.to_string());
+        }
         if let What::GitTrust(a) = &p.what {
             if let Some(names) = a.files_named() {
                 lines.push(format!("  as these files are now: {names} — a change to one asks again"));
@@ -176,14 +178,13 @@ impl Editor {
             self.count(crate::features::Area::Card, "repo-trust");
         }
         self.count(crate::features::Area::Card, o.kind());
-        let joined = named(&o.what).map(|(n, _)| n);
         match parts.iter().position(|p| same(&p.what, &o.what)) {
             Some(i) => parts[i] = o,
             None => parts.push(o),
         }
         crate::sorting::by_key(&mut parts, order);
         let project = self.project_trust.as_ref().map(|p| p.file.clone());
-        let card = card(&root, parts, joined, project.as_deref(), project_in_repo(self));
+        let card = card(&root, parts, project.as_deref(), project_in_repo(self));
         let list = if front { &mut self.offers } else { &mut self.workspace.parked };
         replace(&mut list[at], card);
     }
@@ -217,7 +218,7 @@ pub(crate) fn drop_part(ed: &mut Editor, gone: impl Fn(&What) -> bool, everywher
                     o.what = What::RepoTrust { root, parts: left };
                     emptied = true;
                 }
-                false => replace(o, card(&root, left, None, project.as_deref(), repo)),
+                false => replace(o, card(&root, left, project.as_deref(), repo)),
             }
         }
     }
@@ -232,13 +233,17 @@ pub(crate) fn drop_part(ed: &mut Editor, gone: impl Fn(&What) -> bool, everywher
 /// The card answered (`trusted`): each part as its own card's answer would, one toast for them all.
 pub(crate) fn answer(ed: &mut Editor, id: u64, parts: Vec<Offer>, trusted: bool) {
     ed.offer_finished(id, Ok(()));
-    let (mut took, mut asks, mut too_long) = (Vec::new(), Vec::new(), false);
+    let (mut took, mut asks, mut too_long, mut agent) = (Vec::new(), Vec::new(), false, None);
     for p in parts {
         let Some((name, command)) = named(&p.what) else { continue };
         asks.push(command);
         let n = match p.what {
             What::ProjectTrust { hash } => ed.project_trust_answered(hash, trusted),
             What::ClaudeSettings { hash } => ed.claude_settings_answered(hash, trusted),
+            What::AgentFiles { hash, .. } => {
+                agent = Some(name);
+                ed.agent_files_answered(hash, trusted)
+            }
             What::GitTrust(a) => {
                 // (a value too long to show is never trusted — held back, as its own card's `n`)
                 let yes = trusted && a.showable();
@@ -258,13 +263,21 @@ pub(crate) fn answer(ed: &mut Editor, id: u64, parts: Vec<Offer>, trusted: bool)
             let long = if too_long { " — git's held back: a value too long to show" } else { "" };
             ed.set_success(format!("Trusted — this repository's settings apply: {}{long}", took.join(", ")))
         }
-        false => ed.set_status(format!("Held back — {} to look again", asks.join(", "))),
+        false => {
+            // (the agent's own card's words: not started, until when)
+            let held = agent
+                .map(|a| format!(" · {a} isn't started in this project until you quit"))
+                .unwrap_or_default();
+            ed.set_status(format!("Held back — {} to look again{held}", asks.join(", ")))
+        }
     }
 }
 
-/// What `v` adds after the card's text: each part's own card whole, and Claude's detail.
+/// What `v` adds after the card's text: each part's own card whole, and Claude's or the agent's detail (every file).
 pub(crate) fn view_text(ed: &Editor, parts: &[Offer]) -> String {
-    let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.as_ref());
+    let chat = ed.workspace.claude.chat.as_ref();
+    let seen = chat.and_then(|c| c.settings.seen.as_ref());
+    let files = chat.and_then(|c| Some((c.agent.name, c.agent_gate.files.as_ref()?)));
     let mut more = String::new();
     for p in parts {
         more += &format!("\n── {}\n\n{}\n", p.title, p.question);
@@ -272,6 +285,11 @@ pub(crate) fn view_text(ed: &Editor, parts: &[Offer]) -> String {
             && let Some(s) = seen.filter(|s| s.digest() == Some(hash))
         {
             more += &format!("\n{}\n", crate::claudetrust::detail(s));
+        }
+        if let What::AgentFiles { hash, .. } = p.what
+            && let Some((name, s)) = files.filter(|(_, s)| s.hash == hash)
+        {
+            more += &format!("\n{}\n", crate::agenttrust::detail(name, s));
         }
     }
     more

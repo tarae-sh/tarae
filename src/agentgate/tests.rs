@@ -191,7 +191,12 @@ fn a_file_added_in_a_parents_held_folder_while_it_runs_stops_it() {
                  Their card asks again.";
     assert_eq!(said_n(&ed, words), 1, "said once");
     assert!(!chat(&ed).running(), "stopped");
-    let lines = ["  .stand-in/added.json", "  .stand-in/hooks.json", "  p/.stand-in/hooks.json"];
+    let lines = [
+        "  .stand-in/added.json",
+        "  .stand-in/hooks.json",
+        "  p/.stand-in/hooks.json",
+        crate::agenttrust::AFTER_YES,
+    ];
     assert_eq!(card(&ed).unwrap(), lines);
     ed.workspace.claude.chat = None;
 }
@@ -230,7 +235,12 @@ fn the_tops_git_written_over_while_it_runs_stops_it() {
                  Their card asks again.";
     assert_eq!(said_n(&ed, words), 1, "said once");
     assert!(!chat(&ed).running(), "stopped");
-    let lines = ["  .stand-in/hooks.json", "  wt/.stand-in/hooks.json", "  wt/p/.stand-in/hooks.json"];
+    let lines = [
+        "  .stand-in/hooks.json",
+        "  wt/.stand-in/hooks.json",
+        "  wt/p/.stand-in/hooks.json",
+        crate::agenttrust::AFTER_YES,
+    ];
     assert_eq!(card(&ed).unwrap(), lines);
     ed.workspace.claude.chat = None;
 }

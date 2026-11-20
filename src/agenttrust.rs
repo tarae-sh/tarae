@@ -20,7 +20,10 @@
 //! - The answer is kept in `trust.rs`'s store (`Kind::Agent`), at the first held path's place: a repository's
 //!   checkouts share it, and a folder's is carried to the repository made there (#517, `trust::carried_rel`). A yes
 //!   starts the agent once it's kept; `n` holds it in this project until you quit (never kept, as code trust's).
-//! - Alone in step 3: not part of the repository's card, no `:` command (step 4, with the row's on-screen name).
+//! - The card (`question`): what runs first and never folded — each file, a plugin by its folder with its file count;
+//!   only files read, not run (`Row.held_shown`), fold past `SHOWN_MAX`, by kind and count — then the `▲` line in the
+//!   warning colour (`AFTER_YES`). Part of the repository's one card (`repotrust.rs`, step 4's L5) when another of the
+//!   checkout's waits with it, those lines as they are. `:agent-files` asks about them alone, again after an `n`.
 
 use std::path::{Path, PathBuf};
 
@@ -356,21 +359,80 @@ fn line((rel, to): &(String, Option<String>)) -> String {
     }
 }
 
-/// The card's text and the lines being decided: that the agent waits for it and why, then each file (`SHOWN_MAX`, the
-/// rest counted — `v` shows them).
-pub fn question(name: &str, seen: &Seen) -> (String, std::ops::Range<usize>) {
-    let mut lines = vec![
-        format!(
-            "{name} isn't started until you answer — these run with your permissions, outside tarae's sandbox:"
-        ),
-        String::new(),
-    ];
-    lines.extend(seen.files.iter().take(SHOWN_MAX).map(line));
-    if seen.files.len() > SHOWN_MAX {
-        lines.push(format!("  … and {} more — v shows every one", seen.files.len() - SHOWN_MAX));
+/// `rel` (from the top) from the row's held path it's under (`rules/style.md`): the first at a folder's start.
+fn from_held<'a>(row: &Row, rel: &'a str) -> Option<&'a str> {
+    row.held.iter().find_map(|h| {
+        let at = rel.match_indices(h).map(|(i, _)| i).find(|&i| i == 0 || rel[..i].ends_with('/'))?;
+        Some(&rel[at + h.len()..])
+    })
+}
+
+/// The word for a held file that's read, not run (`Row.held_shown.read`: "rules file") — None: it runs.
+fn read_kind(row: &Row, rel: &str) -> Option<&'static str> {
+    let r = from_held(row, rel)?;
+    let mut read = row.held_shown.read.iter();
+    read.find(|(folder, _)| r.starts_with(folder) && r.ends_with(".md")).map(|(_, word)| *word)
+}
+
+/// The unit that runs a held file is in (`Row.held_shown.units`): its folder from the top (`.agents/plugins/lint/`).
+fn unit_of(row: &Row, rel: &str) -> Option<String> {
+    let r = from_held(row, rel)?;
+    row.held_shown.units.iter().find_map(|u| {
+        let after = r.strip_prefix(u)?;
+        let (name, _) = after.split_once('/')?;
+        Some(rel[..rel.len() - after.len() + name.len() + 1].to_string())
+    })
+}
+
+/// Under the files, on this card and the repository's: what a yes means for them — in the warning colour.
+pub const AFTER_YES: &str =
+    "▲ after a yes these run with your permissions, outside tarae's sandbox: hooks, MCP servers, plugins";
+
+/// The card's text, the lines being decided, and the warning's line (`AFTER_YES`): that the agent waits for it, then
+/// the files — guard 4's fold (sandbox.md, "what runs is never folded"): what runs first, each file its own row and a
+/// plugin its folder with its file count, never folded (the card scrolls; a cut card's `y` waits until it's read to its
+/// end); then what's read, not run, past `SHOWN_MAX` rows counted by kind (`v` names each). A link is read only when it
+/// and the file it names both are.
+pub fn question(row: &Row, seen: &Seen) -> (String, std::ops::Range<usize>, usize) {
+    let shown = crate::trust::visible_line;
+    let mut lines = vec![format!("{} isn't started until you answer.", row.name), String::new()];
+    let (mut runs, mut units, mut read) = (Vec::new(), Vec::<(String, usize)>::new(), Vec::new());
+    for (i, (rel, to)) in seen.files.iter().enumerate() {
+        let kind = read_kind(row, rel).filter(|_| to.as_deref().is_none_or(|t| read_kind(row, t).is_some()));
+        if let Some(k) = kind {
+            read.push((i, k));
+            continue;
+        }
+        match unit_of(row, rel) {
+            Some(u) => match units.iter().position(|(x, _)| *x == u) {
+                Some(j) => units[j].1 += 1,
+                None => {
+                    runs.push(Err(units.len()));
+                    units.push((u, 1));
+                }
+            },
+            None => runs.push(Ok(i)),
+        }
     }
-    let decided = 2..lines.len();
-    (lines.join("\n"), decided)
+    lines.extend(runs.iter().map(|r| match *r {
+        Ok(i) => line(&seen.files[i]),
+        Err(j) => format!("  {} ({})", shown(&units[j].0), crate::nav::count(units[j].1, "file")),
+    }));
+    let room = SHOWN_MAX.saturating_sub(runs.len());
+    // (a fold hides two or more: one left over is shown)
+    let room = if read.len() > room + 1 { room } else { read.len() };
+    lines.extend(read[..room].iter().map(|(i, _)| line(&seen.files[*i])));
+    if read.len() > room {
+        let folded = &read[room..];
+        let kinds = row.held_shown.read.iter().filter_map(|(_, word)| {
+            let n = folded.iter().filter(|(_, k)| k == word).count();
+            (n > 0).then(|| crate::nav::count(n, &format!("more {word}")))
+        });
+        lines.push(format!("  … and {} — v shows every one", kinds.collect::<Vec<_>>().join(", ")));
+    }
+    let warning = lines.len();
+    lines.push(AFTER_YES.into());
+    (lines.join("\n"), 2..lines.len(), warning)
 }
 
 /// What `v` adds: every file, and why it asks.
@@ -386,16 +448,23 @@ pub fn detail(name: &str, seen: &Seen) -> String {
     lines.join("\n")
 }
 
-/// The files' card: alone, never part of the repository's in step 3.
-pub fn card(name: &str, seen: &Seen) -> crate::offer::Offer {
+/// What an `n` says, on the card and when the chat would start the agent: held until you quit, and how to look again.
+pub fn held_back(name: &str) -> String {
+    format!("Held back — {name} isn't started in this project until you quit · :agent-files to look again")
+}
+
+/// The files' card — alone, or a part of the repository's (`repotrust.rs`) when another waits with it.
+pub fn card(row: &'static Row, seen: &Seen) -> crate::offer::Offer {
+    let name = row.name;
     let title = match seen.place {
         Place::Repo { .. } => format!("Trust this project's {name} files?"),
         Place::File(_) => format!("Trust this folder's {name} files?"),
     };
-    let (q, decided) = question(name, seen);
+    let (q, decided, warning) = question(row, seen);
     let asked = crate::cards::Asked::new(crate::cards::Why::Own, crate::cards::Request::Own);
-    let what = crate::offer::What::AgentFiles { hash: seen.hash };
-    let o = crate::offer::Offer::new(title, &q, "", format!("{name} files"), what).deciding(decided);
+    let what = crate::offer::What::AgentFiles { hash: seen.hash, shown: row.shown };
+    let mut o = crate::offer::Offer::new(title, &q, "", format!("{name} files"), what).deciding(decided);
+    o.warnings.push(warning..warning + 1);
     o.asked(asked)
 }
 
@@ -404,27 +473,43 @@ impl Editor {
     /// started in this project until you quit, never kept.
     pub(crate) fn agent_files_answer(&mut self, id: u64, hash: Digest, trusted: bool) {
         self.offer_finished(id, Ok(()));
-        let Some(c) = self.workspace.claude.chat.as_mut() else { return };
-        let (name, gate) = (c.agent.name, &mut c.agent_gate);
+        let Some(name) = self.workspace.claude.chat.as_ref().map(|c| c.agent.name) else { return };
+        match self.agent_files_answered(hash, trusted) {
+            Some(n) if trusted => self.set_success(format!(
+                "Trusted — {name} starts with this project's {}",
+                crate::nav::count(n, "file")
+            )),
+            Some(_) => self.set_status(format!(
+                "Held back — {name} isn't started in this project until you quit · :agent-files to look again"
+            )),
+            None => {}
+        }
+    }
+
+    /// The answer for the files the card showed (`hash`), on their card or the repository's: kept, and the agent
+    /// started once it is (`y`), or held in this project until you quit (`n`) — how many files it was about (None: no
+    /// chat, not asked, or they're other files now).
+    pub(crate) fn agent_files_answered(&mut self, hash: Digest, trusted: bool) -> Option<usize> {
+        let gate = &mut self.workspace.claude.chat.as_mut()?.agent_gate;
         let asked = gate.asked.is_some();
-        let Some(seen) = gate.files.as_mut().filter(|s| s.hash == hash && asked) else { return };
+        let seen = gate.files.as_mut().filter(|s| s.hash == hash && asked)?;
+        let (n, place) = (seen.files.len(), seen.place.clone());
         if !trusted {
             seen.state = State::Ignored;
-            let place = seen.place.clone();
             gate.asked = None;
             if !self.agent_files_held.contains(&place) {
                 self.agent_files_held.push(place);
             }
-            return self
-                .set_status(format!("Held back — {name} isn't started in this project until you quit"));
+            return Some(n);
         }
         seen.state = State::Trusted;
-        let (n, place, file, gid) = (seen.files.len(), seen.place.clone(), seen.file.clone(), gate.id);
-        self.set_success(format!(
-            "Trusted — {name} starts with this project's {}",
-            crate::nav::count(n, "file")
-        ));
-        let Some(path) = self.trust_path.clone() else { return agent_files_kept(self, gid) };
+        let (file, gid) = (seen.file.clone(), gate.id);
+        // (a yes after an `n` — `:agent-files` — lets go of the hold: a later change asks on its card)
+        self.agent_files_held.retain(|p| *p != place);
+        let Some(path) = self.trust_path.clone() else {
+            agent_files_kept(self, gid);
+            return Some(n);
+        };
         let (given, seen) = (crate::trust::given(), crate::storewrite::seen_now(&path));
         let kind = crate::trust::Kind::Agent;
         let w = crate::trust::Write::Answer { kind, place: Some(place), file, hash, trusted, given, seen };
@@ -437,15 +522,50 @@ impl Editor {
                 agent_files_kept(ed, gid)
             }
         });
+        Some(n)
+    }
+
+    /// `:agent-files` — the card again, alone (out of the repository's card, if it's there), for the files the session's
+    /// agent held when last read: unanswered, or held back by an `n`. A yes already given isn't asked again here — the
+    /// agent may run with them loaded, which an `n` couldn't take back from it: `:granted` takes the yes back. On a row
+    /// that holds no files (Claude's), `:claude-settings`: what its project files run as you are its settings.
+    pub fn agent_files_ask(&mut self) -> Result<(), String> {
+        if crate::llm::session_row(self).held.is_empty() {
+            return self.claude_settings_ask();
+        }
+        let c = self.workspace.claude.chat.as_mut().ok_or("the chat reads them when it opens — space l")?;
+        let (row, gate) = (c.agent, &mut c.agent_gate);
+        if gate.reading() {
+            return Err("still reading them — a moment".into());
+        }
+        let seen = gate
+            .files
+            .as_mut()
+            .ok_or_else(|| format!("not read yet — they're read when {} starts", row.name))?;
+        if seen.files.is_empty() {
+            return Err(format!("nothing in this project's {} files needs trust", row.shown));
+        }
+        if seen.state == State::Trusted {
+            return Err(format!(
+                "trusted already — :granted takes the yes back; then {} asks before it starts here",
+                row.name
+            ));
+        }
+        seen.state = State::Ask;
+        gate.asked = Some(crate::clock::now());
+        let o = card(row, seen);
+        crate::repotrust::drop_part(self, |w| matches!(w, crate::offer::What::AgentFiles { .. }), false);
+        self.push_offer(o);
+        Ok(())
     }
 
     /// A yes on the files not written: changed in another tarae before it, unseen — asked again, nothing started.
     fn agent_files_skipped(&mut self, gid: u64, hash: Digest) {
         let Some(c) = self.workspace.claude.chat.as_mut().filter(|c| c.agent_gate.id == gid) else { return };
-        let name = c.agent.name;
+        let row = c.agent;
         let Some(seen) = c.agent_gate.files.as_mut().filter(|s| s.hash == hash) else { return };
         seen.state = State::Ask;
-        let card = card(name, seen);
+        let card = card(row, seen);
         self.set_warning("Changed in another tarae before your yes was kept — asked again");
         self.trust_offer(card);
     }

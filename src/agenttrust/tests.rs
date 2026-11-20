@@ -120,12 +120,12 @@ fn an_untrusted_projects_files_hold_the_agent_and_the_card_names_them() {
     let o = card(&ed).unwrap();
     assert_eq!(o.title, "Trust this folder's stand-in files?");
     let lines: Vec<&str> = o.question.lines().collect();
-    assert_eq!(
-        lines[0],
-        "stand-in isn't started until you answer — these run with your permissions, outside tarae's sandbox:"
-    );
+    assert_eq!(lines[0], "stand-in isn't started until you answer.");
     let link = "  .stand-in/same.json → .stand-in/hooks.json (a link)";
-    assert_eq!(lines[2..], ["  .stand-in/hooks.json", "  .stand-in/rules.md", link]);
+    // (`rules.md` isn't in `rules/`: it runs, as every file whose kind can't be told)
+    assert_eq!(lines[2..], ["  .stand-in/hooks.json", "  .stand-in/rules.md", link, AFTER_YES]);
+    let warned: Vec<usize> = o.warnings.iter().flat_map(|r| r.clone()).collect();
+    assert_eq!(warned, [5], "the ▲ line in the warning colour");
     assert_eq!(o.answers(false), [('y', "Trust"), ('v', "Details"), ('n', "Hold back")]);
     assert!(says(&ed, "stand-in waits for your answer on the card — your message goes once it starts"));
     let c = ed.workspace.claude.chat.as_mut().unwrap();
@@ -203,7 +203,7 @@ fn a_file_added_while_it_runs_stops_it_and_asks() {
     assert_eq!(n(&ed), 1, "said once");
     assert!(!chat(&ed).running(), "stopped");
     let lines: Vec<String> = card(&ed).unwrap().question.lines().map(String::from).collect();
-    assert_eq!(lines[2..], ["  .stand-in/added.json", "  .stand-in/hooks.json"]);
+    assert_eq!(lines[2..], ["  .stand-in/added.json", "  .stand-in/hooks.json", AFTER_YES]);
     ed.offer_accept();
     settle_until(&mut ed, started(2));
     assert_eq!(n(&ed), 1, "no second stop");
@@ -233,7 +233,8 @@ fn a_no_holds_it_until_you_quit() {
     crate::chat::gate_opened(&mut ed);
     settle_until(&mut ed, |ed| card(ed).is_some());
     ed.offer_dismiss();
-    let held = "Held back — stand-in isn't started in this project until you quit";
+    let held =
+        "Held back — stand-in isn't started in this project until you quit · :agent-files to look again";
     assert!(status_said(&ed, held));
     assert!(card(&ed).is_none() && !chat(&ed).running() && !chat(&ed).starting());
     assert_eq!(
@@ -284,7 +285,7 @@ fn a_changed_file_asks_again() {
     crate::chat::gate_opened(&mut ed);
     settle_until(&mut ed, |ed| card(ed).is_some());
     let now = look(&STAND_IN, &root, None).unwrap().hash;
-    assert!(matches!(card(&ed).unwrap().what, What::AgentFiles { hash } if hash == now));
+    assert!(matches!(card(&ed).unwrap().what, What::AgentFiles { hash, .. } if hash == now));
     assert!(heard(&dir2, "a").is_empty(), "the stand-in started");
 }
 
@@ -357,7 +358,7 @@ fn a_link_inside_to_a_listed_file_is_trusted_with_it_and_its_change_asks_again()
         (".stand-in/to.json".to_string(), "link\0.stand-in/hooks.json".to_string()),
     ];
     assert_eq!(seen.hash, crate::trust::hash(&items), "the link by the file it names");
-    let (q, _) = question("stand-in", &seen);
+    let (q, ..) = question(&STAND_IN, &seen);
     assert!(q.contains("\n  .stand-in/to.json → .stand-in/hooks.json (a link)"), "{q}");
     crate::trust::record(store.clone(), crate::trust::Kind::Agent, seen.file.clone(), seen.hash, true)
         .unwrap();
@@ -617,7 +618,9 @@ fn every_held_folder_up_to_the_git_top_is_one_listing() {
     settle_until(&mut ed, |ed| card(ed).is_some());
     let o = card(&ed).unwrap();
     assert_eq!(o.title, "Trust this project's stand-in files?");
-    assert_eq!(o.question.lines().skip(2).collect::<Vec<_>>(), files);
+    let mut want = files.to_vec();
+    want.push(AFTER_YES);
+    assert_eq!(o.question.lines().skip(2).collect::<Vec<_>>(), want);
     assert!(heard(&dir, "a").is_empty(), "the stand-in started");
 }
 
@@ -664,9 +667,9 @@ fn with_no_git_top_only_the_roots_is_held() {
     settle_until(&mut ed, |ed| card(ed).is_some());
     let o = card(&ed).unwrap();
     assert_eq!(o.title, "Trust this folder's stand-in files?");
-    let head =
-        "stand-in isn't started until you answer — these run with your permissions, outside tarae's sandbox:";
-    assert_eq!(o.question.lines().collect::<Vec<_>>(), [head, "", "  .stand-in/p.json"], "nothing more said");
+    let head = "stand-in isn't started until you answer.";
+    let lines = o.question.lines().collect::<Vec<_>>();
+    assert_eq!(lines, [head, "", "  .stand-in/p.json", AFTER_YES], "nothing more said");
     ed.workspace.claude.chat = None;
     repository_at(&nogit);
     assert_eq!(

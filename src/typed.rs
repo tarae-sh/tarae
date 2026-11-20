@@ -283,6 +283,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "code-trust" => editor.code_trust_ask(),
         "code-untrust" => editor.code_untrust(),
         "claude-settings" => editor.claude_settings_ask(),
+        "agent-files" => editor.agent_files_ask(),
         "git-trust" => editor.git_trust_ask(),
         "claude-update" => crate::claudeupdate::update(editor),
         "claude-restart" => {

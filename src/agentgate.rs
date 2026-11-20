@@ -369,6 +369,11 @@ impl Gate {
         self.reading.or(self.asked).or(self.stopping.as_ref().map(|s| s.since))
     }
 
+    /// Its folder and files are being read (`ready`'s job): what's in `files` may be about to change.
+    pub(crate) fn reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
     /// Its agent is being stopped by the watch: nothing is sent to it.
     pub(crate) fn stopping(&self) -> bool {
         self.stopping.is_some()
@@ -457,12 +462,12 @@ fn made_now(
     if held {
         seen.state = State::Ignored;
         c.agent_gate.files = Some(seen);
-        return refused(ed, &format!("Held back — {name} isn't started in this project until you quit"));
+        return refused(ed, &crate::agenttrust::held_back(name));
     }
     seen.state = State::Ask;
     c.agent_gate.asked = Some(crate::clock::now());
     c.note(&format!("{name} waits for your answer on the card — your message goes once it starts"));
-    let card = crate::agenttrust::card(name, &seen);
+    let card = crate::agenttrust::card(c.agent, &seen);
     c.agent_gate.files = Some(seen);
     ed.trust_offer(card);
 }

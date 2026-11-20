@@ -614,6 +614,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:code-trust` |  | Look again at the language servers that run this repository's code, and trust it or not |
 | `:code-untrust` |  | Stop the language servers that run this repository's code |
 | `:claude-settings` |  | Look again at what this project's Claude settings run in the chat, and trust them or not |
+| `:agent-files` |  | Look again at the project files Claude loads that run as you, and trust them or not |
 | `:git-trust` |  | Look again at what this repository's own git settings run, and trust them or not |
 | `:claude-update` |  | Look for a newer claude and install it (claude update, as you) |
 | `:claude-restart` |  | Start every chat's claude again, on the login it finds now |

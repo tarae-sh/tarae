@@ -209,14 +209,15 @@ pub enum What {
     /// trusts them, `n` holds those keys back in the chat. `hash` = what the card showed.
     ClaudeSettings { hash: crate::trust::Digest },
     /// The project's files an agent loads run as you (`agenttrust.rs`, guard 4): `y` trusts them and the agent starts,
-    /// `n` it isn't started in this project until you quit. `hash` = what the card showed.
-    AgentFiles { hash: crate::trust::Digest },
+    /// `n` it isn't started in this project until you quit. `hash` = what the card showed; `shown` = its row's name on
+    /// screen (`Row.shown`), for its part on the repository's card.
+    AgentFiles { hash: crate::trust::Digest, shown: &'static str },
     /// A repository's own git settings and hooks run commands (`gittrust.rs`): `y` lets them run, `n` keeps
     /// them off (held — `gitrepo`).
     GitTrust(Box<crate::gittrust::Ask>),
-    /// More than one of those three waiting together for one checkout (`root`, its session's): one card
-    /// (`repotrust.rs`) — `parts` are their own cards, in order (tarae's, Claude's, git's); `y` trusts each, `n`
-    /// holds each back, `v` shows each whole.
+    /// More than one of those four waiting together for one checkout (`root`, its session's): one card
+    /// (`repotrust.rs`) — `parts` are their own cards, in order (tarae's, Claude's or the agent's files, git's); `y`
+    /// trusts each, `n` holds each back, `v` shows each whole.
     RepoTrust { root: PathBuf, parts: Vec<Offer> },
     /// A server root's language servers that run its code wait for the repository's trust (`codetrust.rs`, G13):
     /// `y` trusts it (kept), `n` holds them back until you quit.
@@ -2313,7 +2314,7 @@ impl crate::editor::Editor {
             }
             What::ProjectTrust { hash } => self.project_trust_answer(id, hash, true),
             What::ClaudeSettings { hash } => self.claude_settings_answer(id, hash, true),
-            What::AgentFiles { hash } => self.agent_files_answer(id, hash, true),
+            What::AgentFiles { hash, .. } => self.agent_files_answer(id, hash, true),
             What::GitTrust(ask) => self.git_trust_answer(id, *ask, true),
             What::RepoTrust { parts, .. } => crate::repotrust::answer(self, id, parts, true),
             What::CodeTrust { root } => self.code_trust_answer(id, &root, true),
@@ -2911,7 +2912,7 @@ impl crate::editor::Editor {
         if let Some(&What::ClaudeSettings { hash }) = self.offers.first().map(|o| &o.what) {
             return self.claude_settings_view(hash);
         }
-        if let Some(&What::AgentFiles { hash }) = self.offers.first().map(|o| &o.what) {
+        if let Some(&What::AgentFiles { hash, .. }) = self.offers.first().map(|o| &o.what) {
             return self.agent_files_view(hash);
         }
         if let Some(What::RepoTrust { parts, .. }) = self.offers.first().map(|o| &o.what) {
@@ -3153,7 +3154,7 @@ impl crate::editor::Editor {
             What::ReviewAtEnd => self.set_status("Agents' edits come one at a time"),
             What::ProjectTrust { hash } => self.project_trust_answer(o.id, hash, false),
             What::ClaudeSettings { hash } => self.claude_settings_answer(o.id, hash, false),
-            What::AgentFiles { hash } => self.agent_files_answer(o.id, hash, false),
+            What::AgentFiles { hash, .. } => self.agent_files_answer(o.id, hash, false),
             What::GitTrust(ask) => self.git_trust_answer(o.id, *ask, false),
             What::RepoTrust { parts, .. } => crate::repotrust::answer(self, o.id, parts, false),
             What::CodeTrust { root } => self.code_trust_answer(o.id, &root, false),

@@ -31,6 +31,10 @@
 //! all in a run answering `n`), a second only after the first's end landed, the message sent once, the stop said once.
 //! At the end, a `y` run: started twice, the card answered twice (it asked again), the message sent once, to the first
 //! start; an `n` run: nothing started, nothing written, the hold said.
+//!
+//! Its step 4 L5 step: the project's `.tarae.toml` found (tarae's settings asking, `project_trust_set`) at any point —
+//! the agent's files' part joins its card, or it joins theirs (`repotrust.rs`), the one card answered as the run
+//! answers. After every step, also: the agent's files and tarae's settings, both asking, are never two cards.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -817,17 +821,21 @@ const CARD_ENDING: usize = 80;
 const STOPPED: &str = "stand-in's files in this project changed while it ran — stopped: it and everything it started \
                        ended. Their card asks again.";
 
-const HELD_BACK: &str = "Held back — stand-in isn't started in this project until you quit";
+const HELD_BACK: &str =
+    "Held back — stand-in isn't started in this project until you quit · :agent-files to look again";
 
 /// How the fixed seeds answered the card.
 static YES_RUNS: AtomicUsize = AtomicUsize::new(0);
 static NO_RUNS: AtomicUsize = AtomicUsize::new(0);
+/// The runs where the files' part was on the repository's card with tarae's.
+static JOINED_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
 fn an_untrusted_projects_agent_waits_for_its_card() {
     super::seeds(CARD, SEEDS, card_run);
     let (yes, no) = (YES_RUNS.load(Ordering::SeqCst), NO_RUNS.load(Ordering::SeqCst));
     assert!(yes > 0 && no > 0, "the card answered one way only: {yes} yes, {no} no");
+    assert!(JOINED_RUNS.load(Ordering::SeqCst) > 0, "the files' part never joined tarae's");
 }
 
 struct Card {
@@ -850,6 +858,10 @@ struct Card {
     /// The first start's end has landed.
     ended: Cell<bool>,
     added: std::path::PathBuf,
+    /// The project's `.tarae.toml`, read and asking — found (its card up) at the step that takes it.
+    tarae: RefCell<Option<crate::trust::Project>>,
+    /// The files' part was seen on the repository's card.
+    joined: Cell<bool>,
 }
 
 impl Card {
@@ -901,6 +913,12 @@ fn card_run(choices: Choices) -> Vec<String> {
         std::fs::create_dir_all(folder.join(".stand-in")).unwrap();
         std::fs::write(folder.join(".stand-in/hooks.json"), "{}").unwrap();
     }
+    // (tarae's setting that runs a command — its card's part; a yes runs nothing here. One: the joined card whole in the
+    // frame, as a cut one's `y` waits until it's read to its end)
+    std::fs::write(project.join(".tarae.toml"), "[editor]\nrestart-build = \"touch marker\"\n").unwrap();
+    let store = crate::trust::Store::default();
+    let tarae = crate::config::load_from(None, Some(project.join(".tarae.toml")), &store).0.project;
+    assert!(tarae.as_ref().is_some_and(|p| p.state == crate::trust::State::Ask), "tarae's settings ask");
     let mut sim = Sim::new(CARD, choices, LIMIT);
     let yes = sim.choices.below(2) == 0;
     let mut ed = Editor::new(crate::config::Config::default());
@@ -927,6 +945,8 @@ fn card_run(choices: Choices) -> Vec<String> {
         looked: Cell::new(false),
         ended: Cell::new(false),
         added: repo.join(".stand-in/added.json"),
+        tarae: RefCell::new(tarae),
+        joined: Cell::new(false),
     };
     let check = |ed: &Editor| card_held(ed, &world);
     let print = |ed: &Editor| card_print(ed, &world);
@@ -943,12 +963,17 @@ fn card_run(choices: Choices) -> Vec<String> {
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     let (running, busy) = (c.running(), c.busy());
     let stopped = c.msgs.iter().filter(|m| m.text == STOPPED).count();
-    let (starts, answers, card) = (starts(&ed), world.answers.get(), ed.offers.iter().any(files_card));
+    let (starts, answers, card) = (starts(&ed), world.answers.get(), ed.offers.iter().any(trust_card));
     let hello = [world.hello(0), world.hello(1)];
     let prompts =
         world.to_agent.iter().flat_map(|t| t.borrow().clone()).filter(|v| v["method"] == "session/prompt");
     let prompts = prompts.count();
-    let held_said = ed.messages.iter().any(|m| m.2 == HELD_BACK);
+    // (its own card's words, or the repository's card's, holding tarae's part too)
+    let joined = "Held back — :project-trust, :agent-files to look again · stand-in isn't started in this project until you quit";
+    let held_said = ed.messages.iter().any(|m| m.2 == HELD_BACK || m.2 == joined);
+    if world.joined.get() {
+        JOINED_RUNS.fetch_add(1, Ordering::SeqCst);
+    }
     sim.at_end(|| {
         if card {
             return Err("a card left up".into());
@@ -984,20 +1009,42 @@ fn card_run(choices: Choices) -> Vec<String> {
     trace
 }
 
+/// The files' card, or the repository's holding their part.
 fn files_card(o: &crate::offer::Offer) -> bool {
-    matches!(o.what, crate::offer::What::AgentFiles { .. })
+    use crate::offer::What;
+    match &o.what {
+        What::AgentFiles { .. } => true,
+        What::RepoTrust { parts, .. } => parts.iter().any(files_card),
+        _ => false,
+    }
 }
 
-/// The files' card in front answered as this run answers it. Whether one was.
+/// tarae's settings' own card.
+fn tarae_card(o: &crate::offer::Offer) -> bool {
+    matches!(o.what, crate::offer::What::ProjectTrust { .. })
+}
+
+fn trust_card(o: &crate::offer::Offer) -> bool {
+    files_card(o) || tarae_card(o)
+}
+
+/// The files' card in front — or tarae's settings' — answered as this run answers it. Whether one was (an answer
+/// counted when it held the files' part).
 fn card_answer(ed: &mut Editor, w: &Card) -> bool {
-    if !ed.offers.first().is_some_and(files_card) {
-        return false;
-    }
-    crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+    let Some(files) = ed.offers.first().filter(|o| trust_card(o)).map(files_card) else { return false };
+    // (tall enough for the joined card whole: a cut one's `y` waits until it's read to its end)
+    crate::term::render(ed, &mut Vec::new(), 120, 50).unwrap();
     let key = if w.yes { 'y' } else { 'n' };
     let answered = ed.offer_key(crate::key::Key::plain(crate::key::Code::Char(key)));
-    w.answers.set(w.answers.get() + usize::from(answered));
+    w.answers.set(w.answers.get() + usize::from(answered && files));
     answered
+}
+
+/// tarae's settings found: their card up — joined by the files' part, or joining it.
+fn card_tarae(ed: &mut Editor, w: &Card) -> Option<String> {
+    let p = w.tarae.borrow_mut().take()?;
+    ed.project_trust_set(Some(p));
+    Some("tarae's settings found".into())
 }
 
 /// The live start's next handshake answer: `initialize`, then its session. None: none left to give.
@@ -1080,8 +1127,8 @@ fn card_turn_over(ed: &Editor, w: &Card) -> Option<String> {
 fn card_input(sim: &mut Sim, ed: &mut Editor, w: &Card) -> String {
     let skip = |what: &str| format!("({what})");
     // (by arm: the message 1, the chat opened 1, the card answered 2, a handshake 2, a take 3, a landing 4, the turn's
-    // answer 1, the change 1, the watch's look 1, a frame 1)
-    match sim.choices.weighted(&[1, 1, 2, 2, 3, 4, 1, 1, 1, 1]) {
+    // answer 1, the change 1, the watch's look 1, tarae's settings found 1, a frame 1)
+    match sim.choices.weighted(&[1, 1, 2, 2, 3, 4, 1, 1, 1, 1, 1]) {
         0 if !w.sent.get() => card_send(ed, w),
         0 => skip("sent already"),
         1 => {
@@ -1098,6 +1145,7 @@ fn card_input(sim: &mut Sim, ed: &mut Editor, w: &Card) -> String {
         6 => card_turn_over(ed, w).unwrap_or_else(|| skip("no turn to answer")),
         7 => card_change(w).unwrap_or_else(|| skip("no change now")),
         8 => card_look(ed, w).unwrap_or_else(|| skip("no watch")),
+        9 => card_tarae(ed, w).unwrap_or_else(|| skip("found already")),
         _ => {
             crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
             "a frame".into()
@@ -1147,23 +1195,35 @@ fn card_held(ed: &Editor, w: &Card) -> Result<(), String> {
     if stopped > 1 {
         return Err(format!("the stop said {stopped} times"));
     }
+    // (one card a checkout: both asking, they're one)
+    let alone = |f: fn(&crate::offer::Offer) -> bool| ed.offers.iter().any(|o| f(o) && !joined(o));
+    if alone(files_card) && alone(tarae_card) {
+        return Err("the files' card and tarae's settings' up apart".into());
+    }
+    w.joined.set(w.joined.get() || ed.offers.iter().any(|o| joined(o) && files_card(o)));
     Ok(())
 }
 
 fn card_print(ed: &Editor, w: &Card) -> String {
     let c = ed.workspace.claude.chat.as_ref();
     format!(
-        "starts {} · running {} · busy {} · card {} · answers {} · hello {}+{} · changed {} · waiting {}",
+        "starts {} · running {} · busy {} · card {} (joined {}) · answers {} · hello {}+{} · changed {} · waiting {}",
         starts(ed),
         c.is_some_and(crate::chat::Chat::running),
         c.is_some_and(|c| c.busy()),
         ed.offers.iter().any(files_card),
+        ed.offers.iter().any(joined),
         w.answers.get(),
         w.hello(0),
         w.hello(1),
         w.changed.get(),
         w.pending.borrow().len()
     )
+}
+
+/// The repository's card (parts joined).
+fn joined(o: &crate::offer::Offer) -> bool {
+    matches!(o.what, crate::offer::What::RepoTrust { .. })
 }
 
 /// What a trace line ends with: the chat busy, what was written to the agent and back, what waits to land.

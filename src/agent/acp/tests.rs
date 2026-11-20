@@ -899,6 +899,7 @@ fn a_test_never_starts_a_real_agent() {
             own_tools: None,
             mode: None,
             held: &[],
+            held_shown: crate::agent::HeldShown::NONE,
             measured: None,
             own: crate::agent::Own::None("a test's"),
         }));
