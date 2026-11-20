@@ -509,6 +509,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.model = Some(s(v).to_string()).filter(|m| !m.is_empty()),
     },
     Setting {
+        path: "llm.agy-model",
+        kind: Kind::Str,
+        doc: "agy's model: a value from its own list (C-t lists it once its session starts; \"\" = agy's default)",
+        get: |c| Value::from(c.llm.agy_model.as_deref().unwrap_or("")),
+        set: |c, v| c.llm.agy_model = Some(s(v).to_string()).filter(|m| !m.is_empty()),
+    },
+    Setting {
         path: "llm.effort",
         kind: Kind::Enum(&["", "low", "medium", "high", "xhigh", "max"]),
         doc: "How hard Claude thinks, for models that take it (\"\" = the model's default)",

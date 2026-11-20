@@ -44,9 +44,10 @@ use crate::spawn::Spawned;
 pub const VERSION: u64 = 1;
 
 /// What an ACP agent can do: its turn stopped (`session/cancel`), a conversation continued (`session/resume`,
-/// else `session/load` — the wire starts a new one where neither is there, said), its thinking as text. Not asked
-/// of it: a fork, per-request usage (a turn's `usage` only), a cost, the plan's limits, models and effort (step
-/// 4), a compaction on demand, who pays (ACP has no word for it), its permission asks read by tool name (an ask's
+/// else `session/load` — the wire starts a new one where neither is there, said), its thinking as text, its model
+/// (its session's `configOptions` listed and set — `Wire::model_at_start`). Not asked of it: a fork, per-request usage
+/// (a turn's `usage` only), a cost, the plan's limits, effort (not yet: its `thought_level` select's values unmeasured),
+/// a compaction on demand, who pays (ACP has no word for it), its permission asks read by tool name (an ask's
 /// name is the agent's own, its title the model's text: every ask refused, condition 1, but one for a tool tarae's
 /// bridge offered — `allowed_ask`, guard 2's ask rule), a helper of Claude's for
 /// its chat's tools (`web_search`'s: a session's every model is its agent's, condition 3), any start but the chat's
@@ -61,7 +62,7 @@ pub const CAPS: Caps = Caps {
     tokens_per_request: false,
     cost: false,
     limits: false,
-    models: false,
+    models: true,
     effort: false,
     compaction: false,
     own_tools_off: true,
@@ -261,6 +262,8 @@ enum In {
     Mcp(String, Value),
     /// tarae stops it, these its words (`Agent::stop_with`).
     Stop(String),
+    /// The session goes on on this model (`Agent::set_model`): a value of its model select's.
+    Model(String),
 }
 
 /// A running ACP agent, as `Agent::Acp` holds it: each call a message to its conversation's thread, never a wait.
@@ -290,6 +293,13 @@ impl Proc {
     pub(super) fn stop_with(&self, said: String) -> bool {
         self.0.send(In::Stop(said)).is_ok()
     }
+
+    /// `session/set_config_option` on its model select, once the session is known and no turn runs (`Wire::next`
+    /// holds the next prompt for its answer); before that, the value its start sets. `default` (the agent's own) has no
+    /// value to set mid-session: false, nothing sent — its next start leaves the model as the agent has it.
+    pub(super) fn set_model(&self, model: &str) -> bool {
+        model != "default" && self.0.send(In::Model(model.to_string())).is_ok()
+    }
 }
 
 impl Drop for Proc {
@@ -315,6 +325,9 @@ struct Begin {
     pid: Option<u32>,
     /// The mode its row keeps it in (guard 2, `Row.mode`).
     mode: Option<&'static str>,
+    /// The model its session is set to before its first turn (`Start.model`, the row's model setting; None: as the
+    /// agent has it).
+    model: Option<String>,
 }
 
 /// Where a bridge binds, and an agent's folder is (`agentgate`): `$state` (`config::state_dir`) — a test's own, its `given` `XDG_STATE_HOME` (a folder of its
@@ -352,6 +365,7 @@ pub(super) fn begin(
         tools: first.tools.then(|| (state(at.given), pid, in_tx.clone())),
         pid: Some(pid),
         mode: s.row.mode,
+        model: s.model.filter(|m| !m.is_empty() && *m != "default").map(String::from),
     };
     match child.stdout.take() {
         Some(out) => {
@@ -402,9 +416,15 @@ enum Asked {
     Resume(String),
     Load(String),
     Prompt,
-    /// `session/set_mode` to the row's (guard 2): at the start, the session's id and model held for its answer (the
+    /// `session/set_mode` to the row's (guard 2): at the start, the session's id and its answer held for its answer (the
     /// session known, `Ready` and the first prompt, only then); None: set back mid-session.
-    Mode(Option<(String, String)>),
+    Mode(Option<(String, Value)>),
+    /// `session/set_config_option` on the model select, to `value`: at the start (`Some`: the session's id and its
+    /// answer, held — opened only once it's answered), else mid-session (`Agent::set_model`).
+    Model {
+        value: String,
+        start: Option<(String, Value)>,
+    },
 }
 
 /// What the agent reported of one tool call (`tool_call`, then its `tool_call_update`s), for the tripwire (guard 3).
@@ -499,6 +519,16 @@ struct Wire {
     reports_n: u64,
     /// It tripped, or tarae stopped it (`In::Stop`): nothing after it is read, no prompt written.
     tripped: bool,
+    /// A model set mid-session waits for its answer: no prompt goes meanwhile (`next`).
+    setting_model: bool,
+    /// A model asked for (`In::Model`) not sent yet: set before the next prompt (`next`).
+    model_next: Option<String>,
+    /// Its session's model select's id (`configId`), as its session's answer or an update said it. None: it offers none.
+    model_config: Option<String>,
+    /// The model it runs, by name (`model_name`), as its last answer or update read back said it. None: none said.
+    model_now: Option<String>,
+    /// `model_now` as the turn under way's prompt was written: the turn's model (`Spent.models`).
+    turn_model: Option<String>,
     /// Its mode set back this turn (guard 2): past `MODE_BACKS`, it's stopped.
     mode_backs: usize,
     /// tarae's tools' bridge, once bound (dropped: its socket and folder go).
@@ -541,6 +571,11 @@ impl Wire {
             calls: Vec::new(),
             reports_n: 0,
             tripped: false,
+            setting_model: false,
+            model_next: None,
+            model_config: None,
+            model_now: None,
+            turn_model: None,
             mode_backs: 0,
             bridge: None,
             link: None,
@@ -625,30 +660,80 @@ impl Wire {
         self.end = true;
     }
 
-    /// The session known, in the row's mode: said (`Conversation`, `Ready`), and the first prompt goes.
-    fn opened(&mut self, id: String, model: String, send: &dyn Fn(Event) -> bool) -> bool {
+    /// The session known, in the row's mode and its model set: said (`Conversation`; `Ready` with the models its session
+    /// offers, `C-t`'s list), and the first prompt goes. `r`: the answer that last said its config options.
+    fn opened(&mut self, id: String, r: &Value, send: &dyn Fn(Event) -> bool) -> bool {
         self.session = Some(id.clone());
-        let ev = Event::Conversation { id, model, version: self.version.clone(), key_source: None };
-        if !send(ev) || !send(Event::Ready { models: Vec::new(), key_source: None, account: None }) {
+        self.model_config = model_select(r).and_then(|s| s["id"].as_str()).map(String::from);
+        self.model_now = running(r);
+        let ev =
+            Event::Conversation { id, model: model_of(r), version: self.version.clone(), key_source: None };
+        if !send(ev) || !send(Event::Ready { models: models_of(r), key_source: None, account: None }) {
             return false;
         }
-        self.next();
+        self.next(send)
+    }
+
+    /// The model step, once the session is in the row's mode (the user's decision of 2026-11-16, chat.md 344: a setting
+    /// chooses its model): where the session `r` runs another than the one asked (`model_next`, else `Begin.model`), its
+    /// model select set to it (`session/set_config_option`) and the session opened only on the answer — no turn before
+    /// it. Its wait ends as the mode step's does: the answer (taken or refused), or the agent's end (stdout's, said as
+    /// its exit). A value the session doesn't offer, or a refusal, isn't a guard: said on the chat's line, at each start
+    /// while the setting names it, and the session opened on what it runs.
+    ///
+    /// The request and its answer as measured: probe 1's `.sb/agent-p4-probe/out-1794764990/wire.jsonl` line 5
+    /// (`session/set_config_option {configId: "model", sessionId, value}`), its answer line 6 (`result.configOptions`,
+    /// the select's `currentValue` the value set) and a `config_option_update` saying the same, line 7; the same in its
+    /// runs 2–5 (lines 107, 147, 171, 202) and probe 2's. agy 1.5.9's selects had flat options; a group (`{group, name,
+    /// options}`) is flattened from ACP's text alone.
+    fn model_at_start(&mut self, id: String, r: Value, send: &dyn Fn(Event) -> bool) -> bool {
+        let Some(want) = self.model_next.take().or_else(|| self.begin.model.clone()) else {
+            return self.opened(id, &r, send);
+        };
+        let Some(select) = model_select(&r).filter(|s| options_of(s).any(|o| o["value"] == want.as_str()))
+        else {
+            return send(Event::Said(self.not_offered(&want, &r))) && self.opened(id, &r, send);
+        };
+        if select["currentValue"] == want.as_str() {
+            return self.opened(id, &r, send);
+        }
+        let params = json!({"sessionId": id, "configId": select["id"], "value": want});
+        self.request("session/set_config_option", params, Asked::Model { value: want, start: Some((id, r)) });
+        true
+    }
+
+    /// `agy offers no model X: on <name>` — `r` the session's answer saying what it runs.
+    fn not_offered(&self, want: &str, r: &Value) -> String {
+        format!("{} offers no model {want}: on {}", self.begin.name, model_name(r))
+    }
+
+    /// A model asked for mid-session (`model_next`), set now: the next prompt waits for its answer. One the session has
+    /// no model select for is said, and nothing sent.
+    fn model_set(&mut self, session: String, value: String, send: &dyn Fn(Event) -> bool) -> bool {
+        let Some(config) = self.model_config.clone() else {
+            let said =
+                format!("{} offers no model {value}: its session has no model to choose", self.begin.name);
+            return send(Event::Said(said));
+        };
+        self.setting_model = true;
+        let params = json!({"sessionId": session, "configId": config, "value": value});
+        self.request("session/set_config_option", params, Asked::Model { value, start: None });
         true
     }
 
     /// Guard 2 at the start: the session's answer `r` in the row's mode — opened at once; in another it offers, set to
     /// the row's first (`session/set_mode`, the session held until its answer); with no mode said, or the row's not
     /// offered, the start ends, said (fail-closed).
-    fn mode_at_start(&mut self, id: String, r: &Value, send: &dyn Fn(Event) -> bool) -> bool {
-        let (name, model) = (self.begin.name, model_of(r));
-        let Some(mode) = self.begin.mode else { return self.opened(id, model, send) };
+    fn mode_at_start(&mut self, id: String, r: Value, send: &dyn Fn(Event) -> bool) -> bool {
+        let name = self.begin.name;
+        let Some(mode) = self.begin.mode else { return self.model_at_start(id, r, send) };
         let modes = &r["modes"];
         let offered = modes["availableModes"].as_array().into_iter().flatten().any(|m| m["id"] == mode);
         match modes["currentModeId"].as_str() {
-            Some(now) if now == mode => self.opened(id, model, send),
+            Some(now) if now == mode => self.model_at_start(id, r, send),
             Some(_) if offered => {
                 let params = json!({"sessionId": id, "modeId": mode});
-                self.request("session/set_mode", params, Asked::Mode(Some((id, model))));
+                self.request("session/set_mode", params, Asked::Mode(Some((id, r))));
                 true
             }
             // (nothing the person does mends it: what happened, and that's all)
@@ -850,8 +935,25 @@ impl Wire {
     }
 
     /// The next prompt, if the session is known and no turn runs.
-    fn next(&mut self) {
-        let Some(session) = self.session.clone().filter(|_| !self.turn && !self.end) else { return };
+    /// A model asked for meanwhile is set first (`model_set`): its answer comes before any prompt goes. False: the
+    /// editor's gone.
+    fn next(&mut self, send: &dyn Fn(Event) -> bool) -> bool {
+        let Some(session) = self.session.clone().filter(|_| !self.turn && !self.end && !self.setting_model)
+        else {
+            return true;
+        };
+        if let Some(value) = self.model_next.take() {
+            if !self.model_set(session, value, send) {
+                return false;
+            }
+            return self.setting_model || self.next(send);
+        }
+        self.prompt_next(session);
+        true
+    }
+
+    /// The next prompt written, if one waits.
+    fn prompt_next(&mut self, session: String) {
         let Some(p) = self.queue.pop_front() else { return };
         let mut blocks: Vec<Value> = self.system_first.take().map(text_block).into_iter().collect();
         match p {
@@ -860,6 +962,7 @@ impl Wire {
             Prompt::Parts(parts) => blocks.extend(parts.into_iter().map(|p| text_block(p.text))),
         }
         self.turn = true;
+        self.turn_model = self.model_now.clone();
         self.mode_backs = 0;
         self.text.clear();
         self.request("session/prompt", json!({"sessionId": session, "prompt": blocks}), Asked::Prompt);
@@ -961,8 +1064,11 @@ impl Wire {
             In::Eof => true,
             In::Prompt(p) => {
                 self.queue.push_back(p);
-                self.next();
-                true
+                self.next(send)
+            }
+            In::Model(value) => {
+                self.model_next = Some(value);
+                self.next(send)
             }
             In::Cancel => {
                 self.cancel();
@@ -1065,6 +1171,15 @@ impl Wire {
         if kind == "current_mode_update" {
             return self.mode_moved(u, send);
         }
+        // (its model moved — by a set of ours, or its own: the title follows what it says it runs)
+        if kind == "config_option_update" {
+            if let Some(id) = model_select(u).and_then(|s| s["id"].as_str()) {
+                self.model_config = Some(id.to_string());
+            }
+            self.model_now = running(u).or(self.model_now.take());
+            let model = model_of(u);
+            return model.is_empty() || (self.flush(send) && send(Event::Answered(model)));
+        }
         let refused = match kind {
             "tool_call" | "tool_call_update" => match self.watch(u) {
                 Watch::Trip(tool, unseen) => {
@@ -1146,7 +1261,39 @@ impl Wire {
                 send(Event::Done(Err(format!("{name}: {message}"))));
                 self.end = true;
             }
-            (Asked::Mode(Some((id, model))), Ok(_)) => return self.opened(id, model, send),
+            (Asked::Mode(Some((id, r))), Ok(_)) => return self.model_at_start(id, r, send),
+            // (the model step's answer: at the start the session opens on it whatever it says — a model isn't a guard)
+            (Asked::Model { value, start }, result) => {
+                let taken = result.as_ref().ok().filter(|a| a["configOptions"].is_array()).cloned();
+                let now = match (&taken, &start) {
+                    (Some(a), _) => a,
+                    (None, Some((_, before))) => before,
+                    (None, None) => &Value::Null,
+                };
+                let said = match &result {
+                    Ok(_) if taken.is_none() || model_of(now) == value => None,
+                    Ok(_) => Some(format!("{name} didn't take model {value}: on {}", model_name(now))),
+                    // (unmeasured: no refusal of agy's was ever recorded — the error's shape is ACP's text alone)
+                    Err((_, message)) => Some(format!("{name} won't take model {value}: {message}")),
+                };
+                if let Some(said) = said
+                    && !send(Event::Said(said))
+                {
+                    return false;
+                }
+                match start {
+                    Some((id, before)) => return self.opened(id, taken.as_ref().unwrap_or(&before), send),
+                    None => {
+                        self.setting_model = false;
+                        self.model_now = taken.as_ref().and_then(running).or(self.model_now.take());
+                        let model = taken.as_ref().map(model_of).unwrap_or_default();
+                        if !model.is_empty() && !send(Event::Answered(model)) {
+                            return false;
+                        }
+                        return self.next(send);
+                    }
+                }
+            }
             (Asked::Mode(Some(_)), Err((_, message))) => {
                 let mode = self.begin.mode.unwrap_or_default();
                 send(Event::Done(Err(format!("{name} won't take mode {mode}: {message}"))));
@@ -1169,7 +1316,7 @@ impl Wire {
                     self.end = true;
                     return true;
                 };
-                return self.mode_at_start(id, &r, send);
+                return self.mode_at_start(id, r, send);
             }
             (Asked::Prompt, result) => {
                 // (the tripwire's turn's end: a report of tarae's the bridge never carried trips here, its words the
@@ -1184,7 +1331,11 @@ impl Wire {
                 let done = match result {
                     Ok(r) => {
                         let conversation = self.session.clone().unwrap_or_default();
-                        if let Some(spent) = spent(&r["usage"], conversation, crate::usage::now_ms())
+                        // (its model: the one in force as its prompt was written — `turn_model`)
+                        let models: Vec<(String, Option<u64>)> =
+                            self.turn_model.clone().map(|m| (m, None)).into_iter().collect();
+                        let spent = spent(&r["usage"], conversation, crate::usage::now_ms());
+                        if let Some(spent) = spent.map(|s| crate::usage::Spent { models, ..s })
                             && !send(Event::Spent(spent))
                         {
                             return false;
@@ -1196,7 +1347,7 @@ impl Wire {
                 if !send(Event::Done(done)) {
                     return false;
                 }
-                self.next();
+                return self.next(send);
             }
         }
         true
@@ -1311,6 +1462,7 @@ impl Staged {
             tools: None,
             pid: None,
             mode: row.mode,
+            model: None,
         };
         let mut w = Wire::new(begin, out);
         w.initialize();
@@ -1538,10 +1690,10 @@ fn cut(mut text: String) -> String {
 /// A `session/update` as an event, or None — dropped, each said: the prompt echoed (`user_message_chunk`), a
 /// chunk's non-text content, ACP's `plan` (tarae's `plan` tool is the plan, the design session's §9.2), a call's
 /// `locations` (§9.1: the places come from tarae's tools' inputs), a call's `diff` and a read's null content, the
-/// commands, config options and title it offers (`available_commands_update`, `config_option_update`,
-/// `session_info_update`: step 4), `usage_update` (no per-request usage to read it with), a compaction's summary, a
+/// commands and title it offers (`available_commands_update`, `session_info_update`: step 4), `usage_update` (no per-request usage to read it with), a compaction's summary, a
 /// `notice`. tarae's own tools' calls (`taraes`, by agy's `name`: the prefix alone is the agent's own, as everywhere)
-/// are dropped and kept in `dropped`, so their updates go too. Its mode (`current_mode_update`) and what its calls came to are the wire's to read first (`Wire::update`:
+/// are dropped and kept in `dropped`, so their updates go too. Its mode (`current_mode_update`), its model
+/// (`config_option_update`) and what its calls came to are the wire's to read first (`Wire::update`:
 /// guards 2 and 3).
 fn update(u: &Value, dropped: &mut HashSet<String>) -> Option<Event> {
     let id = || u["toolCallId"].as_str().unwrap_or_default().to_string();
@@ -1574,11 +1726,57 @@ fn update(u: &Value, dropped: &mut HashSet<String>) -> Option<Event> {
     }
 }
 
+/// A session answer's (or a `config_option_update`'s) model select: the config option whose id or category is `model`.
+fn model_select(r: &Value) -> Option<&Value> {
+    let mut options = r["configOptions"].as_array().into_iter().flatten();
+    options.find(|o| o["id"] == "model" || o["category"] == "model")
+}
+
+/// A select's options, a group's (`{group, name, options}`, ACP's text — agy 1.5.9's were flat) flattened.
+fn options_of(select: &Value) -> impl Iterator<Item = &Value> {
+    let entries = select["options"].as_array().into_iter().flatten();
+    entries.flat_map(|e| match e["options"].as_array() {
+        Some(group) => group.iter().collect::<Vec<_>>(),
+        None => vec![e],
+    })
+}
+
 /// The model a session answer says it runs: its `configOptions`' model select's current value, else "".
 fn model_of(r: &Value) -> String {
-    let mut options = r["configOptions"].as_array().into_iter().flatten();
-    let model = options.find(|o| o["id"] == "model" || o["category"] == "model");
-    model.and_then(|o| o["currentValue"].as_str()).unwrap_or_default().to_string()
+    let model = model_select(r).and_then(|o| o["currentValue"].as_str());
+    model.unwrap_or_default().to_string()
+}
+
+/// The model it runs as its option names it (`Gemini …`), else its value, else that it's the agent's own choice.
+fn model_name(r: &Value) -> String {
+    let now = model_of(r);
+    let option = model_select(r).and_then(|s| options_of(s).find(|o| o["value"] == now.as_str()));
+    match option.and_then(|o| o["name"].as_str()) {
+        Some(name) if !name.is_empty() => shown(name),
+        _ if !now.is_empty() => shown(&now),
+        _ => "its own default".into(),
+    }
+}
+
+/// The model `r` says it runs, by name (`model_name`) — None where it says none (no select, no current value).
+fn running(r: &Value) -> Option<String> {
+    (!model_of(r).is_empty()).then(|| model_name(r))
+}
+
+/// The models a session offers, as `C-t` lists them (`Event::Ready`): its model select's options, groups flattened —
+/// each its value, name and description (none resolves to another: the value is what runs).
+fn models_of(r: &Value) -> Vec<crate::agent::ModelInfo> {
+    let s = |o: &Value, k: &str| shown(o[k].as_str().unwrap_or_default());
+    let options = model_select(r).into_iter().flat_map(options_of);
+    (options.filter(|o| o["value"].as_str().is_some_and(|v| !v.is_empty())))
+        .map(|o| crate::agent::ModelInfo {
+            value: o["value"].as_str().unwrap_or_default().to_string(),
+            name: Some(s(o, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| s(o, "value")),
+            about: s(o, "description"),
+            resolved: String::new(),
+            efforts: Vec::new(),
+        })
+        .collect()
 }
 
 /// A turn's `usage` as tarae counts it (None: not given — a turn cut off). As agy 1.5.9 reported it (step 4's two

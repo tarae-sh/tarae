@@ -340,6 +340,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
         | Event::Money(_)
         | Event::Usage(_)
         | Event::Answered(_)
+        | Event::Said(_)
         | Event::Ready { .. }
         | Event::Tool { .. }
         | Event::ThinkingBlock(_)

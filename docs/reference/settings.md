@@ -64,6 +64,7 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `llm.agent` | `"claude"` · `"agy"` | `"claude"` | The agent a new session starts on — "claude" (Claude Code) or "agy" (Antigravity's agy, on PATH); a session keeps the one it began on |
 | `llm.args` | list of strings | `["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", ""]` | Arguments for llm.command (default: claude -p with speed flags) |
 | `llm.model` | string | `""` | Model for llm.command, e.g. "haiku" ("" = the CLI's default) |
+| `llm.agy-model` | string | `""` | agy's model: a value from its own list (C-t lists it once its session starts; "" = agy's default) |
 | `llm.effort` | `""` · `"low"` · `"medium"` · `"high"` · `"xhigh"` · `"max"` | `""` | How hard Claude thinks, for models that take it ("" = the model's default) |
 | `llm.follow` | bool | `true` | Chat: the editor follows the code Claude is reading, with its thoughts beside it (C-f toggles it in a chat) |
 | `llm.cost` | bool | `true` | Chat: money on the screen — a turn's ≈ API cost and the plan's weekly window on the usage row, a board's estimate; off for a shared screen (:usage and /cost still say it) |

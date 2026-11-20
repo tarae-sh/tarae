@@ -1148,6 +1148,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: Event) {
         | Event::Searched(_)
         | Event::Requesting(_)
         | Event::Answered(_)
+        | Event::Said(_)
         | Event::Compaction(_)
         | Event::Exit(_) => {}
     }

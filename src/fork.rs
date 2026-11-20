@@ -100,6 +100,8 @@ pub struct Forking {
     pub tokens: Option<u64>,
     pub instructions: Option<u64>,
     pub model: String,
+    /// The source's agent: whether its conversation comes along (`Caps::fork`), else a new one, said.
+    pub agent: &'static crate::agent::Row,
     /// Kept current by `sync`: the source's unsaved buffers (relative), what its work under way waits for.
     pub unsaved: Vec<String>,
     pub holds: Option<&'static str>,
@@ -158,6 +160,11 @@ pub fn ask(ed: &mut Editor, source: WorkspaceId, name: Option<&str>) {
     });
 }
 
+/// The fork card's conversation line where the source's agent can't fork one (`Caps::fork`).
+pub fn cant_fork(row: &crate::agent::Row) -> String {
+    format!("Its conversation: a new one — {} can't fork a conversation.", row.name)
+}
+
 /// The card for a fork of `source` as measured.
 fn asked(ed: &mut Editor, source: WorkspaceId, mut making: Making, files: Files) {
     let (asked, ask, note) = ed.new_session_ask();
@@ -166,8 +173,10 @@ fn asked(ed: &mut Editor, source: WorkspaceId, mut making: Making, files: Files)
     // what the fork runs on — your key until a reset is no line for a fork on the plan, nor the plan's 5-hour window
     // for one on the key)
     making.billing = l.claude.billing;
-    making.billing_ask = ask;
-    making.billing_note = note.filter(|_| asked == making.billing);
+    // (who pays only where the source's row has tarae choose it, `Caps.billing`: agy signs in on its own)
+    let bills = crate::llm::workspace_row(ed, l).caps.billing;
+    making.billing_ask = ask.filter(|_| bills);
+    making.billing_note = note.filter(|_| bills && asked == making.billing);
     let conversation = crate::chat::conversation_of(l);
     let usage = &l.claude.usage;
     let model = usage.conv.as_ref().and_then(|c| c.last.as_ref()).map(|r| r.model.clone());
@@ -187,6 +196,7 @@ fn asked(ed: &mut Editor, source: WorkspaceId, mut making: Making, files: Files)
         tokens: usage.context().map(|c| c.0),
         instructions: usage.conv.as_ref().and_then(|c| c.fixed.as_ref()).and_then(|r| r.counts.write),
         model,
+        agent: crate::llm::workspace_row(ed, l),
         unsaved,
         holds,
         go: false,
@@ -494,6 +504,9 @@ pub fn card(f: &Forking, weakness: bool, money: bool) -> Offer {
     }
     let conversation = match &f.from.conversation {
         None => "Its conversation: none yet — a new one.".to_string(),
+        // (an agent that can't fork one: its fork starts a new one — `chat::ensure_proc` resumes none; agy 1.5.9's
+        // `session/fork` answered -32601)
+        Some(_) if !f.agent.caps.fork => cant_fork(f.agent),
         Some(_) => {
             let prices = &crate::sandboxpack::get().price;
             let cost = crate::switchcost::fork_cost(f.tokens, f.instructions, &f.model, prices);

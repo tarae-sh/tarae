@@ -61,6 +61,9 @@ pub struct LlmConfig {
     pub command: String,
     pub args: Vec<String>,
     pub model: Option<String>,
+    /// agy's model (`llm.agy-model`, `agent::AGY`'s `model_setting`): a value from its session's own list, set on
+    /// the wire as its session opens (None: agy's own default).
+    pub agy_model: Option<String>,
     /// `--effort` ("" = the model's default).
     pub effort: String,
     /// Chat: the editor follows where Claude is reading (`C-f` in the chat toggles it for that chat).
@@ -182,6 +185,7 @@ impl Default for LlmConfig {
             command: crate::agent::CLAUDE.command.into(),
             args: crate::agent::CLAUDE.args.iter().map(|s| s.to_string()).collect(),
             model: None,
+            agy_model: None,
             effort: String::new(),
             follow: true,
             follow_resume: 20,
@@ -963,6 +967,7 @@ fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: 
                 | Event::Money(_)
                 | Event::Usage(_)
                 | Event::Answered(_)
+                | Event::Said(_)
                 | Event::Ready { .. }
                 | Event::Tool { .. }
                 | Event::Writing(_)

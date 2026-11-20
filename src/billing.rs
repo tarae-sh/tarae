@@ -373,6 +373,11 @@ pub struct LimitAsk {
     pub resets_at_ms: Option<u64>,
 }
 
+/// What a row tarae doesn't choose who pays for (`Caps.billing`) says where a choice of it is asked: `:session-billing`.
+pub fn signs_in_on_its_own(row: &crate::agent::Row) -> String {
+    format!("{} signs in on its own — tarae doesn't choose who pays", row.name)
+}
+
 impl Editor {
     /// Who pays for a new session's Claude: your key while `a` on the limit card holds (until its window
     /// resets), else `llm.billing`.
@@ -554,10 +559,16 @@ impl Editor {
         }
     }
 
-    /// `:session-billing api|subscription` — the session in front's (`billing_set`); to the key only once
+    /// `:session-billing api|subscription` — refused on a row tarae doesn't choose who pays for (`Caps.billing`); else the
+    /// session in front's (`billing_set`); to the key only once
     /// `api_check` finds it usable (else an error says why and how to add it, nothing changed). A project's key
     /// binding never runs it: `config.rs` leaves such a binding out of `.tarae.toml` and `.tarae.local.toml`, said.
     pub fn session_billing(&mut self, arg: &str) -> Result<(), String> {
+        // (a row tarae doesn't choose who pays for, `Caps.billing`: refused, nothing changed)
+        let row = crate::llm::session_row(self);
+        if !row.caps.billing {
+            return Err(signs_in_on_its_own(row));
+        }
         let arg = arg.trim();
         if arg.is_empty() {
             let b = self.workspace.claude.billing.name();

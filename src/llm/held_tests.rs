@@ -177,6 +177,36 @@ fn an_agents_other_version_is_said_once_a_version() {
     assert!(c.running(), "never refused");
 }
 
+/// L4: a conversation begun on agy's row says once, on its line, what's on in your settings that tarae doesn't do yet
+/// with it — the person's to read, never the agent's; a conversation already known (the same id again) says nothing
+/// more, and one on Claude's row nothing at all.
+#[test]
+fn a_conversations_start_says_whats_on_but_not_yet_with_its_row() {
+    let lines = |row: &'static crate::agent::Row| {
+        let (mut ed, _rx) = editor(on(row));
+        ed.config.llm.web_search = true;
+        crate::chat::open(&mut ed);
+        let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
+        for id in ["s1", "s1"] {
+            let ev = crate::agent::Event::Conversation {
+                id: id.into(),
+                model: String::new(),
+                version: Some("1.5.9".into()),
+                key_source: None,
+            };
+            crate::chat::stream_event(&mut ed, g, ev);
+        }
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        c.msgs
+            .iter()
+            .filter(|m| m.text.starts_with("not yet with"))
+            .map(|m| m.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(lines(&crate::agent::AGY), ["not yet with agy: web search, idle compaction"]);
+    assert!(lines(&crate::agent::CLAUDE).is_empty());
+}
+
 /// `config`'s editor in `root`, its chat's agent a stand-in (`editor`'s).
 fn editor_in(config: Config, root: &std::path::Path) -> (Editor, Receiver<String>) {
     let mut ed = Editor::with_root(config, root.to_path_buf());

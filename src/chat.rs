@@ -2992,6 +2992,10 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
             let (new, row) = (c.conversation.as_deref() != Some(id.as_str()), c.agent);
             // (a fork's first: the copy is a conversation of its own from here — resumed as itself from now on)
             let forked = c.fork && c.generation == generation;
+            // (a conversation begun here: what's on in your settings that tarae doesn't do yet with its row, said once on
+            // its line — the person's to read, never the agent's prompt)
+            let not_yet =
+                (new && c.resume.is_none()).then(|| crate::agent::not_yet_on(&ed.config.llm, row)).flatten();
             // (a process that didn't resume one began it, or forked it: it has cost nothing before)
             match c.resume.is_none() || forked {
                 true => ed.workspace.claude.usage.fresh(&id),
@@ -3033,6 +3037,9 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
                 (c.fork, c.resume) = (false, Some(id.clone()));
             }
             c.conversation = Some(id);
+            if let Some(said) = not_yet {
+                c.note(&said);
+            }
             crate::recovery::moved(&mut ed.recovery);
             c.model = model;
             if forked {
@@ -3082,6 +3089,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: Event) {
         Event::Compaction(e) => crate::compaction::on_event(ed, e),
         // (the web search's helper's alone: the chat has no WebSearch)
         Event::Searched(_) => {}
+        // (its wire's word that isn't a turn's end: on the chat's line, kept with the conversation)
+        Event::Said(said) => c.note(&said),
         Event::Limits(report) => {
             // (its own claude's `rate_limit_event`: sent to plan users only — `limits::on_plan`)
             if report.readings.iter().any(|r| r.from == crate::limits::Source::Event) {

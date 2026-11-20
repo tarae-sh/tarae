@@ -96,6 +96,8 @@ fn said(ev: Event) -> Option<String> {
         Event::Exit(Exit { said, kind: Ended::Tripped { tool } }) => format!("exit tripped {tool}: {said}"),
         Event::Exit(Exit { said, kind: Ended::Unfit { mode } }) => format!("exit unfit {mode}: {said}"),
         Event::Mcp { id, message } => format!("mcp {id} {message}"),
+        Event::Said(s) => format!("said {s}"),
+        Event::Answered(m) => format!("answered {m}"),
         _ => return None,
     })
 }
@@ -328,7 +330,8 @@ fn agy_1_5_9_usage((input, output, read, thought, total): (u64, u64, u64, u64, u
 
 /// `:usage`'s text for `u`, at a fixed time.
 fn usage_said(u: &crate::usage::Usage) -> String {
-    crate::usage::report("s", u, &Default::default(), &[], 100, crate::log::Zone::Here)
+    let a = crate::agent::STAND_IN.shown;
+    crate::usage::report_as(a, "s", u, &Default::default(), &[], 100, crate::log::Zone::Here)
 }
 
 /// L-B5 (#3): agy's usage counted as 1.5.9 reported it. On each of the probes' turns, cached and uncached, tarae's
@@ -353,14 +356,18 @@ fn agys_usage_counts_as_1_5_9_reported() {
     back.restore("s-1", &u.conv_json("s-1").unwrap());
     assert_eq!(back.totals().thought, Some(thought), "kept with the conversation");
     let line = format!(
-        "\nThis agent doesn't report what its turns cost. Its thinking — {} tokens — is part of the output count \
-         below.\n",
+        "\nstand-in reports tokens, not cost. Its thinking — {} tokens — is part of the output count below.\n",
         crate::usage::tokens(thought)
     );
     let said = usage_said(&u);
     assert!(said.contains(&line), "{said}");
     let none = usage_said(&crate::usage::Usage::of(&CAPS));
-    assert!(none.contains("\nThis agent doesn't report what its turns cost.\n"), "no thinking yet: {none}");
+    assert!(none.contains("\nstand-in reports tokens, not cost.\n"), "no thinking yet: {none}");
+    // (its limits: none reported, said whose — never the plan's section of Claude's)
+    assert!(said.contains("## Plan limits\n\nstand-in reports no limits.\n"), "{said}");
+    // (D = A: its total in tokens where a cost would be, never an estimate)
+    assert_eq!(t.cost_said(), format!("{} tokens", crate::usage::tokens(total)));
+    assert!(!said.contains('$'), "no dollar figure for an agent that reports no cost: {said}");
 }
 
 // ── Over the stand-in ───────────────────────────────────────────────────────────
@@ -512,7 +519,8 @@ fn a_turn_on_the_stand_in() {
         ["conversation", "ready", "thinking", "block", "thought", "block", "text", "spent", "done"]
     );
     assert_eq!(got[0], "conversation s-1 gemini-pro None None");
-    assert_eq!(got[1], "ready 0 None false");
+    // (its one model offered: `C-t`'s list)
+    assert_eq!(got[1], "ready 1 None false");
     let joined = |p: &str| got.iter().filter_map(|g| g.strip_prefix(p)).collect::<String>();
     assert_eq!((joined("thought "), joined("text ")), ("Checking the map.".into(), "Hi there".into()));
     let counts =
@@ -890,6 +898,8 @@ fn a_test_never_starts_a_real_agent() {
     for program in ["agy", "/opt/homebrew/bin/gemini", "/nonexistent/claude"] {
         let row: &'static crate::agent::Row = Box::leak(Box::new(crate::agent::Row {
             instructions: &[],
+            model_setting: crate::agent::AGY.model_setting,
+            models_known: &[],
             name: "real",
             shown: "real",
             wire: crate::agent::Wire::Acp,
@@ -1177,6 +1187,197 @@ fn taraes_report(id: &str, tool: &str, args: Value, status: &str) -> Value {
 /// The bridge's `tools/call` of `tool` on `arguments`.
 fn bridge_call(n: u64, tool: &str, arguments: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": n, "method": "tools/call", "params": {"name": tool, "arguments": arguments}})
+}
+
+// ── The model (chat.md 344: a setting chooses it) ────────────────────────────────────────────
+
+/// A model select as agy 1.5.9's (probe 1's `wire.jsonl` line 6), running `now`, its options made-up names — one of them
+/// in a group (ACP's `{group, name, options}`).
+fn select(now: &str) -> Value {
+    json!({"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": now,
+    "options": [
+        {"value": "m-one", "name": "Model One", "description": "the first"},
+        {"group": "more", "name": "More", "options": [{"value": "m-two", "name": "Model Two"}]},
+    ]})
+}
+
+/// A session answer running `now`, in the row's mode.
+fn session_on(now: &str) -> Value {
+    json!({"sessionId": "s-1", "configOptions": [select(now)], "modes": modes("default")})
+}
+
+/// A wire whose start asks for `model` (`Start.model`), its session `session`, a prompt queued before the session's
+/// known: what came up, and what it wrote after `initialize` and `session/new`.
+fn staged_on(model: &str, session: Value) -> (Staged, Agent, Vec<String>, Vec<Value>) {
+    let (mut st, agent) = Staged::new(&std::env::temp_dir());
+    st.w.begin.model = Some(model.into());
+    st.line(&json!({"jsonrpc": "2.0", "id": 0, "result": agy_initialize()}));
+    agent.prompt(Prompt::Text("go".into())).unwrap();
+    st.take();
+    let got = says(st.line(&json!({"jsonrpc": "2.0", "id": 1, "result": session})));
+    let written = st.written();
+    (st, agent, got, written)
+}
+
+/// Pinned (1): the session is set to the setting's model before any turn — the prompt queued before the session was
+/// known goes only after `session/set_config_option`'s answer, never before it; then the session is said on what it
+/// runs, `C-t`'s list its own options, the group flattened.
+#[test]
+fn no_turn_goes_before_the_model_is_set() {
+    let (mut st, _agent, got, written) = staged_on("m-two", session_on("m-one"));
+    assert!(got.is_empty(), "nothing said before the model's set: {got:?}");
+    let set = json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
+        "params": {"sessionId": "s-1", "configId": "model", "value": "m-two"}});
+    let methods: Vec<&Value> = written.iter().map(|w| &w["method"]).collect();
+    assert_eq!(written.last(), Some(&set), "{methods:?}");
+    assert!(!written.iter().any(|w| w["method"] == "session/prompt"), "the prompt held: {methods:?}");
+    let answer = json!({"jsonrpc": "2.0", "id": 2, "result": {"configOptions": [select("m-two")]}});
+    let events = st.line(&answer);
+    let ready = events.iter().find_map(|e| match e {
+        Event::Ready { models, .. } => {
+            Some(models.iter().map(|m| format!("{} {}", m.value, m.name)).collect())
+        }
+        _ => None,
+    });
+    assert_eq!(ready, Some(vec!["m-one Model One".to_string(), "m-two Model Two".into()]));
+    assert_eq!(says(events), ["conversation s-1 m-two None None", "ready 2 None false"]);
+    let written = st.written();
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert_eq!(written[0]["method"], "session/prompt", "the prompt once the model's set");
+    // (on the model asked already: nothing set)
+    let (_, _, got, written) = staged_on("m-one", session_on("m-one"));
+    assert_eq!(got, ["conversation s-1 m-one None None", "ready 2 None false"]);
+    assert!(!written.iter().any(|w| w["method"] == "session/set_config_option"), "{written:?}");
+    assert!(written.iter().any(|w| w["method"] == "session/prompt"), "{written:?}");
+}
+
+/// Pinned (2): a value the session doesn't offer is said on the line at each start (not a guard, never silent), the
+/// session opened on what it runs, nothing set. One it refuses (unmeasured: an error from ACP's text, never recorded of
+/// agy) is said with its words, and the session opens on what it ran.
+#[test]
+fn a_model_not_offered_or_refused_is_said_and_the_session_goes_on() {
+    let (_, _, got, written) = staged_on("m-gone", session_on("m-one"));
+    assert_eq!(
+        got,
+        [
+            "said stand-in offers no model m-gone: on Model One",
+            "conversation s-1 m-one None None",
+            "ready 2 None false"
+        ]
+    );
+    assert!(!written.iter().any(|w| w["method"] == "session/set_config_option"), "{written:?}");
+    assert!(written.iter().any(|w| w["method"] == "session/prompt"), "{written:?}");
+    // (a session with no model select at all: said too)
+    let bare = json!({"sessionId": "s-1", "modes": modes("default")});
+    let (_, _, got, _) = staged_on("m-two", bare);
+    assert_eq!(got[0], "said stand-in offers no model m-two: on its own default");
+    let (mut st, _, _, _) = staged_on("m-two", session_on("m-one"));
+    let refused = json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -32602, "message": "not now"}});
+    let got = says(st.line(&refused));
+    assert_eq!(
+        got,
+        [
+            "said stand-in won't take model m-two: not now",
+            "conversation s-1 m-one None None",
+            "ready 2 None false"
+        ]
+    );
+    assert_eq!(st.written()[0]["method"], "session/prompt");
+}
+
+/// `:model` mid-session reaches the wire: `session/set_config_option` on the select's id, a prompt meanwhile held
+/// until its answer, which moves the title (`Answered`); and a `config_option_update` of the agent's own moves it too.
+#[test]
+fn a_model_chosen_mid_session_is_set_on_the_wire() {
+    let (mut st, agent, _) = staged(session_on("m-one"));
+    st.written();
+    assert!(agent.set_model("m-two"), "told");
+    assert!(!agent.set_model("default"), "the agent's own default: nothing to set mid-session");
+    st.take();
+    st.take();
+    let written = st.written();
+    let set = json!({"jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
+        "params": {"sessionId": "s-1", "configId": "model", "value": "m-two"}});
+    assert_eq!(written, [set]);
+    let held = prompted(&mut st, &agent);
+    assert!(held.is_empty(), "the prompt waits for the set's answer: {held:?}");
+    let answer = json!({"jsonrpc": "2.0", "id": 2, "result": {"configOptions": [select("m-two")]}});
+    assert_eq!(says(st.line(&answer)), ["answered m-two"]);
+    assert_eq!(st.written()[0]["method"], "session/prompt");
+    let moved =
+        update_line(json!({"sessionUpdate": "config_option_update", "configOptions": [select("m-one")]}));
+    assert_eq!(says(st.line(&moved)), ["answered m-one"]);
+}
+
+/// A turn's model (the design session's fix 3 to L4): the one in force as its prompt was written, by the name its
+/// session reads back — a `config_option_update` during the turn is the next turn's; a session with no model select
+/// gives its turns none (`:usage`'s `not reported`).
+#[test]
+fn a_turns_model_is_the_one_in_force_as_it_started() {
+    let turn_model = |st: &mut Staged, agent: &Agent, during: Option<Value>| {
+        let written = prompted(st, agent);
+        let id = written.iter().find(|w| w["method"] == "session/prompt").unwrap()["id"].clone();
+        if let Some(u) = during {
+            st.line(&update_line(u));
+        }
+        let end =
+            json!({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn", "usage": agy_usage()}});
+        let spent = st.line(&end).into_iter().find_map(|e| match e {
+            Event::Spent(s) => Some(s.models),
+            _ => None,
+        });
+        spent.expect("the turn's usage").into_iter().map(|m| m.0).collect::<Vec<_>>()
+    };
+    let (mut st, agent, _) = staged(session_on("m-one"));
+    let moved = json!({"sessionUpdate": "config_option_update", "configOptions": [select("m-two")]});
+    assert_eq!(turn_model(&mut st, &agent, Some(moved)), ["Model One"], "in force as it started");
+    assert_eq!(turn_model(&mut st, &agent, None), ["Model Two"], "the next turn: the one it moved to");
+    let (mut st, agent, _) = staged(json!({"sessionId": "s-1", "modes": modes("default")}));
+    assert!(turn_model(&mut st, &agent, None).is_empty(), "no model select: none");
+}
+
+/// `:usage` on a row that reports neither its cache's warmth, its context nor a cost (the design session's fixes 1
+/// and 2 to L4), by its `Caps`: the line says exactly what isn't reported, by the row's name; the last column is the
+/// tokens' — headed `tokens`, each turn its own count, the total their sum, no `not reported` in it — and each turn's
+/// model as the wire gave it. Claude's (it reports a cost) keeps `API price` and its dollars.
+#[test]
+fn usages_words_and_last_column_follow_what_the_row_reports() {
+    let mut u = crate::usage::Usage::of(&CAPS);
+    let mut sum = 0;
+    for (i, turn) in AGY_1_5_9_TURNS.into_iter().take(3).enumerate() {
+        let s = spent(&agy_1_5_9_usage(turn), "s-1".into(), i as u64 + 1).unwrap();
+        u.spent(crate::usage::Spent { models: vec![("Model One".into(), None)], ..s });
+        sum += turn.4;
+    }
+    let said = usage_said(&u);
+    let line = " · how long its cache stays warm and how full its context is: not reported by stand-in\n";
+    assert!(said.contains(line), "{said}");
+    let rows: Vec<Vec<String>> = (said.lines())
+        .filter(|l| l.starts_with("| "))
+        .map(|l| l.trim_matches('|').split('|').map(|c| c.trim().to_string()).collect())
+        .collect();
+    let last = |r: &Vec<String>| r.last().cloned().unwrap_or_default();
+    assert_eq!(last(&rows[0]), "tokens", "the column's head: {said}");
+    assert_eq!(&rows[0][1], "model");
+    let turns: Vec<String> = AGY_1_5_9_TURNS.iter().take(3).map(|t| crate::usage::tokens(t.4)).collect();
+    let each: Vec<String> = rows[2..5].iter().map(last).collect();
+    assert_eq!(each, turns, "each turn its own count: {said}");
+    assert!(rows[2..5].iter().all(|r| r[1] == "Model One"), "the turn's model: {said}");
+    assert_eq!(last(&rows[5]), crate::usage::tokens(sum), "the total, their sum: {said}");
+    assert!(!said.contains("API price") && !said.contains("cache and context"), "{said}");
+    assert!(rows.iter().all(|r| last(r) != "not reported"), "{said}");
+    // (Claude's: its price)
+    let mut c = crate::usage::Usage::of(&crate::agent::CLAUDE.caps);
+    c.turns.push(crate::usage::Turn {
+        at_ms: 1,
+        cost: Some(0.018),
+        counts: u.turns[0].counts,
+        ..Default::default()
+    });
+    let said =
+        crate::usage::report_as("Claude", "s", &c, &Default::default(), &[], 100, crate::log::Zone::Here);
+    assert!(said.contains("| hit | API price |") && said.contains("$0.018 |"), "{said}");
+    assert!(!said.contains("how full its context is"), "{said}");
 }
 
 /// Guard 2: a session that opens in another mode it offers is set to the row's (`session/set_mode`) before anything

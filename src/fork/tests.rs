@@ -468,6 +468,7 @@ fn the_card_says_what_isnt_carried_and_what_the_first_message_costs() {
         tokens: None,
         instructions: None,
         model: "m".into(),
+        agent: &crate::agent::CLAUDE,
         unsaved: Vec::new(),
         holds: None,
         go: false,
@@ -500,6 +501,12 @@ fn the_card_says_what_isnt_carried_and_what_the_first_message_costs() {
         "{}",
         card(&f, false, true).question
     );
+    // An agent that can't fork a conversation (`Caps::fork`, the stand-in's as agy's): a new one, said whose limit it is
+    f.agent = &crate::agent::STAND_IN;
+    let q = card(&f, false, true).question;
+    assert!(q.contains("\nIts conversation: a new one — stand-in can't fork a conversation.\n"), "{q}");
+    assert!(!q.contains("at turn 14"), "{q}");
+    f.agent = &crate::agent::CLAUDE;
     // No conversation yet: the files alone
     f.from.conversation = None;
     assert!(card(&f, false, true).question.contains("\nIts conversation: none yet — a new one.\n"));

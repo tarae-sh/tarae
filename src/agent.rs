@@ -80,7 +80,7 @@ impl Agent {
     pub fn set_model(&self, model: &str) -> bool {
         match self {
             Agent::Claude(l) => l.set_model(model),
-            Agent::Acp(_) => false,
+            Agent::Acp(a) => a.set_model(model),
         }
     }
 
@@ -203,6 +203,13 @@ pub struct Row {
     /// wrapped. The card, a lasting answer and `read` match it by its folder and the name's start (`own_at`), with no
     /// disk, so they cover one made at any time.
     pub own: Own,
+    /// The setting that chooses its model (the user's decision of 2026-11-16, chat.md 344: per row — each agent's values
+    /// are its own list): what a session of it starts on when the session chose none (`models::of`), and where a choice
+    /// from the home session is saved.
+    pub model_setting: ModelSetting,
+    /// The models it's known to take before it lists its own (`models::offered`): Claude's aliases; none for one that
+    /// lists them only once its session starts (an ACP agent's `configOptions`) — no model name of it is tarae's.
+    pub models_known: &'static [(&'static str, &'static str, &'static str)],
     /// The instruction files it reads at a checkout's root, by name: what a line about one of them says it reads
     /// (`instructions.rs`) — a file the session's row doesn't read gets no reader named. Claude's are Claude Code's;
     /// agy's measured (probe 1b's canaries: `AGENTS.md` and `GEMINI.md` at the root read, `.agent/rules/`,
@@ -221,6 +228,20 @@ pub struct HeldShown {
     /// Folders whose every folder in them is one unit that runs (`plugins/`): one row, its folder and its file count.
     pub units: &'static [&'static str],
 }
+
+/// A row's model setting (`Row.model_setting`): its path, and its value as the config holds it (None: the agent's own
+/// default).
+#[derive(Debug, Clone, Copy)]
+pub struct ModelSetting {
+    pub path: &'static str,
+    pub of: fn(&crate::llm::LlmConfig) -> Option<&str>,
+}
+
+/// Claude's model setting.
+const LLM_MODEL: ModelSetting = ModelSetting { path: "llm.model", of: |c| c.model.as_deref() };
+
+/// agy's (and the stand-in's, playing it).
+const AGY_MODEL: ModelSetting = ModelSetting { path: "llm.agy-model", of: |c| c.agy_model.as_deref() };
 
 impl HeldShown {
     /// Nothing held, or nothing told apart: every file its own row.
@@ -408,6 +429,14 @@ pub static CLAUDE: Row = Row {
     held_shown: HeldShown::NONE,
     measured: None,
     own: Own::Places(&["~/.claude", "~/.claude.json", "~/.claude.json.backup"]),
+    model_setting: LLM_MODEL,
+    // (the aliases every claude knows, before it says which it offers)
+    models_known: &[
+        ("default", "Default", "The CLI's recommended model"),
+        ("opus", "Opus", "For complex work"),
+        ("sonnet", "Sonnet", "Efficient for routine tasks"),
+        ("haiku", "Haiku", "Fastest for quick answers"),
+    ],
     instructions: &["CLAUDE.md", "CLAUDE.local.md"],
 };
 
@@ -433,6 +462,8 @@ pub static AGY: Row = Row {
     held_shown: AGENTS_SHOWN,
     measured: Some("1.5.9"),
     own: Own::Places(&["{user-config}/Antigravity", "~/.antigravity*", "~/.gemini"]),
+    model_setting: AGY_MODEL,
+    models_known: &[],
     instructions: &["AGENTS.md", "GEMINI.md"],
 };
 
@@ -452,6 +483,8 @@ pub static STAND_IN: Row = Row {
     held_shown: AGENTS_SHOWN,
     measured: None,
     own: Own::None("the test binary re-run: it keeps nothing in home"),
+    model_setting: AGY_MODEL,
+    models_known: &[],
     // (as agy's, by its convention's file)
     instructions: &["AGENTS.md"],
 };
@@ -514,7 +547,36 @@ pub fn can_be(row: &'static Row, role: Role) -> Result<&'static Row, String> {
 /// Why `row` doesn't start as `role`: none of its roles. (A debt against the user's 2026-11-13 decision — an agy
 /// session's other roles are to be its own agent's — carried in the plan: honest until then.)
 fn not_for(row: &Row, role: Role) -> String {
-    format!("not yet with {} — {} runs on Claude's sessions only", row.name, role.said())
+    not_yet(row, &format!("{} runs on {CLAUDES_ONLY}", role.said()))
+}
+
+/// Where what tarae doesn't do yet with another row is done: `not_for`'s, `:effort`'s (`models::no_effort`).
+pub const CLAUDES_ONLY: &str = "Claude's sessions only";
+
+/// What tarae doesn't do yet with `row` (not what the agent can't): `not yet with agy — <what>` — `not_for`'s words, for
+/// any act a row's `Caps` says tarae doesn't ask of it yet.
+pub fn not_yet(row: &Row, what: &str) -> String {
+    format!("not yet with {} — {what}", row.name)
+}
+
+/// What's on in your settings that tarae doesn't do yet with `row` — said once at a conversation's start, to the person
+/// (the chat's line, never the agent's prompt): `not yet with agy: web search, idle compaction`. None where nothing is.
+/// Each from the row's `Caps`: the web search (`llm.web-search`) where its helpers aren't its own (`helpers`), effort
+/// (`llm.effort`) where it takes none from tarae, idle compaction (tarae's own, always on: Claude's settings turn it
+/// off) where its conversation can't be compacted, auto cards' reviewer (`llm.auto-cards`) where it can't be that role.
+pub fn not_yet_on(llm: &crate::llm::LlmConfig, row: &Row) -> Option<String> {
+    let caps = &row.caps;
+    let off = [
+        (llm.web_search && !caps.helpers, "web search"),
+        (!llm.effort.is_empty() && !caps.effort, "effort"),
+        (!caps.compaction, "idle compaction"),
+        (
+            llm.auto_cards != crate::autocards::Mode::Off && !caps.roles.contains(&RoleKind::CardReview),
+            "auto cards' reviewer",
+        ),
+    ];
+    let off: Vec<&str> = off.iter().filter(|(on, _)| *on).map(|(_, what)| *what).collect();
+    (!off.is_empty()).then(|| format!("not yet with {}: {}", row.name, off.join(", ")))
 }
 
 /// The row named `name` (a kept conversation's), or None: no such row here.
@@ -880,8 +942,11 @@ pub enum Event {
     /// chat resumes it later (`--resume`).
     Conversation { id: String, model: String, version: Option<String>, key_source: Option<String> },
     /// The model that wrote an answer (an assistant message's `message.model`, or a stream's
-    /// `message_start`) — sent when it changes.
+    /// `message_start`) — sent when it changes; an ACP agent's, as its session says it runs now.
     Answered(String),
+    /// A line its wire says in the chat that isn't a turn's end: a model its session doesn't offer or didn't take
+    /// (`acp::Wire::model_at_start`).
+    Said(String),
     /// It's ready — its answer to our `initialize`: the models it offers (the chat's model picker), and the
     /// credential it runs on (`account.apiKeySource` — `limits.rs`; None: not said), known as it starts rather
     /// than with a turn. One event, so no frame falls between the models and the billing's check.
@@ -1248,6 +1313,8 @@ mod tests {
         // (and it sees each: a row on `acp::CAPS` with no recipe, and one whose asks are read)
         let row = |caps, own_tools| Row {
             instructions: &[],
+            model_setting: super::AGY_MODEL,
+            models_known: &[],
             name: "x",
             shown: "x",
             wire: Wire::Acp,
@@ -1335,6 +1402,8 @@ mod tests {
         use super::{Caps, RoleKind, Row, Wire};
         static EVERY: Row = Row {
             instructions: &[],
+            model_setting: super::AGY_MODEL,
+            models_known: &[],
             name: "every",
             shown: "every",
             wire: Wire::Acp,
@@ -1622,6 +1691,63 @@ mod tests {
 
     /// The literals of `src` (code as a non-test build compiles it, comments out) that say `Claude`, each its text.
     fn claude_literals(src: &str) -> Vec<String> {
+        literals_where(src, |lit| lit.contains("Claude"))
+    }
+
+    /// The model names agy 1.5.9 offered (probe 1's `wire.jsonl` line 6, the structure plan §1b's 18), as words: none
+    /// is tarae's to say — an agy session's models come from its own `configOptions` (chat.md 344, the design session's
+    /// "no agy model name in tarae").
+    const AGY_MODEL_WORDS: &[&str] = &[
+        "argon",
+        "hydrogen",
+        "orchestrator",
+        "gpt-oss",
+        "gemini-4",
+        "gemini-3",
+        "gemini 4",
+        "gemini 3",
+        "gemini-pro",
+    ];
+
+    /// The literals of `src` naming one of agy's models.
+    fn agy_model_literals(src: &str) -> Vec<String> {
+        literals_where(src, |lit| {
+            let lit = lit.to_lowercase();
+            AGY_MODEL_WORDS.iter().any(|w| lit.contains(w))
+        })
+    }
+
+    /// What's on but not yet with a row, from its `Caps`: each setting where it applies, none on Claude's row whatever
+    /// is on, nothing where nothing is on but what's always on (idle compaction).
+    #[test]
+    fn whats_on_but_not_yet_with_a_row_is_from_its_caps() {
+        use super::{CLAUDE, STAND_IN, not_yet_on};
+        let mut cfg =
+            crate::llm::LlmConfig { web_search: false, effort: String::new(), ..Default::default() };
+        assert_eq!(not_yet_on(&cfg, &STAND_IN).as_deref(), Some("not yet with stand-in: idle compaction"));
+        (cfg.web_search, cfg.effort, cfg.auto_cards) = (true, "high".into(), crate::autocards::Mode::Shadow);
+        assert_eq!(
+            not_yet_on(&cfg, &STAND_IN).as_deref(),
+            Some("not yet with stand-in: web search, effort, idle compaction, auto cards' reviewer")
+        );
+        assert_eq!(not_yet_on(&cfg, &CLAUDE), None);
+    }
+
+    /// No agy model name anywhere in tarae's code (its literals, a non-test build's): the setting's value, `C-t`'s
+    /// list, the title and the line all come from the session (`acp::models_of`, `model_name`). And it sees one.
+    #[test]
+    fn no_agy_model_name_is_in_tarae() {
+        let found: Vec<String> = (crate::sim::lint::sources().iter())
+            .flat_map(|(file, src)| {
+                agy_model_literals(src).into_iter().map(move |l| format!("{file}: {l:?}"))
+            })
+            .collect();
+        assert!(found.is_empty(), "agy's model names in tarae:\n{}", found.join("\n"));
+        assert_eq!(agy_model_literals("fn f() { g(\"Gemini 4 Hydrogen\") }"), ["Gemini 4 Hydrogen"]);
+    }
+
+    /// The literals of `src` (code as a non-test build compiles it, comments out) `keep` keeps, each its text.
+    fn literals_where(src: &str, keep: impl Fn(&str) -> bool) -> Vec<String> {
         let (mut out, mut cs) = (Vec::new(), src.chars().peekable());
         while let Some(c) = cs.next() {
             match c {
@@ -1643,7 +1769,7 @@ mod tests {
                             c => lit.push(c),
                         }
                     }
-                    if lit.contains("Claude") {
+                    if keep(&lit) {
                         out.push(lit);
                     }
                 }
@@ -1788,6 +1914,11 @@ mod tests {
                     crate::log::Zone::Here,
                 ),
             ),
+            // (L4's: whose limit each is, the row's name in — `:effort`'s is `not_for`'s, tested with it)
+            ("the fork card's conversation", crate::fork::cant_fork(&STAND_IN)),
+            ("session-billing's refusal", crate::billing::signs_in_on_its_own(&STAND_IN)),
+            ("where a cost would be", crate::usage::tokens_not_cost(a)),
+            ("a conversation's start", super::not_yet_on(&Default::default(), &STAND_IN).unwrap_or_default()),
         ];
         let wrong: Vec<String> = (said.iter())
             .filter(|(_, s)| !s.contains(a) || s.contains("Claude"))
@@ -1879,7 +2010,7 @@ mod tests {
     /// start when that's at least `OWN_PREFIX_MIN` characters — with why it stays Claude's on any row.
     const CLAUDE_CODES_OWN: &[(&str, &str, &str)] = &[
         ("agent.rs", "Claude", "the CLAUDE row's own name on screen (`Row.shown`): it is the name"),
-        ("agent.rs", "not yet with {} — {} runs on Claude's sessions o", HOLD),
+        ("agent.rs", "Claude's sessions only", HOLD),
         ("billing.rs", "a key in claude's environment — tarae passes non", BILLS),
         ("billing.rs", "a key helper in your own Claude settings, or one", BILLS),
         ("billing.rs", "a key Claude Code made when you logged in with a", BILLS),
@@ -1952,8 +2083,6 @@ mod tests {
             "{child}: the turn you started was cut off, no re",
             "Claude Code's restart for the project's Claude settings",
         ),
-        ("orchestra.rs", "Start sessions, each a new branch (from base, de", FIXED_PART),
-        ("orchestra.rs", "Your sessions: state and last report (one named:", FIXED_PART),
         (
             "relay.rs",
             " (one started from this ssh session would have n",
@@ -1998,7 +2127,6 @@ mod tests {
         "a doc of `llm::CLAUDE_ONLY_COMMANDS`: Claude Code's settings, usage or billing";
     const ONLY_SETTINGS: &str =
         "a doc of `llm::CLAUDE_ONLY_SETTINGS`: names the rows, or Claude Code's own (L4 looks again)";
-    const FIXED_PART: &str = "a prompt's fixed part — changed with L4's measured batch";
 
     /// A start shorter than this matches only the whole literal.
     const OWN_PREFIX_MIN: usize = 24;

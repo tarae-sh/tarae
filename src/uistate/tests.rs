@@ -1356,6 +1356,50 @@ fn no_key_is_refused_in_silence() {
     assert!(off.is_empty(), "keys refused in silence:\n{}", off.join("\n"));
 }
 
+/// No silent refusal on a row that can't do what Claude's does (L4): in the chat on the stand-in's row (agy's caps),
+/// `C-t`, `:model`, `:effort` (bare and with a level), `:session-fork` and `:session-billing` each change what's on
+/// screen or say something — never nothing; `:effort` and `:session-billing` say whose limit it is, the row's name in.
+#[test]
+fn an_agy_rows_refusals_are_never_silent() {
+    if no_pty_here("an_agy_rows_refusals_are_never_silent") {
+        return;
+    }
+    for (keys, words) in [
+        ("<C-t>", Some("stand-in's models are listed once its session starts")),
+        ("<esc> <esc> : m o d e l <ret>", Some("stand-in's models are listed once its session starts")),
+        (
+            "<esc> <esc> : e f f o r t <ret>",
+            Some("not yet with stand-in — :effort sets Claude's sessions only"),
+        ),
+        (
+            "<esc> <esc> : e f f o r t <space> l o w <ret>",
+            Some("not yet with stand-in — :effort sets Claude's sessions only"),
+        ),
+        ("<esc> <esc> : s e s s i o n - f o r k <ret>", None),
+        (
+            "<esc> <esc> : s e s s i o n - b i l l i n g <space> a p i <ret>",
+            Some("stand-in signs in on its own — tarae doesn't choose who pays"),
+        ),
+    ] {
+        let mut ed = editor();
+        chat(&mut ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.agent, c.agent_fixed) = (&crate::agent::STAND_IN, true);
+        let (before, said, from) = (shown(&mut ed), ed.said, ed.messages.len());
+        for k in keys.split(' ') {
+            ed.handle_key(key(k));
+        }
+        let now = shown(&mut ed);
+        let told: Vec<&str> = ed.messages[from..].iter().map(|m| m.2.as_str()).collect();
+        assert!(now != before || ed.said != said, "{keys}: nothing changed, nothing said");
+        if let Some(w) = words {
+            assert!(told.iter().any(|t| t.contains(w)), "{keys}: said {told:?}");
+        }
+        assert_eq!(ed.config.llm.effort, crate::llm::LlmConfig::default().effort, "{keys}: nothing changed");
+        assert_eq!(ed.workspace.claude.billing, Default::default(), "{keys}: nothing changed");
+    }
+}
+
 /// #264: `tab` where the walk found it silent says why — a picker of one row, an edit's review with no other change
 /// waiting, a run's output and the terminal's view mode as the bottom's only tab — or does its act there: a draft
 /// takes it as typed.

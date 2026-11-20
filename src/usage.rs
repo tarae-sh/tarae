@@ -122,6 +122,13 @@ impl Counts {
         [self.input, self.write, self.read, self.output].iter().any(Option::is_some)
     }
 
+    /// Every token counted: what was carried and the output — agy's `totalTokens` as 1.5.9 reported it (`acp::spent`).
+    /// None: none reported.
+    pub fn total(&self) -> Option<u64> {
+        let parts = [self.input, self.read, self.write, self.output];
+        parts.iter().any(Option::is_some).then(|| parts.iter().flatten().sum())
+    }
+
     /// What the request carried: input + cache read + cache write.
     pub fn context(&self) -> Option<u64> {
         let parts = [self.input, self.read, self.write];
@@ -381,10 +388,14 @@ impl Totals {
         }
     }
 
-    /// `$1.23` · `$1.23 + 2 not reported` · `not reported`.
+    /// `$1.23` · `$1.23 + 2 not reported` · `not reported` — and where no turn reported a cost but their tokens were
+    /// (an agent that reports none, `Caps::cost` — the design session's D = A), the tokens in its place: `12k tokens`,
+    /// never an estimate.
     pub fn cost_said(&self) -> String {
         match (self.turns - self.unpriced, self.unpriced) {
-            (0, _) => "not reported".into(),
+            (0, _) => {
+                self.counts.total().map_or_else(|| "not reported".into(), |n| format!("{} tokens", tokens(n)))
+            }
             (_, 0) => dollars(self.cost),
             (_, n) => format!("{} + {n} not reported", dollars(self.cost)),
         }
@@ -991,6 +1002,11 @@ pub fn report(
     report_as(crate::agent::CLAUDE.shown, name, u, limits, all, now_ms, zone)
 }
 
+/// What an agent that reports no cost (`Caps::cost`) says where its cost would be: `agy reports tokens, not cost.`
+pub fn tokens_not_cost(a: &str) -> String {
+    format!("{a} reports tokens, not cost.")
+}
+
 /// `report` with its heading naming the session's agent (`a`: its row's `Row.shown`).
 pub fn report_as(
     a: &str,
@@ -1017,26 +1033,34 @@ pub fn report_as(
         Some((n, None)) => format!("context {} (window not reported yet)", tokens(n)),
         None => "context not reported".into(),
     };
-    // (an agent that reports usage each turn only: no cache or context to wait for)
+    // (an agent that reports usage each turn only: its cache counts are in the turns below, but not how long its cache
+    // stays warm nor how full its context is — said so, by name)
     match u.caps.tokens_per_request {
         true => out += &format!("As of {} · {cache} · {context}\n\n", clock(now_ms)),
         false => {
-            out += &format!("As of {} · cache and context not reported by this agent\n\n", clock(now_ms))
+            out += &format!(
+                "As of {} · how long its cache stays warm and how full its context is: not reported by {a}\n\n",
+                clock(now_ms)
+            )
         }
     }
     match u.caps.cost {
         true => out += &format!("{}\n\n", price_note(u.cli.as_deref())),
-        // (agy's thinking: already in its output count, so never added in — `acp::spent`)
+        // (agy's thinking: already in its output count, so never added in — `acp::spent`; no estimate of a cost it
+        // doesn't report — the design session's D = A)
         false if u.totals().thought.is_some() => {
             out += &format!(
-                "This agent doesn't report what its turns cost. Its thinking — {} tokens — is part of the output \
-                 count below.\n\n",
+                "{} Its thinking — {} tokens — is part of the output count below.\n\n",
+                tokens_not_cost(a),
                 tokens(u.totals().thought.unwrap_or_default())
             )
         }
-        false => out += "This agent doesn't report what its turns cost.\n\n",
+        false => out += &format!("{}\n\n", tokens_not_cost(a)),
     }
-    out += &limits_section(u, limits, now_ms, zone);
+    out += &match u.caps.limits {
+        true => limits_section(u, limits, now_ms, zone),
+        false => format!("## Plan limits\n\n{a} reports no limits.\n"),
+    };
     out += "\n## Turns\n\n";
     if u.turns.is_empty() {
         out += "No turn has ended yet.\n";
@@ -1060,19 +1084,22 @@ pub fn report_as(
             }
             let mut row = vec![clock(t.at_ms), model];
             row.extend(cells(&t.counts));
-            row.push(t.cost.map_or_else(|| "not reported".into(), dollars));
+            // (the last column: the API price where the agent reports a cost, else each turn's tokens — one meaning a
+            // column, its total their sum; D = A)
+            row.push(match u.caps.cost {
+                true => t.cost.map_or_else(|| "not reported".into(), dollars),
+                false => count(t.counts.total()),
+            });
             rows.push(row);
         }
         let totals = u.totals();
         let mut row = vec!["total".to_string(), turns(totals.turns)];
         row.extend(cells(&totals.counts));
-        row.push(totals.cost_said());
+        row.push(if u.caps.cost { totals.cost_said() } else { count(totals.counts.total()) });
         rows.push(row);
-        out += &table(
-            &["time", "model", "input", "cache write", "cache read", "output", "hit", "API price"],
-            &rows,
-            2,
-        );
+        let last = if u.caps.cost { "API price" } else { "tokens" };
+        out +=
+            &table(&["time", "model", "input", "cache write", "cache read", "output", "hit", last], &rows, 2);
     }
     out += &calls_section(u, zone);
     if let Some(c) = &u.conv {

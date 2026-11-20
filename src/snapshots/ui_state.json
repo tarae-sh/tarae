@@ -600,6 +600,7 @@
               "cost": 0.0213,
               "input": 12,
               "output": 400,
+              "tokens": 12412,
               "turns": 1,
               "unpriced": 0
             },

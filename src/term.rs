@@ -22208,14 +22208,17 @@ fn usage_spans(
         return None;
     }
     let billed = || if api { vec![sp("api".into(), dim)] } else { Vec::new() };
-    // Each part long and short (the cache has one form)
-    let cache = |_long: bool| match u.cache(now_ms) {
+    // Each part long and short (the cache has one form, but not reported: `warm: not reported` short)
+    let cache = |long: bool| match u.cache(now_ms) {
         _ if !reported => Vec::new(),
         Cache::Warm { left_ms, .. } => {
             vec![sp("● ".into(), accent), sp("warm until ".into(), faint), sp(until(now_ms + left_ms), dim)]
         }
         Cache::Cold { .. } => vec![sp("◦ ".into(), faint), sp("cold".into(), dim)],
-        Cache::NotReported => vec![sp("cache not reported".into(), faint)],
+        // (what's not reported is how long it stays warm — said on that, where `warm until` stands)
+        Cache::NotReported => {
+            vec![sp(if long { "warm until: not reported" } else { "warm: not reported" }.into(), faint)]
+        }
     };
     // (when tarae will compact it if it stays idle — `idlecompact.rs` —, while it's warm)
     let warm_now = matches!(u.cache(now_ms), Cache::Warm { .. }) && reported;
@@ -22258,10 +22261,15 @@ fn usage_spans(
     let cost = |long: bool| -> Vec<Span> {
         let Some(t) = turn.filter(|_| money) else { return Vec::new() };
         let label = if long { "turn ≈ API " } else { "≈" };
-        match t.cost {
-            Some(c) => vec![sp(label.into(), faint), sp(dollars(c), dim)],
-            None if long => vec![sp("cost not reported".into(), faint)],
-            None => Vec::new(),
+        // (an agent that reports no cost: its tokens in its place, never an estimate — D = A)
+        match (t.cost, t.counts.total()) {
+            (Some(c), _) => vec![sp(label.into(), faint), sp(dollars(c), dim)],
+            (None, Some(n)) if long => {
+                vec![sp("turn ".into(), faint), sp(format!("{} tokens", tokens(n)), dim)]
+            }
+            (None, Some(n)) => vec![sp(format!("{} tokens", tokens(n)), dim)],
+            (None, None) if long => vec![sp("cost not reported".into(), faint)],
+            (None, None) => Vec::new(),
         }
     };
     let split = |long: bool| -> Vec<Span> {
@@ -22305,6 +22313,12 @@ fn usage_spans(
     tiers.push([c(), k(), None, None, None, None]);
     tiers.push([c(), None, None, None, None, None]);
     let width = |v: &[Span]| v.iter().map(|s| s.text.width()).sum::<usize>();
+    // (each tier with the cache's long form, then its short — a shorter word before a group goes)
+    let tiers = tiers.into_iter().flat_map(|t| {
+        let mut short = t.clone();
+        short[0] = Some(cache(false));
+        [t, short]
+    });
     for tier in tiers {
         let groups: Vec<Vec<Span>> =
             std::iter::once(billed()).chain(tier.into_iter().flatten()).filter(|g| width(g) > 0).collect();
@@ -28436,6 +28450,80 @@ mod tests {
         assert_eq!(text(Billing::Api, 80).as_deref(), Some("api"));
         assert_eq!(text(Billing::Api, 3).as_deref(), Some("api"), "never folded");
         assert_eq!(text(Billing::Subscription, 80), None, "the plan: nothing new");
+    }
+
+    /// D = A (the design session, chat.md 426), drawn: a row that reports no cost — the stand-in's, agy's caps — says its
+    /// tokens where the cost would be, in tarae's one token form (`usage::tokens`, `10k`), never an estimate: on the
+    /// chat's usage row in the cost's own group (long: `turn 10k tokens`, the rest of the row as Claude's; short: `10k
+    /// tokens`), and in the session list's cost column — starting at the column's x, as Claude's cost on the row above
+    /// does (the list lays a column from its x, `sessionpane::lay`), at 80 and wide. Claude's row keeps its cost in both.
+    #[test]
+    fn a_row_with_no_cost_says_its_tokens_where_the_cost_would_be() {
+        use crate::usage::{Counts, Turn, Usage};
+        let counts = Counts { input: Some(1200), write: Some(30), read: Some(9000), output: Some(80) };
+        let spent = |caps, cost| {
+            let mut u = Usage::of(caps);
+            u.fresh("s-1");
+            let at_ms = crate::usage::now_ms();
+            u.turns.push(Turn {
+                at_ms,
+                conversation: "s-1".into(),
+                counts,
+                cost,
+                requests: 1,
+                ..Turn::default()
+            });
+            u
+        };
+        let agy = spent(&crate::agent::STAND_IN.caps, None);
+        let claude = spent(&crate::agent::CLAUDE.caps, Some(0.018));
+        // The chat's usage row
+        let row = |u: &Usage, w| {
+            let (limits, now) =
+                (crate::limits::Limits::default(), (crate::usage::now_ms(), crate::log::Zone::Here));
+            let money = (crate::billing::Billing::Subscription, true);
+            let spans = usage_spans(u, None, &limits, money, now, w, [Style::default(); 4]);
+            spans.unwrap_or_default().into_iter().map(|s| s.text).collect::<String>()
+        };
+        let (a, c) = (row(&agy, 200), row(&claude, 200));
+        assert!(c.contains("  turn ≈ API $0.018  "), "Claude's: its cost — {c:?}");
+        assert_eq!(
+            a,
+            c.replace("turn ≈ API $0.018", "turn 10k tokens"),
+            "the cost's place, the rest as Claude's"
+        );
+        assert_eq!(row(&claude, 40), "warm until: not reported  ≈$0.018");
+        assert_eq!(
+            row(&agy, 40),
+            "warm until: not reported  10k tokens",
+            "short: the tokens where the cost is"
+        );
+        // (narrower, the cache's short form before the tokens go — the shortest true form that fits)
+        assert_eq!(row(&agy, 32), "warm: not reported  10k tokens");
+        assert_eq!(row(&agy, 20), "warm: not reported");
+        // The session list: a Claude row and the stand-in's together
+        let dir = crate::scratch::Scratch::new("tokensrow");
+        let mut ed = Editor::new(crate::config::Config::default());
+        (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+        ed.workspace.claude.usage = claude;
+        let id = ed.workspace_add(dir.join("b"));
+        let b = ed.workspace_by_id(id).unwrap();
+        (b.name, b.claude.usage) = ("b".into(), agy);
+        ed.session_list();
+        for (w, h) in [(80u16, 30u16), (160, 40)] {
+            ed.focus_sync();
+            render(&mut ed, &mut Vec::new(), w, h).unwrap();
+            let s = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), w, h).unwrap();
+            // (the column a text starts at on the row of session `name`)
+            let at = |name: &str, text: &str| {
+                let line = s.lines().find(|l| l.contains(&format!(" {name} ")) && l.contains(text));
+                let line = line.unwrap_or_else(|| panic!("{name}'s row with {text:?} at {w}:\n{s}"));
+                unicode_width::UnicodeWidthStr::width(&line[..line.find(text).unwrap()])
+            };
+            let (cost, tokens) = (at("main", "≈ API $0.018"), at("b", "10k tokens"));
+            assert_eq!(tokens, cost, "at {w}: the tokens in the cost's column, from its x:\n{s}");
+            assert!(!s.contains("≈ API 10k") && !s.contains("$0.00"), "no estimate:\n{s}");
+        }
     }
 
     /// The row is this conversation's: on the plan, the weekly window joins it only while it presses (≥ 80 %, or

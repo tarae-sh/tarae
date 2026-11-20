@@ -1611,6 +1611,8 @@ impl UsageState {
         let priced = self.totals.turns > self.totals.unpriced;
         totals["cost"] = if priced { json!(self.totals.cost) } else { Value::Null };
         totals["unpriced"] = json!(self.totals.unpriced);
+        // (beside the cost, every token counted: what an agent that reports no cost shows in its place — D = A)
+        totals["tokens"] = json!(self.totals.counts.total());
         let mut v = json!({
             "cache": self.cache, "seconds_left": self.seconds_left, "ttl": self.ttl,
             "context": { "tokens": self.context, "window": self.window,
@@ -1621,7 +1623,8 @@ impl UsageState {
         if let Some((n, t)) = &self.children {
             let priced = t.turns > t.unpriced;
             v["children"] = json!({ "sessions": n, "turns": t.turns,
-                "cost": if priced { json!(t.cost) } else { Value::Null }, "unpriced": t.unpriced });
+                "cost": if priced { json!(t.cost) } else { Value::Null }, "unpriced": t.unpriced,
+                "tokens": t.counts.total() });
         }
         v
     }
@@ -1651,8 +1654,9 @@ impl UsageState {
             )
         });
         let turns = crate::usage::turns(self.totals.turns);
-        // (#161: claude's own table's price, not what a subscription pays)
-        format!("{cache} · {context}{last} · total {} in {turns} · ≈ API price", self.totals.cost_said())
+        // (#161: claude's own table's price, not what a subscription pays — said only where a turn reported one)
+        let price = if self.totals.turns > self.totals.unpriced { " · ≈ API price" } else { "" };
+        format!("{cache} · {context}{last} · total {} in {turns}{price}", self.totals.cost_said())
     }
 }
 

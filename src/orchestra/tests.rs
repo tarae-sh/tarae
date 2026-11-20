@@ -507,7 +507,10 @@ fn sessions_says_what_each_child_cost_and_all() {
     p.ed.workspace.claude.usage.turns.push(turn(0.125));
     let now = crate::usage::now_ms();
     let v = crate::uistate::UsageState::of_session(&p.ed, &p.ed.workspace, now).unwrap().json();
-    assert_eq!(v["children"], json!({ "sessions": 2, "turns": 3, "cost": 1.75, "unpriced": 0 }));
+    assert_eq!(
+        v["children"],
+        json!({ "sessions": 2, "turns": 3, "cost": 1.75, "unpriced": 0, "tokens": null })
+    );
     assert_eq!(v["totals"]["cost"], json!(0.125), "its own apart");
     let child = p.ed.workspaces.iter().find(|l| l.id == kids[1]).unwrap();
     let v = crate::uistate::UsageState::of_session(&p.ed, child, now).unwrap().json();
