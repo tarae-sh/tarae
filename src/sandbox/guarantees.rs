@@ -361,10 +361,12 @@ const ATTRS_SERVED: &str = " A command changes a file's mode, times and extended
      trusted attributes — in the project neither.";
 
 /// What an unserved Landlock run may change of a file's attributes (tier unserved stays a full tier with this said:
-/// user decision 2026-10-18): nothing serves its calls, so mode and times stay the run's.
+/// user decision 2026-10-18): nothing serves its calls, so mode and times stay the run's; an owner call is refused
+/// even where it changes nothing (D-h), so a copy that keeps owners fails as root (`cp -a`).
 const ATTRS_UNSERVED: &str = " Here a command can change the mode and times of any file of the user's it can name — \
      never what's in it: Landlock has no right for them. Never a file's owner, extended attributes, ACLs or flags — \
-     in the project neither.";
+     in the project neither, and a call setting one is refused even where it changes nothing: as root `cp -a` \
+     fails here, `cp -R` copies without them.";
 
 /// Where a Seatbelt policy opens this machine's ports: what listens on them is reached whoever's it is (step 8, user
 /// decision 9: Linux refuses another session's listener there, macOS's sandbox can't tell whose one is).

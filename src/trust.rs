@@ -205,23 +205,44 @@ pub fn typed_binding(v: &toml::Value) -> bool {
 /// The text with what draws as something else — control characters, bidi and zero-width marks — spelled
 /// out as `\u{…}`, so the card shows what's there.
 pub fn visible(s: &str) -> String {
-    let hidden = |c: char| {
-        (c.is_control() && c != '\n' && c != '\t')
-            || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
-    };
     s.chars().map(|c| if hidden(c) { format!("\\u{{{:x}}}", c as u32) } else { c.to_string() }).collect()
+}
+
+/// What `visible` spells out: a control character but a line break and a tab, a bidi or zero-width mark.
+fn hidden(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t')
+        || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// `visible` on one line, for text a card shows as a line of its own (a key, a value, a file's name): a line
 /// break shown as `¶` — one more line could pass for a line of the card's own — a tab and the Unicode line
 /// and paragraph separators spelled out too, and a `¶` of the text's own, so none reads as the other.
 pub fn visible_line(s: &str) -> String {
-    let spelled = |c: char| match c {
-        '\n' => "¶".to_string(),
-        '\t' | '¶' | '\u{2028}' | '\u{2029}' => format!("\\u{{{:x}}}", c as u32),
-        c => c.to_string(),
+    let shown = |c: char| match line_char(c) {
+        LineChar::Itself => c.to_string(),
+        LineChar::Break => "¶".to_string(),
+        LineChar::Spelled => format!("\\u{{{:x}}}", c as u32),
     };
-    visible(&s.chars().map(spelled).collect::<String>())
+    s.chars().map(shown).collect()
+}
+
+/// How `visible_line` shows a character: as it is, as `¶` (a line break), or spelled out as `\u{…}`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LineChar {
+    Itself,
+    Break,
+    Spelled,
+}
+
+/// `visible_line`'s rule for one character, allocating nothing: what can't allocate spells a line by it too (a
+/// run's child after its fork, `sandbox::keeper::spell_line`).
+pub fn line_char(c: char) -> LineChar {
+    match c {
+        '\n' => LineChar::Break,
+        '\t' | '¶' | '\u{2028}' | '\u{2029}' => LineChar::Spelled,
+        c if hidden(c) => LineChar::Spelled,
+        _ => LineChar::Itself,
+    }
 }
 
 /// What an answer is about: a digest of the held-back items.

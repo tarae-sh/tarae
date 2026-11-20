@@ -255,6 +255,15 @@ the keeper — and in the session's user namespace Yama 1 and 2 let tarae throug
   - **tarae says so in the log, and the next run's policy makes a new keeper** (D11). A second death within 10
     minutes and none is made: runs fail, saying why.
   - **The runs' seccomp filters stay on**: with its listener gone, an address-bearing call fails and reaches nothing.
+- **However it goes** (asked to end, died, killed at `END_WITHIN`), it takes itself off tarae's list as it's seen
+  gone (`Keeper::unlist`). Its channel, pidfd and device handles close with the last holder still there, not at the
+  next run's `ready`. The holders: its reader and wait threads, until they've said it's gone. A run still waited
+  for, until its wait answers (gone answers it). And each run's policy, through its `Hold`, spent or not. A policy
+  lives on its run's worker until the run is reaped. It also lives in the run's supervisor, which serves it until no
+  process of the run is left, and in its refusals' thread, until the supervisor and the proxy's record of the run
+  let it go (the proxy at the run's reaping). The longest is the supervisor, while something the run left keeps
+  running. That is bounded by the keeper's own end: asked, it ends its runs' tree; died or killed, `gone` ends what
+  they left by its tag. So none outlives the keeper by more than what ending its runs takes.
 - `:procs` shows each session's keeper (`sandbox keeper` — `the session's keeper · <checkout>`), its runs and
   leftovers under it. Its memory is the resident one from its `stat`, which stays readable for a non-dumpable
   process; its Pss it says itself (`Usage`).
@@ -409,25 +418,28 @@ socket bound to port 0 (`udp_disconnect`) — and another asked for, four times 
 (`supervisor::picked`): by chance one bind in tens of thousands, on purpose only by narrowing the range
 (`IP_LOCAL_PORT_RANGE`).
 
-A keeper's rows go when it does — ended by tarae, at once; died, or killed for not ending in time, as each socket
-goes (`Owners::let_go`, asked from 100 ms, doubling to 30 s, on a thread, for an hour at most — `LET_GO_FOR`: what
-still holds a socket then outlived its keeper for good, and its rows stay as they are, a cookie naming one socket
-ever): what its runs left still holds them, and
-where ending it by its tag fails (it never came to tarae, or outlived the TERM) a listener it holds stays its
-session's — another session's to everyone else — until it's gone (pinned for both: died unasked, and asked but
-killed past `END_WITHIN`). A session past `owners::KEPT` rows keeps the sockets still in tarae's tables and those
-touched since the sweep before (made, or named by a served bind or listen, or by a connect or send while still
-unbound — where it binds itself, which makes it a row again; a bound one is in the kernel's list). The sweep reads
-that list with the table let go: every session's calls take the table, and a dump of every socket can take a while. Keyed by cookie, not inode:
-inode numbers come from one 32-bit counter the machine's pipes and pseudo files share, so a stale row would name a
-newer socket; sock_diag gives each socket's cookie in its sockid. Where sock_diag can't be had the lookup reads
-tarae's `/proc/net/{tcp,udp}[6]` whole, which find a row by its inode (no cookie) and don't say `IPV6_V6ONLY` — both
-err only to refusing; where neither can be read, whose the socket is can't be told and the call or bind is refused
-as that (`network-untold`, "refused: whose the port is couldn't be told here" — never said to be another
-session's; the report tells Claude to tell the user, the log says why: `supervisor::told`, `Refusal::Untold`). A
-UDP socket whose reuse options can't be turned off for the kernel's pick isn't bound, said (`network-bind`) and
-logged. Measured (M8.1, `owners::tests::perf_a_loopback_lookup`, 2026-10-14), a
-lookup with 100 / 1 000 / 10 000 sockets in the netns, median:
+A keeper's rows go when it does — ended by tarae, at once; died, or killed for not ending in time, as each socket goes
+(`Owners::let_go`, asked from 100 ms, doubling to 30 s, on a thread, for an hour at most — `LET_GO_FOR`: what still
+holds a socket then outlived its keeper for good, and its rows stay as they are, a cookie naming one socket ever): what
+its runs left still holds them, and where ending it by its tag fails (it never came to tarae, or outlived the TERM) a
+listener it holds stays its session's — another session's to everyone else — until it's gone (pinned for both: died
+unasked, and asked but killed past `END_WITHIN`). A port a run just let go can read as taken for a moment: tarae's own
+copy of its socket (`pidfd_getfd`'s, close-on-exec) lives on in a process tarae forked meanwhile until that process
+reaches its exec. Until then the same session's next bind there gets the kernel's "address in use" — a server or a test
+started twice on one port — and another session's is refused as another's (the binds test's control waits it out,
+`a_bind_onto_another_sessions_port_is_refused`). A session past `owners::KEPT` rows keeps the sockets still in tarae's
+tables and those touched since the sweep before (made, or named by a served bind or listen, or by a connect or send
+while still unbound — where it binds itself, which makes it a row again; a bound one is in the kernel's list). The sweep
+reads that list with the table let go: every session's calls take the table, and a dump of every socket can take a
+while. Keyed by cookie, not inode: inode numbers come from one 32-bit counter the machine's pipes and pseudo files
+share, so a stale row would name a newer socket; sock_diag gives each socket's cookie in its sockid. Where sock_diag
+can't be had the lookup reads tarae's `/proc/net/{tcp,udp}[6]` whole, which find a row by its inode (no cookie) and
+don't say `IPV6_V6ONLY` — both err only to refusing; where neither can be read, whose the socket is can't be told and
+the call or bind is refused as that (`network-untold`, "refused: whose the port is couldn't be told here" — never said
+to be another session's; the report tells Claude to tell the user, the log says why: `supervisor::told`,
+`Refusal::Untold`). A UDP socket whose reuse options can't be turned off for the kernel's pick isn't bound, said
+(`network-bind`) and logged. Measured (M8.1, `owners::tests::perf_a_loopback_lookup`, 2026-10-14), a lookup with 100 /
+1 000 / 10 000 sockets in the netns, median:
 
 | machine | TCP listeners: sock_diag | `/proc/net/tcp{,6}` | UDP sockets: sock_diag | `/proc/net/udp{,6}` |
 |---|---|---|---|---|

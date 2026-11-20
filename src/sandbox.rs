@@ -2656,6 +2656,10 @@ pub struct RunDir {
 /// The lock file in an instance's folder.
 const INSTANCE_LOCK: &str = "lock";
 
+/// The shut folder's name in an instance's folder (`linux::Covers::shut_folder`: empty, mode 0) — removed by name
+/// first when a gone tarae's folder is cleared (`gone_cleared`).
+pub(crate) const SHUT_FOLDER: &str = "shut-folder";
+
 /// This tarae's folder for its runs' folders in one base — `<pid>-<k>`, the first `k` from 0 whose name isn't
 /// taken (another tarae's with this pid, one in a container; a gone one's with it, its lock free, is cleared and
 /// its name taken over — pids come back) — short, as a run's `TMPDIR` is in it and a socket's path holds 104
@@ -2876,6 +2880,11 @@ fn runs_pruned(base: &Path) -> Pruned {
 
 /// An instance's folder `dir` removed with what's in it where its tarae is gone — its lock free, taken here:
 /// true; its tarae running: false; left, and why: Err. A link isn't followed (`remove_dir_all` follows none inside).
+/// Its shut folder (`SHUT_FOLDER`, empty, mode 0) goes first, by name — once the lock is taken, never before: a
+/// live tarae's runs hold it by its device and inode. `remove_dir_all` opens each folder to empty it, which a user
+/// can't do to a mode-0 one, while `rmdir` needs only write on its parent; nothing is opened, recursed into or
+/// chmodded. One that isn't empty leaves the whole folder as it was found: Err, naming it and why. What's at that
+/// name that isn't a folder (a link, a file) goes with the rest (`rmdir` doesn't follow it).
 fn gone_cleared(dir: &Path) -> Result<bool, String> {
     use std::os::unix::fs::OpenOptionsExt;
     if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) {
@@ -2891,7 +2900,14 @@ fn gone_cleared(dir: &Path) -> Result<bool, String> {
         Err(e) => return Err(format!("its lock: {e}")),
     };
     match lock.try_lock() {
-        Ok(()) => std::fs::remove_dir_all(dir).map(|()| true).map_err(|e| format!("removing it: {e}")),
+        Ok(()) => {
+            match std::fs::remove_dir(dir.join(SHUT_FOLDER)) {
+                Ok(()) => {}
+                Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => {}
+                Err(e) => return Err(format!("its shut folder: {e}")),
+            }
+            std::fs::remove_dir_all(dir).map(|()| true).map_err(|e| format!("removing it: {e}"))
+        }
         Err(std::fs::TryLockError::WouldBlock) => Ok(false),
         Err(std::fs::TryLockError::Error(e)) => Err(format!("its lock: {e}")),
     }
@@ -8440,6 +8456,89 @@ mod tests {
         assert_eq!(said.len(), 1 + signals.len(), "nothing else refused: {said:?}");
     }
 
+    /// A gone tarae's instance folder that got a shut folder (`linux::Covers::shut_folder`: empty, mode 0) beside its
+    /// shut file (mode 0) and a run folder is cleared as the prune and a restart's `Instance::make` clear it
+    /// (`gone_cleared`), as a user too — who can't open a mode-0 folder, which `remove_dir_all` does to empty each
+    /// one: the shut folder goes first, by name (#667: before, every such folder stayed, and after eight restarts
+    /// on one pid every run was refused). With none, cleared as before; a link at its name goes with the rest, what
+    /// it points at untouched. One with a file in it (mode 0) leaves everything as found, its reason said; a held
+    /// lock (its tarae running) leaves everything, the shut folder too. Root opens a mode-0 folder anyway: as a user
+    /// it says what it's for.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_gone_instance_with_its_shut_folder_is_cleared() {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+        let scratch = crate::scratch::Scratch::new("gone-shut");
+        let outside = scratch.to_path_buf().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep-me"), "x").unwrap();
+        // (a gone instance's folder: its lock (free), a run folder, the shut file and its shut folder as `with` makes it)
+        let instance = |name: &str, with: &dyn Fn(&Path)| {
+            let dir = scratch.to_path_buf().join(name);
+            std::fs::create_dir_all(dir.join("0")).unwrap();
+            std::fs::write(dir.join(INSTANCE_LOCK), "").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o000)
+                .open(dir.join("shut"))
+                .unwrap();
+            with(&dir.join(SHUT_FOLDER));
+            dir
+        };
+        let left = |dir: &Path| -> Vec<String> {
+            let names =
+                std::fs::read_dir(dir).map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>());
+            names.unwrap_or_default().iter().map(|n| n.to_string_lossy().into_owned()).collect()
+        };
+        // SAFETY: a plain call.
+        let uid = unsafe { libc::geteuid() };
+        let tarae_made = |at: &Path| std::fs::DirBuilder::new().mode(0o000).create(at).unwrap();
+        // Cleared: its shut folder as tarae made it; none; a link at its name
+        for (name, with, what) in [
+            ("4000007-0", &tarae_made as &dyn Fn(&Path), "its shut folder, empty, mode 0"),
+            ("4000008-0", &|_: &Path| {}, "no shut folder"),
+            (
+                "4000009-0",
+                &|at: &Path| std::os::unix::fs::symlink(&outside, at).unwrap(),
+                "a link at its name",
+            ),
+        ] {
+            let dir = instance(name, with);
+            let cleared = gone_cleared(&dir);
+            assert_eq!(cleared, Ok(true), "as uid {uid}, {what}: left in it: {:?}", left(&dir));
+            assert!(!dir.exists(), "as uid {uid}, {what}: gone");
+        }
+        assert_eq!(left(&outside), ["keep-me"], "what the link pointed at, untouched");
+        // Left as found, its reason said: a shut folder with a file in it
+        let planted = instance("4000010-0", &|at| {
+            std::fs::create_dir(at).unwrap();
+            std::fs::write(at.join("planted"), "x").unwrap();
+            std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o000)).unwrap();
+        });
+        let refused = gone_cleared(&planted);
+        let mut found = left(&planted);
+        found.sort();
+        // (its mode back, so what's in it can be looked at and the scratch folder can go)
+        let _ = std::fs::set_permissions(planted.join(SHUT_FOLDER), std::fs::Permissions::from_mode(0o700));
+        assert!(
+            refused.as_ref().is_err_and(|e| e.starts_with("its shut folder: ")),
+            "as uid {uid}: a shut folder with something in it: left, and why — {refused:?}"
+        );
+        assert_eq!(found, ["0", INSTANCE_LOCK, "shut", SHUT_FOLDER], "as uid {uid}: all as found");
+        assert_eq!(left(&planted.join(SHUT_FOLDER)), ["planted"], "as uid {uid}: what was in it, as it was");
+        // Its tarae running (its lock held): nothing removed, the shut folder too
+        let running = instance("4000011-0", &tarae_made);
+        let held = std::fs::File::open(running.join(INSTANCE_LOCK)).unwrap();
+        held.try_lock().unwrap();
+        let kept = gone_cleared(&running);
+        let there = running.join(SHUT_FOLDER).exists();
+        drop(held);
+        let _ = std::fs::remove_dir(running.join(SHUT_FOLDER));
+        assert_eq!(kept, Ok(false), "as uid {uid}: its tarae running");
+        assert!(there, "as uid {uid}: a running tarae's shut folder stays");
+    }
+
     /// A tarae that's gone (a crash, a kill) leaves its run folders in tarae's cache, which nothing else clears
     /// (the temp folders were the system's): the next start removes them — where tarae's cache is, as the
     /// variables say. Whose they are is the lock in each tarae's own folder (`Instance`), never a pid: one a
@@ -11523,7 +11622,8 @@ mod tests {
                 let key = std::fs::canonicalize(place.join(policy::KEY_NAMED)).unwrap();
                 let p = policy_from(&root, crate::tools::with_allowed(&llm, &caps, Some(g)), &here).unwrap();
                 let p = confined(Policy { run: RunDir::new().ok(), ..p });
-                if let Ok(want) = std::env::var("TARAE_EXPECT_TIER").map(|w| w.trim().to_string()) {
+                // (the expected tier as the must-be-refused suite reads it: `partial` below Landlock ABI 3)
+                if let Some(want) = refused::tier_said_expected() {
                     let got = p.tier_said().unwrap_or_default();
                     assert_eq!(got, want, "tier {want} expected by TARAE_EXPECT_TIER, got {got}");
                 }
@@ -11561,6 +11661,20 @@ mod tests {
                     c.outside.unsought.is_some(),
                     !c.runs_mount() && g.ns.is_some_and(|n| n.user),
                     "{why}"
+                );
+                // (a partial kernel's words, each where it's said: the why's, Claude's sentence, its files' row —
+                // none of them at ABI 3 and above)
+                let (abi, sentence) = (c.abi, g.sentence());
+                let partial = [
+                    why.contains(&format!("Landlock ABI {abi}: partial, every run asks")),
+                    sentence.contains(&format!(", partial (Landlock ABI {abi})")),
+                    sentence.contains("files (any can be emptied: no truncating rule below ABI 3)"),
+                ];
+                assert_eq!(partial, [abi < 3; 3], "ABI {abi}: {why}\n{sentence}");
+                assert_eq!(
+                    why.contains("partial") || sentence.contains("partial"),
+                    abi < 3,
+                    "{why}\n{sentence}"
                 );
             }
         }
@@ -16068,8 +16182,10 @@ mod tests {
         }
         // What it costs, in the typical project (each `(what, script, whether it goes, the path, what's left)`)
         let npm = "find node_modules -mindepth 1 -maxdepth 1 -exec rm -rf {} +";
-        let checkout =
-            "cp -a .git \"$TMPDIR/g\" && git --git-dir=\"$TMPDIR/g\" --work-tree=. checkout -q other";
+        // (copied as the report tells people to, `cp -R`: no owner kept — an owner call, even to the file's own, is
+        // refused in tier unserved (D-h), where root's `cp -a` fails on it — and the copy whole, file for file)
+        let checkout = "cp -R .git \"$TMPDIR/g\" && diff -r .git \"$TMPDIR/g\" && \
+                        git --git-dir=\"$TMPDIR/g\" --work-tree=. checkout -q other";
         for (label, script, goes, at, left) in [
             ("cargo clean", "env -u CARGO_TARGET_DIR cargo clean", true, "target", "gone"),
             ("npm ci's removal (ci.js: each entry inside)", npm, true, "node_modules", "empty"),
@@ -17404,6 +17520,39 @@ mod tests {
         }
     }
 
+    /// For real, where a run hides keys by mounts of its own: a project key gone between its policy's walk and its
+    /// run (strict: the project's) refuses the run, fail-closed, and the refusal names the key — `cover`'s place
+    /// (`CoverAt`), said by the run's child on its own line. Its break-once: the path left out of that line.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_project_key_gone_before_its_run_refuses_it_by_name() {
+        let test = "a_project_key_gone_before_its_run_refuses_it_by_name";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let (t, root) = key_files("gone-before");
+        let p = key_policy(&root);
+        if skipped_for_mounts(&p, test, true) {
+            return;
+        }
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let key = root.join(".env");
+        let Some(Ok(confine)) = &c.confine else { panic!("{test}: not confined: {:?}", c.confine) };
+        assert!(
+            confine.covers.keys.iter().any(|k| k.path == key),
+            "{test}: hidden: {:?}",
+            confine.covers.keys
+        );
+        std::fs::remove_file(&key).unwrap();
+        let (ok, _, err) = sh_confined(&c, &root, "true");
+        let said = format!(
+            "hiding the files named like keys (one moved since? run it again): errno 2 at {}",
+            key.display()
+        );
+        assert!(!ok && err.contains(&said), "{test}: {err}");
+        std::fs::remove_dir_all(&t).ok();
+    }
+
     /// Where #633's tests and `every_rows_place_is_kept_from_runs` make their stand-ins: beside the build folder
     /// (where `a_kept_place_outside_home_is_closed`'s are), or the project's `target` where that isn't writable — a
     /// binary in `/usr/local/bin` run as a user (#656) — no temp folder, which is a write place of every run already.
@@ -17427,6 +17576,8 @@ mod tests {
     /// Where its runs have no mounts of their own both are left out of that grant as of `/`'s — the place shut for
     /// them; in tier own both are hidden by mounts
     /// (`a_kept_file_or_folder_in_a_temp_folder_is_hidden_by_a_mount_in_tier_own`, #634) and no place is shut.
+    /// Each one no mount hides, in whatever tier, is a hole its place's rule holds: not moved, removed, written in nor
+    /// its name taken — by itself or by a folder on its way moved away — its bytes as they were, its place shut.
     /// Before: read and written through the write grant. Its break-once: `TARAE_TEST_KEPT_IN_WRITES=1`.
     #[cfg(not(target_os = "macos"))]
     #[test]
@@ -17445,7 +17596,8 @@ mod tests {
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, FAKE).unwrap();
         }
-        let reads = Reads { home: Some(home.clone()), kept: vec![kube.clone(), gcloud], ..Reads::default() };
+        let reads =
+            Reads { home: Some(home.clone()), kept: vec![kube.clone(), gcloud.clone()], ..Reads::default() };
         let p = Policy::for_project(&Env {
             root: root.clone(),
             reads,
@@ -17453,10 +17605,14 @@ mod tests {
             ..Env::default()
         });
         let c = confined(Policy { write: vec![writes.clone()], run: RunDir::new().ok(), ..p });
-        let (tier, shut, mounted) = match &c.confine {
-            Some(Ok(c)) => (c.tier(), c.shut_kept.clone(), c.covers.kept.len()),
+        let (tier, shut, hidden) = match &c.confine {
+            Some(Ok(c)) => {
+                let hidden: Vec<PathBuf> = c.covers.kept.iter().map(|k| k.path.clone()).collect();
+                (c.tier(), c.shut_kept.clone(), hidden)
+            }
             other => panic!("{test}: not confined: {other:?}"),
         };
+        let mounted = hidden.len();
         for f in &closed {
             let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
             assert!(
@@ -17470,11 +17626,74 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&kube).unwrap(), FAKE, "{tier}: the kept file as it was");
         let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{0}' && echo y >> '{0}'", open.display()));
         assert!(ok && out == FAKE, "{tier}: beside it, read and written: {err}");
+        // (each kept place no mount hides, in whatever tier, is a hole its place's rule holds: not moved, removed,
+        // written in, nor its name taken — by itself or by a folder on its way moved away — its bytes as they were,
+        // and its place said shut)
+        for (kept, file) in [(&kube, &kube), (&gcloud, &closed[1])] {
+            if hidden.contains(kept) {
+                continue;
+            }
+            assert!(
+                shut.contains(&writes),
+                "{tier}: {} unhidden, its place not shut: {shut:?}",
+                kept.display()
+            );
+            let folder = kept.is_dir();
+            let rel = file.strip_prefix(kept).unwrap_or(Path::new(""));
+            // (a planting at `at`: the kept entry made anew there, a folder with its file, or the file)
+            let plant = |at: &Path| match folder {
+                true => format!("mkdir -p '{0}' && echo planted > '{0}/{1}'", at.display(), rel.display()),
+                false => format!(
+                    "mkdir -p '{}' && echo planted > '{}'",
+                    at.parent().unwrap().display(),
+                    at.display()
+                ),
+            };
+            let k = kept.display();
+            let mut tries = vec![
+                ("moved".to_string(), format!("mv '{k}' '{k}.moved'")),
+                ("removed".to_string(), format!("rm -rf '{k}'")),
+                ("its name taken".to_string(), format!("mv '{k}' '{k}.away' && {}", plant(kept))),
+            ];
+            if folder {
+                tries.push(("a new file in it".to_string(), format!("echo x > '{k}/new.txt'")));
+            }
+            for way in kept.ancestors().skip(1).take_while(|a| a.starts_with(&writes) && *a != writes) {
+                let w = way.display();
+                let script = format!("mv '{w}' '{w}.away' && {}", plant(kept));
+                tries.push((format!("its folder {w} moved away and the name taken"), script));
+            }
+            for (what, script) in &tries {
+                let (ok, _, err) = sh_confined(&c, &root, script);
+                let now = std::fs::read_to_string(file).unwrap_or_else(|e| e.to_string());
+                assert!(!ok && now == FAKE, "{tier}: unhidden {k} {what}: `{script}`: now {now:?} — {err}");
+            }
+        }
         // (both hidden by mounts of the run's own, or neither: then the place that takes no new entry for them)
         match mounted {
             2 => assert!(shut.is_empty(), "{tier}: no place shut: {shut:?}"),
             0 => assert_eq!(shut, [writes], "{tier}: the place that takes no new entry for them"),
-            n => panic!("{tier}: {n} of the two kept places hidden by mounts"),
+            n => {
+                // (what a folder made where the shut folder goes looks like here: its links and filesystem — what
+                // named #667's K6 case, a folder of one link on overlayfs; `Covers::shut_folder` takes the one
+                // tarae's own `mkdir` made, by its device and inode)
+                use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+                let instance = c.run.as_ref().and_then(|r| r.path().parent().map(Path::to_path_buf));
+                let seen = instance.map_or("no run folder".to_string(), |at| {
+                    let probe = at.join("probe-folder");
+                    let made = std::fs::DirBuilder::new().mode(0o000).create(&probe);
+                    let links = std::fs::symlink_metadata(&probe).map(|m| m.nlink());
+                    let path = std::ffi::CString::new(probe.as_os_str().as_encoded_bytes()).unwrap();
+                    // SAFETY: a statfs for the call to fill; a NUL-terminated path.
+                    let fs = unsafe {
+                        let mut s: libc::statfs = std::mem::zeroed();
+                        (libc::statfs(path.as_ptr(), &mut s) == 0).then_some(s.f_type)
+                    };
+                    std::fs::remove_dir(&probe).ok();
+                    format!("a folder made there: {made:?}, links {links:?}, filesystem {fs:x?}")
+                });
+                panic!("{tier}: {n} of the two kept places hidden by mounts ({seen})")
+            }
         }
     }
 

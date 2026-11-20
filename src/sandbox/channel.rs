@@ -193,10 +193,13 @@ pub enum Msg {
         id: u64,
         pid: u32,
     },
+    /// The run didn't start: at `step`, `errno` — and, its mounts' (`Step::Covers`), the path of the one that failed
+    /// (empty: none said).
     Failed {
         id: u64,
         errno: i32,
         step: Step,
+        at: Vec<u8>,
     },
     /// The run reaped: its `wait` status.
     Exited {
@@ -299,10 +302,11 @@ pub fn encode(msg: &Msg) -> Result<Vec<u8>, Refused> {
             b.extend(id.to_le_bytes());
             b.extend(pid.to_le_bytes());
         }
-        Msg::Failed { id, errno, step } => {
+        Msg::Failed { id, errno, step, at } => {
             b.extend(id.to_le_bytes());
             b.extend(errno.to_le_bytes());
             b.push(step.code());
+            bytes(&mut b, at);
         }
         Msg::Exited { id, status } => {
             b.extend(id.to_le_bytes());
@@ -513,7 +517,7 @@ pub fn decode(b: &[u8], fds: usize) -> Result<Msg, Refused> {
             Msg::Ready { pid, places, port }
         }
         65 => Msg::Started { id: r.u64()?, pid: r.u32()? },
-        66 => Msg::Failed { id: r.u64()?, errno: r.i32()?, step: r.step()? },
+        66 => Msg::Failed { id: r.u64()?, errno: r.i32()?, step: r.step()?, at: r.bytes()? },
         67 => Msg::Exited { id: r.u64()?, status: r.i32()? },
         68 => Msg::Reaped { n: r.u32()? },
         69 => Msg::Usage { rss_kb: r.u64()?, pss_kb: r.u64()? },
@@ -717,7 +721,8 @@ mod tests {
                 port: true,
             },
             Msg::Started { id: 7, pid: 4243 },
-            Msg::Failed { id: 7, errno: libc::ENOENT, step: Step::Exec },
+            Msg::Failed { id: 7, errno: libc::ENOENT, step: Step::Exec, at: Vec::new() },
+            Msg::Failed { id: 8, errno: libc::ENOENT, step: Step::Covers, at: b"/p/.git".to_vec() },
             Msg::Exited { id: 7, status: 3 << 8 },
             Msg::Reaped { n: 2 },
             Msg::Usage { rss_kb: 3100, pss_kb: 900 },

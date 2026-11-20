@@ -44,7 +44,10 @@ expect = { own = "own", own-user = "own", host = "host", host-user = "host", uns
 name = "K1"
 says = "5.14, AlmaLinux 9 (RHEL 9's kernel): the floor, Landlock as backported, SELinux"
 image = "almalinux-9"
-install = "dnf -y install dnf-plugins-core && dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo && dnf -y install docker-ce docker-ce-cli containerd.io"
+# (AlmaLinux's own repository, not its geo mirrorlist: a mirror it put first from here (2026-11-20) answered
+# `repomd.xml` gzip-compressed as plain, and dnf takes such an answer and fails to parse it without trying the next
+# mirror — three tries, the same mirror each time. One source, slower, for the reason the rows pin their images)
+install = "sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^# *baseurl=|baseurl=|' /etc/yum.repos.d/almalinux-*.repo && dnf -y install dnf-plugins-core && dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo && dnf -y install docker-ce docker-ce-cli containerd.io"
 modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"]
 whole = "host-user"
 # (read on its first run, 2026-11-02 on fdfdbcd1, as found: AlmaLinux 9.8's 5.14.0-687 backports Landlock ABI 6 —

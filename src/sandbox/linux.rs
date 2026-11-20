@@ -1998,6 +1998,37 @@ impl KeptWay {
     }
 }
 
+/// The shut folders tarae's own `mkdir` made (`Covers::shut_folder`), each by its place, device and inode: the one
+/// taken there is that folder — a run is granted no instance folder, and a folder made there by anything else isn't
+/// taken. Its link count says little: K6's test container, on overlayfs, gave a fresh empty folder one link where
+/// ext4 gives two (inferred, not measured: btrfs under that overlay, whose folders all report one). A restart's
+/// instance folder is new (`Instance::make` clears a gone tarae's), and so is its shut folder's record.
+static SHUT_MADE: std::sync::Mutex<Vec<Cover>> = std::sync::Mutex::new(Vec::new());
+
+/// What a shut folder is seen as: a folder or not, its mode, owner, links, and (device, inode).
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    dir: bool,
+    mode: u32,
+    uid: u32,
+    links: u64,
+    at: (u64, u64),
+}
+
+/// Whether `seen` is tarae's shut folder: a folder of mode 0, `uid`'s, with no folder in it (two links at most —
+/// one where a filesystem gives every folder one), and the one tarae's own `mkdir` made there (`recorded`: its
+/// device and inode). Err: why not.
+fn shut_folder_taken(seen: &Seen, uid: u32, recorded: Option<(u64, u64)>) -> Result<(), &'static str> {
+    match () {
+        _ if !seen.dir => Err("not a folder"),
+        _ if seen.mode & 0o7777 != 0 => Err("its mode isn't 0"),
+        _ if seen.uid != uid => Err("someone else's"),
+        _ if seen.links > 2 => Err("a folder in it"),
+        _ if recorded != Some(seen.at) => Err("not the folder tarae made there"),
+        _ => Ok(()),
+    }
+}
+
 /// A key hidden by a mount: where it is, a real path, and which file it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cover {
@@ -2085,26 +2116,41 @@ impl Covers {
 
     /// The shut folder in `run`'s instance folder, beside the shut file, made the first time (#634): empty, mode 0,
     /// through no link (`mkdir` makes no link's target) — tarae's, which no run is granted, so nothing but tarae
-    /// writes there; with mode 0 and its mount read-only a run opens, lists and makes nothing in it. Err: it can't
-    /// be made, or what's there isn't one.
+    /// writes there; with mode 0 and its mount read-only a run opens, lists and makes nothing in it. Taken only as
+    /// the folder tarae's own `mkdir` made there, by its device and inode (`SHUT_MADE`), never removed and made
+    /// again — a `:restart`'s new instance folder gets a new one. Err: it can't be made, or what's there isn't it.
     fn shut_folder(&mut self, run: &Path) -> io::Result<()> {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         if self.shut_dir.is_some() {
             return Ok(());
         }
         let dir = run.parent().ok_or_else(|| io::Error::other("a run's folder in no instance"))?;
-        let at = dir.join("shut-folder");
-        match std::fs::DirBuilder::new().mode(0o000).create(&at) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        let at = dir.join(super::SHUT_FOLDER);
+        let made = match std::fs::DirBuilder::new().mode(0o000).create(&at) {
+            Ok(()) => true,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
             Err(e) => return Err(e),
-        }
+        };
         let m = at.symlink_metadata()?;
+        let recorded = {
+            let mut made_here = SHUT_MADE.lock().unwrap_or_else(|e| e.into_inner());
+            if made {
+                made_here.retain(|c| c.path != at);
+                made_here.push(Cover { path: at.clone(), dev: m.dev(), ino: m.ino() });
+            }
+            made_here.iter().find(|c| c.path == at).map(|c| (c.dev, c.ino))
+        };
+        let seen = Seen {
+            dir: m.file_type().is_dir(),
+            mode: m.mode(),
+            uid: m.uid(),
+            links: m.nlink(),
+            at: (m.dev(), m.ino()),
+        };
         // SAFETY: a plain call.
         let uid = unsafe { libc::geteuid() };
-        if !m.file_type().is_dir() || m.mode() & 0o7777 != 0 || m.uid() != uid || m.nlink() != 2 {
-            return Err(io::Error::other(format!("{} isn't tarae's shut folder", at.display())));
-        }
+        shut_folder_taken(&seen, uid, recorded)
+            .map_err(|why| io::Error::other(format!("{} isn't tarae's shut folder: {why}", at.display())))?;
         self.shut_dir = Some(Cover { path: at, dev: m.dev(), ino: m.ino() });
         Ok(())
     }
@@ -3426,6 +3472,66 @@ fn audit_op(blockers: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::sandbox::{Env, Guard, Reads, RunDir};
+
+    /// A shut folder is taken by what it is, never by its link count alone (#667: K6's test container, on overlayfs,
+    /// gave a fresh empty folder one link): a folder of mode 0, the user's, two links at most, and the one tarae's own
+    /// `mkdir` made there, by its device and inode. Every row is judged before the assertion, so a break shows each
+    /// row it changes.
+    #[test]
+    fn a_shut_folder_is_the_one_tarae_made_whatever_its_links() {
+        let ok = Seen { dir: true, mode: 0o040000, uid: 1000, links: 2, at: (7, 42) };
+        let mine = Some((7, 42));
+        let rows = [
+            ("two links, recorded", ok, mine, true),
+            ("one link (K6's), recorded", Seen { links: 1, ..ok }, mine, true),
+            ("three links: a folder in it", Seen { links: 3, ..ok }, mine, false),
+            ("its mode changed", Seen { mode: 0o040700, ..ok }, mine, false),
+            ("someone else's", Seen { uid: 1001, ..ok }, mine, false),
+            ("not a folder", Seen { dir: false, mode: 0o100000, ..ok }, mine, false),
+            ("none recorded there", ok, None, false),
+            ("another inode recorded there", ok, Some((7, 43)), false),
+            ("another device recorded there", ok, Some((8, 42)), false),
+        ];
+        let wrong: Vec<&str> = rows
+            .iter()
+            .filter(|(_, seen, recorded, taken)| shut_folder_taken(seen, 1000, *recorded).is_ok() != *taken)
+            .map(|(row, ..)| *row)
+            .collect();
+        assert!(wrong.is_empty(), "judged wrong: {wrong:?}");
+    }
+
+    /// On this machine's filesystem: the shut folder `shut_folder` makes is taken, and by every confine after; with
+    /// its mode changed it isn't, until it's back; one in an instance folder made there by anything else isn't. A
+    /// restart's new instance folder (made again at its name, as `Instance::make` does a gone tarae's) gets a new
+    /// shut folder, taken — the old one still there elsewhere, so the two can't share an inode.
+    #[test]
+    fn the_shut_folder_tarae_made_is_taken_and_no_other() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let held = crate::scratch::Scratch::new("shut-folder");
+        let dir = held.to_path_buf();
+        let (instance, other) = (dir.join("1-0"), dir.join("2-0"));
+        let (run, at) = (instance.join("run-1"), instance.join("shut-folder"));
+        std::fs::create_dir_all(&run).unwrap();
+        let take = |run: &Path| Covers::default().shut_folder(run);
+        take(&run).expect("made and taken");
+        take(&run).expect("taken again by the next confine: the one it made");
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(take(&run).is_err(), "its mode changed: refused");
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o000)).unwrap();
+        take(&run).expect("its mode back: taken");
+        // (one made there by something else, in an instance folder tarae never made one in)
+        std::fs::create_dir_all(other.join("run-1")).unwrap();
+        std::fs::DirBuilder::new().mode(0o000).create(other.join("shut-folder")).unwrap();
+        let foreign = take(&other.join("run-1"));
+        assert!(
+            foreign.is_err_and(|e| e.to_string().contains("not the folder tarae made")),
+            "not tarae's: refused"
+        );
+        // (a restart: the instance folder made again at its name, the old one kept aside)
+        std::fs::rename(&instance, dir.join("1-0.before")).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        take(&run).expect("a restart's new instance folder: its own shut folder made and taken");
+    }
 
     /// What a run gets of this process's environment with the default settings — as a real policy's
     /// (`sandbox::env_in`); a policy made by hand gets nothing of it.

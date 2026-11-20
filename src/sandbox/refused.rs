@@ -178,6 +178,21 @@ fn skipped(test: &str) -> bool {
     }
 }
 
+/// The tier a machine is said to give (`TARAE_EXPECT_TIER`) as a policy says it (`Policy::tier_said`): by its name,
+/// and below Landlock ABI 3 `partial` after it, as the product says it. None: none said.
+pub(super) fn tier_said_expected() -> Option<String> {
+    let want = std::env::var("TARAE_EXPECT_TIER").ok()?;
+    let want = want.trim();
+    if want.is_empty() {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    let partial = crate::landlock::abi().is_ok_and(|n| n < 3);
+    #[cfg(not(target_os = "linux"))]
+    let partial = false;
+    Some(format!("{want}{}", if partial { " partial" } else { "" }))
+}
+
 fn confined_policy_in(root: &Path, llm: &crate::llm::LlmConfig, here: &Here) -> Policy {
     let policy = run_policy_in(root, llm, &[], here).unwrap();
     #[cfg(target_os = "linux")]
@@ -297,17 +312,8 @@ fn in_stand_in_home() {
     let sealed =
         policy.confine.as_ref().and_then(|c| c.as_ref().ok()).is_some_and(|c| !c.covers.seals.is_empty());
     let _other_cleanup = RunCleanupGuard { policy: other_policy.clone() };
-    if let Ok(want) = std::env::var("TARAE_EXPECT_TIER") {
-        let want = want.trim();
-        // (the expected tier by its name; below Landlock ABI 3 its runs say it `partial`, as the product does)
-        if !want.is_empty() {
-            #[cfg(target_os = "linux")]
-            let partial = crate::landlock::abi().is_ok_and(|n| n < 3);
-            #[cfg(not(target_os = "linux"))]
-            let partial = false;
-            let want = format!("{want}{}", if partial { " partial" } else { "" });
-            assert_eq!(policy.tier_said(), Some(want), "unexpected sandbox tier");
-        }
+    if let Some(want) = tier_said_expected() {
+        assert_eq!(policy.tier_said(), Some(want), "unexpected sandbox tier");
     }
     let own_run = policy.run.as_ref().unwrap().path().to_path_buf();
     let other_run = other_policy.run.as_ref().unwrap().path().to_path_buf();

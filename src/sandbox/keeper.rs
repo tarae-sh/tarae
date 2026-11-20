@@ -141,8 +141,10 @@ struct Slot {
     skipped: Option<Arc<Mutex<Option<super::linux::Skipped>>>>,
 }
 
-/// Every keeper there is (a session's, and ones superseded still ending their runs). Held only to look or
-/// change: `of` is the main loop's (`:procs`).
+/// Every keeper there is (a session's, and ones superseded still ending their runs) — none gone past its own `gone`:
+/// each takes itself off as it goes (`Keeper::unlist`), a moment after it says so. Held only to look or change: `of`
+/// is the main loop's (`:procs`). Lock order: `KEEPERS`, then a keeper's `state` (`there_or_born`'s look); never
+/// `KEEPERS` inside a `state`.
 static KEEPERS: Mutex<Vec<Arc<Keeper>>> = Mutex::new(Vec::new());
 /// Held through `ready` — a birth too (≤ `READY_WITHIN`): two runs' policies made at once get one keeper,
 /// workers waiting on it, never `KEEPERS`'s readers.
@@ -237,9 +239,9 @@ pub fn arm_test_end() {
             };
             let going: Vec<Arc<Keeper>> =
                 of(None).into_iter().filter(|k| last.contains(&k.serial) && !k.is_gone()).collect();
+            // (each takes itself off the list as it goes — `gone`'s `unlist`, whenever that lands: after a
+            // deadline's KILL too, which `ended_by` doesn't wait out — and its descriptors go with its last `Arc`)
             end_together(&going);
-            // (their descriptors go with the last of their `Arc`s)
-            lock(&KEEPERS).retain(|k| !k.is_gone());
         }
     }
     thread_local! {
@@ -260,6 +262,9 @@ fn there_or_born(root: &Path, key: Option<&str>, ns: Ns, held: bool) -> Result<A
     let _births = lock(&BIRTHS);
     let current = {
         let mut keepers = lock(&KEEPERS);
+        // (one gone that hasn't taken itself off yet — between its `gone` saying so and its `unlist` — is dropped
+        // here: a run is never handed a keeper already gone. Under the list's lock, but never its last `Arc`: the
+        // thread in its `gone`, its reader or its wait, holds one until its `unlist` is done)
         keepers.retain(|k| lock(&k.state).gone.is_none());
         keepers.iter().find(|k| k.root == root && !lock(&k.state).superseded).cloned()
     };
@@ -315,6 +320,11 @@ fn there_or_born(root: &Path, key: Option<&str>, ns: Ns, held: bool) -> Result<A
     let k = Keeper::born(root, key, ns).map_err(|e| format!("the session's keeper couldn't start: {e}"))?;
     lock(&k.state).holds = usize::from(held);
     lock(&KEEPERS).push(k.clone());
+    // (gone before it was listed — died at once: `gone` found nothing to take off then. It says it's gone before it
+    // takes `KEEPERS`, so one or the other sees it)
+    if k.is_gone() {
+        k.unlist();
+    }
     k.hand_port();
     Ok(k)
 }
@@ -714,8 +724,14 @@ impl Keeper {
                     }
                 }
             }
-            Msg::Failed { id, errno, step } => {
-                let why = format!("{}: {}", step.said(), io::Error::from_raw_os_error(errno));
+            Msg::Failed { id, errno, step, at } => {
+                let at = match at.is_empty() {
+                    true => String::new(),
+                    // (a project's file name in tarae's words: spelled as a card's line is — a newline in it can't
+                    // start a line of its own)
+                    false => format!(" at {}", crate::trust::visible_line(&String::from_utf8_lossy(&at))),
+                };
+                let why = format!("{}: {}{at}", step.said(), io::Error::from_raw_os_error(errno));
                 match s.runs.get_mut(&id) {
                     Some(slot) if slot.started.is_none() => slot.started = Some(Err(why)),
                     _ => self.log().line(
@@ -844,6 +860,10 @@ impl Keeper {
             super::proxy::get().send(super::proxy::ToProxy::SessionPortGone { session, keeper: self.serial });
         }
         drop(port);
+        // (off the list now, however it went — asked, died, killed: its channel, pidfd and device places close with
+        // its last `Arc`, a thread's or a run's here still. `state` and `port` are let go above: `KEEPERS` is taken
+        // alone — `there_or_born` takes it, then each keeper's `state`)
+        self.unlist();
         for (pid, pidfd) in &runs {
             kill_run(*pid, pidfd);
         }
@@ -902,6 +922,20 @@ impl Keeper {
             }
             s = self.changed.wait_timeout(s, left).unwrap_or_else(|e| e.into_inner()).0;
         }
+    }
+
+    /// Off the list (`KEEPERS`): the list's hold on it let go — once it's gone (`gone`, or its birth finding it gone
+    /// as it lists it). Takes `KEEPERS` alone, never inside this keeper's `state` or `port`: the order is `KEEPERS`
+    /// then a keeper's `state` (`there_or_born`). What it held goes after the list's lock, not under it.
+    fn unlist(&self) {
+        let off: Vec<Arc<Keeper>> = {
+            let mut keepers = lock(&KEEPERS);
+            let (off, on): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut *keepers).into_iter().partition(|k| k.serial == self.serial);
+            *keepers = on;
+            off
+        };
+        drop(off);
     }
 
     /// Whether the keeper is gone.
@@ -1933,6 +1967,8 @@ fn readable(fd: BorrowedFd, wait: Duration) -> io::Result<bool> {
 struct Child {
     pid: i32,
     error: Option<OwnedFd>,
+    /// What its child hides by mounts (`Exec.covers`): where a `Step::Covers` failure was, said by its path.
+    covers: Option<Covering>,
 }
 
 /// The keeper (`tarae --sandbox-keeper`, first thing in `main`): its loop over its channel, its children's
@@ -2043,7 +2079,9 @@ pub fn main() -> ! {
                 }
                 // (a keeper's own kinds, or a malformed record: refused, and it goes on)
                 Ok(Some((Ok(_), _))) | Ok(Some((Err(_), _))) => {
-                    let _ = k.say(&Msg::Failed { id: 0, errno: libc::EINVAL, step: Step::Request }, &[]);
+                    let failed =
+                        Msg::Failed { id: 0, errno: libc::EINVAL, step: Step::Request, at: Vec::new() };
+                    let _ = k.say(&failed, &[]);
                 }
             }
         }
@@ -2071,7 +2109,7 @@ impl Kept {
     fn start(&mut self, run: channel::Run, fds: Vec<OwnedFd>) {
         let id = run.id;
         let failed = |k: &Kept, step, errno| {
-            let _ = k.say(&Msg::Failed { id, errno, step }, &[]);
+            let _ = k.say(&Msg::Failed { id, errno, step, at: Vec::new() }, &[]);
         };
         let exec = match Exec::of(&run) {
             Ok(exec) => exec,
@@ -2098,14 +2136,14 @@ impl Kept {
             let e = errno();
             // SAFETY: our own unreaped child.
             unsafe { libc::kill(pid, libc::SIGKILL) };
-            self.children.insert(id, Child { pid, error: None });
+            self.children.insert(id, Child { pid, error: None, covers: None });
             return failed(self, Step::Fork, e);
         }
         // SAFETY: just made, ours.
         let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as RawFd) };
         drop(error_w);
         drop(fds);
-        self.children.insert(id, Child { pid, error: Some(error_r) });
+        self.children.insert(id, Child { pid, error: Some(error_r), covers: exec.covers });
         let started = Msg::Started { id, pid: pid as u32 };
         let _ = self.say(&started, &[pidfd.as_fd()]);
     }
@@ -2117,7 +2155,7 @@ impl Kept {
     fn failure(&mut self, id: u64) {
         let Some(c) = self.children.get_mut(&id) else { return };
         let Some(fd) = c.error.take() else { return };
-        let mut b = [0u8; SKIP_RECORD + 5];
+        let mut b = [0u8; SKIP_RECORD + 10];
         // SAFETY: a buffer of its size for the call.
         let n = unsafe { libc::read(fd.as_raw_fd(), b.as_mut_ptr().cast(), b.len()) };
         let mut rest = match n {
@@ -2131,10 +2169,19 @@ impl Kept {
             rest = &rest[len..];
             again = rest.is_empty();
         }
-        if rest.len() == 5 {
+        // (a failure: its step and errno — and, its mounts', which of them, said by its path)
+        if rest.len() == 5 || rest.len() == 10 {
             let step = channel::Step::from_code(rest[0]).unwrap_or(Step::Exec);
             let errno = i32::from_le_bytes([rest[1], rest[2], rest[3], rest[4]]);
-            let _ = self.say(&Msg::Failed { id, errno, step }, &[]);
+            let place = rest.get(5..10).and_then(|p| {
+                Some((CoverAt::from_code(p[0])?, u32::from_le_bytes([p[1], p[2], p[3], p[4]])))
+            });
+            let covers = self.children.get(&id).and_then(|c| c.covers.as_ref());
+            let at = match (place, covers) {
+                (Some((list, i)), Some(c)) => c.path_at(list, i).to_vec(),
+                _ => Vec::new(),
+            };
+            let _ = self.say(&Msg::Failed { id, errno, step, at }, &[]);
         }
         if again && let Some(c) = self.children.get_mut(&id) {
             c.error = Some(fd);
@@ -2331,6 +2378,39 @@ fn own_usage() -> (u64, u64) {
     (kb("Rss:"), kb("Pss:"))
 }
 
+/// `trust::visible_line` of `bytes` (read as `String::from_utf8_lossy` does) given to `out` piece by piece,
+/// allocating nothing — a run's child's words after its fork.
+fn spell_line(bytes: &[u8], mut out: impl FnMut(&[u8])) {
+    for chunk in bytes.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            match crate::trust::line_char(c) {
+                crate::trust::LineChar::Itself => out(c.encode_utf8(&mut [0; 4]).as_bytes()),
+                crate::trust::LineChar::Break => out("¶".as_bytes()),
+                crate::trust::LineChar::Spelled => {
+                    // (`\u{` its digits in hex, right to left, `}`: ten bytes at most)
+                    let mut b = [0u8; 10];
+                    let (mut n, mut i) = (c as u32, b.len() - 1);
+                    b[i] = b'}';
+                    loop {
+                        i -= 1;
+                        b[i] = b"0123456789abcdef"[(n % 16) as usize];
+                        n /= 16;
+                        if n == 0 {
+                            break;
+                        }
+                    }
+                    i -= 3;
+                    b[i..i + 3].copy_from_slice(b"\\u{");
+                    out(&b[i..]);
+                }
+            }
+        }
+        if !chunk.invalid().is_empty() {
+            out("\u{FFFD}".as_bytes());
+        }
+    }
+}
+
 /// A run's child, after the keeper's fork: its channel closed, the files named like keys hidden in a
 /// mount namespace of its own where it's asked to (`cover`, 7d), dumpable again (finding 1: tarae reads a
 /// served run's memory through `/proc/<tid>/mem`, which a non-dumpable process refuses without a namespace of
@@ -2348,9 +2428,20 @@ fn own_usage() -> (u64, u64) {
 fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: RawFd) -> ! {
     #[cfg(test)]
     crate::allocs::NO_ALLOC.store(true, std::sync::atomic::Ordering::Relaxed);
-    let fail = |step: Step, errno: i32| -> ! {
-        let mut b = [step.code(); 5];
-        b[1..].copy_from_slice(&errno.to_le_bytes());
+    // (a failure: its step and errno on the failure pipe, in one write; and where its mounts failed — which list and
+    // the entry's place in it, `CoverAt` — after them, the entry's path on its own line too)
+    let fail_at = |step: Step, errno: i32, place: Option<(CoverAt, u32, &[u8])>| -> ! {
+        let mut b = [step.code(); 10];
+        b[1..5].copy_from_slice(&errno.to_le_bytes());
+        let len = match place {
+            Some((list, i, _)) => {
+                b[5] = list as u8;
+                b[6..].copy_from_slice(&i.to_le_bytes());
+                10
+            }
+            None => 5,
+        };
+        let path = place.map_or(&[][..], |(_, _, p)| p);
         // (the errno's digits, right to left, in a buffer of the stack's)
         let mut digits = [0u8; 12];
         let (mut n, mut at) = (errno.unsigned_abs(), digits.len());
@@ -2362,22 +2453,30 @@ fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: R
                 break;
             }
         }
-        let parts: [&[u8]; 4] = [
+        let parts: [&[u8]; 5] = [
             "tarae's sandbox couldn't start it — ".as_bytes(),
             step.said().as_bytes(),
             b": errno ",
             &digits[at..],
+            if path.is_empty() { &[][..] } else { &b" at "[..] },
         ];
-        // SAFETY: writes of buffers we own, then the end of this process.
-        unsafe {
-            libc::write(error, b.as_ptr().cast(), b.len());
-            for p in parts {
-                libc::write(2, p.as_ptr().cast(), p.len());
-            }
-            libc::write(2, b"\n".as_ptr().cast(), 1);
-            libc::_exit(127)
+        // SAFETY: a write of a buffer we own.
+        let say = |p: &[u8]| unsafe {
+            libc::write(2, p.as_ptr().cast(), p.len());
+        };
+        // SAFETY: a write of a buffer we own.
+        unsafe { libc::write(error, b.as_ptr().cast(), len) };
+        for p in parts {
+            say(p);
         }
+        // (a project's file name on tarae's line, spelled as `trust::visible_line` does: a newline in it can't
+        // start a line of its own)
+        spell_line(path, say);
+        say(b"\n");
+        // SAFETY: the end of this process.
+        unsafe { libc::_exit(127) }
     };
+    let fail = |step: Step, errno: i32| -> ! { fail_at(step, errno, None) };
     let (ruleset, stdin, stdout, stderr) = (&fds[0], &fds[1], &fds[2], &fds[3]);
     // SAFETY: plain calls on this process and descriptors it holds.
     unsafe {
@@ -2409,8 +2508,11 @@ fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: R
         // says why it failed)
         if let Some(c) = &exec.covers {
             let mut left = SkipRecord::new();
-            if let Err(e) = cover(c, &mut left) {
-                fail(Step::Covers, e);
+            let mut at = (CoverAt::Namespace, 0);
+            if let Err(e) = cover(c, &mut left, &mut at) {
+                let path = c.path_at(at.0, at.1);
+                let named = if path.is_empty() { at.0.said() } else { path };
+                fail_at(Step::Covers, e, Some((at.0, at.1, named)));
             }
             // (what it left of the keys outside the project, said before its exec — none left said too, so tarae
             // knows; `Kept::failure` reads it)
@@ -2591,6 +2693,68 @@ struct Covering {
     gone_in_the_window: Option<CString>,
 }
 
+/// Which of a run's child's mounts failed (`cover`): which list, the entry's place in it beside it. Sent after a
+/// `Step::Covers` failure's step and errno, as its code (`as u8`); the keeper says the entry's path
+/// (`Msg::Failed.at`), and the child on its own line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CoverAt {
+    /// Its own user and mount namespace, its id maps, its capabilities dropped: no entry.
+    Namespace,
+    Pin,
+    Seal,
+    /// A strict key's cover — the project's keys and the kept places (`Covering.keys`).
+    Key,
+    LoosePin,
+    Loose,
+    ShutFile,
+    ShutFolder,
+}
+
+impl CoverAt {
+    const ALL: [CoverAt; 8] = [
+        CoverAt::Namespace,
+        CoverAt::Pin,
+        CoverAt::Seal,
+        CoverAt::Key,
+        CoverAt::LoosePin,
+        CoverAt::Loose,
+        CoverAt::ShutFile,
+        CoverAt::ShutFolder,
+    ];
+
+    fn from_code(code: u8) -> Option<CoverAt> {
+        CoverAt::ALL.get(usize::from(code)).copied()
+    }
+
+    /// What a refusal says where it names no path (`Covering::path_at`): a key outside the project, or a folder on
+    /// its way — the report only counts those. Empty: the entry's path is said instead, or there's none.
+    fn said(self) -> &'static [u8] {
+        match self {
+            CoverAt::Loose => b"a file named like a key outside the project",
+            CoverAt::LoosePin => b"a folder on the way to a file named like a key outside the project",
+            _ => b"",
+        }
+    }
+}
+
+impl Covering {
+    /// The path of entry `i` of list `at`, where a refusal may name it — the project's entries, the kept places and
+    /// tarae's own shut file and folder, which the report names or could. Empty: none — its namespace, a place past
+    /// the list, or a key outside the project and the folders on its way, which the report only counts (`CoverAt::
+    /// said` says those). Allocates nothing: a run's child says it (`child`).
+    fn path_at(&self, at: CoverAt, i: u32) -> &[u8] {
+        let list = match at {
+            CoverAt::Namespace | CoverAt::LoosePin | CoverAt::Loose => return &[],
+            CoverAt::Pin => &self.pins,
+            CoverAt::Seal => &self.seals,
+            CoverAt::Key => &self.keys,
+            CoverAt::ShutFile => return self.shut.as_ref().map_or(&[][..], |s| s.0.as_bytes()),
+            CoverAt::ShutFolder => return self.shut_dir.as_ref().map_or(&[][..], |s| s.0.as_bytes()),
+        };
+        list.get(i as usize).map_or(&[][..], |e| e.0.as_bytes())
+    }
+}
+
 /// Test builds: the file of the two-deep test's window case — in the scratch folder its run's project is in
 /// (`tarae-sb-keys-two-deep-<pid>-<n>/project`, `scratch::Scratch`), at `granted/a/b/gone-in-the-window.pem`, a real path; none for any other run.
 #[cfg(test)]
@@ -2743,9 +2907,11 @@ unsafe fn seal(path: &std::ffi::CStr, dev: u64, ino: u64, read_only: bool) -> Re
 ///
 /// # Safety
 /// A run's child's: raw calls on what `c` holds.
-unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
+unsafe fn cover(c: &Covering, left: &mut SkipRecord, at: &mut (CoverAt, u32)) -> Result<(), i32> {
     // SAFETY: raw calls on this process, `c`'s strings and buffers on the stack; each descriptor closed.
     unsafe {
+        // (where it is, kept as it goes: a failure says that entry — `CoverAt`)
+        *at = (CoverAt::Namespace, 0);
         if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
             return Err(errno());
         }
@@ -2772,16 +2938,19 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
         // (B9: each protected entry bound read-only over itself — a copy of its own mount at it, its whole tree, so
         // the project around it is one rule; first, so a key inside one is covered in what the run sees. Before
         // them the folders on the way, each bound over itself, outermost first: they can't be moved away with one)
-        for (path, dev, ino) in &c.pins {
+        for (i, (path, dev, ino)) in c.pins.iter().enumerate() {
+            *at = (CoverAt::Pin, i as u32);
             seal(path, *dev, *ino, false)?;
         }
-        for (path, dev, ino) in &c.seals {
+        for (i, (path, dev, ino)) in c.seals.iter().enumerate() {
+            *at = (CoverAt::Seal, i as u32);
             seal(path, *dev, *ino, true)?;
         }
         // (the folders on the way to the keys outside the project, each bound over itself as `pins` are — where every
         // program writes: one gone or swapped since the walk is left, as a loose key is, and so is what it held, as
         // that key's own check below finds — its path through what's there now isn't the file the walk found)
-        for (path, dev, ino) in &c.loose_pins {
+        for (i, (path, dev, ino)) in c.loose_pins.iter().enumerate() {
+            *at = (CoverAt::LoosePin, i as u32);
             match seal(path, *dev, *ino, false) {
                 Ok(()) | Err(libc::ENOENT | libc::ENOTDIR | libc::ELOOP | libc::ESTALE) => {}
                 Err(e) => return Err(e),
@@ -2790,9 +2959,11 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
         // (the keys outside the project, `loose` — D-i: where every program writes, `/tmp`: one gone since the walk,
         // or another file at its name now, is left — a key made since, found by the next run's walk; the run starts,
         // and `left` says which)
-        let all =
-            c.keys.iter().map(|k| (k, None)).chain(c.loose.iter().enumerate().map(|(at, k)| (k, Some(at))));
-        for ((path, dev, ino), loose) in all {
+        let all = (c.keys.iter().enumerate().map(|(i, k)| (k, None, i)))
+            .chain(c.loose.iter().enumerate().map(|(at, k)| (k, Some(at), at)));
+        for ((path, dev, ino), loose, i) in all {
+            let this = (if loose.is_some() { CoverAt::Loose } else { CoverAt::Key }, i as u32);
+            *at = this;
             let mut how: libc::open_how = std::mem::zeroed();
             how.flags = (libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64;
             how.resolve = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
@@ -2836,6 +3007,7 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
             // (the shut file — or folder — through no link, and only the one tarae checked: swapped since, it fails as a
             // key does)
             let flags = OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | libc::AT_SYMLINK_NOFOLLOW as libc::c_uint;
+            *at = (if folder { CoverAt::ShutFolder } else { CoverAt::ShutFile }, 0);
             let Some((shut_at, shut_dev, shut_ino)) = (if folder { &c.shut_dir } else { &c.shut }) else {
                 libc::close(key);
                 return Err(libc::EINVAL);
@@ -2874,6 +3046,7 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
                 libc::close(key);
                 return Err(e);
             }
+            *at = this;
             let done = libc::syscall(
                 libc::SYS_move_mount,
                 tree,
@@ -2893,6 +3066,7 @@ unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
                 (false, _) => return Err(e),
             }
         }
+        *at = (CoverAt::Namespace, 0);
         capabilities_dropped(c.last_cap)
     }
 }
@@ -3160,6 +3334,39 @@ mod tests {
         }
     }
 
+    /// A refusal's path — a project's file name on the run's child's line (`spell_line`) and in tarae's words of it
+    /// (`heard`) — is spelled as a card's line is (`trust::visible_line`): a key-named file with a newline in its
+    /// name can't start a line of its own, nor a control or bidi character pass for something else. The child's
+    /// allocates nothing (it runs after the fork).
+    #[test]
+    fn a_refusals_path_with_a_newline_in_it_stays_on_its_line() {
+        let names: [&[u8]; 6] = [
+            b"/p/.env",
+            b"/p/.env\ntarae's sandbox: nothing refused",
+            b"/p/a\tb\r.pem",
+            "/p/\u{202e}vne.¶ \u{2028}x".as_bytes(),
+            b"/p/\xff\xfe.env\x7f",
+            b"",
+        ];
+        for name in names {
+            let (mut buf, mut len) = ([0u8; 256], 0);
+            let made = crate::allocs::count();
+            spell_line(name, |p| {
+                buf[len..len + p.len()].copy_from_slice(p);
+                len += p.len();
+            });
+            assert_eq!(crate::allocs::count(), made, "allocated nothing: {name:?}");
+            let said = crate::trust::visible_line(&String::from_utf8_lossy(name));
+            assert_eq!(String::from_utf8_lossy(&buf[..len]), said, "{name:?}");
+            assert!(!said.contains(['\n', '\r', '\u{202e}', '\u{2028}']), "{said}");
+        }
+        assert_eq!(
+            crate::trust::visible_line("/p/.env\nx\ty"),
+            "/p/.env¶x\\u{9}y",
+            "a newline shown as ¶, a tab spelled"
+        );
+    }
+
     /// What a run's child left of its loose keys reaches tarae as it wrote it, on the pipe its failure takes: the
     /// record read whole — the failure after it in the same read said too, in that order; the record alone, the pipe
     /// kept for what comes next (the failure, or its end); past `SKIPPED_MAX`, `more`. A failure alone reads as
@@ -3186,7 +3393,7 @@ mod tests {
         let failed = [Step::Landlock.code(), 13, 0, 0, 0];
         // A record, then a failure, both there when it reads
         let (r, w) = io::pipe().unwrap();
-        k.children.insert(1, Child { pid: 0, error: Some(r.into()) });
+        k.children.insert(1, Child { pid: 0, error: Some(r.into()), covers: None });
         let mut left = SkipRecord::new();
         left.push(2, true);
         left.push(0, false);
@@ -3194,11 +3401,11 @@ mod tests {
         write(&w, &failed);
         k.failure(1);
         assert_eq!(heard(), Msg::Skipped { id: 1, keys: vec![(2, true), (0, false)], more: false });
-        assert_eq!(heard(), Msg::Failed { id: 1, errno: 13, step: Step::Landlock });
+        assert_eq!(heard(), Msg::Failed { id: 1, errno: 13, step: Step::Landlock, at: Vec::new() });
         assert!(k.children[&1].error.is_none(), "its failure said, the pipe is done");
         // The record alone (none left: said so), the pipe kept; its end then closes it
         let (r, w) = io::pipe().unwrap();
-        k.children.insert(2, Child { pid: 0, error: Some(r.into()) });
+        k.children.insert(2, Child { pid: 0, error: Some(r.into()), covers: None });
         write(&w, SkipRecord::new().record());
         k.failure(2);
         assert_eq!(heard(), Msg::Skipped { id: 2, keys: Vec::new(), more: false });
@@ -3221,11 +3428,32 @@ mod tests {
         );
         // A failure alone, as before
         let (r, w) = io::pipe().unwrap();
-        k.children.insert(4, Child { pid: 0, error: Some(r.into()) });
+        k.children.insert(4, Child { pid: 0, error: Some(r.into()), covers: None });
         write(&w, &failed);
         k.failure(4);
-        assert_eq!(heard(), Msg::Failed { id: 4, errno: 13, step: Step::Landlock });
+        assert_eq!(heard(), Msg::Failed { id: 4, errno: 13, step: Step::Landlock, at: Vec::new() });
         assert_eq!(skipped_in(4, &failed), None, "a failure isn't a record");
+        // A failure at its mounts, with where: said by that entry's path (a seal's, here)
+        let (r, w) = io::pipe().unwrap();
+        let covers = Covering {
+            shut: None,
+            shut_dir: None,
+            keys: Vec::new(),
+            loose: Vec::new(),
+            seals: vec![(CString::new("/p/one").unwrap(), 1, 2), (CString::new("/p/.git").unwrap(), 1, 3)],
+            pins: Vec::new(),
+            loose_pins: Vec::new(),
+            uid_map: CString::default(),
+            gid_map: CString::default(),
+            last_cap: 0,
+            gone_in_the_window: None,
+        };
+        k.children.insert(5, Child { pid: 0, error: Some(r.into()), covers: Some(covers) });
+        write(&w, &[Step::Covers.code(), 2, 0, 0, 0, CoverAt::Seal as u8, 1, 0, 0, 0]);
+        k.failure(5);
+        let at = b"/p/.git".to_vec();
+        assert_eq!(heard(), Msg::Failed { id: 5, errno: 2, step: Step::Covers, at });
+        assert_eq!(skipped_in(5, &[Step::Covers.code(), 2, 0, 0, 0, 2, 1, 0, 0, 0]), None);
     }
 
     /// The namespaces this system gives a keeper (`tier::get`): every test's keeper is born in them, so each
@@ -3981,10 +4209,17 @@ mod tests {
     /// gone and its descriptors let go by the next test, not at the test binary's end (#643: 91 of them, ~640
     /// descriptors, past a Raspberry Pi's 1024). In a process of its own, one test after the other, each asking and
     /// returning — the first only to open what's opened once for the process (the proxy, the log) — then a third
-    /// finds no keeper there and every descriptor the second had back. Each count is taken once the ends before it
-    /// are done on every thread that carries one (`ends_carried`) — the test's end waits for the keeper gone, not
-    /// for its threads and the proxy to let go of what they hold (#655: one descriptor more, under a whole run's
-    /// load).
+    /// finds no keeper there and every descriptor the second had back. Each count waits on its condition, the shared
+    /// patience at most (`fds_once_let_go`): the keepers of the scenes before it let go — no `Arc` held, none of its
+    /// descriptors open, its port neither — and the third's for the count back to the second's. The test's end
+    /// waits for the keeper gone, not for its threads to let go of it, and a thread `born_lo` started may not have
+    /// run once by then (#667: under a whole run's load, never scheduled through the scene's end and the next one's
+    /// start — still bearing its creator's name, which a wait by the threads' names missed). Back within the
+    /// patience: they go with the test, not at the binary's end. A count past the one before says what's open then
+    /// that wasn't, the threads there, and what of each keeper is still held. A keeper held past the patience fails
+    /// it (broken once: with `unlist` out, the first scene's), but its counts compare like with like: what else
+    /// stays open the same in every scene it can't see — the gone keeper's guard is
+    /// `a_gone_keeper_lets_its_descriptors_go_however_it_went`.
     #[test]
     fn a_keeper_a_test_asked_for_ends_with_the_test() {
         let scenes = ["left_scene_1_asks", "left_scene_2_asks", "left_scene_3_looks"];
@@ -3998,45 +4233,100 @@ mod tests {
         let said: Vec<&str> = text.lines().filter_map(|l| l.split_once("scene: ").map(|(_, s)| s)).collect();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(said.len(), 3, "the scenes ran, in their order:\n{text}\n{err}");
-        let fds = |s: &str| s.split("fds=").nth(1).and_then(|n| n.parse::<usize>().ok()).unwrap();
+        let field = |s: &str, name: &str| -> String {
+            s.split(' ').find_map(|w| w.strip_prefix(name)).unwrap_or_default().to_string()
+        };
+        let fds = |s: &str| field(s, "fds=").parse::<usize>().unwrap();
         assert!(said[1].starts_with("asked "), "{text}");
         assert!(said[2].starts_with("keepers=0 "), "the keepers ended with their tests: {text}\n{err}");
-        assert!(!text.contains("still ending: "), "the keepers' ends done on every thread: {text}");
+        assert_eq!(
+            field(said[1], "held="),
+            "-",
+            "the first scene's keeper let go before the second counted: {text}"
+        );
         let (before, after) = (fds(said[1]), fds(said[2]));
-        assert!(after <= before, "its descriptors let go: {before} before it was asked for, {after} after");
-    }
-
-    /// The threads of this process carrying a keeper's end, by name: its reader and its wait (`tarae-keeper`,
-    /// `tarae-kwait` — each holds the keeper, its channel, pidfd and device places, until it ends), one ending it
-    /// (`tarae-kend`), and a session port's accept loop (`tarae-proxy-port`, cut to Linux's 15 bytes: it holds the
-    /// port's listener and its stop until the proxy, hearing `SessionPortGone`, lets the stop go). Waited for until
-    /// none is there, `PATIENCE` at most: those still there then.
-    fn ends_carried() -> Vec<String> {
-        const CARRY: [&str; 4] = ["tarae-keeper", "tarae-kwait", "tarae-kend", "tarae-proxy-por"];
-        let there = || -> Vec<String> {
-            let tasks = std::fs::read_dir("/proc/self/task").unwrap().flatten();
-            let names = tasks.filter_map(|t| std::fs::read_to_string(t.path().join("comm")).ok());
-            names.map(|n| n.trim_end().to_string()).filter(|n| CARRY.contains(&n.as_str())).collect()
-        };
-        let end = Instant::now() + crate::test_results::PATIENCE;
-        loop {
-            let carrying = there();
-            if carrying.is_empty() || Instant::now() >= end {
-                return carrying;
+        // (what's open after that wasn't before, each as `/proc/self/fd` names it, and the threads there then)
+        let mut new: Vec<String> = field(said[2], "open=").split('|').map(str::to_string).collect();
+        for was in field(said[1], "open=").split('|') {
+            if let Some(i) = new.iter().position(|n| n == was) {
+                new.remove(i);
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
+        // (whose: the second scene's keeper still open by its channel, or listed though gone — else another's)
+        let chan = field(said[1], "chan=");
+        let chan_open = new.contains(&chan);
+        assert!(
+            after <= before && field(said[2], "held=") == "-",
+            "its descriptors let go: {before} before it was asked for, {after} after — new: {}; threads: {}; \
+             the second scene's channel {chan} still open: {chan_open}; keepers listed, the gone too: {}; \
+             the scenes' keepers held: {}",
+            new.join(", "),
+            field(said[2], "threads=").replace('|', ", "),
+            field(said[2], "listed="),
+            field(said[2], "held=").replace('|', ", ")
+        );
     }
 
-    /// This process's descriptors, once the keepers' ends before are done (`ends_carried`): `fds=N`, and what
-    /// still carried one past the patience.
-    fn fds_after_the_ends() -> String {
-        let carrying = ends_carried();
-        let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
-        match carrying.is_empty() {
-            true => format!("fds={fds}"),
-            false => format!("still ending: {} fds={fds}", carrying.join(" ")),
-        }
+    /// The second scene's count of descriptors before it asked: the third's waits until it's back to it.
+    static ASKED_BEFORE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+    /// A scene's keeper: its scene, its `Weak`, its descriptors as they were named (`named`: channel, pidfd, device
+    /// places) and its port's inode (0: none) — what's let go of it (`not_let_go`).
+    struct SceneKeeper {
+        scene: u32,
+        weak: std::sync::Weak<Keeper>,
+        fds: Vec<(std::os::fd::RawFd, String, u64, u64)>,
+        port: u64,
+    }
+
+    /// The keepers the scenes asked for, in their order.
+    static SCENE_KEEPERS: Mutex<Vec<SceneKeeper>> = Mutex::new(Vec::new());
+
+    /// This process's descriptors, each as `/proc/self/fd` names it (spaces as `_`).
+    fn open_fds() -> Vec<String> {
+        let fds = std::fs::read_dir("/proc/self/fd").unwrap().flatten();
+        fds.map(|d| {
+            std::fs::read_link(d.path()).map_or("?".into(), |l| l.to_string_lossy().replace(' ', "_"))
+        })
+        .collect()
+    }
+
+    /// The scenes' keepers not let go yet, each `<scene>:arcs=<held>,fds=<open>,port=<open>` — an `Arc` held
+    /// (a thread of its own not run yet among them), one of its descriptors still open, or its port.
+    fn not_let_go() -> Vec<String> {
+        let open = open_fds();
+        let keepers = lock(&SCENE_KEEPERS);
+        let held = keepers.iter().filter_map(|k| {
+            let arcs = k.weak.strong_count();
+            let fds = k.fds.iter().filter(|f| named(f.0) == **f).count();
+            let port = k.port != 0 && open.contains(&format!("socket:[{}]", k.port));
+            (arcs > 0 || fds > 0 || port).then(|| format!("{}:arcs={arcs},fds={fds},port={port}", k.scene))
+        });
+        held.collect()
+    }
+
+    /// This process's threads, by name (spaces as `_`: a field of a scene's line).
+    fn threads() -> Vec<String> {
+        let tasks = std::fs::read_dir("/proc/self/task").unwrap().flatten();
+        let names = tasks.filter_map(|t| std::fs::read_to_string(t.path().join("comm")).ok());
+        names.map(|n| n.trim_end().replace(' ', "_")).collect()
+    }
+
+    /// This process's descriptors once the scenes' keepers before are let go (`not_let_go`) and they're `at_most`
+    /// or fewer, the shared patience at most: `fds=N`, each as `/proc/self/fd` names it (`open=`), the threads there
+    /// (`threads=`), and what of the keepers was still held then (`held=`, `-`: nothing).
+    fn fds_once_let_go(at_most: usize) -> String {
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        let held = loop {
+            let held = not_let_go();
+            if (held.is_empty() && open_fds().len() <= at_most) || Instant::now() >= end {
+                break held;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let open = open_fds();
+        let held = if held.is_empty() { "-".to_string() } else { held.join("|") };
+        format!("fds={} open={} threads={} held={held}", open.len(), open.join("|"), threads().join("|"))
     }
 
     /// `a_keeper_a_test_asked_for_ends_with_the_test`'s tests: a session's keeper asked for, never ended — and
@@ -4045,10 +4335,20 @@ mod tests {
         if std::env::var_os(SCENE).is_none() {
             return;
         }
-        let fds = fds_after_the_ends();
+        // (the first scene's keeper let go before the second counts: like with like by its condition, not by luck)
+        let fds = fds_once_let_go(usize::MAX);
+        let count = fds.split(' ').find_map(|w| w.strip_prefix("fds=")).and_then(|n| n.parse().ok());
+        ASKED_BEFORE.store(count.unwrap_or(usize::MAX), std::sync::atomic::Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!("tarae-keeper-left-{}-{n}", std::process::id()));
         let k = ready(&root, Some("a key"), ns()).unwrap();
-        println!("scene: asked pid={} {fds}", k.pid);
+        let fds_of = [k.chan.as_raw_fd(), k.pidfd.as_raw_fd()].into_iter();
+        let fds_of = fds_of.chain(k.devices.iter().map(|(_, f)| f.as_raw_fd())).map(named).collect();
+        let weak = Arc::downgrade(&k);
+        lock(&SCENE_KEEPERS).push(SceneKeeper { scene: n, weak, fds: fds_of, port: k.port_ino });
+        // (its channel as `/proc/self/fd` names it: the last scene's failure says whether it's among the new)
+        let chan = std::fs::read_link(format!("/proc/self/fd/{}", k.chan.as_raw_fd()))
+            .map_or("?".into(), |l| l.to_string_lossy().replace(' ', "_"));
+        println!("scene: asked pid={} chan={chan} {fds}", k.pid);
     }
 
     #[test]
@@ -4070,8 +4370,97 @@ mod tests {
         if std::env::var_os(SCENE).is_none() {
             return;
         }
-        let there = of(None).iter().filter(|k| !k.is_gone()).count();
-        println!("scene: keepers={there} {}", fds_after_the_ends());
+        // (their `Arc`s let go before the count: only `KEEPERS`' own are left)
+        let (there, listed) = {
+            let listed = of(None);
+            (listed.iter().filter(|k| !k.is_gone()).count(), listed.len())
+        };
+        let before = ASKED_BEFORE.load(std::sync::atomic::Ordering::SeqCst);
+        println!("scene: keepers={there} listed={listed} {}", fds_once_let_go(before));
+    }
+
+    /// A session's keeper that's gone lets its descriptors go however it went — asked to end (`end`), died by itself
+    /// (KILL from outside, not asked), killed at the deadline (stopped: its `End` unheard until `ended_by`'s KILL) —
+    /// once nothing of ours holds it: off the list as it goes (`unlist`), and its channel, pidfd and device places
+    /// closed with its last `Arc`. Each looked at before the next keeper is asked for, whose `ready` would prune the
+    /// list anyway. In a process of its own (the binary run again on `gone_scene_each_way`): what the rest of the
+    /// test binary opens isn't in its table, and a death here is no other test's.
+    #[test]
+    fn a_gone_keeper_lets_its_descriptors_go_however_it_went() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .arg("sandbox::keeper::tests::gone_scene_each_way")
+            .env(SCENE, "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let said: Vec<&str> = text.lines().filter_map(|l| l.split_once("scene: ").map(|(_, s)| s)).collect();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(said, ["asked: let go", "died: let go", "killed: let go"], "{text}\n{err}");
+    }
+
+    /// A descriptor of this process as it names a file now: its number, what `/proc/self/fd` says, and the file's
+    /// device and inode — a closed one names nothing (`""`, 0, 0).
+    fn named(fd: std::os::fd::RawFd) -> (std::os::fd::RawFd, String, u64, u64) {
+        use std::os::unix::fs::MetadataExt;
+        let at = format!("/proc/self/fd/{fd}");
+        let link =
+            std::fs::read_link(&at).map_or_else(|_| String::new(), |l| l.to_string_lossy().into_owned());
+        let (dev, ino) = std::fs::metadata(&at).map_or((0, 0), |m| (m.dev(), m.ino()));
+        (fd, link, dev, ino)
+    }
+
+    /// `a_gone_keeper_lets_its_descriptors_go_however_it_went`'s: each way, a keeper of its own root (a death is
+    /// counted by root, D11), its descriptors named as it was born, then gone, then looked for.
+    #[test]
+    #[ignore = "run by a_gone_keeper_lets_its_descriptors_go_however_it_went, in a process of its own"]
+    fn gone_scene_each_way() {
+        if std::env::var_os(SCENE).is_none() {
+            return;
+        }
+        // SAFETY: a signal to the keeper this scene made, by its pidfd (no other process can be it).
+        let signal = |k: &Arc<Keeper>, sig: i32| unsafe {
+            libc::syscall(libc::SYS_pidfd_send_signal, k.pidfd.as_raw_fd(), sig, 0, 0)
+        };
+        for way in ["asked", "died", "killed"] {
+            let root = std::env::temp_dir().join(format!("tarae-keeper-gone-{}-{way}", std::process::id()));
+            let k = ready(&root, Some("a key"), ns()).unwrap();
+            let fds = [k.chan.as_raw_fd(), k.pidfd.as_raw_fd()].into_iter();
+            let was: Vec<_> = fds.chain(k.devices.iter().map(|(_, f)| f.as_raw_fd())).map(named).collect();
+            let weak = Arc::downgrade(&k);
+            match way {
+                "asked" => k.end(),
+                "died" => {
+                    signal(&k, libc::SIGKILL);
+                }
+                _ => {
+                    signal(&k, libc::SIGSTOP);
+                    end_together(std::slice::from_ref(&k));
+                }
+            }
+            drop(k);
+            // (all three waited for together, the shared patience at most: below Linux 6.9 every pidfd is one
+            // inode, so a pidfd opened meanwhile into a number its own had looks like its own for a moment)
+            let look = || {
+                let held: Vec<String> =
+                    was.iter().filter(|w| named(w.0) == **w).map(|w| w.1.clone()).collect();
+                (weak.strong_count(), held, of(Some(&root)).len())
+            };
+            let end = Instant::now() + crate::test_results::PATIENCE;
+            let (arcs, held, listed) = loop {
+                let (arcs, held, listed) = look();
+                if (arcs == 0 && held.is_empty() && listed == 0) || Instant::now() >= end {
+                    break (arcs, held, listed);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            match arcs == 0 && held.is_empty() && listed == 0 {
+                true => println!("scene: {way}: let go"),
+                false => {
+                    println!("scene: {way}: held — {arcs} of its Arcs, listed {listed}, descriptors {held:?}")
+                }
+            }
+        }
     }
 
     /// `:procs` names each session's keeper (CLAUDE.md: a new kind of child process gets a line there).
@@ -8805,7 +9194,10 @@ mod tests {
     /// address) is refused, `EADDRINUSE`, said by its address; `[::1]` beside its `127.0.0.1` isn't. A UDP bind to
     /// port 0 isn't given that port either (`supervisor::alone`: the kernel would). A TCP socket bound beside the
     /// holder's before either listened is refused at its listen, the holder's listening first. A run of the holder's
-    /// own session makes the same binds — the control: the kernel takes them — but the port picked: never a taken one.
+    /// own session makes the same binds — the control: the kernel takes them — but the port picked: never a taken one;
+    /// once the other session's sockets there are gone (one lives on while a copy forked meanwhile does: frictions33).
+    /// K4 own as root, 1 run in 3: the control's `[::]` and `[::1]` UDP binds refused as joining the other session's
+    /// `[::1]` socket, still there.
     #[test]
     fn a_bind_onto_another_sessions_port_is_refused() {
         let test = "a_bind_onto_another_sessions_port_is_refused";
@@ -8846,6 +9238,45 @@ mod tests {
         io::Read::read_to_end(&mut late.spawned.stderr.take().unwrap(), &mut Vec::new()).unwrap();
         crate::spawn::wait(late.spawned.pid).unwrap();
         let refused_mine: Vec<super::super::Denial> = refused.try_iter().map(|r| r.denial).collect();
+        // (the other session's run ended, but what it bound — its `[::1]` ones, which don't overlap the holder's —
+        // lives on while a copy does: tarae's own (`pidfd_getfd`'s, close-on-exec), held by a process another thread
+        // of tarae's forked meanwhile until its exec (frictions33). A bind of the holder's session at `[::]` or
+        // `[::1]` would join it, rightly refused as another session's. So the control waits for that session's
+        // sockets on those ports to go, as the supervisor's own check sees them, the shared patience at most)
+        let ports: std::collections::HashMap<&str, u16> = held
+            .split_whitespace()
+            .filter_map(|w| w.split_once('=').and_then(|(k, v)| Some((k, v.parse().ok()?))))
+            .collect();
+        // (each protocol whose port has the other session's socket there)
+        let others_there = || -> Vec<String> {
+            let there = [(true, "tcp"), (false, "udp")].into_iter().filter(|&(tcp, proto)| {
+                let Some(&port) = ports.get(proto) else { return false };
+                let at = (std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)), false);
+                let listed = || super::super::owners::diag::bound_on(tcp, port);
+                let on =
+                    super::super::owners::OWNERS
+                        .another_on(at, (tcp, theirs.policy.session), listed, |_| Ok(String::new()));
+                on.unwrap_or(true)
+            });
+            there.map(|(_, proto)| format!("{proto} [::]:{}", ports[proto])).collect()
+        };
+        let (began, first) = (Instant::now(), others_there());
+        let by = began + crate::test_results::PATIENCE;
+        let mut left = first.clone();
+        while !left.is_empty() && Instant::now() < by {
+            std::thread::sleep(Duration::from_millis(10));
+            left = others_there();
+        }
+        // (said on the test's line: a run that never waited proves nothing about the wait)
+        let waited = match (first.is_empty(), left.is_empty()) {
+            (true, _) => "the control waited for nothing: no other session's socket on its ports".to_string(),
+            (false, gone) => format!(
+                "the control waited {} for the other session's sockets on {} to go: {}",
+                crate::term::run_duration(began.elapsed()),
+                first.join(", "),
+                if gone { "gone".to_string() } else { format!("still there: {}", left.join(", ")) }
+            ),
+        };
         let (started, refused) = theirs.helper_told("binds", &[("TARAE_TO", &held)]);
         let by_theirs = helper_said(started);
         let refused_theirs: Vec<super::super::Denial> = refused.try_iter().map(|r| r.denial).collect();
@@ -8859,7 +9290,7 @@ mod tests {
         let said = |d: &[super::super::Denial]| d.iter().map(|d| d.reported()).collect::<Vec<String>>();
         let line = format!(
             "tier {tier}: held {held}\n  another session's: {bound_late}, then the holder {listened}; {by_mine}\n  \
-             refused: {:#?}\n  its own session's: {by_theirs}\n  refused: {:#?}\n",
+             refused: {:#?}\n  {waited}\n  its own session's: {by_theirs}\n  refused: {:#?}\n",
             said(&refused_mine),
             said(&refused_theirs)
         );

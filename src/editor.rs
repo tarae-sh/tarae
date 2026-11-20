@@ -12814,8 +12814,8 @@ mod tests {
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltouch them<ret>");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        assert!(made.exists(), "the project is writable");
-        assert!(!marker.exists(), "outside it isn't");
+        assert!(made.exists(), "the project is writable: {}", tool_answer(&log));
+        assert!(!marker.exists(), "outside it isn't: {}", tool_answer(&log));
         let answer = tool_answer(&log).replace("\\n", " ");
         let answer = answer.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(answer.contains("Permission denied") && answer.contains("In tarae's sandbox"), "{answer}");
