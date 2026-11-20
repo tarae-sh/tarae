@@ -3540,6 +3540,41 @@ mod tests {
         );
     }
 
+    /// A folder tarae's own `mkdir` made that fails the check is never recorded, so it's never taken later (#667: the
+    /// record follows the check). In a setgid instance folder the fresh shut folder inherits the bit (mode 02000) and is
+    /// refused for its mode; its mode set to 0 after, the next confine finds it made but unrecorded: still refused.
+    #[test]
+    fn a_shut_folder_refused_as_it_was_made_is_never_taken() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let held = crate::scratch::Scratch::new("shut-setgid");
+        let instance = held.to_path_buf().join("1-0");
+        let (run, at) = (instance.join("run-1"), instance.join(super::super::SHUT_FOLDER));
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::set_permissions(&instance, std::fs::Permissions::from_mode(0o2700)).unwrap();
+        let take = || Covers::default().shut_folder(&run);
+        let first = take();
+        let mode = std::fs::symlink_metadata(&at).map(|m| m.mode() & 0o7777);
+        let second = (|| {
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o000))?;
+            Ok::<_, io::Error>(take())
+        })();
+        // (by name, its mode back first, so the scratch folder can go)
+        let _ = std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::remove_dir(&at);
+        assert_eq!(
+            mode.ok(),
+            Some(0o2000),
+            "made inheriting the setgid bit (what this test needs of the filesystem)"
+        );
+        let said = |r: &io::Result<()>| r.as_ref().err().map(io::Error::to_string).unwrap_or_default();
+        assert!(said(&first).contains("its mode isn't 0"), "refused as it was made, for its mode: {first:?}");
+        let second = second.expect("its mode set to 0");
+        assert!(
+            said(&second).contains("not the folder tarae made there"),
+            "never recorded, never taken: {second:?}"
+        );
+    }
+
     /// On this machine's filesystem: the shut folder `shut_folder` makes is taken, and by every confine after; with
     /// its mode changed it isn't, until it's back; one in an instance folder made there by anything else isn't. A
     /// restart's new instance folder (made again at its name, as `Instance::make` does a gone tarae's) gets a new
