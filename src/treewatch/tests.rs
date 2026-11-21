@@ -827,6 +827,7 @@ fn the_prefix_drop_drops_and_counts_what_reaches_it() {
     let events = [(root.join("target/debug/x.rs"), CREATED), (out.join("gen.rs"), CREATED)];
     assert_eq!(said(t.step(&events), &root), kinds(&[("target/debug/build/x-1/out/gen.rs", Kind::Created)]));
     assert_eq!(t.unwatched, 1);
+    assert_eq!(t.unwatched_paths, [root.join("target/debug/x.rs")]);
 }
 
 /// The start says no, in words, for a root that's there and isn't a folder — before anything runs.

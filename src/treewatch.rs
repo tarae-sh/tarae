@@ -136,11 +136,13 @@ enum Msg {
 }
 
 /// What a test sees of a running watch: each stream running, by its number (the worker's count of the streams it
-/// started) and its group; the events dropped by prefix (`Tree.unwatched`) and with no stat (`Tree.unkept`).
+/// started) and its group; the events dropped by prefix (`Tree.unwatched`, and their paths) and with no stat
+/// (`Tree.unkept`).
 #[cfg(test)]
 struct Seen {
     streams: Vec<(u64, Group)>,
     unwatched: usize,
+    unwatched_paths: Vec<PathBuf>,
     unkept: usize,
 }
 
@@ -522,6 +524,9 @@ struct Tree {
     /// Tests: the paths checked against the roots and what's left out (`watched`).
     #[cfg(test)]
     checked: std::cell::Cell<usize>,
+    /// Tests: the paths dropped by prefix (`unwatched`), one per dropped event.
+    #[cfg(test)]
+    unwatched_paths: Vec<PathBuf>,
 }
 
 /// A table past this many files after a `keep` change is said in the log, once: a glob that keeps everything
@@ -552,6 +557,8 @@ impl Tree {
             stats: 0,
             #[cfg(test)]
             checked: Default::default(),
+            #[cfg(test)]
+            unwatched_paths: Vec::new(),
         })
     }
 
@@ -762,7 +769,13 @@ impl Tree {
         let mut files: Vec<(PathBuf, u32, bool)> = (files.into_iter())
             .filter_map(|(p, f)| {
                 let unwanted = self.unwanted(&p, f);
-                (unwanted || self.watched(&p)).then_some((p, f, unwanted))
+                if unwanted || self.watched(&p) {
+                    Some((p, f, unwanted))
+                } else {
+                    #[cfg(test)]
+                    self.unwatched_paths.push(p);
+                    None
+                }
             })
             .collect();
         self.unwatched += named - files.len();
@@ -1491,8 +1504,12 @@ mod mac {
                 #[cfg(test)]
                 Ok(Msg::Seen(reply)) => {
                     let running = streams.running.iter().map(|r| (r.number, r.group.clone())).collect();
-                    let seen =
-                        super::Seen { streams: running, unwatched: tree.unwatched, unkept: tree.unkept };
+                    let seen = super::Seen {
+                        streams: running,
+                        unwatched: tree.unwatched,
+                        unwatched_paths: tree.unwatched_paths.clone(),
+                        unkept: tree.unkept,
+                    };
                     let _ = reply.send(seen);
                 }
             }

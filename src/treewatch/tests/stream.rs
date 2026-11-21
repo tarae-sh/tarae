@@ -284,8 +284,11 @@ fn a_left_out_folder_made_after_the_start_says_nothing() {
     let numbers: Vec<u64> = seen.streams.iter().map(|(n, _)| *n).collect();
     eprintln!("TREEWATCH 1a: streams {numbers:?}, {} events dropped by prefix", seen.unwatched);
     assert_eq!(numbers, [1], "the one stream runs on");
-    // (the folder's own creation may be named: dropped by prefix, one)
-    assert!(seen.unwatched <= 1, "nothing below it reached the worker ({})", seen.unwatched);
+    // (the folder itself may be named, and under load in more than one burst — each dropped by prefix and counted;
+    // what's below it is what must never reach the worker)
+    let dropped_below: Vec<_> =
+        seen.unwatched_paths.iter().filter(|p| p.starts_with(&target) && **p != target).collect();
+    assert!(dropped_below.is_empty(), "nothing below it reached the worker: {dropped_below:#?}");
 }
 
 /// FSEvents' flags for a file's events, as `Tree::unwanted` reads them: a file made, written, renamed and removed is
