@@ -239,6 +239,22 @@ fn registries() -> Option<&'static Registries> {
         .as_ref()
 }
 
+/// How pip is given its registry's certificate — each way the report names (`sandbox::Outranked`), tested: its own
+/// `--cert` alone (outranked by the run's CA variables: it fails, and the report says why), `llm.sandbox-ca` (every
+/// run's), its `--cert` with the two variables requests reads unset for that one command, and `cert` in its own config
+/// file with the first `n` of `OUTRANKING` unset for it. The other tools: `Own`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Given {
+    Own,
+    SandboxCa,
+    Unset,
+    Conf(usize),
+}
+
+/// The run's CA variables that outrank pip's own certificate: requests' two over its `--cert`, and pip's `PIP_CERT`
+/// over its config file's `cert` too.
+const OUTRANKING: [&str; 3] = ["REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "PIP_CERT"];
+
 /// One tool's run: its program, arguments and environment, run in its project; what the registry must have
 /// served it and what it must have made there.
 struct Asked {
@@ -251,7 +267,7 @@ struct Asked {
 
 /// `tool`'s project at `root` (made here, outside the sandbox: its build files are protected names), and the run
 /// that fetches its package — trusting the HTTPS registry by the tool's own setting, its homes in the project.
-fn project(tool: &str, program: PathBuf, root: &Path, base: &Path) -> Asked {
+fn project(tool: &str, program: PathBuf, root: &Path, base: &Path, given: Given) -> Asked {
     std::fs::create_dir_all(root).unwrap();
     if TLS.contains(&tool) {
         // (the trust in the project, where a run reads it)
@@ -309,26 +325,25 @@ fn project(tool: &str, program: PathBuf, root: &Path, base: &Path) -> Asked {
             "GET /npm/tarballs/m5pad-1.0.0.tgz",
             "npm/node_modules/m5pad/package.json",
         ),
-        "pip" => (
-            args(&[
-                "-m",
-                "pip",
-                "download",
-                "--no-deps",
-                "--no-cache-dir",
-                "--disable-pip-version-check",
-                "-d",
-                &at("pipd"),
-                "--index-url",
-                &format!("https://{h}/pypi/simple"),
-                "--cert",
-                &pem,
-                "m5six",
-            ]),
-            Vec::new(),
-            "GET /pypi/files/m5six-1.0-py3-none-any.whl",
-            "pipd/m5six-1.0-py3-none-any.whl",
-        ),
+        "pip" => {
+            let (pipd, index) = (at("pipd"), format!("https://{h}/pypi/simple"));
+            let mut a =
+                vec!["-m", "pip", "download", "--no-deps", "--no-cache-dir", "--disable-pip-version-check"];
+            a.extend(["-d", &pipd, "--index-url", &index]);
+            // (through `llm.sandbox-ca` no `--cert`: the run's bundle holds it; through its config file, `cert` there —
+            // the test's own file, `PIP_CONFIG_FILE`)
+            let mut env = Vec::new();
+            match given {
+                Given::SandboxCa => {}
+                Given::Conf(_) => {
+                    put(&root.join("pip.conf"), format!("[global]\ncert = {pem}\n"));
+                    env.push(("PIP_CONFIG_FILE", at("pip.conf")));
+                }
+                Given::Own | Given::Unset => a.extend(["--cert", &pem]),
+            }
+            a.push("m5six");
+            (args(&a), env, "GET /pypi/files/m5six-1.0-py3-none-any.whl", "pipd/m5six-1.0-py3-none-any.whl")
+        }
         "go" => {
             put(&root.join("go.mod"), "module m5go\n\ngo 1.19\n");
             (
@@ -377,10 +392,12 @@ fn project(tool: &str, program: PathBuf, root: &Path, base: &Path) -> Asked {
 }
 
 /// `tool` fetches its package as Claude's runs do — the network open, its registry named — by the run's way out,
-/// its proxy URL (the proxy variables, and the packs' lines). Skips
+/// its proxy URL (the proxy variables, and the packs' lines), its certificate `given` as said. On the product's path:
+/// the run's trust bundle made from the system's roots (stand-ins, `mitm_tests`'), every CA variable the packs name
+/// pointing at it, whatever this machine's environment holds (CI's held one, and only pip's run there failed). Skips
 /// itself (said) where its tool, a JDK for the HTTPS registry, Landlock or the supervisor isn't here.
-fn fetches(tool: &str) {
-    let test = format!("m5_tests::m5_{tool}");
+fn fetches(tool: &str, given: Given) {
+    let test = format!("m5_tests::m5_{tool} ({given:?})");
     let program = match tool {
         "cargo" => {
             on_path("rustup").map(|_| PathBuf::from(setup(Command::new("rustup").args(["which", "cargo"]))))
@@ -399,10 +416,23 @@ fn fetches(tool: &str) {
     if TLS.contains(&tool) && r.tls.is_none() {
         return skip(&test, "no java, keytool and python3 on PATH (its HTTPS registry's)");
     }
-    let root =
-        std::env::current_dir().unwrap().join(format!("target/tarae-m5-{tool}-{}", std::process::id()));
+    let name = format!("target/tarae-m5-{tool}-{given:?}-{}", std::process::id());
+    let root = std::env::current_dir().unwrap().join(name);
     let _ = std::fs::remove_dir_all(&root);
-    let asked = project(tool, program, &root, &r.base);
+    let mut asked = project(tool, program, &root, &r.base, given);
+    // (the one-command way: the variables named unset for this command alone, as `env -u` does)
+    let unset = match given {
+        Given::Unset => &OUTRANKING[..2],
+        Given::Conf(n) => &OUTRANKING[..n],
+        Given::Own | Given::SandboxCa => &[],
+    };
+    if !unset.is_empty() {
+        let Some(env) = on_path("env") else { return skip(&test, "no env on PATH") };
+        let unset = unset.iter().flat_map(|v| ["-u".to_string(), v.to_string()]);
+        let program = asked.program.display().to_string();
+        asked.args = unset.chain([program]).chain(asked.args).collect();
+        asked.program = env;
+    }
     // (under the build's `target/`, not `/tmp`: a run writes there)
     let root = std::fs::canonicalize(&root).unwrap();
     let rule = super::egress::Pattern::parse(&host(tool)).unwrap();
@@ -410,12 +440,28 @@ fn fetches(tool: &str) {
         sandbox_network: true,
         sandbox_hosts: crate::llm::Hosts::List(vec![rule]),
         sandbox_localhost: true,
+        sandbox_ca: match given {
+            Given::SandboxCa => vec![root.join("repo.pem").display().to_string()],
+            _ => Vec::new(),
+        },
         ..Default::default()
     };
     // (7b: its trust files are named like keys, `*.pem`, `*.p12` — closed to a run until the user opens each from
     // the run's panel, `allow::Grant::Key`, as a project with them would)
     let open = ["repo.pem", "trust.p12"].map(|f| root.join(f)).into_iter().filter(|f| f.exists());
-    let mut p = crate::sandbox::policy_opening(&root, &llm, &open.collect::<Vec<_>>()).unwrap();
+    let mut here = crate::sandbox::Here::now();
+    let trust = &crate::sandboxpack::get().proxy.trust;
+    here.env.retain(|k, _| !trust.contains(k));
+    here.system_roots = Some(super::mitm_tests::system_roots());
+    let mut p = crate::sandbox::policy_opening(&root, &llm, &open.collect::<Vec<_>>(), &here).unwrap();
+    // (the product's path: every CA variable the packs name points at the run's own bundle)
+    let bundle = p.run.as_ref().map(|r| r.path().join(crate::sandbox::cabundle::FILE).display().to_string());
+    let named = |v: &str| p.env.iter().find(|(k, _)| k == v).map(|(_, f)| f.clone());
+    assert!(
+        bundle.is_some() && trust.iter().all(|v| named(v) == bundle),
+        "{tool}: its CA variables name its bundle {bundle:?} — REQUESTS_CA_BUNDLE {:?}",
+        named("REQUESTS_CA_BUNDLE")
+    );
     // (this machine's own address stands for the outside: a policy that knows none)
     p.own_addresses = Some(Vec::new());
     p.watch = crate::sandbox::watch_for(&p);
@@ -454,7 +500,16 @@ fn fetches(tool: &str) {
     let said = format!("{out}\n{err}\nreport: {report}\nserved: {served:?}");
     let way = format!("URL {url} · variables {vars:?} · Gradle's lines {gradle_lines}");
     assert!(url && !vars.is_empty(), "{tool}: its way out is the URL — {way}");
-    assert!(status.is_some_and(|s| s.success()), "{tool} ({way}): {status:?}\n{said}");
+    // (pip's own `--cert` alone, or its config file's `cert` with PIP_CERT still set: outranked by the run's CA
+    // variables — it fails, and the report says why and the two ways, the variables named)
+    if tool == "pip" && matches!(given, Given::Own | Given::Conf(0..=2)) {
+        assert!(!status.is_some_and(|s| s.success()), "pip's {given:?}, outranked: {status:?}\n{said}");
+        let words = crate::sandbox::Outranked { requests: true }.said();
+        assert!(report.contains(&words), "pip: the report says it — {words:?}\n{said}");
+        std::fs::remove_dir_all(&root).ok();
+        return;
+    }
+    assert!(status.is_some_and(|s| s.success()), "{tool} {given:?} ({way}): {status:?}\n{said}");
     assert!(served.iter().any(|s| s == asked.served), "{tool}: {} served\n{said}", asked.served);
     assert!(root.join(asked.made).exists(), "{tool}: {} made\n{said}", asked.made);
     std::fs::remove_dir_all(&root).ok();
@@ -462,30 +517,53 @@ fn fetches(tool: &str) {
 
 #[test]
 fn m5_curl() {
-    fetches("curl")
+    fetches("curl", Given::Own)
 }
 
 #[test]
 fn m5_cargo() {
-    fetches("cargo")
+    fetches("cargo", Given::Own)
 }
 
 #[test]
 fn m5_npm() {
-    fetches("npm")
+    fetches("npm", Given::Own)
 }
 
+/// pip's certificate through `llm.sandbox-ca`: in every run's bundle, no `--cert`.
 #[test]
 fn m5_pip() {
-    fetches("pip")
+    fetches("pip", Given::SandboxCa)
+}
+
+/// pip's own `--cert` alone: the run's REQUESTS_CA_BUNDLE outranks it — it fails, and the report says why and the ways.
+#[test]
+fn m5_pip_cert_alone_is_outranked_and_said() {
+    fetches("pip", Given::Own)
+}
+
+/// pip's `--cert` with REQUESTS_CA_BUNDLE and CURL_CA_BUNDLE unset for that one command (`env -u`): it passes — the
+/// report's way unsets PIP_CERT too, for pip.conf's `cert`, which `--cert` outranks.
+#[test]
+fn m5_pip_cert_with_the_variables_unset() {
+    fetches("pip", Given::Unset)
+}
+
+/// pip's `cert` in its own config file, no `--cert`: the run's PIP_CERT outranks it as well — it fails and the report
+/// says so; with only requests' two unset it still fails; with PIP_CERT unset too, as the report says, it passes.
+#[test]
+fn m5_pip_conf_cert_is_outranked_by_pip_cert_too() {
+    fetches("pip", Given::Conf(0));
+    fetches("pip", Given::Conf(2));
+    fetches("pip", Given::Conf(3));
 }
 
 #[test]
 fn m5_go() {
-    fetches("go")
+    fetches("go", Given::Own)
 }
 
 #[test]
 fn m5_gradle() {
-    fetches("gradle")
+    fetches("gradle", Given::Own)
 }

@@ -278,6 +278,9 @@ pub struct TestRun {
     pub guard: Option<crate::sandbox::Guard>,
     /// When it last printed (a sandboxed run quiet after a denial may be waiting on it — the panel says so).
     pub last_output: Instant,
+    /// Claude's run failed a certificate check that its CA variables outranked (`sandbox::outranked`, kept at its
+    /// end by `tools::tests_done`): its panel's line where nothing was blocked.
+    pub outranked: Option<crate::sandbox::Outranked>,
     /// What it waits on that isn't its own work — another cargo's lock — from its output (`waits.rs`).
     pub wait: crate::waits::Waiting,
     /// Its way from the ask to its end, for the log (`trace.rs`).
@@ -374,6 +377,7 @@ impl TestRun {
             tell: None,
             guard: None,
             last_output: Instant::now(),
+            outranked: None,
             wait: Default::default(),
             trace: crate::trace::RunTrace::new("test run"),
             by_claude: false,
@@ -866,6 +870,7 @@ impl Editor {
             tell: None,
             guard,
             last_output: Instant::now(),
+            outranked: None,
             wait: Default::default(),
             trace,
             by_claude: false,

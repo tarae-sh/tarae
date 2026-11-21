@@ -242,7 +242,7 @@ pub(crate) struct Given {
 
 /// The system's roots a test's run starts from (`Here.system_roots`): a stand-in CA's, never the company's — the
 /// real store is never read here.
-fn system_roots() -> Vec<Vec<u8>> {
+pub(super) fn system_roots() -> Vec<Vec<u8>> {
     static SYSTEM: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     vec![SYSTEM.get_or_init(|| authority("tarae test system root").der).clone()]
 }

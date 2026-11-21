@@ -797,6 +797,67 @@ fn its_document_holds_the_runs_own_rope_and_a_tab_as_printed() {
 }
 
 #[test]
+fn a_certificate_check_its_ca_variables_outranked_leads_the_failed_runs_panel() {
+    let mut ed = task(3);
+    let r = ed.workspace.task_run.as_mut().unwrap();
+    r.state = crate::task::State::Failed(Some(1));
+    r.outranked = Some(crate::sandbox::Outranked { requests: true });
+    let shown = frame(&mut ed);
+    let line = refused(&ed, Slot::Task).expect("its line");
+    assert_eq!(line, crate::sandbox::Outranked { requests: true }.line());
+    assert!(shown.contains("sandbox: certificate check failed"), "{shown}");
+    // (none kept: no line)
+    ed.workspace.task_run.as_mut().unwrap().outranked = None;
+    assert_eq!(refused(&ed, Slot::Task), None);
+}
+
+/// The tests' panel leads with it the same (`Slot::Test`).
+#[test]
+fn a_certificate_check_its_ca_variables_outranked_leads_the_failed_tests_panel() {
+    let mut ed = task(0);
+    ed.workspace.task_run = None;
+    let mut t = crate::testing::TestRun::finished("tests", Vec::new(), vec!["running 1 test".into()]);
+    t.outranked = Some(crate::sandbox::Outranked { requests: false });
+    ed.workspace.test_run = Some(t);
+    let line = refused(&ed, Slot::Test).expect("its line");
+    assert_eq!(line, crate::sandbox::Outranked { requests: false }.line());
+    ed.workspace.test_run.as_mut().unwrap().outranked = None;
+    assert_eq!(refused(&ed, Slot::Test), None, "none kept: no line");
+}
+
+/// What the sandbox blocked leads before it (`sandbox::panel_line`): a check that failed may be why, a blocked thing
+/// is the user's to open.
+#[test]
+fn what_the_sandbox_blocked_leads_before_an_outranked_certificate_check() {
+    let mut ed = task(0);
+    let watch = crate::sandbox::Watch::quiet("t.");
+    let policy = crate::sandbox::Policy {
+        watch: Some(watch.clone()),
+        ..crate::sandbox::Policy::for_project(&crate::sandbox::Env::default())
+    };
+    watch.record(crate::sandbox::Denial {
+        process: "pip".into(),
+        op: "file-write-data".into(),
+        target: "/opt/tarae-test/x".into(),
+    });
+    let r = ed.workspace.task_run.as_mut().unwrap();
+    r.state = crate::task::State::Failed(Some(1));
+    r.guard = Some(crate::sandbox::Guard::In(Box::new(policy.clone())));
+    r.outranked = Some(crate::sandbox::Outranked { requests: true });
+    let line = refused(&ed, Slot::Task).expect("its line");
+    assert!(line.line.starts_with("sandbox blocked writing /opt/tarae-test/x"), "{line:?}");
+    assert!(!line.calm, "{line:?}");
+    // The tests' run: its own arm, the same order
+    let mut t = crate::testing::TestRun::finished("tests", Vec::new(), Vec::new());
+    t.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
+    t.outranked = Some(crate::sandbox::Outranked { requests: true });
+    ed.workspace.test_run = Some(t);
+    let line = refused(&ed, Slot::Test).expect("its line");
+    assert!(line.line.starts_with("sandbox blocked writing /opt/tarae-test/x"), "the tests' run: {line:?}");
+    assert!(!line.calm, "the tests' run: {line:?}");
+}
+
+#[test]
 fn its_lines_are_coloured_as_the_panel_coloured_them() {
     let mut ed = task(0);
     let r = ed.workspace.task_run.as_mut().unwrap();

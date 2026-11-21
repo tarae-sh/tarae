@@ -403,6 +403,9 @@ pub struct Run {
     pub ran: Option<crate::chat::Ran>,
     /// When it last printed (a sandboxed run quiet after a denial may be waiting on it — the panel says so).
     pub last_output: Instant,
+    /// Claude's command failed a certificate check that its CA variables outranked (`sandbox::outranked`, kept at
+    /// its end by `tools::run_done`): its panel's line where nothing was blocked.
+    pub outranked: Option<crate::sandbox::Outranked>,
     /// The tallest its panel has been (`term::task_panel_h`) — it never shrinks while the run is up; a run of
     /// the same task again starts there.
     pub tall: std::cell::Cell<usize>,
@@ -673,6 +676,7 @@ impl Run {
             guard: None,
             ran: None,
             last_output: Instant::now(),
+            outranked: None,
             tall: Default::default(),
             scroll: None,
             section: 0,
@@ -1297,6 +1301,7 @@ impl Editor {
             guard: None,
             ran: None,
             last_output: Instant::now(),
+            outranked: None,
             tall: std::cell::Cell::new(tall),
             scroll: None,
             section: 0,

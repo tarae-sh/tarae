@@ -382,20 +382,18 @@ pub fn tests_ran(r: &crate::testing::TestRun) -> crate::sandbox::RunIs {
 }
 
 /// The sandbox's line that leads a run panel's output when it blocked something (#474a: its first row, above what the
-/// program printed — `term::lead_row`): the task's run or the tests', as `sandbox::panel_line` says it.
+/// program printed — `term::lead_row`): the task's run or the tests', as `sandbox::panel_line` says it. Where nothing
+/// was blocked, a failed certificate check its CA variables outranked (`sandbox::Outranked::line`).
 pub fn refused(ed: &Editor, slot: Slot) -> Option<crate::sandbox::PanelLine> {
     use crate::sandbox::panel_line;
+    let trust = |o: Option<crate::sandbox::Outranked>| o.map(|o| o.line());
     match slot {
-        Slot::Task => ed
-            .workspace
-            .task_run
-            .as_ref()
-            .and_then(|r| panel_line(r.guard.as_ref(), task_ran(r), r.last_output)),
-        Slot::Test => ed
-            .workspace
-            .test_run
-            .as_ref()
-            .and_then(|r| panel_line(r.guard.as_ref(), tests_ran(r), r.last_output)),
+        Slot::Task => ed.workspace.task_run.as_ref().and_then(|r| {
+            panel_line(r.guard.as_ref(), task_ran(r), r.last_output).or_else(|| trust(r.outranked))
+        }),
+        Slot::Test => ed.workspace.test_run.as_ref().and_then(|r| {
+            panel_line(r.guard.as_ref(), tests_ran(r), r.last_output).or_else(|| trust(r.outranked))
+        }),
         _ => None,
     }
 }

@@ -91,6 +91,9 @@ public class Repo {
         ssl.init(kmf.getKeyManagers(), null, null);
         HttpsServer s = HttpsServer.create(new InetSocketAddress(InetAddress.getByName(a[0]), 0), 0);
         s.setHttpsConfigurator(new HttpsConfigurator(ssl));
+        // (each exchange, its handshake too, on a thread of its own: on the dispatcher's one, a client slow in its
+        // handshake held every other — m5_pip's two timeouts on CI, `.sb/m5-pip.md`)
+        s.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         Path root = Path.of(a[3]).toAbsolutePath().normalize();
         s.createContext("/", x -> {
             String p = x.getRequestURI().getPath();
@@ -328,7 +331,8 @@ fn gradle_resolves_through_the_proxy() {
     // (7a, 7b: the project's trust store is named like a key, `*.p12` — closed to a run until the user opens that
     // file from the run's panel, `allow::Grant::Key`, as a project with one would)
     #[allow(unused_mut)]
-    let mut p = crate::sandbox::policy_opening(&root, &llm, &[root.join("trust.p12")]).unwrap();
+    let here = crate::sandbox::Here::now();
+    let mut p = crate::sandbox::policy_opening(&root, &llm, &[root.join("trust.p12")], &here).unwrap();
     #[cfg(target_os = "linux")]
     {
         // (this machine's own address stands for the outside: a policy that knows none)

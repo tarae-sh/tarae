@@ -124,6 +124,50 @@ const REFUSED_HOST_KEYS: &[&str] = &[
     "@1",
 ];
 
+/// m5_pip's refused-cert scene's keys: the chat asked, the run's card (a program of the project's: its script shown)
+/// answered `y`, the run's failed certificate check waited for — the run panel's line saying the run's CA variables
+/// outranked pip's `--cert`, and the ways.
+const REFUSED_CERT_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "fetch the knots index",
+    "\r",
+    "@20?Claude wants to run",
+    "@1",
+    "\x11",
+    "@1",
+    "y",
+    "@30?certificate check failed",
+    // (the git card that came on its own meanwhile, `n` in the scene's own state; then the chat hidden: the panel's
+    // line the whole width)
+    "@1",
+    "\x11",
+    "@1",
+    "n",
+    "@1",
+    " ",
+    "L",
+    "@1.5",
+];
+
+/// The refused-cert scene's stand-in `./pip`: short, so its run's card shows it whole at 80 columns (`y` waits until a
+/// script is read) — it prints `pip.out` and fails.
+const REFUSED_CERT_PIP: &str = "#!/bin/sh\ncat pip.out >&2\nexit 1\n";
+
+/// What it prints: pip's own lines when the run's REQUESTS_CA_BUNDLE outranks its `--cert` (CI's, `.sb/m5-pip.md`).
+const REFUSED_CERT_OUT: &str = "Looking in indexes: https://pypi.skein.invalid/simple\n\
+    WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken \
+    by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: \
+    self-signed certificate (_ssl.c:1029)'))': /simple/skein-knots/\n\
+    Could not fetch URL https://pypi.skein.invalid/simple/skein-knots/: There was a problem confirming the ssl \
+    certificate: HTTPSConnectionPool(host='pypi.skein.invalid', port=443): Max retries exceeded with url: \
+    /simple/skein-knots/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] \
+    certificate verify failed: self-signed certificate (_ssl.c:1029)'))) - skipping\n\
+    ERROR: Could not find a version that satisfies the requirement skein-knots (from versions: none)\n\
+    ERROR: No matching distribution found for skein-knots\n";
+
 /// #484a's refused-host-follow scene's keys: refused-host's, then the chat hidden (`space L`) as Short 4's take has it —
 /// the run panel the whole width under the follow card, `[r` replaying the run there.
 const REFUSED_HOST_FOLLOW_KEYS: &[&str] = &[
@@ -4578,6 +4622,9 @@ const SCENES: &[Scene] = &[
     Scene { name: "refused-host", claude: "refusedhost", files: MAIN, keys: REFUSED_HOST_KEYS },
     // (#484a: the same, the chat hidden — Short 4's layout: the panel's lead line the whole width, its hint beside it)
     Scene { name: "refused-host-follow", claude: "refusedhost", files: MAIN, keys: REFUSED_HOST_FOLLOW_KEYS },
+    // (m5_pip: a run with the network open — its trust bundle — whose pip fails a certificate check: the run panel's
+    // calm line, the run's CA variables outranking `--cert`, and the ways)
+    Scene { name: "refused-cert", claude: "refusedcert", files: MAIN, keys: REFUSED_CERT_KEYS },
     // (#481: the pointer's rest in every code view, on the buffer's own text only — the stand-in language server's
     // hover, the scene's own home: `-review` on a line Claude's edit review keeps, `-removed` on a line `space v`
     // shows removed)
@@ -7681,6 +7728,14 @@ fn prepare(
     if scene.name == "sandbox-runtime" {
         write(&dir.join("home").join(S4_DOOMED).join(S4_MARKER), S4_MARKER_TEXT)?;
     }
+    // (m5_pip's refused-cert: the stand-in `./pip` its run runs)
+    if scene.name == "refused-cert" {
+        use std::os::unix::fs::PermissionsExt;
+        write(&demo.join("pip"), REFUSED_CERT_PIP)?;
+        write(&demo.join("pip.out"), REFUSED_CERT_OUT)?;
+        std::fs::set_permissions(demo.join("pip"), std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("pip: {e}"))?;
+    }
     // (R1's also-read: the notes folder its `also {read}` asks for, there to be granted)
     if scene.name == "also-read" {
         write(&dir.join("home/notes/strands.md"), "# Strands\n")?;
@@ -7740,6 +7795,9 @@ fn prepare(
         }
         .into_iter()
         .chain(masked_env(scene.name))
+        // (refused-cert's: the system's roots from the distro's file, as tarae reads them where SSL_CERT_FILE says —
+        // the run's bundle made without the keychain)
+        .chain((scene.name == "refused-cert").then_some(("SSL_CERT_FILE", Some("/etc/ssl/cert.pem"))))
         .chain(shot::shot_env(std::env::var_os("TARAE_SHOT_ZELLIJ")))
         .chain(commits_env())
         .collect(),
@@ -7837,6 +7895,8 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
         "v4" => "review-at-end = true\n",
         // (P2b's masked card with the network open: no host left to answer on its own card)
         "maskedopen" => "sandbox-network = true\n",
+        // (m5_pip's: the network open, so the run has its trust bundle and its CA variables)
+        "refusedcert" => "sandbox-network = true\n",
         // (V1's: main's edit lands unseen, so fix's — waiting on it — lands too, and the two meet)
         s if s.contains("=v1-main") => "review-at-end = true\n",
         // (V6's: fix's and main's edits land unseen and meet, the turns going on; the project's docs ask first, so docs'
@@ -8575,6 +8635,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "refusedkey",
     "refusedgit",
     "refusedhost",
+    "refusedcert",
     "masked",
     "maskedopen",
     "maskedother",
@@ -8784,6 +8845,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "refusedkey" => turn.refused_key()?,
             "refusedgit" => turn.refused_git()?,
             "refusedhost" => turn.refused_host()?,
+            "refusedcert" => turn.refused_cert()?,
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
             "rmcard" => turn.rm_card()?,
@@ -9879,6 +9941,18 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.text("\n")?;
         self.call(1, "run", json!({"command": "curl -sS -I https://uploads.skein.invalid/"}))?;
         self.words("The host is closed to my commands.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// m5_pip's turn: pip given the index's certificate by `--cert` — outranked by the run's CA variables, the check
+    /// fails.
+    fn refused_cert(&mut self) -> io::Result<()> {
+        self.words("The knots index is the team's own, with its own certificate. Let me fetch the package.")?;
+        self.text("\n")?;
+        let pip =
+            "./pip download skein-knots --index-url https://pypi.skein.invalid/simple --cert certs/skein.pem";
+        self.call(1, "run", json!({"command": pip}))?;
+        self.words("The certificate check failed.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

@@ -179,6 +179,9 @@ pub struct Report {
     pub temp_cut: bool,
     /// The lock's cap (`KeyFolders::lock_said`) was told: in this report or before it.
     pub lock_cut: bool,
+    /// A failed run's certificate check where its CA variables named tarae's bundle (`outranked`): said in `text`,
+    /// and kept on the run for its panel's line.
+    pub outranked: Option<Outranked>,
 }
 
 /// What Claude was told in its conversation (`Chat.rules_said`, `tools::rules_known`), by digest: the rules (None:
@@ -340,8 +343,16 @@ impl Guard {
             .filter(|s| !s.is_empty())
             .copied()
             .collect::<Vec<_>>();
-        let (text, blocked, open) = self.report_text(output, rules, quiet_rules, &apart.join("\n"), passed);
-        Report { text, blocked, open, rules: rules_digest, guarantees, temp_cut, lock_cut }
+        let (mut text, blocked, open) =
+            self.report_text(output, rules, quiet_rules, &apart.join("\n"), passed);
+        let outranked = match self {
+            Guard::In(p) if !passed => outranked(p, output),
+            _ => None,
+        };
+        if let Some(o) = outranked {
+            text = format!("{}\n{}", text.trim_end(), o.said());
+        }
+        Report { text, blocked, open, rules: rules_digest, guarantees, temp_cut, lock_cut, outranked }
     }
 
     /// What its runs are kept apart from and share (`Policy::guarantees`) — None: not in the sandbox.
@@ -4373,6 +4384,95 @@ pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Ins
     })
 }
 
+/// A failed certificate check in a run whose CA variables named tarae's bundle (#419: every run with a proxy URL):
+/// those variables outrank a tool's own CA option — requests reads `REQUESTS_CA_BUNDLE`, else `CURL_CA_BUNDLE`, over
+/// its session's own, so pip's `--cert` is dropped, and pip reads `PIP_CERT` over pip.conf's `cert` (`.sb/m5-pip.md`,
+/// measured; m5's pip rows). The variables stay (the design session, 2026-11-21); the report and the run's panel say
+/// it, with the narrow way first: the variable unset for that one command, then `llm.sandbox-ca` for every run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Outranked {
+    /// The output is requests' (urllib3's `HTTPSConnectionPool(`, `requests.exceptions.`): its two variables are named.
+    pub requests: bool,
+}
+
+/// The words a certificate check leaves in a tool's output when the certificate's issuer isn't trusted — the one
+/// failure a CA fixes — lowercased, each a phrase with a space in it as the library prints it, never an identifier (a
+/// test named `rejects_self_signed_cert`, a compile error naming rustls' `CertificateError::UnknownIssuer` — tarae's
+/// own source holds it): OpenSSL's, Python's, curl's and Node's (self-signed in both spellings, the local issuer not
+/// found, the first certificate unverified — Node's codes print these beside them), GnuTLS's, Go's, rustls' (cargo's,
+/// uv's). Never a certificate expired or not yet valid, nor a name that doesn't match (OpenSSL's `certificate verify
+/// failed` comes with those too, git-gnutls's `server certificate verification failed` with every kind: the line
+/// would send a person to `llm.sandbox-ca` for what no CA fixes — the design session, 2026-11-21), nor a JVM's
+/// (`PKIX path building failed`: it reads no CA variable). A failed run whose output quotes one is said too (calm).
+const CERT_UNTRUSTED: [&str; 8] = [
+    "self-signed certificate",
+    "self signed certificate",
+    "unable to get local issuer certificate",
+    "unable to get issuer certificate",
+    "unable to verify the first certificate",
+    "the certificate issuer is unknown",
+    "certificate signed by unknown authority",
+    "invalid peer certificate: unknownissuer",
+];
+
+/// Whether `output` shows a certificate check failed for its issuer (`CERT_UNTRUSTED`) while `p`'s CA variables named
+/// its run's bundle — None: no bundle named (a run without a proxy URL, or its system's roots unread), or no such
+/// line. Its caller asks only of a run that failed.
+pub fn outranked(p: &Policy, output: &[(bool, String)]) -> Option<Outranked> {
+    let bundle = p.run.as_ref()?.path().join(cabundle::FILE);
+    let trust = &crate::sandboxpack::get().proxy.trust;
+    if !p.env.iter().any(|(k, v)| trust.contains(k) && Path::new(v) == bundle) {
+        return None;
+    }
+    let failed = |l: &String| {
+        let l = l.to_ascii_lowercase();
+        CERT_UNTRUSTED.iter().any(|w| l.contains(w))
+    };
+    let requests = |l: &String| l.contains("HTTPSConnectionPool(") || l.contains("requests.exceptions.");
+    output
+        .iter()
+        .any(|(_, l)| failed(l))
+        .then(|| Outranked { requests: output.iter().any(|(_, l)| requests(l)) })
+}
+
+impl Outranked {
+    /// What Claude reads after the report: why, the one-command way (only for a certificate it was given), the
+    /// setting (the user's).
+    pub fn said(&self) -> String {
+        let (reads, way) = match self.requests {
+            true => (
+                ", and requests reads REQUESTS_CA_BUNDLE, else CURL_CA_BUNDLE, over its caller's own CA option (pip's \
+                 --cert), and pip reads PIP_CERT over pip.conf's cert",
+                "run it with env -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE -u PIP_CERT",
+            ),
+            false => (
+                ": a CA outside it may not be trusted here, and where the command was given its own CA a variable \
+                 may outrank that (git's GIT_SSL_CAINFO over http.sslCAInfo; not curl's --cacert)",
+                "run it with that tool's variable unset (env -u NAME …)",
+            ),
+        };
+        format!(
+            "A certificate check failed in this run. Its CA variables name tarae's trust bundle (the system's roots, \
+             the user's CA variables, llm.sandbox-ca){reads}. Only for a certificate the user or the project gave \
+             this command, never one made up to get past the check: for this command alone, {way}; for every run, \
+             it goes in llm.sandbox-ca — the user's setting, so tell them."
+        )
+    }
+
+    /// The run's panel's line where nothing was blocked: calm (nothing in `space m s` opens it), whole under the
+    /// mouse. One row can't hold both ways: requests', the short one, the setting, where it shows (through
+    /// `llm.sandbox-ca,` at 120 columns, the cause at 80), the long command last — the narrow way first is Claude's,
+    /// read whole (the design session, 2026-11-21); any other tool's, the bundle and the setting, whole at 120.
+    pub fn line(&self) -> PanelLine {
+        const REQUESTS: &str = "sandbox: certificate check failed — tarae's CA bundle outranks pip's --cert here; add \
+            yours to llm.sandbox-ca, or for this command: env -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE -u PIP_CERT";
+        const ANY: &str = "sandbox: certificate check failed — this run's CA variables name tarae's bundle; a CA of \
+            yours goes in llm.sandbox-ca";
+        let line = if self.requests { REQUESTS } else { ANY };
+        PanelLine { line: line.into(), calm: true, quiet: None, designed: None }
+    }
+}
+
 /// The paths a line of output names — words that start `/`, `~/` (home), `./` or `../` (from `root`), with
 /// quotes, brackets and a closing `:` or `.` taken off — as the profile sees them, worked out without the
 /// disk (the main thread asks): `.` and `..` folded, `/tmp`, `/var` and `/etc` in `/private`. Not the
@@ -5681,13 +5781,14 @@ pub fn policy(root: &Path, llm: &crate::llm::LlmConfig, reads: &[PathBuf]) -> Re
 /// `policy`, these files named like keys opened as the user's grant from the run's panel opens them
 /// (`allow::Grant::Key`, through `tools::with_allowed`).
 #[cfg(test)]
-pub fn policy_opening(root: &Path, llm: &crate::llm::LlmConfig, keys: &[PathBuf]) -> Result<Policy, String> {
+pub fn policy_opening(
+    root: &Path,
+    llm: &crate::llm::LlmConfig,
+    keys: &[PathBuf],
+    here: &Here,
+) -> Result<Policy, String> {
     let open = crate::allow::Allowed { keys: keys.to_vec(), ..Default::default() };
-    policy_from(
-        root,
-        crate::tools::with_allowed(llm, &crate::caps::Caps::answered(&[&open]), None),
-        &Here::now(),
-    )
+    policy_from(root, crate::tools::with_allowed(llm, &crate::caps::Caps::answered(&[&open]), None), here)
 }
 
 /// The policy for the run about to start with the settings and grants `w` (`tools::with_allowed`) and what
@@ -12536,6 +12637,232 @@ mod tests {
             p.run_env.notes
         );
         drop(p);
+        proxy::terminate::forget(session);
+    }
+
+    /// A policy on `root` with the network open, as `here` makes it.
+    fn open_policy(root: &Path, here: &Here) -> Policy {
+        let llm = crate::llm::LlmConfig {
+            sandbox_network: true,
+            sandbox_hosts: crate::llm::Hosts::Any,
+            ..Default::default()
+        };
+        policy_from(root, crate::tools::Widened { llm, ..Default::default() }, here).unwrap()
+    }
+
+    /// An `open_policy` whose CA variables name its run's bundle (`bundled_here`'s stand-in system root) — None (said,
+    /// for `test`) where no way to the proxy is here.
+    fn bundled(test: &str, root: &Path, here: &Here) -> Option<Policy> {
+        let p = open_policy(root, here);
+        if p.proxy_url().is_none() {
+            eprintln!("{test}: skipped, no way to the proxy: {:?}", p.reach);
+            return None;
+        }
+        Some(p)
+    }
+
+    /// `bundled`'s `Here`: this machine's, but its CA variables, with a stand-in system root.
+    fn bundled_here() -> Here {
+        let mut here = Here::now();
+        here.env.retain(|k, _| !crate::sandboxpack::get().proxy.trust.contains(k));
+        here.system_roots = Some(vec![crate::web::fetch::tests::authority("tarae test system root").der]);
+        here
+    }
+
+    /// What pip printed on PR #9's CI (`.sb/m5-pip.md`), written by hand in its log's shape: the tests' host, one line.
+    const PIP_SELF_SIGNED: &str = "Could not fetch URL https://pypi.test/simple/m5six/: There was a problem confirming \
+         the ssl certificate: HTTPSConnectionPool(host='pypi.test', port=443): Max retries exceeded with url: \
+         /simple/m5six/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate \
+         verify failed: self-signed certificate (_ssl.c:1029)')))";
+
+    /// What tells a failed certificate check is a phrase as a library prints it, never an identifier: a test's name or
+    /// a type's (tarae's own source names rustls' `UnknownIssuer` in four files) would make a failed build say it.
+    #[test]
+    fn every_untrusted_certificates_words_are_a_phrase() {
+        let not: Vec<&str> =
+            CERT_UNTRUSTED.iter().copied().filter(|w| !w.contains(' ') || *w != w.to_lowercase()).collect();
+        assert!(not.is_empty(), "not a lowercased phrase with a space: {not:?}");
+    }
+
+    /// m5_pip (the design session, 2026-11-21, option 1 of `.sb/m5-pip.md`): a failed run whose CA variables name its
+    /// bundle and whose output shows a certificate check failed for its issuer is said — Claude's words after the
+    /// report, the narrow way first; the person's as the run panel's calm line, the setting where the row shows it —
+    /// requests' and pip's variables named only where the output is requests'. Not an expired certificate nor a name
+    /// that doesn't match (no CA fixes those), a JVM's words (it reads no CA variable), a test's name or a compile
+    /// error that names one, a line naming no check, a passing run, nor a run with no bundle (its system's roots
+    /// unread).
+    #[test]
+    fn a_failed_certificate_check_under_the_bundle_is_said_with_its_ways() {
+        let scratch = crate::scratch::Scratch::new("sb-outranked");
+        let root = std::fs::canonicalize(&*scratch).unwrap();
+        let mut here = bundled_here();
+        let test = "a_failed_certificate_check_under_the_bundle_is_said_with_its_ways";
+        let Some(p) = bundled(test, &root, &here) else { return };
+        let out = |l: &str| vec![(true, l.to_string())];
+        let pip = out(PIP_SELF_SIGNED);
+        let (requests, other) = (Outranked { requests: true }, Outranked { requests: false });
+        // (each row says where its line is from: none is a recorded output)
+        let rows = [
+            ("pip, by hand in CI's log's shape", pip.clone(), Some(requests)),
+            (
+                "curl, by hand",
+                out("curl: (60) SSL certificate problem: self-signed certificate"),
+                Some(other),
+            ),
+            (
+                "Go, by hand",
+                out("tls: failed to verify certificate: x509: certificate signed by unknown authority"),
+                Some(other),
+            ),
+            // (Node's words only: its code, SELF_SIGNED_CERT_IN_CHAIN, is no phrase)
+            (
+                "Node, by hand",
+                out(
+                    "npm error request to https://registry.test/m5pad failed, reason: self signed certificate in \
+                     certificate chain",
+                ),
+                Some(other),
+            ),
+            (
+                "Node, the leaf's issuer, by hand",
+                out("Error: unable to verify the first certificate"),
+                Some(other),
+            ),
+            (
+                "GnuTLS, by hand",
+                out("- Status: The certificate is NOT trusted. The certificate issuer is unknown."),
+                Some(other),
+            ),
+            (
+                "rustls (uv, cargo), by hand",
+                out("error: invalid peer certificate: UnknownIssuer"),
+                Some(other),
+            ),
+            (
+                "a JVM, by hand",
+                out("PKIX path building failed: unable to find valid certification path"),
+                None,
+            ),
+            // (identifiers, not a check that failed: a test named for one, a compile error naming rustls' type)
+            ("a failing test, by hand", out("test tls::rejects_self_signed_cert ... FAILED"), None),
+            (
+                "a compile error, by hand",
+                out("error[E0004]: non-exhaustive patterns: `CertificateError::UnknownIssuer` not covered"),
+                None,
+            ),
+            // (what no CA fixes: an expired certificate, a name that doesn't match — never sent to llm.sandbox-ca)
+            (
+                "expired (Python), by hand",
+                out("HTTPSConnectionPool(host='pypi.test', port=443): Max retries exceeded (Caused by \
+                     SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify \
+                     failed: certificate has expired (_ssl.c:1029)')))"),
+                None,
+            ),
+            (
+                "a name that doesn't match (Python), by hand",
+                out("HTTPSConnectionPool(host='pypi.test', port=443): Max retries exceeded (Caused by \
+                     SSLError(SSLCertVerificationError(1, \"[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify \
+                     failed: Hostname mismatch, certificate is not valid for 'pypi.test'. (_ssl.c:1029)\")))"),
+                None,
+            ),
+            ("no check, by hand", out("error: could not compile `m5` due to 2 previous errors"), None),
+        ];
+        let wrong: Vec<String> = rows
+            .iter()
+            .filter(|(_, o, want)| outranked(&p, o) != *want)
+            .map(|(row, o, want)| format!("{row}: {:?}, not {want:?}", outranked(&p, o)))
+            .collect();
+        assert!(wrong.is_empty(), "judged wrong: {wrong:?}");
+        // The report: a failed run's says it last; a passing run's says nothing of it
+        let g = Guard::In(Box::new(p.clone()));
+        let failed = g.report_with(&pip, Told::default(), false);
+        assert_eq!(failed.outranked, Some(requests));
+        assert!(failed.text.ends_with(&requests.said()), "{}", failed.text);
+        let passed = g.report_with(&pip, Told::default(), true);
+        assert_eq!(passed.outranked, None);
+        assert!(!passed.text.contains("A certificate check failed"), "{}", passed.text);
+        // The words, Claude's and the person's
+        assert_eq!(
+            requests.said(),
+            "A certificate check failed in this run. Its CA variables name tarae's trust bundle (the system's roots, \
+             the user's CA variables, llm.sandbox-ca), and requests reads REQUESTS_CA_BUNDLE, else CURL_CA_BUNDLE, \
+             over its caller's own CA option (pip's --cert), and pip reads PIP_CERT over pip.conf's cert. Only for a \
+             certificate the user or the project gave this command, never one made up to get past the check: for \
+             this command alone, run it with env -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE -u PIP_CERT; for every run, \
+             it goes in llm.sandbox-ca — the user's setting, so tell them."
+        );
+        assert_eq!(
+            other.said(),
+            "A certificate check failed in this run. Its CA variables name tarae's trust bundle (the system's roots, \
+             the user's CA variables, llm.sandbox-ca): a CA outside it may not be trusted here, and where the \
+             command was given its own CA a variable may outrank that (git's GIT_SSL_CAINFO over http.sslCAInfo; not \
+             curl's --cacert). Only for a certificate the user or the project gave this command, never one made up to \
+             get past the check: for this command alone, run it with that tool's variable unset (env -u NAME …); for \
+             every run, it goes in llm.sandbox-ca — the user's setting, so tell them."
+        );
+        let line = requests.line();
+        assert!(line.calm && line.quiet.is_none() && line.designed.is_none(), "{line:?}");
+        assert_eq!(
+            line.line,
+            "sandbox: certificate check failed — tarae's CA bundle outranks pip's --cert here; add yours to \
+             llm.sandbox-ca, or for this command: env -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE -u PIP_CERT"
+        );
+        let any = other.line();
+        assert!(any.calm && any.quiet.is_none() && any.designed.is_none(), "{any:?}");
+        assert_eq!(
+            any.line,
+            "sandbox: certificate check failed — this run's CA variables name tarae's bundle; a CA of yours goes in \
+             llm.sandbox-ca"
+        );
+        // (the rows' cut: requests' setting in sight at 120 columns, the cause at 80; any other's whole at 120, its
+        // cause at 80)
+        let shown = |l: &PanelLine, w: usize| l.line.chars().take(w).collect::<String>();
+        assert!(
+            shown(&line, 118).contains("llm.sandbox-ca,")
+                && shown(&line, 78).contains("outranks pip's --cert"),
+            "{line:?}"
+        );
+        assert!(
+            shown(&any, 118) == any.line && shown(&any, 78).contains("CA variables name tarae's"),
+            "{any:?}"
+        );
+        // No bundle (the system's roots unread): nothing named it, nothing to say
+        let session = p.session;
+        drop((g, p));
+        here.system_fails = Some("no keychain".into());
+        let unread = open_policy(&root, &here);
+        assert_eq!(outranked(&unread, &pip), None, "no bundle");
+        drop(unread);
+        proxy::terminate::forget(session);
+    }
+
+    /// A failed run's certificate check its CA variables outranked is kept on the run at its end — the task's
+    /// (`tools::run_done`) and the tests' (`tools::tests_done`) — where its panel's line reads it (`rundoc::refused`).
+    #[test]
+    fn a_failed_runs_outranked_check_is_kept_on_the_run() {
+        let scratch = crate::scratch::Scratch::new("sb-outranked-kept");
+        let root = std::fs::canonicalize(&*scratch).unwrap();
+        let test = "a_failed_runs_outranked_check_is_kept_on_the_run";
+        let Some(p) = bundled(test, &root, &bundled_here()) else { return };
+        let session = p.session;
+        let requests = Some(Outranked { requests: true });
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        let task =
+            crate::task::Task { name: "pip".into(), cmd: "pip download m5six".into(), cwd: root.clone() };
+        let mut run = crate::task::Run::for_test(task);
+        run.push_line(true, PIP_SELF_SIGNED.into(), false);
+        run.state = crate::task::State::Failed(Some(1));
+        run.guard = Some(Guard::In(Box::new(p.clone())));
+        ed.workspace.task_run = Some(run);
+        crate::tools::run_done(&mut ed);
+        assert_eq!(ed.workspace.task_run.as_ref().unwrap().outranked, requests, "the task's run");
+        // (the tests' run, failed as `finished` makes it)
+        let mut t = crate::testing::TestRun::finished("tests", Vec::new(), vec![PIP_SELF_SIGNED.into()]);
+        t.guard = Some(Guard::In(Box::new(p)));
+        ed.workspace.test_run = Some(t);
+        crate::tools::tests_done(&mut ed);
+        assert_eq!(ed.workspace.test_run.as_ref().unwrap().outranked, requests, "the tests' run");
+        drop(ed);
         proxy::terminate::forget(session);
     }
 

@@ -866,6 +866,7 @@ pub fn tests_done(ed: &mut Editor) {
     let code = crate::codetool::tool::lists(ed);
     let Some(r) = ed.workspace.test_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
+    r.outranked = said.as_ref().and_then(|s| s.outranked);
     let guard = said.as_ref().map(|s| format!("\n{}\n", s.text)).unwrap_or_default();
     let loopback = said.as_ref().filter(|_| failed).and_then(|s| loopback_of(&s.open));
     if let Some(head) = r.tell.take() {
@@ -5322,6 +5323,7 @@ pub fn run_done(ed: &mut Editor) {
     let known = rules_known(ed, failed);
     let Some(r) = ed.workspace.task_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
+    r.outranked = said.as_ref().and_then(|s| s.outranked);
     // (what a warning with `start` said as it started — a manifest tool's changes, piece F — Claude reads too)
     let started: Vec<String> = r
         .ran
@@ -10734,6 +10736,7 @@ mod tests {
             guarantees,
             temp_cut: false,
             lock_cut: false,
+            outranked: None,
         };
         let none = Told::default();
         let known = Told { rules: Some(7), guarantees: Some(9), temp_cut: false, lock_cut: false };
