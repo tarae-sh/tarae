@@ -8,7 +8,8 @@ use std::thread::JoinHandle;
 use tarae_testkit::scratch::Scratch;
 
 use super::*;
-use crate::record::{AfterKeys, Outer, Spec, TERMINAL, read_log, record};
+use crate::record::tests::{ended, taking};
+use crate::record::{AfterKeys, Outer, Spec, TERMINAL, read_log};
 
 /// A made-up state: the keys in `region` (taking `takes`), `prompt` up where given, the cards given.
 fn state(region: &str, takes: &str, prompt: Option<&str>, cards: Value) -> Value {
@@ -409,7 +410,7 @@ fn the_way_in_is_its_users_alone_its_keys_and_marks_land_and_it_goes_with_the_ta
         cwd: Some(cwd.clone()),
         hands: Some(dir.path().to_path_buf()),
     };
-    let taking = std::thread::spawn(move || record(spec, cmd));
+    let taking = taking(spec, cmd);
     let mut seen = String::new();
     let until = |seen: &mut String, text: &str| {
         while !seen.contains(text) {
@@ -437,7 +438,7 @@ fn the_way_in_is_its_users_alone_its_keys_and_marks_land_and_it_goes_with_the_ta
     let (c, said) = ask(&sock, &json!({ "do": "state" })).unwrap();
     assert_eq!((c, said.as_str()), (code::ERROR, "tarae's state: no UI socket watched (record --state)"));
     std::io::Write::write_all(&mut &shown, b"bye\r").unwrap();
-    taking.join().unwrap().unwrap();
+    ended(taking, "the take's end once the pane's bye was its command's last read").unwrap();
 
     assert!(!folder.exists() && !take.join(WAY_IN).exists(), "the way in went with the take");
     let keys = read_log(&take.join("keys.bin")).unwrap();

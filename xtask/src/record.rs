@@ -400,7 +400,16 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
     let started = Instant::now();
     let wall =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    // (its words for take.json, read now: `cmd` goes right after the spawn)
+    let command: Vec<String> = std::iter::once(cmd.get_program())
+        .chain(cmd.get_args())
+        .map(|a| a.to_string_lossy().into())
+        .collect();
     let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", cmd.get_program().to_string_lossy()))?;
+    // Our copies of the slave go now: `slave`, and the three `cmd` keeps after the spawn — on Linux the master reads
+    // its end only once no one holds the slave, this process included, so the screen's reader (joined once the
+    // command ended) would wait for good
+    drop(cmd);
     drop(slave);
     let pid = child.id();
 
@@ -440,7 +449,8 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
                             let _ = tx.send(Log::Screen(at, buf[..n].to_vec()));
                         }
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                        // (macOS: EIO once the last of the child's side closed)
+                        // (the pty's end, EIO: on Linux once no one holds the slave, this process included; on
+                        // macOS when the command ends)
                         Err(_) => break,
                     }
                 }
@@ -568,10 +578,6 @@ pub(crate) fn record(spec: Spec, mut cmd: Command) -> Result<Taken> {
         missed,
         watched: spec.ui.is_some(),
     };
-    let command: Vec<String> = std::iter::once(cmd.get_program())
-        .chain(cmd.get_args())
-        .map(|a| a.to_string_lossy().into())
-        .collect();
     let about = json!({
         "v": 1, "size": [cols, rows], "command": command, "started_unix_ms": wall as u64, "ms": ms,
         "exit": taken.exit, "shown": spec.outer.is_some(),

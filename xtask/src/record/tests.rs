@@ -54,6 +54,25 @@ fn rest(rx: &Receiver<Vec<u8>>, seen: &mut Vec<u8>) {
     }
 }
 
+/// `record` on a thread of its own: what it returns, for `ended`.
+pub(super) fn taking(spec: Spec, cmd: Command) -> Receiver<Result<Taken>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tx.send(record(spec, cmd)));
+    rx
+}
+
+/// What `taking`'s take returned, within the shared patience — else a failure naming `waits`, the test's own wait,
+/// first. Given up, its thread is left behind: its stand-in ends with the pty when the test binary does.
+pub(super) fn ended(rx: Receiver<Result<Taken>>, waits: &str) -> Result<Taken> {
+    rx.recv_timeout(crate::PATIENCE).unwrap_or_else(|e| {
+        panic!(
+            "{waits}: not within {} s ({e}) — a take ends once its command did and its screen was read to the pty's \
+             end",
+            crate::PATIENCE.as_secs()
+        )
+    })
+}
+
 fn sh(script: &str) -> Command {
     let mut cmd = Command::new("/bin/sh");
     cmd.args(["-c", script]);
@@ -82,16 +101,13 @@ fn a_take_logs_what_its_terminal_was_sent_and_what_it_sent_back_in_order_at_its_
     let rx = reader(&shown);
     let cmd = sh(r#"stty size; printf 'ready\033[1mbold\033[0m\001'; read -r x; printf 'got:%s' "$x""#);
     let take = dir.join("take");
-    let taking = std::thread::spawn({
-        let take = take.clone();
-        move || record(spec(take, (80, 24), Some(outer), Vec::new()), cmd)
-    });
+    let taking = taking(spec(take.clone(), (80, 24), Some(outer), Vec::new()), cmd);
     let mut seen = Vec::new();
     until(&rx, &mut seen, b"ready");
     // (what the terminal sends back — a key, an answer to a question — reaches the command)
     shown.write_all(b"hi\r").unwrap();
     until(&rx, &mut seen, b"got:hi");
-    let taken = taking.join().unwrap().unwrap();
+    let taken = ended(taking, "the take's end once its command printed got:hi and exited").unwrap();
     rest(&rx, &mut seen);
 
     let screen = read_log(&take.join("screen.bin")).unwrap();
@@ -369,7 +385,11 @@ fn a_key_script_is_played_in_order_waiting_on_the_screen() {
     let take = dir.join("take");
     let cmd = sh(r#"printf ready; read -r x; printf 'got:%s' "$x"; read -r y; printf 'then:%s' "$y""#);
     let steps = keys::of_keys(&["@?ready", "hi", "\\r", "@?got:hi", "@type:bye", "\\r"]).unwrap();
-    let taken = record(spec(take.clone(), (80, 24), None, steps), cmd).unwrap();
+    let taken = ended(
+        taking(spec(take.clone(), (80, 24), None, steps), cmd),
+        "the take's end once its script's last key was read and its command exited",
+    )
+    .unwrap();
     assert!(taken.missed.is_empty(), "{:?}", taken.missed);
     let keys = read_log(&take.join("keys.bin")).unwrap();
     assert_eq!(bytes_of(&keys, SCRIPT), b"hi\rbye\r");
@@ -393,11 +413,8 @@ fn a_headless_take_whose_keys_ran_out_with_it_still_up_is_ended_and_said() {
     let cmd = sh(r#"printf up; while read -r l; do case "$l" in *:q!*) printf bye; exit 0;; esac; done"#);
     let mut s = spec(take.clone(), (80, 24), None, keys::of_keys(&["@?up", "hi"]).unwrap());
     s.after_keys = AfterKeys::End(Duration::from_millis(50));
-    // (on a thread: broken, the take would wait for good — the test fails at the shared patience instead, and its
-    // stand-in ends with the pty when the run does)
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || tx.send(record(s, cmd)));
-    let taken = rx.recv_timeout(crate::PATIENCE).expect("the take still up, its keys run out").unwrap();
+    let taken =
+        ended(taking(s, cmd), "the take ended by the recorder, its keys run out with it still up").unwrap();
     assert!(taken.ended_after_keys.is_some_and(|ms| ms >= 50), "{taken:?}");
     assert_eq!(taken.exit, Some(0), "ended by the quit, not a kill: {taken:?}");
     assert!(taken.said(&take).contains("ended by the recorder — its keys ran out"), "{}", taken.said(&take));
@@ -437,7 +454,11 @@ fn a_take_the_hands_reached_isnt_ended_when_its_keys_run_out() {
 fn a_wait_that_never_comes_is_said_and_ends_with_the_screen() {
     let dir = Scratch::new("xtask-record-miss");
     let steps = keys::of_keys(&["@600?never", "x"]).unwrap();
-    let taken = record(spec(dir.join("take"), (80, 24), None, steps), sh("printf done")).unwrap();
+    let taken = ended(
+        taking(spec(dir.join("take"), (80, 24), None, steps), sh("printf done")),
+        "the take's end with its wait missed, its command gone after printf done",
+    )
+    .unwrap();
     // (said as a wait missed, or — the command gone before the script began — as the screen ended before it; the
     // key after it never sent either way)
     assert!(taken.missed.first().is_some_and(|m| m.contains("never")), "{:?}", taken.missed);
