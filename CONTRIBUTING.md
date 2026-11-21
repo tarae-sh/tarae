@@ -180,8 +180,9 @@ Where each OS is tested: macOS's tests run here, on the maintainer's Mac (`:pref
 every landing; CI neither builds nor runs them. [CI](.github/workflows/ci.yml) runs the same checks when started by hand (Actions → CI → Run
 workflow) — fmt, clippy (warnings are errors), and the tests on Linux, with and without bundled grammars, every
 failing test binary said at once (`--no-fail-fast`) — except `cargo perf`:
-time is judged on a fixed machine, so CI runs only the time budgets, in the `perf` profile, and they only report (the
-`perf-budgets-…` artifact, what went over in the step's summary; never a failed job) — its gate is the deterministic
+time is judged on a fixed machine, so CI runs only the time budgets, and only in a run that asks for them
+(`perf_report`), in a job of their own under the `compat-tests` profile, and they only report (the `perf-budgets-…`
+artifact, what went over in the step's summary; never a failed job) — its gate is the deterministic
 tests and budgets of work, the same on any machine. A test that fails there and passes here waits on the wrong
 thing: it's made to wait on its condition, never run again until green. It also downloads and
 builds a grammar from GitHub (the tests that need the network, `#[ignore = "network: …"]`, named in its `cargo test --

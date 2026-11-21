@@ -109,7 +109,7 @@ debug = "line-tables-only"
 
 # The perf budgets and real-use scenarios (`cargo perf` → xtask perf): what a release build costs, so the test
 # profile's opt-level doesn't change what they measure — with line tables (and not stripped, no dSYM made) so
-# samples have names. Its builds turn on `dev-grammars` (xtask perf, CI), which the syntax budgets need.
+# samples have names. Its builds turn on `dev-grammars` (xtask perf), which the syntax budgets need.
 # `unpacked` is macOS's (the line tables stay in the objects); Linux keeps it off (`.cargo/config.toml`).
 [profile.perf]
 inherits = "release"
@@ -121,7 +121,8 @@ strip = false
 # command outside it and on Linux tarae's own supervisor serves the run's socket calls — an opt-level 0 tarae would
 # slow only the sandboxed side. No LTO and 16 units: `perf`'s fat LTO of the test binary was killed out of memory
 # in an 11.7 GiB colima VM (compat piece 4, 2026-10-16); without it the whole-program inlining the suite's times
-# don't depend on goes, not the optimizations.
+# don't depend on goes, not the optimizations. CI's time report (its `perf-report` job) builds the budgets in it too,
+# for the same reason.
 [profile.compat-tests]
 inherits = "release"
 lto = false

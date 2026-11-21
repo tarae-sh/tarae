@@ -5,6 +5,11 @@ name: CI
 # (CONTRIBUTING.md).
 on:
   workflow_dispatch:
+    inputs:
+      perf_report:
+        description: Run the time-budgets report job (compat-tests profile, report only)
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -38,8 +43,8 @@ jobs:
   test:
     name: test (linux${{ matrix.features && format(', {0}', matrix.features) || '' }})
     # A hang ends the job, not the driver: on PR #9's run xtask's record::tests held both Linux jobs five hours until
-    # cancelled; the tarae binary's tests took 841 s there, so an hour is roomy
-    timeout-minutes: 60
+    # cancelled; a cold test run takes ~21 min, so 45 min guards against hangs with room to spare
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -57,28 +62,87 @@ jobs:
           git config --global user.email ci@example.com
       # Every failing test binary said at once (cargo stops at the first otherwise: one failure a round)
       - run: cargo test --locked --no-fail-fast --workspace --features "${{ matrix.features }}"
-      # The time budgets only report here (time is judged on a fixed machine — `cargo perf` in `:preflight-full`;
-      # a shared runner's numbers are its neighbours' too): they skip themselves at the test profile's opt-level 0,
-      # so here in the `perf` profile (release). The build fails the job, the budgets never: their output is the
-      # `perf-budgets-…` artifact, what went over the step's summary. The dev grammars (rust) for the syntax
-      # budgets: only debug builds have them unasked
-      - run: cargo test --locked --features dev-grammars --features "${{ matrix.features }}" --profile perf --bin tarae --no-run
-      - name: perf budgets (report only)
+
+  # Time budgets on Linux, opt-in (`perf_report`) and report-only: time is judged on the maintainer's Mac, by
+  # `cargo perf` in `:preflight-full` (a shared runner's numbers are its neighbours' too). It has its own job so it
+  # never slows the test jobs or turns them red; it uses `compat-tests` (release without LTO, 16 units) because
+  # `perf`'s fat LTO build was killed about 25 min in (exit 143, cause unconfirmed). No step ends failed: build and
+  # budgets bound cargo with coreutils `timeout`, record their exit code and exit 0, while `continue-on-error: true`
+  # and the step `timeout-minutes` serve as the backstop for a kill, and the job's `timeout-minutes` sits above the
+  # steps' sum.
+  # `--features dev-grammars` supplies the rust grammar the syntax budgets need outside debug builds.
+  perf-report:
+    name: perf report (linux${{ matrix.features && format(', {0}', matrix.features) || '' }})
+    if: inputs.perf_report
+    continue-on-error: true
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["", bundled-grammars]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-report-${{ matrix.features }}
+      # Tests commit into throwaway repos (git hunks, disk sync)
+      - run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+      - name: build perf budgets
+        id: build
         shell: bash
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          timeout -k 1m 20m cargo test --locked --features dev-grammars --features "${{ matrix.features }}" --profile compat-tests --bin tarae --no-run && code=0 || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: perf budgets (report only)
+        id: budgets
+        if: steps.build.outputs.code == '0'
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 25
         env:
           # the 16 ms key → frame budget times this, so what's reported over is well over
           TARAE_PERF_SLACK: "3"
         run: |
-          cargo test --locked --features dev-grammars --features "${{ matrix.features }}" --profile perf --bin tarae -- perf_budget > perf-budgets.txt 2>&1 && code=0 || code=$?
+          timeout -k 1m 20m cargo test --locked --features dev-grammars --features "${{ matrix.features }}" --profile compat-tests --bin tarae -- perf_budget > perf-budgets.txt 2>&1 && code=0 || code=$?
+          compiled=$(grep -c 'Compiling' perf-budgets.txt || true)
           {
-            echo "### perf budgets, report only (exit $code)"
+            if [ "$code" -eq 124 ]; then
+              echo "### perf budgets, report only (timed out, exit $code)"
+            else
+              echo "### perf budgets, report only (exit $code)"
+            fi
+            echo "Cargo Compiling lines: $compiled (0 = ran built binary)"
             echo '```'
             grep -E '^test .*FAILED$|panicked at|^test result' perf-budgets.txt || echo 'no result line: see the artifact'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           tail -n 40 perf-budgets.txt
+      - name: report build failure
+        if: always() && steps.build.outputs.code != '0'
+        shell: bash
+        continue-on-error: true
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          BUILD_CODE: ${{ steps.build.outputs.code }}
+        run: |
+          {
+            if [ "$BUILD_CODE" = "124" ]; then
+              echo "### perf budgets, report only (build timed out, exit 124)"
+            elif [ -n "$BUILD_CODE" ]; then
+              echo "### perf budgets, report only (build failed, exit $BUILD_CODE)"
+            else
+              echo "### perf budgets, report only (build did not succeed: outcome ${BUILD_OUTCOME:-unknown})"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: perf-budgets-linux${{ matrix.features && format('-{0}', matrix.features) || '' }}
           path: perf-budgets.txt
@@ -94,7 +158,7 @@ jobs:
   network:
     runs-on: ubuntu-latest
     # (as the test jobs: a hang ends the job)
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install

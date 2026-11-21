@@ -1554,22 +1554,63 @@ mod tests {
         // CI
         let ci = read(".github/workflows/ci.yml");
         let warnings_are_errors = ci.lines().any(|l| l.trim() == "RUSTFLAGS: -D warnings");
-        let features: Vec<String> = ci
+        // Read `features:` from the `test:` job alone so another job's matrix (`perf-report`) can't double or
+        // skew what the test checks expand to.
+        let test_job_features: Vec<&str> = ci
             .lines()
+            .skip_while(|l| *l != "  test:")
+            .skip(1)
+            .take_while(|l| l.is_empty() || l.starts_with("    ") || l.trim_start().starts_with('#'))
             .filter_map(|l| l.trim().strip_prefix("features:"))
-            .flat_map(|v| {
-                v.trim().trim_matches(['[', ']']).split(',').map(|f| f.trim().trim_matches('"').to_string())
-            })
             .collect();
+        assert_eq!(test_job_features.len(), 1, "CI's test job has one features matrix");
+        let features: Vec<String> = test_job_features[0]
+            .trim()
+            .trim_matches(['[', ']'])
+            .split(',')
+            .map(|f| f.trim().trim_matches('"').to_string())
+            .collect();
+        // Every `cargo …` command in CI's `run:` lines and `run: |` blocks (including ones wrapped in `timeout` or
+        // `env`, so the skips below actually guard those commands).
+        let mut ci_cmds = Vec::new();
+        let mut block_indent: Option<usize> = None;
+        for line in ci.lines() {
+            let indent = line.len() - line.trim_start().len();
+            let trimmed = line.trim();
+            if let Some(base) = block_indent {
+                if !trimmed.is_empty() && indent <= base {
+                    block_indent = None;
+                } else {
+                    if !trimmed.starts_with('#') {
+                        ci_cmds.push(trimmed);
+                    }
+                    continue;
+                }
+            }
+            if let Some(rest) = trimmed.trim_start_matches("- ").strip_prefix("run:") {
+                let rest = rest.trim();
+                if rest == "|" {
+                    block_indent = Some(indent);
+                } else {
+                    ci_cmds.push(rest);
+                }
+            }
+        }
         let mut ran = Vec::new();
         let mut clippy_linux = Vec::new();
-        for cmd in ci
-            .lines()
-            .filter_map(|l| l.trim().trim_start_matches("- ").strip_prefix("run: "))
-            .filter(|c| c.starts_with("cargo "))
-        {
-            // (on purpose: perf as budgets only, the network job)
-            if cmd.contains("--profile perf") || cmd.contains("-- --ignored") {
+        for cmd in ci_cmds.into_iter().filter_map(|raw| {
+            if raw.starts_with("cargo ") {
+                Some(raw)
+            } else if raw.starts_with("timeout ") || raw.starts_with("env ") {
+                raw.find(" cargo ").map(|i| &raw[i + 1..])
+            } else {
+                None
+            }
+        }) {
+            // (on purpose: the opt-in `perf-report` job builds and runs time budgets in `compat-tests` to report
+            // only — time is judged by `cargo perf` on the maintainer's Mac; and the network job runs `--ignored`
+            // tests)
+            if cmd.contains("--profile compat-tests") || cmd.contains("-- --ignored") {
                 continue;
             }
             // (as CI runs it, `--locked` too: what the container's clippy lines must be)
