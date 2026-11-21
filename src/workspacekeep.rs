@@ -394,7 +394,7 @@ mod tests {
         let (main, session) = (dir.join("main"), dir.join("session"));
         std::fs::create_dir_all(&main).unwrap();
         std::fs::create_dir_all(session.join(".sb/sub")).unwrap();
-        let ok = std::process::Command::new("git").args(["init", "-q"]).current_dir(&main).status().unwrap();
+        let ok = crate::gitrepo::test_git(&main).args(["init", "-q"]).status().unwrap();
         assert!(ok.success());
         std::fs::write(main.join(".gitignore"), ignore).unwrap();
         std::fs::write(session.join(".sb/plan.md"), "the plan\n").unwrap();

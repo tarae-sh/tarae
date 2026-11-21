@@ -69,12 +69,7 @@ fn run(choices: Choices) -> Vec<String> {
     std::fs::write(repo.join("new.txt"), MADE).unwrap();
     std::fs::remove_file(repo.join("gone.txt")).unwrap();
     git(&repo, &["add", "-A"]);
-    let out = std::process::Command::new("git")
-        .args(["-C", &repo.display().to_string(), "diff", "--cached", "HEAD"])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap();
+    let out = crate::gitrepo::test_git(&repo).args(["diff", "--cached", "HEAD"]).output().unwrap();
     git(&repo, &["reset", "-q", "--hard", "HEAD"]);
     let patch = dir.join("x.patch");
     std::fs::write(&patch, &out.stdout).unwrap();

@@ -4,13 +4,9 @@ use crate::scratch::Scratch;
 
 /// The test's own git in its own folder: none of the user's settings, no hooks.
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .args(["-c", "core.hooksPath=/dev/null", "-C"])
-        .arg(dir)
+    let out = crate::gitrepo::test_git(dir)
+        .args(["-c", "core.hooksPath=/dev/null"])
         .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("XDG_CONFIG_HOME", "/dev/null")
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
         .env("GIT_COMMITTER_NAME", "t")

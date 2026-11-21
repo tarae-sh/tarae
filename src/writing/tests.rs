@@ -1407,10 +1407,7 @@ fn perf_budget_reveal_far_below_the_view() {
     let budget = Duration::from_millis(16) * slack.max(1);
     let corpus = crate::test_results::corpus();
     let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["show", &format!("{corpus}:src/chat.rs")])
-        .current_dir(&here)
-        .output();
+    let out = crate::gitrepo::test_git(&here).args(["show", &format!("{corpus}:src/chat.rs")]).output();
     let Some(text) = out.ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8(o.stdout).ok())
     else {
         return crate::test_results::said_skip(&format!("{name} — no commit {corpus} here"));

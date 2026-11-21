@@ -991,24 +991,11 @@ impl Tree {
 /// made where none was (G23), only the snapshot finds it (`Workspace.made_protected`). git with no config but its
 /// own, no hooks. Never a repository under test: its clone's history is its own.
 pub fn checkout(project: &Path) -> Result<(), String> {
-    // (git's repository variables from where the tests run — a hook, a git-driven script — would point it at
-    // another repository, tarae's own included: none, and no climbing past the project)
-    const REPOSITORY_VARIABLES: &[&str] = &[
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_COMMON_DIR",
-    ];
+    // (`test_git` removes git's repository variables and skips global/system config; no climbing past the project)
     let above = project.parent().unwrap_or(project);
     let git = |args: &[&str]| {
         crate::gitrepo::not_in_this_repository(project, args);
-        let mut c = std::process::Command::new("git");
-        for v in REPOSITORY_VARIABLES {
-            c.env_remove(v);
-        }
-        let out = c
+        let out = crate::gitrepo::test_git(project)
             .args([
                 "-c",
                 "user.name=compat",
@@ -1019,9 +1006,6 @@ pub fn checkout(project: &Path) -> Result<(), String> {
             ])
             .args(["-c", "core.hooksPath=/dev/null"])
             .args(args)
-            .current_dir(project)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CEILING_DIRECTORIES", above)
             .stdin(std::process::Stdio::null())
             .output()

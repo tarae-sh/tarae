@@ -1,8 +1,6 @@
 //! The woven view (`weave.rs`): the merge itself, and three checkouts of a fixture repository merged in memory —
 //! what's shown, in whose colour, and what keys do there.
 
-use std::process::Command;
-
 use super::*;
 use crate::config::Config;
 use crate::key::{Code, Key};
@@ -146,13 +144,10 @@ fn perf_merge_a_big_file() {
 /// git in the test's own repository: its own name, no signing, no hooks, none of the machine's config.
 fn git(dir: &Path, args: &[&str]) {
     crate::gitrepo::not_in_this_repository(dir, args);
-    let out = Command::new("git")
+    let out = crate::gitrepo::test_git(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
         .args(["-c", "init.defaultBranch=main", "-c", "core.hooksPath=/dev/null"])
         .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));

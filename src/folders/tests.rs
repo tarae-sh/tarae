@@ -378,12 +378,9 @@ fn a_folder_is_in_its_workspace_once_while_kept_ones_are_judged() {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
+    let out = crate::gitrepo::test_git(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
         .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));

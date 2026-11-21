@@ -2143,14 +2143,10 @@ mod tests {
     /// git in the test's own repository — none of the user's config read (no global or system file: none of their
     /// hooks, no signing).
     fn git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let out = crate::gitrepo::test_git(dir)
             .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
             .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));

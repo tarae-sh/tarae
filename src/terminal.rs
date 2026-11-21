@@ -1177,10 +1177,9 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("term-git");
         let dir = scratch.to_path_buf();
         let git = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
+            let ok = crate::gitrepo::test_git(&dir)
                 .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null"])
                 .args(args)
-                .current_dir(&dir)
                 .env_remove("GIT_OPTIONAL_LOCKS")
                 .output()
                 .unwrap()

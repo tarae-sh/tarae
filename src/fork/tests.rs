@@ -8,14 +8,14 @@ use super::*;
 use crate::config::Config;
 
 fn git_in(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    let out = crate::gitrepo::test_git(dir).args(args).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
 fn has_branch(repo: &Path, b: &str) -> bool {
-    let mut git = std::process::Command::new("git");
-    git.arg("-C").arg(repo).args(["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]);
+    let mut git = crate::gitrepo::test_git(repo);
+    git.args(["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]);
     git.output().unwrap().status.success()
 }
 

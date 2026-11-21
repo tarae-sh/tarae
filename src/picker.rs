@@ -1928,8 +1928,7 @@ mod tests {
         use std::process::{Command, Stdio};
         let corpus = crate::test_results::corpus();
         let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let archive =
-            Command::new("git").args(["archive", "--format=tar", corpus]).current_dir(&here).output();
+        let archive = crate::gitrepo::test_git(&here).args(["archive", "--format=tar", corpus]).output();
         let Some(archive) = archive.ok().filter(|a| a.status.success()) else {
             let why =
                 format!("picker::tests::perf_listing_and_searching_with_a_folder — no commit {corpus} here");

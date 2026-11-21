@@ -405,9 +405,7 @@ fn a_runs_rewrite_of_an_open_file_dries_as_the_watch_reloads_it() {
     let s = crate::scratch::Scratch::new("motion-run-wet");
     let dir = std::fs::canonicalize(s.path()).unwrap();
     let git = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&dir)
+        let out = crate::gitrepo::test_git(&dir)
             .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
             .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t"])
             .args(args)

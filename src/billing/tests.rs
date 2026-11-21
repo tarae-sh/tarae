@@ -71,7 +71,7 @@ impl Place {
         std::fs::create_dir_all(dir.join("project")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         let root = dir.join("project");
-        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&root).output().unwrap();
+        let git = crate::gitrepo::test_git(&root).args(["init", "-q"]).output().unwrap();
         assert!(git.status.success());
         // (a nonce per run: what's found later is this run's, and nothing of tarae's own holds it)
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();

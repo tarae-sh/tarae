@@ -177,8 +177,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &RefCell<
 }
 
 fn out(repo: &std::path::Path, args: &[&str]) -> String {
-    let mut o = std::process::Command::new("git");
-    o.args(args).current_dir(repo).env("GIT_CONFIG_GLOBAL", "/dev/null");
+    let mut o = crate::gitrepo::test_git(repo);
+    o.args(args);
     String::from_utf8_lossy(&o.output().unwrap().stdout).trim().to_string()
 }
 

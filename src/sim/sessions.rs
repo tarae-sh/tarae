@@ -94,13 +94,9 @@ pub(super) fn git(dir: &Path, args: &[&str]) {
 
 /// `git`, its output given back (`sim/gitbase.rs`: a blob's id, the index's text).
 pub(super) fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .args(["-c", "core.hooksPath=/dev/null", "-C"])
-        .arg(dir)
+    let out = crate::gitrepo::test_git(dir)
+        .args(["-c", "core.hooksPath=/dev/null"])
         .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("XDG_CONFIG_HOME", "/dev/null")
         .env("GIT_AUTHOR_DATE", DATE)
         .env("GIT_COMMITTER_DATE", DATE)
         .output()

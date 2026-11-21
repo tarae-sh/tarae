@@ -4317,7 +4317,7 @@ mod tests {
         let dir = crate::scratch::Scratch::new("review-held-offers").into_path();
         let run = |args: &[&str]| {
             let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
-            let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
+            let ok = crate::gitrepo::test_git(&dir).args(id).args(args).output();
             assert!(ok.unwrap().status.success(), "git {args:?}");
         };
         run(&["init", "-q"]);

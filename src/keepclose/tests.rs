@@ -2,7 +2,6 @@
 //! change in no commit), `up` (clean) and `db` (its own commit on the line `main` changes) — and `main` moving.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use super::*;
@@ -51,10 +50,8 @@ impl Scene {
     /// Whether `name`'s HEAD has main's tip under it.
     fn on_tip(&self, name: &str) -> bool {
         let tip = git(&self.main, &["rev-parse", "main"]);
-        Command::new("git")
+        crate::gitrepo::test_git(self.root(name))
             .args(["merge-base", "--is-ancestor", &tip, "HEAD"])
-            .current_dir(self.root(name))
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .status()
             .unwrap()
             .success()

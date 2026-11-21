@@ -8796,8 +8796,7 @@ mod tests {
             if token {
                 std::fs::write(r.join("docs/app.conf"), "password = tarae-fake-token\n").unwrap();
             }
-            let out =
-                std::process::Command::new("git").args(["init", "-q"]).current_dir(&r).output().unwrap();
+            let out = crate::gitrepo::test_git(&r).args(["init", "-q"]).output().unwrap();
             assert!(out.status.success());
             r
         };

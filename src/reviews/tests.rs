@@ -445,13 +445,9 @@ fn repo(
 /// attributes in their default place either (`$XDG_CONFIG_HOME/git/`, else `~/.config/git/` — read with no
 /// config at all; under `/dev/null` there's nothing to read), no hooks, a committer of its own.
 fn test_git(dir: &Path) -> std::process::Command {
-    let mut git = std::process::Command::new("git");
+    let mut git = crate::gitrepo::test_git(dir);
     git.args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-        .args(["-c", "core.hooksPath=/dev/null"])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("XDG_CONFIG_HOME", "/dev/null")
-        .current_dir(dir);
+        .args(["-c", "core.hooksPath=/dev/null"]);
     git
 }
 

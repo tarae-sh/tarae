@@ -7,7 +7,7 @@ use crate::event::WorkspaceId;
 use crate::offer::What;
 
 fn git_in(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    let out = crate::gitrepo::test_git(dir).args(args).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -98,8 +98,8 @@ fn refs(repo: &Path) -> Vec<String> {
 /// `git status --porcelain` rows, sorted.
 fn status(dir: &Path) -> Vec<String> {
     // (untrimmed: a row's first column is a space where nothing is staged)
-    let mut git = std::process::Command::new("git");
-    git.arg("-C").arg(dir).args(["status", "--porcelain", "-uall"]);
+    let mut git = crate::gitrepo::test_git(dir);
+    git.args(["status", "--porcelain", "-uall"]);
     let out = String::from_utf8(git.output().unwrap().stdout).unwrap();
     let mut rows: Vec<String> = out.lines().map(str::to_string).collect();
     rows.sort();

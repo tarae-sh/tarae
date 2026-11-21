@@ -2756,7 +2756,7 @@ mod tests {
         }
         let project = std::fs::canonicalize(&project).unwrap();
         for args in [&["init", "-q"][..], &["add", "-A"]] {
-            let ok = std::process::Command::new("git").args(args).current_dir(&project).output().unwrap();
+            let ok = crate::gitrepo::test_git(&project).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
         ed.workspace.root = project.clone();
@@ -2797,7 +2797,7 @@ mod tests {
         std::fs::write(project.join(".gitignore"), "ignored/\n").unwrap();
         let project = std::fs::canonicalize(&project).unwrap();
         for args in [&["init", "-q"][..], &["add", "-A"]] {
-            let ok = std::process::Command::new("git").args(args).current_dir(&project).output().unwrap();
+            let ok = crate::gitrepo::test_git(&project).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
         ed.workspace.root = project.clone();

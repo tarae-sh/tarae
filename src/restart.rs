@@ -3348,7 +3348,7 @@ mod tests {
             &["commit", "-q", "-m", "base"],
         ] {
             // (plain git: there's no repository for tarae's — `gitrepo` — before the `init`)
-            let out = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+            let out = crate::gitrepo::test_git(dir).args(args).output().unwrap();
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         }
         crate::gitrepo::git(dir, &["rev-parse", "--short", "HEAD"], None).unwrap().trim().to_string()

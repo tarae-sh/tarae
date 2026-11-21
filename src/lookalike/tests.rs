@@ -8,11 +8,7 @@ use crate::trust::{State, Store};
 
 /// git in a test's own repository — no user or system config, no hooks, no signing, a name of its own.
 fn git_here(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
+    let out = crate::gitrepo::test_git(dir)
         .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
         .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t"])
         .args(args)

@@ -73,7 +73,7 @@ struct Place {
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> bool {
-    std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success()
+    crate::gitrepo::test_git(dir).args(args).output().unwrap().status.success()
 }
 
 fn place(name: &str) -> Place {

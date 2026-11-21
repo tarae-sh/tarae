@@ -215,8 +215,7 @@ fn walked(
 }
 
 fn tip_of(dir: &std::path::Path) -> String {
-    let out =
-        std::process::Command::new("git").args(["rev-parse", "main"]).current_dir(dir).output().unwrap();
+    let out = crate::gitrepo::test_git(dir).args(["rev-parse", "main"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -500,9 +499,8 @@ fn owed(ed: &Editor, w: &World) -> Result<(), String> {
         if seen || l.moving.is_some() || ed.keep_close.waits.iter().any(|x| x.ws.id == *id) {
             continue;
         }
-        let on = std::process::Command::new("git")
+        let on = crate::gitrepo::test_git(&l.root)
             .args(["merge-base", "--is-ancestor", tip, "HEAD"])
-            .current_dir(&l.root)
             .status()
             .unwrap()
             .success();

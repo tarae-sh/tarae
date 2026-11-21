@@ -74,12 +74,9 @@ fn run(choices: Choices) -> Vec<String> {
 
 /// A rebase stopped at its conflict in `wt` (git run here), taken up as tarae takes one up (`rebase_adopt`).
 fn stopped(ed: &mut Editor, wt: &Path, m: &mut Model) {
-    let _ = std::process::Command::new("git")
-        .args(["-c", "core.hooksPath=/dev/null", "-c", "user.email=t@t", "-c", "user.name=t", "-C"])
-        .arg(wt)
+    let _ = crate::gitrepo::test_git(wt)
+        .args(["-c", "core.hooksPath=/dev/null", "-c", "user.email=t@t", "-c", "user.name=t"])
         .args(["rebase", "main"])
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
     let stop = crate::rebase::under_way(wt).expect("stopped at its conflict");
