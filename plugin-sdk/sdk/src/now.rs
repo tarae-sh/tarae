@@ -60,11 +60,13 @@ mod tests {
     static TURN: Mutex<()> = Mutex::new(());
 
     /// As before any call: nothing to draw from.
+    #[cfg(feature = "getrandom04")]
     fn reset() {
         *super::STATE.lock().unwrap() = None;
     }
 
     /// The generator's next `n` bytes after a fresh `set(millis, entropy)`.
+    #[cfg(feature = "getrandom04")]
     fn generators(entropy: &[u8], n: usize) -> Vec<u8> {
         reset();
         super::set(1, entropy);

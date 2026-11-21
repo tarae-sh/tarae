@@ -946,6 +946,9 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin-sdk");
         let mut sdk = std::process::Command::new("cargo");
         sdk.args(["test", "--features", "test", "--target", &host().unwrap()]).current_dir(root.join("sdk"));
+        // (warnings as errors, as CI's `RUSTFLAGS` makes them: here too, so the preflight denies what CI denies — the
+        // SDK's own config gives no rustflags for this one to replace)
+        sdk.env("RUSTFLAGS", "-D warnings");
         crate::testing::fixture_target(&mut sdk, &root.join("sdk"));
         let sdk = sdk.output().unwrap();
         let said = String::from_utf8_lossy(&sdk.stdout);

@@ -37,6 +37,9 @@ jobs:
   # CI's at all: the Mac builds and runs them at every landing (`:preflight`, `:preflight-full`)
   test:
     name: test (linux${{ matrix.features && format(', {0}', matrix.features) || '' }})
+    # A hang ends the job, not the driver: on PR #9's run xtask's record::tests held both Linux jobs five hours until
+    # cancelled; the tarae binary's tests took 841 s there, so an hour is roomy
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -90,8 +93,14 @@ jobs:
   # (preflight's cis_network_job_runs_every_network_test_and_only_those)
   network:
     runs-on: ubuntu-latest
+    # (as the test jobs: a hang ends the job)
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: TARAE_MEASURE_REACHES_NETWORK=1 cargo test --locked --bin tarae -- --ignored --exact grammar::tests::grammar_install_e2e plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin plugin::cli::tests::the_bundled_plugins_pass_their_own_tests web::fetch::tests::a_real_page_is_fetched
+      # RUSTFLAGS unset, not emptied (an empty value wins too): cargo takes rustflags from one place only and
+      # RUSTFLAGS wins over a config's, so `tarae plugin test` would build the bundled db plugin without its
+      # .cargo/config.toml's `--cfg getrandom_backend="custom"` and getrandom 0.4 refuses wasm32. The SDK's own
+      # tests deny warnings in the test itself
+      - run: env -u RUSTFLAGS TARAE_MEASURE_REACHES_NETWORK=1 cargo test --locked --bin tarae -- --ignored --exact grammar::tests::grammar_install_e2e plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin plugin::cli::tests::the_bundled_plugins_pass_their_own_tests web::fetch::tests::a_real_page_is_fetched
