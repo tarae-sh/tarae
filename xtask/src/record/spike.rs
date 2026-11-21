@@ -433,6 +433,8 @@ fn bench_direct(bin: &Path, me: &Path, size: (u16, u16)) -> Result<Round> {
     let mut d = Driver::on(File::from(master), size)?;
     let t0 = Instant::now();
     let mut child = cmd.spawn().map_err(|e| format!("tarae: {e}"))?;
+    // Drop `cmd`'s copies of the slave too: on Linux the pty's end comes only once no one holds the slave.
+    drop(cmd);
     drop(slave);
     let round = drive(&mut d, t0);
     d.quit();

@@ -380,6 +380,8 @@ fn drive(
         });
     }
     let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", bin.display()))?;
+    // Drop `cmd`'s copies of the slave too: on Linux the pty's end comes only once no one holds the slave.
+    drop(cmd);
     drop(slave);
     let (tx, rx) = mpsc::channel();
     let mut reader = master.try_clone().map_err(|e| e.to_string())?;

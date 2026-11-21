@@ -1038,6 +1038,8 @@ fn drive_with(
         });
     }
     let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", setup.bin.display()))?;
+    // Drop `cmd`'s copies of the slave too: on Linux the pty's end comes only once no one holds the slave.
+    drop(cmd);
     drop(slave);
     on_spawn(child.id());
 
