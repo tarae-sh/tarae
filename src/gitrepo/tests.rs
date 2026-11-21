@@ -12,6 +12,109 @@ fn git_in(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// Every git a test starts itself goes through `test_git` — no global config at all, never the user's (#678: their
+/// `safe.bareRepository=explicit` failed two tests). The list holds what's left, per file, and only shrinks
+/// (the message prints the table as it is now).
+#[test]
+fn every_git_a_test_starts_goes_through_test_git() {
+    let now = crate::sim::lint::test_counts(&["new(\"git\")"], &[]);
+    crate::sim::lint::only_shrinks("git started directly in tests", &now, GIT_STARTED_IN_TESTS);
+}
+
+/// `test_git` takes nothing of git's from the test's environment: each of a repository's own names removed (a
+/// test run under `git -c …`, a hook or `rebase -x` would hand it config above every file, or tarae's own
+/// repository), and the three that shut out the machine's config set.
+#[test]
+fn test_git_takes_no_repository_or_config_from_the_environment() {
+    let git = test_git("/");
+    let envs: std::collections::HashMap<_, _> = git.get_envs().collect();
+    // (`git rev-parse --local-env-vars`, git 2.54, and the template folder `fixture_git` kept out)
+    let removed = "GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
+                   GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE \
+                   GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR \
+                   GIT_TEMPLATE_DIR";
+    for name in removed.split_whitespace() {
+        assert_eq!(envs.get(std::ffi::OsStr::new(name)), Some(&None), "{name}: not removed");
+    }
+    for (name, value) in
+        [("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1"), ("XDG_CONFIG_HOME", "/dev/null")]
+    {
+        assert_eq!(envs.get(std::ffi::OsStr::new(name)), Some(&Some(std::ffi::OsStr::new(value))), "{name}");
+    }
+}
+
+/// git a test starts itself, outside `test_git`, per file (from the repository's root). `tests/` and xtask are crates
+/// of their own: `test_git` is tarae's test build's, so theirs wait for a helper they can reach.
+const GIT_STARTED_IN_TESTS: &[(&str, usize)] = &[
+    ("src/allow.rs", 2),
+    ("src/apply/tests.rs", 1),
+    ("src/basetree/tests.rs", 1),
+    ("src/billing/tests.rs", 1),
+    ("src/chat.rs", 1),
+    ("src/codereview.rs", 26),
+    ("src/codetrust/tests.rs", 3),
+    ("src/compat.rs", 1),
+    ("src/config.rs", 7),
+    ("src/endsave/tests.rs", 2),
+    ("src/folders/tests.rs", 1),
+    ("src/fork/tests.rs", 2),
+    ("src/git.rs", 2),
+    ("src/gitmenu.rs", 2),
+    ("src/gitpanel.rs", 3),
+    // (`test_git` itself)
+    ("src/gitrepo.rs", 1),
+    ("src/gitrepo/held/tests.rs", 10),
+    ("src/gitrepo/tests.rs", 3),
+    ("src/gittool/tests.rs", 2),
+    ("src/gittrust/tests.rs", 4),
+    ("src/hooks.rs", 1),
+    ("src/keepclose/tests.rs", 1),
+    ("src/lookalike/tests.rs", 1),
+    ("src/lsp_editor.rs", 1),
+    ("src/motion/tests.rs", 1),
+    ("src/orchestra/tests.rs", 1),
+    ("src/overlap/tests.rs", 3),
+    ("src/picker.rs", 1),
+    ("src/plugin/mod.rs", 2),
+    ("src/reads.rs", 2),
+    ("src/repotrust/tests.rs", 1),
+    ("src/restart.rs", 1),
+    ("src/reviewer.rs", 1),
+    ("src/reviews/tests.rs", 1),
+    ("src/safebare/tests.rs", 1),
+    ("src/sandbox.rs", 4),
+    ("src/sandbox/linux.rs", 1),
+    ("src/sandbox/proxy/macos_tests.rs", 1),
+    ("src/sandbox/refused.rs", 1),
+    ("src/sim/applies.rs", 1),
+    ("src/sim/brings.rs", 1),
+    ("src/sim/codetrust.rs", 1),
+    ("src/sim/commit.rs", 1),
+    ("src/sim/folders.rs", 1),
+    ("src/sim/keepclose.rs", 2),
+    ("src/sim/lookalike.rs", 1),
+    ("src/sim/rebaseexit.rs", 1),
+    ("src/sim/sessions.rs", 1),
+    ("src/sim/trustscan.rs", 1),
+    ("src/sinceyes/tests.rs", 1),
+    ("src/snapread.rs", 2),
+    ("src/snapshot/look.rs", 1),
+    ("src/snapshot/tests.rs", 2),
+    ("src/terminal.rs", 1),
+    ("src/weave/tests.rs", 1),
+    ("src/workspacekeep.rs", 1),
+    ("src/worktree.rs", 8),
+    ("src/writing/tests.rs", 1),
+    ("tests/e2e.rs", 4),
+    ("tests/harness/mod.rs", 2),
+    ("tests/live.rs", 6),
+    ("tests/live/watched.rs", 2),
+    ("xtask/src/buildprune/tests.rs", 1),
+    ("xtask/src/linux.rs", 3),
+    ("xtask/src/record/hands/tests.rs", 1),
+    ("xtask/src/scenes.rs", 1),
+];
+
 /// A commit is said by its first 7 characters, a shorter one whole — never cut inside a character (#479).
 #[test]
 fn a_short_sha_is_said_whole() {

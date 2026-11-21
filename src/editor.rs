@@ -8370,9 +8370,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tarae-gitmenu-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().expect("git").stdout
-        };
+        let git = |args: &[&str]| crate::gitrepo::test_git(&dir).args(args).output().expect("git").stdout;
         git(&["init", "-q"]);
         git(&["config", "user.name", "Kim"]);
         git(&["config", "user.email", "kim@example.com"]);
@@ -8428,9 +8426,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tarae-blame-wait-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().expect("git").stdout
-        };
+        let git = |args: &[&str]| crate::gitrepo::test_git(&dir).args(args).output().expect("git").stdout;
         git(&["init", "-q"]);
         git(&["config", "user.name", "Kim"]);
         git(&["config", "user.email", "kim@example.com"]);
@@ -8467,7 +8463,7 @@ mod tests {
         let file = dir.join("sub/a.txt");
         std::fs::write(&file, "one\n").unwrap();
         for args in [&["init", "-q"][..], &["add", "sub/a.txt"]] {
-            let ok = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            let ok = crate::gitrepo::test_git(&dir).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
         std::fs::write(&file, "one\ntwo\n").unwrap();
@@ -8528,7 +8524,7 @@ mod tests {
         let file = dir.join("sub/a.txt");
         std::fs::write(&file, "one\n").unwrap();
         for args in [&["init", "-q"][..], &["add", "sub/a.txt"]] {
-            let ok = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            let ok = crate::gitrepo::test_git(&dir).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
         std::fs::write(&file, "one\ntwo\n").unwrap();
@@ -10479,7 +10475,7 @@ mod tests {
         // The commit as git makes it, stopped between its two steps: the new index in `index.lock`, the old one still
         // `index`, the ref moved
         let out = |args: &[&str]| {
-            let o = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            let o = crate::gitrepo::test_git(&dir).args(args).output().unwrap();
             assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
             String::from_utf8(o.stdout).unwrap().trim().to_string()
         };
@@ -12872,9 +12868,7 @@ mod tests {
         let dir = std::fs::canonicalize(&dir).unwrap();
         std::fs::write(dir.join("Cargo.toml"), "[package]\n").unwrap();
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&dir)
+            crate::gitrepo::test_git(&dir)
                 .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
                 .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t"])
                 .args(args)
@@ -16936,12 +16930,7 @@ mod tests {
                 && ed.workspace.git_status.as_ref().is_some_and(|s| s.staged.is_empty())
                 && ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG")
         });
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["log", "-1", "--format=%s"])
-            .output()
-            .unwrap();
+        let log = crate::gitrepo::test_git(&repo).args(["log", "-1", "--format=%s"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "add two");
         assert!(ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG"), "its buffer closed");
         assert_eq!(
@@ -17036,11 +17025,7 @@ mod tests {
             ed.workspace.committing.is_none()
                 && ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG")
         });
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["log", "-1", "--format=%B"])
-            .output();
+        let out = crate::gitrepo::test_git(&repo).args(["log", "-1", "--format=%B"]).output();
         let body = String::from_utf8_lossy(&out.unwrap().stdout).trim().to_string();
         assert_eq!(body, "#146: keep it\n\n#149's body stays\nand a plain line");
         std::fs::remove_dir_all(&repo).ok();
@@ -17236,14 +17221,26 @@ mod tests {
 
     /// git's output in `dir` (trimmed) — the test fails if git does.
     fn git_out(dir: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        checked_out(&mut crate::gitrepo::test_git(dir), args)
+    }
+
+    /// git's output in the bare repository `bare` (`bare_remote`'s), named with `--git-dir` — as a person who took
+    /// #610's offer has git read one (`safe.bareRepository=explicit` refuses one it's only in).
+    fn bare_out(bare: &Path, args: &[&str]) -> String {
+        let mut named = std::ffi::OsString::from("--git-dir=");
+        named.push(bare);
+        checked_out(crate::gitrepo::test_git(bare).arg(named), args)
+    }
+
+    fn checked_out(git: &mut std::process::Command, args: &[&str]) -> String {
+        let out = git.args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     /// Whether git succeeds in `dir`.
     fn git_ok(dir: &Path, args: &[&str]) -> bool {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        let out = crate::gitrepo::test_git(dir).args(args).output().unwrap();
         out.status.success()
     }
 
@@ -17300,7 +17297,7 @@ mod tests {
         settle_until(&mut ed, |ed| {
             said(ed, ToastKind::Success, "Pushed main") == 1 && status(ed).upstream.is_some()
         });
-        assert_eq!(git_out(&bare, &["rev-parse", "main"]), git_out(&work, &["rev-parse", "HEAD"]));
+        assert_eq!(bare_out(&bare, &["rev-parse", "main"]), git_out(&work, &["rev-parse", "HEAD"]));
         assert_eq!(status(&ed).upstream.as_deref(), Some("origin/main"));
         // One of ours ahead: pushed
         commit_in(&work, "a.txt", "one\ntwo\n", "two");
@@ -17308,7 +17305,7 @@ mod tests {
         settle_until(&mut ed, |ed| status(ed).ahead == 1);
         feed(&mut ed, "P");
         settle_until(&mut ed, |ed| said(ed, ToastKind::Success, "Pushed main") == 2 && status(ed).ahead == 0);
-        assert_eq!(git_out(&bare, &["rev-parse", "main"]), git_out(&work, &["rev-parse", "HEAD"]));
+        assert_eq!(bare_out(&bare, &["rev-parse", "main"]), git_out(&work, &["rev-parse", "HEAD"]));
         // Someone else pushes: `p` takes it in; again, nothing to take
         git_in(&base, &["clone", "-q", bare.to_str().unwrap(), "other"]);
         let other = base.join("other");
@@ -17338,7 +17335,7 @@ mod tests {
         settle_until(&mut ed, |ed| {
             ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::ForcePush(_)))
         });
-        assert_eq!(git_out(&bare, &["rev-parse", "main"]), theirs, "the remote kept theirs");
+        assert_eq!(bare_out(&bare, &["rev-parse", "main"]), theirs, "the remote kept theirs");
         ed.offer_dismiss();
         feed(&mut ed, "p");
         settle_until(&mut ed, |ed| said(ed, ToastKind::Error, "pull: ") == 1);
@@ -17497,9 +17494,39 @@ mod tests {
     /// remote's hook refuses says why — not git's last line.
     #[test]
     fn amend_then_push_over_the_remote_with_a_lease() {
+        amend_then_push(false);
+    }
+
+    /// #610: a person who took tarae's offer has git use a bare repository only when named. tarae's own amend, card
+    /// and push over a bare remote work for them as for anyone: the same scene, `safe.bareRepository = explicit` in
+    /// this test's own global config, never the user's — tarae's git reads it, and the one command that checks
+    /// it holds names it; the test's own git (`test_git`) reads none.
+    #[test]
+    fn amend_then_push_works_where_git_takes_a_bare_repository_only_when_named() {
+        amend_then_push(true);
+    }
+
+    fn amend_then_push(only_named: bool) {
         use crate::offer::What;
-        let work = git_repo("amend-push", &[("a.txt", "one\n")]);
-        let (bare, base) = bare_remote("amend-push", &work);
+        let work =
+            git_repo(if only_named { "amend-push-named" } else { "amend-push" }, &[("a.txt", "one\n")]);
+        let (bare, base) = bare_remote(if only_named { "amend-push-named" } else { "amend-push" }, &work);
+        if only_named {
+            let file = base.join("user.gitconfig");
+            std::fs::write(&file, "[safe]\n\tbareRepository = explicit\n").unwrap();
+            // (tarae's git runs in `work` only; the push's receive-pack in the remote is its child, its
+            // environment the pusher's)
+            crate::gitrepo::global_config_for(&work, &file);
+            // (it holds: git only in the bare remote, not naming it, is refused — this one command reads the
+            // test's global, named here: `test_git` reads none)
+            let in_it = crate::gitrepo::test_git(&bare)
+                .env("GIT_CONFIG_GLOBAL", &file)
+                .args(["rev-parse", "main"])
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&in_it.stderr);
+            assert!(!in_it.status.success() && err.contains("cannot use bare repository"), "{err}");
+        }
         git_in(&work, &["push", "-q", "-u", "origin", "main"]);
         let first = git_out(&work, &["rev-parse", "HEAD"]);
         let status = |ed: &Editor| ed.workspace.git_status.clone().unwrap_or_default();
@@ -17544,7 +17571,7 @@ mod tests {
             "the amended one: {q}"
         );
         assert!(ed.offers[0].warning.is_none(), "nothing of anyone else's goes");
-        assert_eq!(git_out(&bare, &["rev-parse", "main"]), first, "nothing pushed before y");
+        assert_eq!(bare_out(&bare, &["rev-parse", "main"]), first, "nothing pushed before y");
         // A colleague pushes two meanwhile: y's lease refuses, theirs kept
         git_in(&base, &["clone", "-q", bare.to_str().unwrap(), "other"]);
         let other = base.join("other");
@@ -17566,7 +17593,7 @@ mod tests {
         settle_until(&mut ed, |ed| {
             said(ed, ToastKind::Error, "origin/main moved since the card was shown") == 1
         });
-        assert_eq!(git_out(&bare, &["rev-parse", "main"]), theirs, "the lease kept theirs");
+        assert_eq!(bare_out(&bare, &["rev-parse", "main"]), theirs, "the lease kept theirs");
         // Asked again: the colleague's two are named as not yours — first, warned, counted in the title — then
         // ours as it was before the amend; y replaces exactly what it listed
         ed.workspace.set_at(crate::workspace::Here::Side);
@@ -17590,7 +17617,7 @@ mod tests {
         assert_eq!(ed.offers[0].decided_lines(), 1..6, "both groups are what's decided");
         ed.offer_accept();
         settle_until(&mut ed, |ed| said(ed, ToastKind::Success, "Pushed main over origin/main") == 1);
-        assert_eq!(git_out(&bare, &["rev-parse", "main"]), git_out(&work, &["rev-parse", "HEAD"]));
+        assert_eq!(bare_out(&bare, &["rev-parse", "main"]), git_out(&work, &["rev-parse", "HEAD"]));
         // `A` on a pushed commit warns too (`:q` cancels)
         ed.git_commit_start(true);
         settle_until(&mut ed, |ed| {
@@ -17628,7 +17655,7 @@ mod tests {
         assert!(q.contains(&expect), "{q}");
         assert!(ed.messages.iter().all(|m| !m.2.contains("hint:")), "{:?}", ed.messages);
         ed.offer_dismiss();
-        assert_eq!(git_out(&bare, &["rev-parse", "main"]), later, "n: theirs as it was");
+        assert_eq!(bare_out(&bare, &["rev-parse", "main"]), later, "n: theirs as it was");
         // A push the remote refuses (its hook): said why — git's own last line is `error: failed to push`
         let hook = bare.join("hooks/pre-receive");
         std::fs::write(&hook, "#!/bin/sh\necho 'main is protected' >&2\nexit 1\n").unwrap();
@@ -18022,12 +18049,7 @@ mod tests {
         assert!(text(&ed).starts_with("base\n"), "{}", text(&ed));
         feed(&mut ed, "A, amended<esc>:w<ret>");
         settle_until(&mut ed, |ed| ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG"));
-        let log = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["log", "--format=%s"])
-            .output()
-            .unwrap();
+        let log = crate::gitrepo::test_git(&repo).args(["log", "--format=%s"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "base, amended", "one commit, amended");
         // A new message: insert mode, as before
         std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
@@ -18207,12 +18229,7 @@ mod tests {
             ed.workspace.committing.is_none()
                 && ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG")
         });
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["log", "-1", "--format=%B"])
-            .output()
-            .unwrap();
+        let out = crate::gitrepo::test_git(&repo).args(["log", "-1", "--format=%B"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("Add two\n\n{wrapped}"));
         std::fs::remove_dir_all(&repo).ok();
         std::fs::remove_file(&log).ok();
@@ -18629,12 +18646,7 @@ mod tests {
         );
         feed(&mut ed, "s");
         settle_until(&mut ed, |ed| ed.doc().git_hunks.len() == 1);
-        let staged = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["diff", "--cached"])
-            .output()
-            .unwrap();
+        let staged = crate::gitrepo::test_git(&repo).args(["diff", "--cached"]).output().unwrap();
         let staged = String::from_utf8_lossy(&staged.stdout);
         assert!(staged.contains("+FOUR") && !staged.contains("+ONE"), "that hunk alone: {staged}");
         assert!(ed.workspace.is_at(crate::workspace::Here::Side), "the tab keeps the keys (#50)");
@@ -18816,9 +18828,7 @@ mod tests {
     fn a_review_takes_the_base_over_from_the_git_tab() {
         let dir = git_repo("inline-review", &[("a.txt", "one\ntwo\n")]);
         std::fs::write(dir.join("a.txt"), "one\nTWO\n").unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap()
-        };
+        let git = |args: &[&str]| crate::gitrepo::test_git(&dir).args(args).output().unwrap();
         git(&["add", "a.txt"]);
         std::fs::write(dir.join("a.txt"), "ONE\nTWO\n").unwrap();
         let mut ed = editor("");
@@ -18842,9 +18852,7 @@ mod tests {
     #[test]
     fn the_git_tabs_deleted_untracked_and_staged_rows_show_what_they_can() {
         let repo = git_repo("inline-rows", &[("a.txt", "one\ntwo\nthree\n"), ("d.txt", "gone\n")]);
-        let git = |args: &[&str]| {
-            std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap()
-        };
+        let git = |args: &[&str]| crate::gitrepo::test_git(&repo).args(args).output().unwrap();
         std::fs::write(repo.join("a.txt"), "ONE\ntwo\nthree\n").unwrap();
         git(&["add", "a.txt"]);
         std::fs::write(repo.join("a.txt"), "ONE\ntwo\nTHREE\n").unwrap();
@@ -19532,7 +19540,7 @@ mod tests {
     }
 
     fn git_in(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        let out = crate::gitrepo::test_git(dir).args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
@@ -22870,7 +22878,7 @@ q = \"delete_selection\"\n",
         }
         std::fs::write(dir.join("src/selection.rs"), "fn other() {}\n\nfn put_cursor() {}\n").unwrap();
         for args in [&["init", "-q"][..], &["add", "-A"]] {
-            let ok = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            let ok = crate::gitrepo::test_git(&dir).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
         let mut ed = editor("");

@@ -794,6 +794,51 @@ fn test_global(dir: &Path) -> PathBuf {
     own.map(|(_, f)| f).unwrap_or_else(|| PathBuf::from("/dev/null"))
 }
 
+/// Tests: what git takes from the environment as a repository's own — another repository (`GIT_DIR`,
+/// `GIT_WORK_TREE`: tarae's own, under `git rebase -x 'cargo test'` or a hook) or config above every file
+/// (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`: `git -c …`). `git rev-parse --local-env-vars`'s list (git 2.54),
+/// which git itself clears entering a submodule — and the environment's template folder.
+#[cfg(test)]
+const TEST_GIT_REMOVES: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    // (not a repository's: `init.templateDir`'s stand-in, a user's hooks copied into a fixture)
+    "GIT_TEMPLATE_DIR",
+];
+
+/// Tests only: git a test starts itself, in `dir`, reading no global config at all — `/dev/null`, no system config,
+/// none of the machine's ignore and attributes, and none from the environment: no `git -c`'s, no other repository
+/// (`TEST_GIT_REMOVES`) — so the user's `safe.bareRepository`, hooks or fsmonitor reach no test (#678), and a test
+/// run from inside git (a hook, `rebase -x`) works in `dir`, not git's repository. Not the test's own either: a
+/// global a test registers (`global_config_for`) stands in for a hostile user's, which only tarae's git under test
+/// (`base`) may meet — a set-up or a query running its filters would change what the test measures. A test that means
+/// its own git to see one names the file on that one command (`.env("GIT_CONFIG_GLOBAL", file)`). Every git a test
+/// starts goes through here (`every_git_a_test_starts_goes_through_test_git`).
+#[cfg(test)]
+pub(crate) fn test_git(dir: impl AsRef<Path>) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir.as_ref());
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1").env("XDG_CONFIG_HOME", "/dev/null");
+    for name in TEST_GIT_REMOVES {
+        cmd.env_remove(name);
+    }
+    cmd
+}
+
 #[cfg(test)]
 pub fn global_config_for(under: &Path, file: &Path) {
     GLOBALS.lock().unwrap_or_else(|e| e.into_inner()).push((under.to_path_buf(), file.to_path_buf()));
@@ -1382,15 +1427,10 @@ pub(crate) fn not_in_this_repository(dir: &Path, args: &[&str]) {
 #[cfg(test)]
 pub(crate) fn fixture_git(dir: &Path, args: &[&str]) -> String {
     not_in_this_repository(dir, args);
-    let out = Command::new("git")
+    let out = test_git(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
         .args(["-c", "init.defaultBranch=main", "-c", "core.hooksPath=/dev/null"])
         .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("XDG_CONFIG_HOME", "/dev/null")
-        .env_remove("GIT_TEMPLATE_DIR")
         .output()
         .unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));

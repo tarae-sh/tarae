@@ -1388,9 +1388,10 @@ pub mod lint {
         let mut out = BTreeMap::new();
         for (path, s) in &split {
             let whole;
+            // (a test-only file whole, its literals kept as in its test-only items: a pattern may hold one)
             let text = match all_tests || tests.contains(*path) {
                 true => {
-                    whole = format!("{}{}", s.code, s.tests);
+                    whole = format!("{}{}", s.decls, s.tests);
                     &whole
                 }
                 false => &s.tests,
