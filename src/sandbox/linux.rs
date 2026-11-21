@@ -3543,6 +3543,7 @@ mod tests {
     /// A folder tarae's own `mkdir` made that fails the check is never recorded, so it's never taken later (#667: the
     /// record follows the check). In a setgid instance folder the fresh shut folder inherits the bit (mode 02000) and is
     /// refused for its mode; its mode set to 0 after, the next confine finds it made but unrecorded: still refused.
+    /// The instance folder here is the test's own, given the bit by hand: tarae's (`Instance::make`) clears it (#673).
     #[test]
     fn a_shut_folder_refused_as_it_was_made_is_never_taken() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -3572,6 +3573,49 @@ mod tests {
         assert!(
             said(&second).contains("not the folder tarae made there"),
             "never recorded, never taken: {second:?}"
+        );
+    }
+
+    /// A setgid runs folder (#673: a setgid home, an `XDG_CACHE_HOME` in a group's shared folder): the instance folder
+    /// tarae makes in it doesn't keep the bit, so the shut folder made in that is mode 0 and taken — where it kept it,
+    /// the shut folder came out 02000 and was refused at every run.
+    #[test]
+    fn a_setgid_runs_folder_still_gives_a_shut_folder_taken() {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        let held = crate::scratch::Scratch::new("shut-setgid-base");
+        let base = held.to_path_buf();
+        // (each mode in octal, none where it isn't there)
+        let mode = |p: &Path| {
+            std::fs::symlink_metadata(p).map_or("none".to_string(), |m| format!("0o{:o}", m.mode() & 0o7777))
+        };
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o2700)).unwrap();
+        assert_eq!(
+            mode(&base),
+            "0o2700",
+            "the base keeps the setgid bit (what this test needs of the filesystem)"
+        );
+        // (and passes it on to a folder made in it: a filesystem that keeps the bit but doesn't — some FUSE, 9p,
+        // drvfs — gives a 0700 instance folder with the fix broken too)
+        let sibling = base.join("plain");
+        std::fs::DirBuilder::new().mode(0o700).create(&sibling).unwrap();
+        assert_eq!(
+            mode(&sibling),
+            "0o2700",
+            "a folder made in the base takes the bit (what this test needs too)"
+        );
+        let run = RunDir::new_in(&base).unwrap();
+        let instance = run.path().parent().unwrap().to_path_buf();
+        let at = instance.join(super::super::SHUT_FOLDER);
+        let made = mode(&instance);
+        let taken = Covers::default().shut_folder(run.path());
+        let shut = mode(&at);
+        // (by name, its mode back first, so the scratch folder can go)
+        let _ = std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::remove_dir(&at);
+        assert!(
+            made == "0o700" && shut == "0o0" && taken.is_ok(),
+            "the instance folder without the setgid bit, its shut folder mode 0 and taken: \
+             instance folder {made}, shut folder {shut}, taken: {taken:?}"
         );
     }
 

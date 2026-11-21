@@ -2723,6 +2723,7 @@ impl Instance {
                 }
                 Err(e) => return Err(e),
             }
+            setgid_cleared(&dir);
             match lock_taken(&dir.join(INSTANCE_LOCK)) {
                 Ok(Some(lock)) => return Ok(Instance { dir, lock, since: instance_since() }),
                 // (a prune holds it: the folder is going)
@@ -2746,6 +2747,24 @@ impl Instance {
             (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
             _ => false,
         }
+    }
+}
+
+/// The setgid bit cleared from an instance folder just made: its mode set to 0700 through a handle of it (opened
+/// through no link — never a chmod by path). On Linux a folder made in a setgid one takes the bit whatever mode it
+/// asks for (#673: a setgid home, an `XDG_CACHE_HOME` in a group's shared folder), and passes it on to what's made
+/// in it — the shut folder would come out 02000 and be refused for its mode at every run. One that fails is logged;
+/// its shut folder is then refused as before (closed).
+fn setgid_cleared(dir: &Path) {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let set = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)
+        .and_then(|f| f.set_permissions(std::fs::Permissions::from_mode(0o700)));
+    if let Err(e) = set {
+        let said = format!("{}: its mode not set to 700, a setgid bit may stay: {e}", dir.display());
+        crate::log::line("sandbox", "warning", &said);
     }
 }
 
