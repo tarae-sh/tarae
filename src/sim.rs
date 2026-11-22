@@ -1311,6 +1311,65 @@ mod tests {
         let counted: Vec<&str> = n.keys().map(String::as_str).collect();
         assert_eq!(counted, ["nav.rs", "term/after.rs"]);
     }
+
+    /// No tracked text file names the home folder (`/Users/<login>/` or `/home/<login>/`) of whoever runs the
+    /// tests (a4bf3c55). Skips out loud when `HOME` is unset, empty, or `/`.
+    #[test]
+    fn no_tracked_file_names_the_home_of_whoever_runs_the_tests() {
+        let Some(login) = lint::home_login(std::env::var_os("HOME").as_deref()) else {
+            return crate::test_results::said_skip(
+                "sim::tests::no_tracked_file_names_the_home_of_whoever_runs_the_tests — HOME is unset, empty, or /",
+            );
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let hits = lint::home_paths_in(root, &login);
+        assert!(
+            hits.is_empty(),
+            "tracked files name this machine's home folder (/Users/{login}/ or /home/{login}/):\n{}",
+            hits.join("\n")
+        );
+    }
+
+    /// `home_login` and `home_paths_in`: extracts the last path component (rejecting unset, empty, `/`), catches
+    /// both `/Users/<login>/` and `/home/<login>/` with 1-based `file:line`, and skips binary files and other
+    /// logins.
+    #[test]
+    fn home_path_lint_catches_both_prefixes_and_names_each_line() {
+        assert_eq!(lint::home_login(None), None);
+        assert_eq!(lint::home_login(Some(std::ffi::OsStr::new(""))), None);
+        assert_eq!(lint::home_login(Some(std::ffi::OsStr::new("/"))), None);
+        assert_eq!(
+            lint::home_login(Some(std::ffi::OsStr::new("/Users/tarae-lint-user"))),
+            Some("tarae-lint-user".into())
+        );
+        assert_eq!(
+            lint::home_login(Some(std::ffi::OsStr::new("/Users/tarae-lint-user/"))),
+            Some("tarae-lint-user".into())
+        );
+        assert_eq!(
+            lint::home_login(Some(std::ffi::OsStr::new("/home/tarae-lint-user"))),
+            Some("tarae-lint-user".into())
+        );
+
+        let s = crate::scratch::Scratch::new("home-path-lint");
+        std::fs::create_dir_all(s.join("docs")).unwrap();
+        std::fs::create_dir_all(s.join("src")).unwrap();
+        let login = "tarae-lint-user";
+        std::fs::write(
+            s.join("src/a.rs"),
+            format!("let ok = \"/Users/{login}2/x\";\nlet bad = \"/Users/{login}/x\";\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            s.join("docs/note.md"),
+            format!("line one\nline two\nsee /home/{login}/.config/tarae\n"),
+        )
+        .unwrap();
+        std::fs::write(s.join("docs/img.png"), [0x89, b'P', b'N', b'G', 0, b'/']).unwrap();
+
+        let hits = lint::home_paths_in(&s, login);
+        assert_eq!(hits, ["docs/note.md:3", "src/a.rs:2"]);
+    }
 }
 
 /// Source-walking checks that keep code on the simulation's seams (`clock`, `event::sleep`).
@@ -1744,5 +1803,84 @@ pub mod lint {
         }
         let table: String = now.iter().map(|(f, n)| format!("    (\"{f}\", {n}),\n")).collect();
         assert!(wrong.is_empty(), "{what}:\n{}\n\nthe table as it is now:\n{table}", wrong.join("\n"));
+    }
+
+    /// The login named by `HOME` — its last normal path component (`None` when unset, empty, or `/`).
+    pub fn home_login(home: Option<&std::ffi::OsStr>) -> Option<String> {
+        let home = home.filter(|h| !h.is_empty())?;
+        let name = Path::new(home).file_name()?.to_str()?;
+        (!name.is_empty()).then(|| name.to_string())
+    }
+
+    /// Every tracked file under `root` (relative paths, sorted): `git ls-files -z` via `test_git` when `root`
+    /// is a git checkout, or every regular file under `root` (skipping `.git`, `target`, `.sb`, `.claude`) when
+    /// pointed at a scratch folder or tarball.
+    pub fn tracked_files(root: &Path) -> Vec<std::path::PathBuf> {
+        let mut out = if root.join(".git").exists() {
+            let res = crate::gitrepo::test_git(root).args(["ls-files", "-z"]).output().expect("git ls-files");
+            assert!(
+                res.status.success(),
+                "git ls-files in {}: {}",
+                root.display(),
+                String::from_utf8_lossy(&res.stderr)
+            );
+            let files: Vec<std::path::PathBuf> = res
+                .stdout
+                .split(|&b| b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| std::path::PathBuf::from(std::str::from_utf8(s).expect("tracked path is UTF-8")))
+                .collect();
+            assert!(!files.is_empty(), "git ls-files returned no files in {}", root.display());
+            files
+        } else {
+            let mut rels = Vec::new();
+            walk_all(root, root, &mut rels);
+            rels
+        };
+        out.sort();
+        out
+    }
+
+    fn walk_all(root: &Path, dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if matches!(entry.file_name().to_str(), Some(".git" | "target" | ".sb" | ".claude")) {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                walk_all(root, &path, out);
+            } else if ft.is_file()
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                out.push(rel.to_path_buf());
+            }
+        }
+    }
+
+    /// Lines in tracked text files under `root` that name `/Users/<login>/` or `/home/<login>/`, each as
+    /// `<path>:<line>` (1-based). Binary (non-UTF-8 or NUL-bearing), non-regular, and missing files are skipped.
+    pub fn home_paths_in(root: &Path, login: &str) -> Vec<String> {
+        let needles = [format!("/Users/{login}/"), format!("/home/{login}/")];
+        let mut hits = Vec::new();
+        for rel in tracked_files(root) {
+            let full = root.join(&rel);
+            if !full.symlink_metadata().is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&full) else { continue };
+            if bytes.contains(&0) {
+                continue;
+            }
+            let Ok(text) = std::str::from_utf8(&bytes) else { continue };
+            let shown = rel.to_string_lossy().replace('\\', "/");
+            for (idx, line) in text.lines().enumerate() {
+                if needles.iter().any(|n| line.contains(n.as_str())) {
+                    hits.push(format!("{shown}:{}", idx + 1));
+                }
+            }
+        }
+        hits
     }
 }
