@@ -7,6 +7,7 @@ use crate::editor::Editor;
 use crate::offer::{Offer, What};
 use crate::sizes::Slot;
 use crate::uistate::tests::{chat, editor, light_card, task_panel};
+use unicode_width::UnicodeWidthStr;
 
 /// A frame at `w`×`h`, as the main loop draws one after an event.
 fn frame(ed: &mut Editor, (w, h): (u16, u16)) {
@@ -251,5 +252,112 @@ fn the_nine_file_end_card_keeps_its_width_given_the_keys() {
         );
         let line = super::card_line(&ed).unwrap_or_default();
         assert!(whole(&line), "{high}: its answers whole, with the keys: {line}");
+    }
+}
+
+/// #659: a break at a ` · ` separator takes the separator with it — neither row ends nor starts on `·`,
+/// rows stay within `w`, and indents / single-row separators / grapheme clusters at the break stay intact.
+#[test]
+fn card_rows_takes_dot_separator_at_wrap_breaks() {
+    fn words(s: &str) -> Vec<&str> {
+        s.split_whitespace().filter(|w| *w != "·").collect()
+    }
+    let check = |text: &str, w: usize, row0: usize, cont: usize, check_words: bool| {
+        let rows = super::card_rows(text, w);
+        assert!(!rows.is_empty(), "w={w}: empty rows for {text:?}");
+        for (idx, r) in rows.iter().enumerate() {
+            assert!(r.width() <= w, "w={w}: row {idx} wider than w ({} > {w}): {r:?} in {rows:?}", r.width());
+            assert!(!r.ends_with(" ·") && r.trim() != "·", "w={w}: row {idx} ends on separator: {rows:?}");
+            let expected = if idx == 0 { row0 } else { cont.min(w / 2) };
+            assert_eq!(
+                r.len() - r.trim_start_matches(' ').len(),
+                expected,
+                "w={w}: row {idx} indent: {rows:?}"
+            );
+            let body = &r[expected..];
+            if idx > 0 {
+                assert!(
+                    !body.starts_with("· ") && body != "·",
+                    "w={w}: row {idx} starts on separator: {rows:?}"
+                );
+            }
+        }
+        if check_words {
+            let got: Vec<&str> = rows.iter().flat_map(|r| words(r)).collect();
+            assert_eq!(got, words(text), "w={w}: words changed: {rows:?}");
+        }
+    };
+
+    let cases = [
+        ("Connect to api.example.com · port 443 · through tarae's proxy", 0, 0, 15),
+        ("alpha · beta · gamma · delta · epsilon", 0, 0, 15),
+        ("  api.example.com · port 443 · through tarae's proxy", 2, 6, 17),
+        ("▲ first check · second check · third check", 0, 2, 15),
+    ];
+    for &(text, row0, cont, min_w) in &cases {
+        for w in 15..=70 {
+            check(text, w, row0, cont, w >= min_w);
+        }
+        assert_eq!(super::card_rows(text, 80), vec![text]);
+    }
+    // Without repacking after losing `· `, `tarae's` stays with `proxy` on the third row.
+    assert_eq!(
+        super::card_rows(cases[0].0, 27),
+        vec!["Connect to api.example.com", "port 443 · through", "tarae's proxy"]
+    );
+    assert_eq!(super::card_rows("·", 24), vec!["·"]);
+    assert_eq!(super::card_rows("  ·", 24), vec!["  ·"]);
+    // A ZWJ emoji and a combining mark at a wrap break stay whole across the break.
+    assert_eq!(super::card_rows("alpha · 👩\u{200D}💻 next", 10), vec!["alpha", "👩\u{200D}💻 next"]);
+    assert_eq!(super::card_rows("alpha · cafe\u{0301} · next", 12), vec!["alpha · cafe\u{0301}", "next"]);
+}
+
+/// Every row `card_rows(text, w)` returns fits within `w`, even for indented lines with 1–2-cell first words,
+/// long unbroken tokens, paths with/without trailing `/`, and ` · ` separators — preventing `OfferCard::draw`
+/// from underflowing `self.inner - text.width()`.
+#[test]
+fn card_rows_never_exceeds_width() {
+    let assert_fits = |label: &str, text: &str, w: usize| {
+        let rows = super::card_rows(text, w);
+        assert!(!rows.is_empty(), "{label} (w={w}): empty rows for {text:?}");
+        for (idx, r) in rows.iter().enumerate() {
+            assert!(
+                r.width() <= w,
+                "{label} (w={w}): row {idx} width {} > {w}: {r:?} (all rows: {rows:?})",
+                r.width()
+            );
+        }
+    };
+
+    // The two concrete cases from the #659 review read.
+    let long_rm = "  rm aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    assert_fits("read case 1 (short first word + unbroken token)", long_rm, 56);
+    let long_cd = "  cd /Users/me/.local/share/tarae/worktrees/tarae/agy678";
+    assert_fits("read case 2 (short first word + path with / near end)", long_cd, 50);
+
+    // Deterministic sweep across short first words, paths with/without `/` near the end,
+    // ` · ` separators, leading indents 0–4, and widths 12..=80.
+    let prefixes = ["rm ", "cd ", "- ", "a/", "ab/", "▲ "];
+    let tails = [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "/Users/me/.local/share/tarae/worktrees/tarae/agy678",
+        "/Users/me/.local/share/tarae/worktrees/tarae/",
+        "/a/b/c/defghijklmnopqrstuvwxyz0123456789/tail",
+        "very_long_segment_without_any_slash_or_space_at_all_12345",
+        "· port 443 · through tarae's proxy · extra/path/segment",
+        "first · second_very_long_token_without_spaces · third",
+        "foo/bar/baz/qux · /one/two/three/four/five/six/seven",
+    ];
+    for lead in 0..=4 {
+        let pad = " ".repeat(lead);
+        for prefix in prefixes {
+            for tail in tails {
+                let text = format!("{pad}{prefix}{tail}");
+                let label = format!("lead={lead} prefix={prefix:?}");
+                for w in 12..=80 {
+                    assert_fits(&label, &text, w);
+                }
+            }
+        }
     }
 }

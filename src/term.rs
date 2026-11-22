@@ -14867,9 +14867,32 @@ const CARD_MIN_INNER: usize = 24;
 /// How much wider a card's text may go than its reading width to take back a paragraph's last row.
 const CARD_SLACK: usize = 8;
 
+/// Drop ` · ` separators left hanging at wrap breaks: a row ending in ` ·` loses it, a continuation row starting with
+/// `· ` after its `indent` spaces loses it, and a row that is only the separator is left alone (#659).
+fn strip_break_dots(rows: &mut [String], indent: usize) {
+    for (idx, row) in rows.iter_mut().enumerate() {
+        if idx > 0 && row.as_bytes().get(..indent).is_some_and(|b| b.iter().all(|&c| c == b' ')) {
+            while let Some(rest) = row.get(indent..).and_then(|s| s.strip_prefix("· ")) {
+                if rest.trim().is_empty() {
+                    break;
+                }
+                row.drain(indent..indent + "· ".len());
+            }
+        }
+        while let Some(head) = row.strip_suffix(" ·") {
+            if head.trim().is_empty() {
+                break;
+            }
+            let len = head.len();
+            row.truncate(len);
+        }
+    }
+}
+
 /// A paragraph of a card's text wrapped to `w`: an indented line (a setting, a command) goes on hanging 4 cells
 /// under its own start — its value never wraps back to the card's edge as if it were a line of its own; a
-/// warning (`▲ …`, `cardwarn.rs`) under its words, past its mark.
+/// warning (`▲ …`, `cardwarn.rs`) under its words, past its mark. A break at a ` · ` separator takes the
+/// separator with it: neither row ends nor begins with ` · ` (#659).
 fn card_rows(text: &str, w: usize) -> Vec<String> {
     let lead = text.len() - text.trim_start_matches(' ').len();
     let indent = match (lead, text.starts_with("▲ ")) {
@@ -14886,10 +14909,12 @@ fn card_rows(text: &str, w: usize) -> Vec<String> {
         }],
         indent,
     }];
-    crate::markdown::wrap(&para, w, Style::default())
+    let mut rows: Vec<String> = crate::markdown::wrap(&para, w, Style::default())
         .into_iter()
         .map(|l| l.into_iter().map(|s| s.text).collect::<String>())
-        .collect()
+        .collect();
+    strip_break_dots(&mut rows, indent.min(w / 2));
+    rows
 }
 
 /// What the screen lacks for the card up (`card_lack`): the window's columns it needs; the rows its area has and the
