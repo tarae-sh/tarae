@@ -2271,7 +2271,7 @@ mod tests {
         let dir = scratch.to_path_buf();
         let run = |args: &[&str]| {
             let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
-            let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
+            let ok = crate::gitrepo::test_git(&dir).args(id).args(args).output();
             assert!(ok.unwrap().status.success(), "git {args:?}");
         };
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
@@ -2336,8 +2336,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let git_out = |args: &[&str]| {
             let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
-            let out =
-                std::process::Command::new("git").args(id).args(args).current_dir(&dir).output().unwrap();
+            let out = crate::gitrepo::test_git(&dir).args(id).args(args).output().unwrap();
             assert!(out.status.success(), "git {args:?}");
             String::from_utf8(out.stdout).unwrap()
         };
@@ -2377,7 +2376,7 @@ mod tests {
         let dir = scratch.to_path_buf();
         let run = |args: &[&str]| {
             let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
-            let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
+            let ok = crate::gitrepo::test_git(&dir).args(id).args(args).output();
             assert!(ok.unwrap().status.success(), "git {args:?}");
         };
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();

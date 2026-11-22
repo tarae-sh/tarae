@@ -635,13 +635,9 @@ fn single_preflight(ed: &mut Editor, names: &[(String, std::path::PathBuf)], pas
 /// `git rebase main` in `root` as the scenario's own git runs — aborted at a conflict: whether it went through.
 fn rebase(root: &std::path::Path) -> bool {
     let run = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(["-c", "core.hooksPath=/dev/null", "-C"])
-            .arg(root)
+        crate::gitrepo::test_git(root)
+            .args(["-c", "core.hooksPath=/dev/null"])
             .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("XDG_CONFIG_HOME", "/dev/null")
             .env("GIT_AUTHOR_DATE", "2026-10-18T00:00:00Z")
             .env("GIT_COMMITTER_DATE", "2026-10-18T00:00:00Z")
             .output()

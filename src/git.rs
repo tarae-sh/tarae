@@ -527,11 +527,7 @@ mod tests {
 
     /// git in a test's own repository — no user or system config, no hooks, no signing, a name of its own.
     fn git_here(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
+        let out = crate::gitrepo::test_git(dir)
             .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
             .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t"])
             .args(args)
@@ -714,7 +710,7 @@ mod tests {
         std::fs::write(&big, "fn line() { let x = 1 + 2 + 3; } // a line of a large file\n".repeat(100_000))
             .unwrap();
         for args in [&["init", "-q"][..], &["add", "-A"]] {
-            let ok = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            let ok = crate::gitrepo::test_git(&dir).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
         let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;

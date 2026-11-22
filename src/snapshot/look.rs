@@ -665,11 +665,8 @@ mod tests {
     fn a_slow_scan_wakes_only_when_something_happens() {
         let scratch = crate::scratch::Scratch::new("look-wakes");
         let root = std::fs::canonicalize(scratch.path()).unwrap();
-        let out = std::process::Command::new("git")
+        let out = crate::gitrepo::test_git(&root)
             .args(["-c", "init.defaultBranch=main", "init", "-q"])
-            .arg(&root)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
         assert!(out.status.success(), "git init: {}", String::from_utf8_lossy(&out.stderr));

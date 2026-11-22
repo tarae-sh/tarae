@@ -493,7 +493,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("changed");
         let dir = scratch.to_path_buf();
         let run = |args: &[&str]| {
-            let ok = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            let ok = crate::gitrepo::test_git(&dir).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         };
         let names: Vec<String> = (0..40).map(|i| format!("f{i:02}.txt")).collect();
@@ -556,7 +556,7 @@ mod tests {
                 "a",
             ],
         ] {
-            let ok = std::process::Command::new("git").args(args).current_dir(&top).output().unwrap();
+            let ok = crate::gitrepo::test_git(&top).args(args).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
         let trusted = top.join(".git");

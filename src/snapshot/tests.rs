@@ -11,9 +11,7 @@ use super::*;
 
 /// git in the test's own repository — no hooks, no signing, a name of its own.
 fn git_in(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = crate::gitrepo::test_git(dir)
         .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
         .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t"])
         .args(args)
@@ -1373,8 +1371,7 @@ fn what_came_with_heads_move_isnt_the_turns() {
     git_in(&dir, &["add", "src"]);
     git_in(&dir, &["commit", "-q", "-m", "side"]);
     git_in(&dir, &["checkout", "-q", "-"]);
-    let short =
-        std::process::Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "--short", "side"]).output();
+    let short = crate::gitrepo::test_git(&dir).args(["rev-parse", "--short", "side"]).output();
     let short = String::from_utf8(short.unwrap().stdout).unwrap().trim().to_string();
     let said = format!("HEAD moved: fast-forward to {short}");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
