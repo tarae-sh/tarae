@@ -61,16 +61,18 @@ fn a_folder_not_yours_alone_isnt_started_in() {
     std::fs::rename(&moved, &folder).unwrap();
     // (a link where a folder should be, to a folder of this user's: refused, nothing made through it)
     let (other, there) = (dir.join("other"), dir.join("there"));
-    std::fs::create_dir_all(other.join("tarae")).unwrap();
+    let state = other.join("tarae");
+    std::fs::create_dir_all(&state).unwrap();
+    chmod(&state, 0o700);
     std::fs::create_dir(&there).unwrap();
     chmod(&there, 0o700);
-    std::os::unix::fs::symlink(&there, other.join("tarae/agent-homes")).unwrap();
-    let state = other.join("tarae");
+    std::os::unix::fs::symlink(&there, state.join("agent-homes")).unwrap();
     assert_eq!(refused(&state), format!("stand-in: {} isn't yours alone — not started", homes_of(&state)));
     assert_eq!(std::fs::read_dir(&there).unwrap().count(), 0, "made through the link");
     // Through the chat: said where it would start, nothing started
     let state = dir.join("chat-state");
     std::fs::create_dir_all(state.join("tarae/agent-homes/stand-in")).unwrap();
+    chmod(&state.join("tarae"), 0o700);
     chmod(&state.join("tarae/agent-homes"), 0o700);
     chmod(&state.join("tarae/agent-homes/stand-in"), 0o755);
     let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
