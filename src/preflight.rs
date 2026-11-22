@@ -1570,43 +1570,15 @@ mod tests {
             .split(',')
             .map(|f| f.trim().trim_matches('"').to_string())
             .collect();
-        // Every `cargo …` command in CI's `run:` lines and `run: |` blocks (including ones wrapped in `timeout` or
-        // `env`, so the skips below actually guard those commands).
-        let mut ci_cmds = Vec::new();
-        let mut block_indent: Option<usize> = None;
-        for line in ci.lines() {
-            let indent = line.len() - line.trim_start().len();
-            let trimmed = line.trim();
-            if let Some(base) = block_indent {
-                if !trimmed.is_empty() && indent <= base {
-                    block_indent = None;
-                } else {
-                    if !trimmed.starts_with('#') {
-                        ci_cmds.push(trimmed);
-                    }
-                    continue;
-                }
-            }
-            if let Some(rest) = trimmed.trim_start_matches("- ").strip_prefix("run:") {
-                let rest = rest.trim();
-                if rest == "|" {
-                    block_indent = Some(indent);
-                } else {
-                    ci_cmds.push(rest);
-                }
-            }
-        }
+        // Every `cargo …` command in CI's one-line `run:` steps and `run: |` blocks (including ones wrapped in
+        // `timeout` or `env`, so the skips below actually guard those commands). Any other non-comment line holding
+        // `cargo ` fails the test loudly instead of silently slipping past parity.
+        let ci_cmds = ci_cargo_commands(&ci).unwrap_or_else(|err| {
+            panic!(".github/workflows/ci.yml: {err}");
+        });
         let mut ran = Vec::new();
         let mut clippy_linux = Vec::new();
-        for cmd in ci_cmds.into_iter().filter_map(|raw| {
-            if raw.starts_with("cargo ") {
-                Some(raw)
-            } else if raw.starts_with("timeout ") || raw.starts_with("env ") {
-                raw.find(" cargo ").map(|i| &raw[i + 1..])
-            } else {
-                None
-            }
-        }) {
+        for cmd in ci_cmds {
             // (on purpose: the opt-in `perf-report` job builds and runs time budgets in `compat-tests` to report
             // only — time is judged by `cargo perf` on the maintainer's Mac; and the network job runs `--ignored`
             // tests)
@@ -1690,6 +1662,410 @@ mod tests {
         for c in &clippy_linux {
             assert!(xtask.contains(&format!("\"{c}\\n\"")), "`cargo xtask linux clippy` runs CI's `{c}`");
         }
+    }
+
+    /// Strip a YAML `#` comment (whole-line or after whitespace outside double/single-quoted scalars).
+    fn strip_yaml_comment(line: &str) -> &str {
+        let mut quote: Option<u8> = None;
+        let mut escaped = false;
+        let b = line.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            if escaped {
+                escaped = false;
+            } else {
+                match quote {
+                    Some(b'"') if c == b'\\' => escaped = true,
+                    Some(b'\'') if c == b'\'' && b.get(i + 1) == Some(&b'\'') => i += 1,
+                    Some(q) if c == q => quote = None,
+                    Some(_) => {}
+                    None if c == b'"' => quote = Some(b'"'),
+                    // In YAML a single-quoted scalar starts only at a token boundary, not on an English apostrophe.
+                    None if c == b'\''
+                        && (i == 0 || matches!(b[i - 1], b' ' | b'\t' | b'[' | b'{' | b',')) =>
+                    {
+                        quote = Some(b'\'');
+                    }
+                    None if c == b'#' && (i == 0 || matches!(b[i - 1], b' ' | b'\t')) => {
+                        return &line[..i];
+                    }
+                    None => {}
+                }
+            }
+            i += 1;
+        }
+        line
+    }
+
+    /// Parse a YAML `run:` mapping key (with optional leading `- ` sequence marker), returning `(key_indent, value)`.
+    fn parse_run_key(line: &str) -> Option<(usize, &str)> {
+        let lead = line.len() - line.trim_start().len();
+        let trimmed = &line[lead..];
+        let (key_indent, after_dash) = if let Some(after) = trimmed.strip_prefix('-')
+            && after.starts_with([' ', '\t'])
+        {
+            let ws = after.len() - after.trim_start().len();
+            (lead + 1 + ws, &after[ws..])
+        } else {
+            (lead, trimmed)
+        };
+        let rest = after_dash.strip_prefix("run:")?;
+        if !rest.is_empty() && !rest.starts_with([' ', '\t']) {
+            return None;
+        }
+        Some((key_indent, rest.trim()))
+    }
+
+    fn split_word(s: &str) -> Option<(&str, &str)> {
+        let s = s.trim_start();
+        let end = s.find(char::is_whitespace)?;
+        Some((&s[..end], s[end..].trim_start()))
+    }
+
+    fn is_shell_ident(s: &str) -> bool {
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    }
+
+    fn is_wrapper_flag(s: &str) -> bool {
+        s.starts_with('-')
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'=' | b'.'))
+    }
+
+    /// Extract a single `cargo …` command from a shell line, unwrapping direct leading `timeout …` or `env …`
+    /// wrappers. Rejects trailing `\` continuations and shell chaining (`;`, `&&`, `||`) except the exact
+    /// ` && code=0 || code=$?` tail used by the report job.
+    fn extract_cargo_cmd(raw: &str) -> Option<&str> {
+        let mut s = raw;
+        loop {
+            if s.starts_with("cargo ") {
+                break;
+            } else if let Some(rest) = s.strip_prefix("timeout ") {
+                let mut rest = rest.trim_start();
+                while rest.starts_with('-') {
+                    let (flag, after) = split_word(rest)?;
+                    if !is_wrapper_flag(flag) {
+                        return None;
+                    }
+                    rest = after;
+                    if matches!(flag, "-k" | "-s" | "--kill-after" | "--signal") {
+                        let (arg, after) = split_word(rest)?;
+                        if !arg.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+                        {
+                            return None;
+                        }
+                        rest = after;
+                    }
+                }
+                let (dur, after) = split_word(rest)?;
+                if !dur.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                    || !dur.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
+                {
+                    return None;
+                }
+                s = after;
+            } else {
+                let mut rest = s.strip_prefix("env ")?.trim_start();
+                loop {
+                    let (tok, after) = split_word(rest)?;
+                    if matches!(tok, "-u" | "--unset") {
+                        let (var, after) = split_word(after)?;
+                        if !is_shell_ident(var) {
+                            return None;
+                        }
+                        rest = after;
+                    } else if is_wrapper_flag(tok) {
+                        rest = after;
+                    } else if let Some((name, _)) = tok.split_once('=')
+                        && is_shell_ident(name)
+                        && !tok.contains([';', '&', '|', '\\'])
+                    {
+                        rest = after;
+                    } else {
+                        break;
+                    }
+                }
+                s = rest;
+            }
+        }
+        if s.ends_with('\\') {
+            return None;
+        }
+        let body = s.strip_suffix(" && code=0 || code=$?").unwrap_or(s);
+        if body.contains(';') || body.contains("&&") || body.contains("||") {
+            return None;
+        }
+        Some(s)
+    }
+
+    /// Parse every `cargo …` command out of a GitHub Actions workflow YAML.
+    ///
+    /// Reads only the forms `.github/workflows/ci.yml` uses today: a one-line `run: <cmd>`, or a `run: |` literal
+    /// block whose lines are each one whole command (with optional leading `timeout …` / `env …` and optional
+    /// trailing `&& code=0 || code=$?`). Any other non-comment line holding `cargo ` fails, naming the line and
+    /// which forms are allowed.
+    fn ci_cargo_commands(ci: &str) -> Result<Vec<String>, String> {
+        struct LiteralBlock {
+            base_indent: usize,
+            prev_continued: bool,
+        }
+        struct PendingPlain {
+            key_indent: usize,
+            lineno: usize,
+            line: String,
+            cmd: String,
+        }
+
+        let mut cmds = Vec::new();
+        let mut unread = Vec::new();
+        let mut block: Option<LiteralBlock> = None;
+        let mut pending_plain: Option<PendingPlain> = None;
+
+        for (idx, line) in ci.lines().enumerate() {
+            let lineno = idx + 1;
+            let indent = line.len() - line.trim_start().len();
+            let trimmed = line.trim();
+
+            if let Some(p) = pending_plain.take() {
+                if trimmed.is_empty() {
+                    pending_plain = Some(p);
+                    continue;
+                }
+                if trimmed.starts_with('#') {
+                    cmds.push(p.cmd);
+                    continue;
+                }
+                if indent > p.key_indent {
+                    unread.push(format!("line {}: {} (continued on line {lineno})", p.lineno, p.line));
+                } else {
+                    cmds.push(p.cmd);
+                }
+            }
+
+            if let Some(mut b) = block.take() {
+                if trimmed.is_empty() {
+                    b.prev_continued = false;
+                    block = Some(b);
+                    continue;
+                }
+                if indent > b.base_indent {
+                    let is_comment = !b.prev_continued && trimmed.starts_with('#');
+                    let ends_backslash =
+                        !is_comment && trimmed.bytes().rev().take_while(|&c| c == b'\\').count() % 2 == 1;
+                    if !is_comment {
+                        if b.prev_continued || trimmed.ends_with('\\') {
+                            if trimmed.contains("cargo ") {
+                                unread.push(format!("line {lineno}: {trimmed}"));
+                            }
+                        } else if let Some(cmd) = extract_cargo_cmd(trimmed) {
+                            cmds.push(cmd.to_string());
+                        } else if trimmed.contains("cargo ") {
+                            unread.push(format!("line {lineno}: {trimmed}"));
+                        }
+                    }
+                    b.prev_continued = ends_backslash;
+                    block = Some(b);
+                    continue;
+                }
+            }
+
+            let no_comment = strip_yaml_comment(line);
+            if let Some((key_indent, rest)) = parse_run_key(no_comment) {
+                if rest == "|" {
+                    block = Some(LiteralBlock { base_indent: key_indent, prev_continued: false });
+                } else if let Some(cmd) = extract_cargo_cmd(rest) {
+                    pending_plain = Some(PendingPlain {
+                        key_indent,
+                        lineno,
+                        line: no_comment.trim().to_string(),
+                        cmd: cmd.to_string(),
+                    });
+                } else if rest.contains("cargo ") {
+                    unread.push(format!("line {lineno}: {}", no_comment.trim()));
+                }
+            } else if no_comment.contains("cargo ") {
+                unread.push(format!("line {lineno}: {}", no_comment.trim()));
+            }
+        }
+
+        if let Some(p) = pending_plain {
+            cmds.push(p.cmd);
+        }
+
+        if unread.is_empty() {
+            Ok(cmds)
+        } else {
+            Err(format!(
+                "unread `cargo ` line(s) (allowed: one-line `run: <cmd>` or `run: |` with one whole command per line, optional leading `timeout`/`env`, optional trailing `&& code=0 || code=$?`):\n{}",
+                unread.join("\n")
+            ))
+        }
+    }
+
+    #[track_caller]
+    fn assert_ci_cargo_refused(yaml: &str, expected_line: &str) {
+        match ci_cargo_commands(yaml) {
+            Ok(cmds) => panic!("expected refusal naming `{expected_line}`, got {cmds:?}"),
+            Err(err) => {
+                assert!(err.contains(expected_line), "missing `{expected_line}` in:\n{err}");
+                assert!(err.contains("allowed:"), "missing allowed forms in:\n{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn ci_cargo_commands_reads_todays_ci_yml_and_allowed_forms() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+        assert_eq!(
+            ci_cargo_commands(&ci).unwrap(),
+            vec![
+                "cargo fmt --all --check",
+                "cargo clippy --locked --workspace --all-targets",
+                "cargo clippy --locked --workspace --all-targets --features bundled-grammars",
+                "cargo test --locked --no-fail-fast --workspace --features \"${{ matrix.features }}\"",
+                "cargo test --locked --features dev-grammars --features \"${{ matrix.features }}\" --profile compat-tests --bin tarae --no-run && code=0 || code=$?",
+                "cargo test --locked --features dev-grammars --features \"${{ matrix.features }}\" --profile compat-tests --bin tarae -- perf_budget > perf-budgets.txt 2>&1 && code=0 || code=$?",
+                "cargo test --locked --bin tarae -- --ignored --exact grammar::tests::grammar_install_e2e plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin plugin::cli::tests::the_bundled_plugins_pass_their_own_tests web::fetch::tests::a_real_page_is_fetched",
+            ]
+        );
+
+        let yaml = "\
+# whole-line comment mentioning cargo test
+jobs:
+  checks:
+    steps:
+      - name: Linux's checks # inline comment mentioning cargo clippy
+        run: cargo fmt --all --check # trailing comment mentioning cargo test
+      - run: |
+          # shell comment mentioning cargo test
+          cargo test --lib
+          timeout -k 1m 20m cargo test --profile compat-tests --bin tarae && code=0 || code=$?
+        env:
+          CARGO_TERM_COLOR: always
+      - run: env -u RUSTFLAGS FOO=1 cargo test --bin tarae
+";
+        assert_eq!(
+            ci_cargo_commands(yaml).unwrap(),
+            vec![
+                "cargo fmt --all --check",
+                "cargo test --lib",
+                "cargo test --profile compat-tests --bin tarae && code=0 || code=$?",
+                "cargo test --bin tarae",
+            ]
+        );
+    }
+
+    #[test]
+    fn ci_cargo_commands_refuses_literal_strip_block() {
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |-\n      cargo test --workspace\n",
+            "line 3: cargo test --workspace",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |+\n      cargo test --workspace\n",
+            "line 3: cargo test --workspace",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |2\n      cargo test --workspace\n",
+            "line 3: cargo test --workspace",
+        );
+    }
+
+    #[test]
+    fn ci_cargo_commands_refuses_folded_block() {
+        assert_ci_cargo_refused(
+            "steps:\n  - run: >\n      cargo test --locked\n      --workspace\n",
+            "line 3: cargo test --locked",
+        );
+    }
+
+    #[test]
+    fn ci_cargo_commands_refuses_folded_strip_block() {
+        assert_ci_cargo_refused(
+            "steps:\n  - run: >-\n      cargo clippy --locked\n        --workspace\n",
+            "line 3: cargo clippy --locked",
+        );
+    }
+
+    #[test]
+    fn ci_cargo_commands_refuses_multiline_plain_scalar() {
+        assert_ci_cargo_refused(
+            "steps:\n  - run: cargo test --locked --workspace\n      -- --skip slow_test\n",
+            "line 2: - run: cargo test --locked --workspace (continued on line 3)",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: cargo test --locked --workspace\n\n      -- --skip slow_test\n",
+            "line 2: - run: cargo test --locked --workspace (continued on line 4)",
+        );
+    }
+
+    #[test]
+    fn ci_cargo_commands_refuses_backslash_continuation() {
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |\n      cargo test --locked \\\n        --workspace\n",
+            "line 3: cargo test --locked \\",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |\n      RUSTFLAGS=\"\" \\\n        cargo test --locked --workspace\n",
+            "line 4: cargo test --locked --workspace",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: cargo test --workspace \\\n",
+            "line 2: - run: cargo test --workspace \\",
+        );
+    }
+
+    #[test]
+    fn ci_cargo_commands_refuses_chained_commands() {
+        assert_ci_cargo_refused(
+            "steps:\n  - run: cargo test --workspace; cargo clippy --workspace\n",
+            "line 2: - run: cargo test --workspace; cargo clippy --workspace",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: timeout -k 1m 20m cargo test --locked --profile compat-tests --bin tarae && cargo clippy --locked --workspace\n",
+            "line 2: - run: timeout -k 1m 20m cargo test --locked --profile compat-tests --bin tarae && cargo clippy --locked --workspace",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: cargo test --workspace || true\n",
+            "line 2: - run: cargo test --workspace || true",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |\n      cargo test --profile compat-tests && cargo clippy --workspace && code=0 || code=$?\n",
+            "line 3: cargo test --profile compat-tests && cargo clippy --workspace && code=0 || code=$?",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |\n      cargo test --profile compat-tests && code=0 || code=$?; cargo clippy --workspace\n",
+            "line 3: cargo test --profile compat-tests && code=0 || code=$?; cargo clippy --workspace",
+        );
+    }
+
+    #[test]
+    fn ci_cargo_commands_refuses_disallowed_wrappers_and_stray_lines() {
+        assert_ci_cargo_refused(
+            "steps:\n  - run: timeout 10m bash -c \"cargo test --locked --profile compat-tests && cargo clippy --locked --workspace\"\n",
+            "line 2: - run: timeout 10m bash -c \"cargo test --locked --profile compat-tests && cargo clippy --locked --workspace\"",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: env FOO=1 bash -c \"cargo test --workspace\"\n",
+            "line 2: - run: env FOO=1 bash -c \"cargo test --workspace\"",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: time cargo test --workspace\n",
+            "line 2: - run: time cargo test --workspace",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: FOO=1 cargo test --workspace\n",
+            "line 2: - run: FOO=1 cargo test --workspace",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - run: |\n      if true; then cargo test; fi\n",
+            "line 3: if true; then cargo test; fi",
+        );
+        assert_ci_cargo_refused(
+            "steps:\n  - name: run cargo test\n    run: echo ok\n",
+            "line 2: - name: run cargo test",
+        );
     }
 
     /// CI's network job runs the tests that need the network by name, and those are the ones marked so
