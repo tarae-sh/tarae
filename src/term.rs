@@ -15484,6 +15484,8 @@ impl OfferCard {
         let kept = (editor.screen.offer_top).filter(|t| {
             !measuring && t.0 == o.id && t.2 == area && editor.offers.first().is_some_and(|f| f.id == o.id)
         });
+        // Strictly `>`, not `>=` (#658): `atop` (the row above a waiting card) is taken only with the keys, when a
+        // card needs it to stand whole, and given back on `esc` — as a card covers the chat's input only while keyed.
         let kept_top = kept.map(|t| t.1).filter(|&y| y > atop && y < floor);
         // (the width it stood at, the frame before: never narrower while it stands in the same room — #632, the design
         // session's for landing 3: the nine-file end card went 5 columns narrower as you turned to it, its cut row no

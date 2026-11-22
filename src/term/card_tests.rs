@@ -255,6 +255,86 @@ fn the_nine_file_end_card_keeps_its_width_given_the_keys() {
     }
 }
 
+/// #658: `atop` (`1`, 1-based row 2) is taken only while a card has the keys and needs it to stand whole. One card
+/// opened with the keys stands whole at `y == atop` with no shift between two keyed frames; `esc` gives `atop` back so
+/// it waits at `y == 2` strictly above the chat input's rule; turning back with `C-q` keeps `y == 2` whole down to
+/// `floor` (its waiting top kept by `kept_top > atop`), and `esc` again returns to the exact same waiting rect.
+#[test]
+fn a_card_turned_to_and_away_from_waits_where_it_waited() {
+    if crate::sandbox::no_pty_here("term::card_tests::a_card_turned_to_and_away_from_waits_where_it_waited") {
+        return;
+    }
+    let size = (80, 34);
+    let floor = usize::from(size.1) - 2;
+    let mut ed = editor();
+    crate::uistate::tests::terminal(&mut ed);
+    frame(&mut ed, size);
+    ed.workspace.set_kept(crate::pane::Shows::Slot, Some(13));
+    chat(&mut ed, "");
+    frame(&mut ed, size);
+
+    // One card throughout, opened with the keys (as `space v q` does): stands whole at `y == atop` (`1`), within
+    // `floor`.
+    ed.push_offer(end_card(9, 9));
+    ed.handle_key("C-q".parse().unwrap());
+    frame(&mut ed, size);
+    assert!(ed.card_has_keys(), "the keys its own");
+    let (keyed1, cut) = drawn(&ed).expect("drawn whole with the keys");
+    assert_eq!(cut, 0, "whole with the keys: {keyed1:?}");
+    assert_eq!(keyed1.1, 1, "stands at atop (1): {keyed1:?}");
+    assert!(keyed1.1 + keyed1.3 - 1 <= floor, "within the floor ({floor}): {keyed1:?}");
+
+    // Drawn again while keyed at `y == atop`: no shift between two keyed frames, still within `floor`.
+    frame(&mut ed, size);
+    assert!(ed.card_has_keys(), "still has the keys");
+    let (keyed2, cut) = drawn(&ed).expect("still drawn with the keys");
+    assert_eq!((keyed2, cut), (keyed1, 0), "no shift on the next frame while keyed");
+    assert!(keyed2.1 + keyed2.3 - 1 <= floor, "within the floor ({floor}): {keyed2:?}");
+
+    // `esc` back to the code: gives `atop` back and waits cut at `y == 2`, strictly above the chat input's rule.
+    ed.handle_key("esc".parse().unwrap());
+    frame(&mut ed, size);
+    assert!(!ed.card_has_keys(), "keys back to the code");
+    let (waiting1, cut1) = drawn(&ed).expect("drawn waiting over the chat's foot");
+    assert_eq!(waiting1.1, 2, "gives atop back and waits at atop + 1 (2): {waiting1:?}");
+    assert!(cut1 > 0, "waits cut above the chat input: {waiting1:?}");
+    let input = ed.screen.chat_input.get().expect("the chat's input drawn").y;
+    assert!(
+        waiting1.1 + waiting1.3 - 1 < input - 1,
+        "bottom stays strictly above the chat input's rule ({}): {waiting1:?}",
+        input - 1
+    );
+
+    // Turning back to the same card (`C-q`): its waiting top (`2 > atop`) is kept, standing whole down to `floor`.
+    ed.handle_key("C-q".parse().unwrap());
+    frame(&mut ed, size);
+    assert!(ed.card_has_keys(), "the keys its own again");
+    let (back, cut) = drawn(&ed).expect("drawn whole again with the keys");
+    assert_eq!(cut, 0, "whole again with the keys: {back:?}");
+    assert_eq!(back.1, waiting1.1, "keeps its waiting top (2): {back:?}");
+    assert!(back.1 + back.3 - 1 <= floor, "within the floor ({floor}): {back:?}");
+
+    // `esc` again: waits at the exact same rect and cut as after the first `esc`.
+    ed.handle_key("esc".parse().unwrap());
+    frame(&mut ed, size);
+    assert!(!ed.card_has_keys(), "keys back to the code again");
+    let (waiting2, cut2) = drawn(&ed).expect("drawn waiting again over the chat's foot");
+    assert_eq!((waiting2, cut2), (waiting1, cut1), "same waiting rect and cut after turning to and away");
+
+    // A card taller than the screen laid anew with keys at `y == atop`: no shift between two keyed frames, within
+    // `floor`.
+    ed.handle_key("C-q".parse().unwrap());
+    ed.handle_key("n".parse().unwrap());
+    ed.push_offer(huge_card());
+    ed.handle_key("C-q".parse().unwrap());
+    frame(&mut ed, size);
+    let (huge1, cut1) = drawn(&ed).expect("huge card drawn with the keys");
+    assert_eq!(huge1.1, 1, "huge card stands at atop (1): {huge1:?}");
+    assert!(cut1 > 0 && huge1.1 + huge1.3 - 1 <= floor, "cut within floor ({floor}): {huge1:?}");
+    frame(&mut ed, size);
+    assert_eq!(drawn(&ed), Some((huge1, cut1)), "no shift between two keyed frames at atop");
+}
+
 /// #659: a break at a ` · ` separator takes the separator with it — neither row ends nor starts on `·`,
 /// rows stay within `w`, and indents / single-row separators / grapheme clusters at the break stay intact.
 #[test]
