@@ -6469,10 +6469,10 @@ mod tests {
     /// else the journal — followed from its end.
     #[test]
     fn auditds_records_are_read_where_they_go() {
-        let domain = r#"type=UNKNOWN[1424] msg=audit(1791187720.409:280): domain=107163519 status=allocated mode=enforcing pid=127026 uid=1001 exe="/home/wq/tarae/target-ll/release/tarae" comm="tarae-landlock"UID="wq""#;
-        let access = r#"type=UNKNOWN[1423] msg=audit(1791187720.409:280): domain=107163519 blockers=fs.make_reg path="/home/wq/proj" dev="sda1" ino=264783"#;
+        let domain = r#"type=UNKNOWN[1424] msg=audit(1791187720.409:280): domain=107163519 status=allocated mode=enforcing pid=127026 uid=1001 exe="/home/me/tarae/target-ll/release/tarae" comm="tarae-landlock"UID="wq""#;
+        let access = r#"type=UNKNOWN[1423] msg=audit(1791187720.409:280): domain=107163519 blockers=fs.make_reg path="/home/me/proj" dev="sda1" ino=264783"#;
         let made =
-            Denial { process: "the run".into(), op: "file-make-in".into(), target: "/home/wq/proj".into() };
+            Denial { process: "the run".into(), op: "file-make-in".into(), target: "/home/me/proj".into() };
         let owned = |pid: u32, comm: &str| Audit {
             owner: Some(Owner { pid, comm: comm.into() }),
             ..Default::default()
@@ -6548,7 +6548,7 @@ mod tests {
         [
             format!(
                 "type=UNKNOWN[1424] msg=audit(1791193258.514:942): domain={domain} status=allocated \
-                 mode=enforcing pid={pid} uid=1001 exe=\"/home/wq/tarae/target-ll/release/tarae\" \
+                 mode=enforcing pid={pid} uid=1001 exe=\"/home/me/tarae/target-ll/release/tarae\" \
                  comm=\"{comm}\"UID=\"wq\""
             ),
             format!(
@@ -7055,7 +7055,7 @@ mod tests {
         use crate::mutate::{self, Rng};
         let mut a =
             Audit { owner: Some(Owner { pid: 0, comm: "tl-loop-none".into() }), ..Default::default() };
-        let mut seeds = vm_records(301, "tl-1", Path::new("/home/wq/p/Cargo.toml")).to_vec();
+        let mut seeds = vm_records(301, "tl-1", Path::new("/home/me/p/Cargo.toml")).to_vec();
         seeds.push(
             "audit: type=1423 audit(1:2): domain=1a blockers=fs.read_file path=2F686F6D652F752F612062 ino=9"
                 .into(),

@@ -28793,7 +28793,7 @@ mod tests {
             assert!(cut.contains("stable-aarch"), "{w}: {cut:?}");
         }
         // (nothing shared at the start: the end takes what's left)
-        let label = "read /Users/wq/Library/Caches/npm-cache";
+        let label = "read /Users/me/Library/Caches/npm-cache";
         let cut = fit_keeping(label, 0..5, 24);
         assert!(cut.starts_with("read ") && cut.ends_with("/npm-cache") && cut.width() <= 24, "{cut:?}");
     }
