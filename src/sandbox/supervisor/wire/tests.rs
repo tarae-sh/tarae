@@ -627,7 +627,7 @@ fn a_control_at_address_0_is_read_as_the_kernel_reads_it() {
 /// meet is whole, as the kernel's copies and `/proc/<tid>/mem` read across mappings. It held the first piece that
 /// held a read whole: the model's 16-byte iovec reads saw one piece, `read_msg`'s one read of the array another.
 /// The fuzz input, minimized: a stream's header at `HEAD` naming three iovecs at `IOV`; at `IOV` first one iovec
-/// (`BUFS`, 2), then three (`BUFS`, 4); four bytes at `BUFS`. Nothing is there past `USER_MAX` (a piece laid
+/// (`BUFS`, 2), then three (`BUFS`, 4); four bytes at `BUFS`. Nothing is there past `user_max` (a piece laid
 /// across it is read up to it only).
 #[test]
 fn a_fake_memory_holds_one_byte_an_address() {
@@ -646,12 +646,149 @@ fn a_fake_memory_holds_one_byte_an_address() {
     assert_eq!(m.peek(IOV, 48).unwrap()[..16], m.peek(IOV, 16).unwrap(), "the first piece laid there");
     let msg = read_msg(&m, passer(&mut Vec::new()), at, datagram).ok().unwrap();
     assert_eq!(msg.data, b"ababcdabcd");
-    let meeting = Fake::default().at(BUFS, *b"ab").at(BUFS + 2, *b"cd").at(USER_MAX - 2, *b"yzw");
+    let top = user_max();
+    let meeting = Fake::default().at(BUFS, *b"ab").at(BUFS + 2, *b"cd").at(top - 2, *b"yzw");
     assert_eq!(meeting.peek(BUFS, 4), Ok(b"abcd".to_vec()), "across pieces that meet");
     assert_eq!(meeting.peek(BUFS + 1, 4), Err(libc::EFAULT), "past them");
-    assert_eq!(meeting.peek(USER_MAX - 2, 2), Ok(b"yz".to_vec()));
-    assert_eq!(meeting.peek(USER_MAX - 2, 3), Err(libc::EFAULT), "past where a process's memory ends (V2-6)");
-    assert_eq!(meeting.peek(USER_MAX + 4, 0), Ok(Vec::new()), "nothing read of nothing");
+    assert_eq!(meeting.peek(top - 2, 2), Ok(b"yz".to_vec()));
+    assert_eq!(meeting.peek(top - 2, 3), Err(libc::EFAULT), "past where a process's memory ends (V2-6)");
+    assert_eq!(meeting.peek(top + 4, 0), Ok(Vec::new()), "nothing read of nothing");
+}
+
+/// #693: where a run's memory ends is the kernel's, found by halves from what it takes — each end a kernel has
+/// (arm64's `1 << VA_BITS`, the Pi 5's 47 among them; x86_64's a page short of 2^47 or 2^56, 6.6–6.11's top bit),
+/// asked 66 times or so; an answer that isn't one end, or an end past the tag byte where there is one, can't tell for
+/// good, an errno as its list says (`FOR_GOOD`, `PASSING`, any other for now). A kernel that drops a tag before it
+/// judges gives the end below it.
+#[test]
+fn the_end_of_a_runs_memory_is_the_kernels() {
+    let kernel = |end: u64| move |at: u64| Ok::<_, i32>(at <= end);
+    for end in [1 << 39, 1 << 42, 1 << 47, 1 << 48, 1 << 52, (1 << 47) - 4096, (1 << 56) - 4096] {
+        let asked = std::cell::Cell::new(0);
+        let counted = |at| {
+            asked.set(asked.get() + 1);
+            kernel(end)(at)
+        };
+        assert_eq!(end_of(counted, 1 << 56), Ok(end), "{end:#x}");
+        assert!(asked.get() <= 70, "{end:#x}: {} asks", asked.get());
+    }
+    let top_bit = (1 << 63) - 1;
+    assert_eq!(end_of(kernel(top_bit), u64::MAX), Ok(top_bit), "x86_64's 6.6–6.11");
+    let for_good =
+        |r: Result<u64, Untold>, what: &str| assert!(matches!(r, Err(Untold::ForGood(_))), "{what}: {r:?}");
+    let for_now =
+        |r: Result<u64, Untold>, what: &str| assert!(matches!(r, Err(Untold::ForNow(_))), "{what}: {r:?}");
+    for_good(end_of(kernel(top_bit), 1 << 56), "past arm64's tag byte");
+    for_good(end_of(|at| Ok(at > 0 && at < 1 << 47), u64::MAX), "0 refused");
+    for_good(end_of(|_| Ok(true), u64::MAX), "everything taken");
+    for_good(end_of(kernel(1 << 20), u64::MAX), "an end below 2^32");
+    for (e, _) in FOR_GOOD {
+        for_good(end_of(|_| Err(*e), u64::MAX), &format!("errno {e}"));
+    }
+    for (e, _) in PASSING {
+        for_now(end_of(|_| Err(*e), u64::MAX), &format!("errno {e}"));
+    }
+    for_now(end_of(|_| Err(libc::EIO), u64::MAX), "an errno on neither list");
+    // (an errno halfway through the halves: what was taken so far isn't an end)
+    let halfway =
+        |at: u64| if (1 << 50..1 << 62).contains(&at) { Err(libc::EINTR) } else { Ok(at <= 1 << 47) };
+    for_now(end_of(halfway, u64::MAX), "EINTR halfway");
+    assert_eq!(
+        untold(libc::EMFILE, "a pipe".into()),
+        Untold::ForNow("a pipe: Too many open files (os error 24)".into())
+    );
+    // (a kernel that drops a tag before it judges — arm64's, for a thread that turned the tagged ABI on: taken again
+    // wherever the bytes below the tag are — still gives the end below the tag, and tarae refuses everything past it,
+    // tagged pointers too)
+    let untags = |at: u64| Ok(at & ((1 << 56) - 1) <= 1 << 47);
+    assert_eq!(end_of(untags, 1 << 56), Ok(1 << 47), "tags dropped");
+}
+
+/// #693 (Neon's round): an end untold for now is the built one only until the next run's supervisor asks again —
+/// each look between asks nothing, the failure is said once however often it comes, and the next asking that's told
+/// is kept (said once, asked no more). Where the kernel's end is higher (here a 52-bit arm64's), keeping the built
+/// one would refuse what the kernel takes.
+#[test]
+fn an_end_untold_for_now_is_asked_again_at_the_next_run() {
+    let (end, said, count) = (End::new(), std::cell::RefCell::new(Vec::new()), std::cell::Cell::new(0));
+    let say = |level: &str, words: &str| said.borrow_mut().push(format!("{level}: {words}"));
+    let asked = &count;
+    let ask = |r: Result<u64, Untold>| {
+        move || {
+            asked.set(asked.get() + 1);
+            r
+        }
+    };
+    let emfile = || Err(Untold::ForNow("a pipe: Too many open files".into()));
+    assert_eq!(end.get(ask(emfile()), say), USER_MAX_BUILT, "the first run's supervisor: no descriptor left");
+    assert_eq!(end.get(ask(Ok(1 << 52)), say), USER_MAX_BUILT, "its run's looks: not asked");
+    end.ask_again();
+    assert_eq!(end.get(ask(emfile()), say), USER_MAX_BUILT, "the next run's: again none");
+    end.ask_again();
+    assert_eq!(end.get(ask(Ok(1 << 52)), say), 1 << 52, "the third's: told");
+    end.ask_again();
+    assert_eq!(end.get(ask(Ok(1 << 40)), say), 1 << 52, "kept, asked no more");
+    assert_eq!(count.get(), 3);
+    let built = USER_MAX_BUILT;
+    assert_eq!(
+        *said.borrow(),
+        [
+            format!(
+                "warn: where a run's memory ends couldn't be asked of this kernel now (a pipe: Too many open files): \
+                 {built:#x}, as built, until the next run's supervisor asks again"
+            ),
+            format!("info: a run's memory ends at 0x10000000000000 on this kernel (built: {built:#x})"),
+        ]
+    );
+}
+
+/// #693: an end untold for good is the built one, kept and said once — asked again it would answer the same; one
+/// told that's the built one isn't said.
+#[test]
+fn an_end_untold_for_good_is_the_built_one_said_once() {
+    let (end, said, asked) = (End::new(), std::cell::RefCell::new(Vec::new()), std::cell::Cell::new(0));
+    let say = |level: &str, words: &str| said.borrow_mut().push(format!("{level}: {words}"));
+    for _ in 0..3 {
+        let ask = || {
+            asked.set(asked.get() + 1);
+            Err(Untold::ForGood("an empty write at 0x0: Operation not permitted (os error 1)".into()))
+        };
+        assert_eq!(end.get(ask, say), USER_MAX_BUILT);
+        end.ask_again();
+    }
+    assert_eq!(asked.get(), 1);
+    let built = USER_MAX_BUILT;
+    let want = format!(
+        "warn: where a run's memory ends can't be asked of this kernel (an empty write at 0x0: Operation not \
+         permitted (os error 1)): {built:#x}, as built"
+    );
+    assert_eq!(*said.borrow(), [want]);
+    let same = End::new();
+    said.borrow_mut().clear();
+    assert_eq!(same.get(|| Ok(built), say), built);
+    assert!(said.borrow().is_empty(), "{:?}", said.borrow());
+}
+
+/// #693 (Neon's round): `MAX_RW_COUNT` is `INT_MAX` cut to the kernel's page — each page size by a stand-in; and with
+/// this system's own (16 KiB on Apple Silicon's macOS and the Pi 5's kernel, 4 KiB on most), a lone long buffer whose
+/// cut reach ends at the end of a run's memory is taken (a datagram past tarae's 1 MiB: `EMSGSIZE`), and a byte
+/// higher it faults. A 4 KiB page's count there (`0x7fff_f000`) would reach 12 KiB past the end on 16 KiB pages:
+/// `EFAULT` where the kernel cuts and goes on. (`kernel::a_lone_long_buffer_is_cut_at_this_kernels_page` asks a
+/// kernel the same.)
+#[test]
+fn a_lone_buffer_is_cut_at_this_kernels_page() {
+    assert_eq!(rw_count_of(4096), 0x7fff_f000);
+    assert_eq!(rw_count_of(16 << 10), 0x7fff_c000);
+    assert_eq!(rw_count_of(64 << 10), 0x7fff_0000);
+    // SAFETY: sysconf only reads.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    let cut = i32::MAX as u64 & !(page - 1);
+    for (base, want) in [(user_max() - cut, libc::EMSGSIZE), (user_max() - cut + 1, libc::EFAULT)] {
+        let m =
+            Fake::default().at(HEAD, msghdr((0, 0), (IOV, 1), (0, 0))).at(IOV, iovecs(&[(base, 1 << 60)]));
+        let got = read_msg(&m, passer(&mut Vec::new()), HEAD, true).map(|_| ()).map_err(|u| u.errno());
+        assert_eq!(got, Err(want), "a lone buffer at {base:#x}, pages of {page} bytes");
+    }
 }
 
 /// F1: the `i`th message of a `sendmmsg` array is found by checked sums — one whose header (and its `msg_len`,

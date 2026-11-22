@@ -41,21 +41,258 @@ const ADDR_MAX: usize = 128;
 pub(super) const SEND_MAX: usize = 1 << 20;
 /// The most control data (`SCM_RIGHTS` …) a message carries.
 const CONTROL_MAX: usize = 1 << 16;
-/// The most one call reads or writes (`MAX_RW_COUNT`: `INT_MAX` to a 4 KiB page; a kernel of 64 KiB pages cuts at
-/// 64 KiB, which tarae doesn't follow).
-const MAX_RW_COUNT: u64 = 0x7fff_f000;
+/// The most one call reads or writes (`MAX_RW_COUNT`): `INT_MAX` cut down to the start of a page, this kernel's —
+/// `0x7fff_f000` with 4 KiB pages, `0x7fff_c000` with 16 KiB, `0x7fff_0000` with 64 KiB. The supervisor's kernel is
+/// its runs', so its page is theirs.
+pub(super) fn max_rw_count() -> u64 {
+    // SAFETY: sysconf only reads.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    rw_count_of(u64::try_from(page).ok().filter(|p| p.is_power_of_two()).unwrap_or(4096))
+}
+
+/// `MAX_RW_COUNT` for a kernel of pages of `page` bytes.
+fn rw_count_of(page: u64) -> u64 {
+    i32::MAX as u64 & !(page - 1)
+}
+
 /// Where a process's memory ends (`TASK_SIZE_MAX`): the kernel takes no pointer of a run's whose reach passes it
 /// (`access_ok`: `EFAULT`, before anything is copied — an empty buffer too), and nothing tarae reads of a run's
 /// memory goes past it (`supervisor::read_mem`, `check::Fake`) — `/proc/<tid>/mem` would read some of it: arm64's
 /// drops a pointer's top byte (its tagged addresses), where the kernel refuses one unless the run turned the tagged
-/// ABI on (V2-6). x86_64's: 2^47 less a page (with 5-level paging a process may map past it only by asking — tarae
-/// refuses there, a refusal the kernel wouldn't make; 6.6–6.11 check only the top bit, so an empty buffer past it is
-/// refused by tarae alone). arm64's: 2^48 (a 52-bit kernel's past it only by asking, as above). The architectures
-/// tarae builds for.
+/// ABI on (V2-6). The kernel's own (`kernels_end`; the supervisor asks first, as it starts — `serve`): arm64's is
+/// `1 << VA_BITS`, a choice of the kernel's build (39, 42, 47 — 16 KiB pages' default, the Pi 5's —, 48, 52); x86_64's
+/// 2^47 less a page, 2^56 less a page with 5-level paging, and 2^63 less a byte on 6.6–6.11 (they check only the top
+/// bit). Learned once it's told; where it can't be, `USER_MAX_BUILT` — for good, or until the next run's supervisor
+/// asks again (`End`, #693).
+pub(super) fn user_max() -> u64 {
+    #[cfg(test)]
+    if let Some(pinned) = *PINNED {
+        return pinned;
+    }
+    END.get(kernels_end, log_end)
+}
+
+/// `user_max`, asked of the kernel again where the last asking failed for now (`Untold::ForNow`) — as a run's
+/// supervisor starts (`serve`, on its `tarae-serve` thread, before the run's first call).
+pub(super) fn user_max_asked_again() -> u64 {
+    END.ask_again();
+    user_max()
+}
+
+static END: End = End::new();
+
+fn log_end(level: &str, words: &str) {
+    #[cfg(not(fuzzing))]
+    crate::log::line("sandbox", level, words);
+    #[cfg(fuzzing)]
+    let _ = (level, words);
+}
+
+/// Where a process's memory ends where the kernel can't be asked (#693: never a smaller guess — that would refuse what
+/// the kernel takes, and break runs). x86_64's with 4-level paging; arm64's with 48-bit addresses (4 KiB pages'
+/// default). The architectures tarae builds for.
 #[cfg(target_arch = "x86_64")]
-pub(super) const USER_MAX: u64 = (1 << 47) - 4096;
+pub(super) const USER_MAX_BUILT: u64 = (1 << 47) - 4096;
 #[cfg(not(target_arch = "x86_64"))]
-pub(super) const USER_MAX: u64 = 1 << 48;
+pub(super) const USER_MAX_BUILT: u64 = 1 << 48;
+
+/// Where an end the kernel gives is held below: arm64's top byte is a tag, which `/proc/<tid>/mem` drops (V2-6) — an
+/// end past it would let tarae read where the kernel refuses. x86_64 has none.
+#[cfg(target_arch = "x86_64")]
+const END_BELOW: u64 = u64::MAX;
+#[cfg(not(target_arch = "x86_64"))]
+const END_BELOW: u64 = 1 << 56;
+
+/// Tests: an end pinned instead of the kernel's, the kernel not asked — `TARAE_TEST_USER_MAX` (hex with `0x`, else
+/// decimal): the break-once of #693 (`USER_MAX_BUILT`'s `0x1000000000000` is the value before it).
+#[cfg(test)]
+pub(super) const PIN_USER_MAX: &str = "TARAE_TEST_USER_MAX";
+
+#[cfg(test)]
+static PINNED: std::sync::LazyLock<Option<u64>> = std::sync::LazyLock::new(|| {
+    let v = std::env::var(PIN_USER_MAX).ok()?;
+    let n = match v.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => v.parse(),
+    };
+    Some(n.unwrap_or_else(|_| panic!("{PIN_USER_MAX}={v}: not a number")))
+});
+
+/// Why the kernel's end isn't known: for good — asked again it would say the same — or for now.
+#[derive(Debug, PartialEq)]
+enum Untold {
+    ForGood(String),
+    ForNow(String),
+}
+
+/// The errnos asking can meet that can't change while tarae runs: the built end, kept.
+const FOR_GOOD: &[(i32, &str)] = &[
+    (libc::EPERM, "a seccomp filter's or an LSM's refusal of the pipe or of its write"),
+    (libc::EACCES, "an LSM's refusal"),
+    (libc::ENOSYS, "a filter that hides the call"),
+];
+
+/// The errnos that pass: the built end for now, asked again at the next run. So is any errno on neither list —
+/// asking again costs a pipe and 66 empty writes; keeping the built end where the kernel's is higher (5-level x86_64,
+/// a 52-bit arm64, 6.6–6.11's top bit) would refuse what the kernel takes, for good.
+const PASSING: &[(i32, &str)] = &[
+    (libc::EMFILE, "tarae's descriptors all open: some close"),
+    (libc::ENFILE, "the system's descriptors all open: the same"),
+    (libc::ENOMEM, "the kernel short of memory for the pipe"),
+    (libc::EINTR, "a signal during the asking"),
+];
+
+/// An errno met asking, as `FOR_GOOD` and `PASSING` say — `what` it was asking.
+fn untold(errno: i32, what: String) -> Untold {
+    let on = |list: &[(i32, &str)]| list.iter().any(|(e, _)| *e == errno);
+    let why = format!("{what}: {}", std::io::Error::from_raw_os_error(errno));
+    match on(FOR_GOOD) && !on(PASSING) {
+        true => Untold::ForGood(why),
+        false => Untold::ForNow(why),
+    }
+}
+
+/// Where a run's memory ends, as far as it's known: `learned` once told — the kernel's end, or the built one where it
+/// can't be told for good — and until then, whether the next look asks (`again`: at first, and after `ask_again`) and
+/// whether a failure for now was said (`said`: once).
+struct End {
+    learned: std::sync::OnceLock<u64>,
+    asking: std::sync::Mutex<Asking>,
+}
+
+struct Asking {
+    again: bool,
+    said: bool,
+}
+
+impl End {
+    const fn new() -> End {
+        End {
+            learned: std::sync::OnceLock::new(),
+            asking: std::sync::Mutex::new(Asking { again: true, said: false }),
+        }
+    }
+
+    /// The end: learned, else asked of `ask` where this look may ask — told, kept (an end other than the built one
+    /// said, `info`); untold for good, the built end kept (said, `warn`); untold for now, the built end this time
+    /// (said the first time, `warn`), asked again after `ask_again`. A look that may not ask: the built end, unasked.
+    /// Looks meanwhile wait for the asking (`asking`'s lock), never take the built end in its place.
+    fn get(&self, ask: impl FnOnce() -> Result<u64, Untold>, say: impl FnOnce(&str, &str)) -> u64 {
+        if let Some(&end) = self.learned.get() {
+            return end;
+        }
+        let mut asking = self.asking.lock().unwrap_or_else(|e| e.into_inner());
+        // (learned by the look this one waited for)
+        if let Some(&end) = self.learned.get() {
+            return end;
+        }
+        if !std::mem::replace(&mut asking.again, false) {
+            return USER_MAX_BUILT;
+        }
+        let built = USER_MAX_BUILT;
+        let (end, said) = match ask() {
+            Ok(end) => (
+                end,
+                (end != built)
+                    .then(|| format!("a run's memory ends at {end:#x} on this kernel (built: {built:#x})")),
+            ),
+            Err(Untold::ForGood(why)) => (
+                built,
+                Some(format!(
+                    "where a run's memory ends can't be asked of this kernel ({why}): {built:#x}, as built"
+                )),
+            ),
+            Err(Untold::ForNow(why)) => {
+                if !std::mem::replace(&mut asking.said, true) {
+                    say(
+                        "warn",
+                        &format!(
+                            "where a run's memory ends couldn't be asked of this kernel now ({why}): {built:#x}, as \
+                             built, until the next run's supervisor asks again"
+                        ),
+                    );
+                }
+                return built;
+            }
+        };
+        let _ = self.learned.set(end);
+        if let Some(words) = said {
+            say(if end == built { "warn" } else { "info" }, &words);
+        }
+        end
+    }
+
+    /// The next look asks again, where the last asking failed for now.
+    fn ask_again(&self) {
+        self.asking.lock().unwrap_or_else(|e| e.into_inner()).again = true;
+    }
+}
+
+/// This kernel's end of a process's memory (`user_max`), asked by `end_of` with empty writes on a pipe of tarae's own,
+/// made for it and closed after: `vfs_write` checks the buffer (`access_ok`) before the file's own write, and a pipe's
+/// write of nothing returns at once (`pipe_write`'s "null write succeeds") — no byte read or written, no reader woken,
+/// no `SIGPIPE`, nothing for `fsnotify` (it hears only a write of something). No file, no path, nothing anyone else
+/// holds.
+#[cfg(all(target_os = "linux", not(fuzzing)))]
+fn kernels_end() -> Result<u64, Untold> {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0; 2];
+    // SAFETY: room for the two descriptors `pipe2` writes.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(untold(errno, "a pipe".into()));
+    }
+    // SAFETY: just made, ours alone.
+    let (_read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let takes = |at: u64| {
+        // SAFETY: a write of nothing — the kernel judges the address and reads no byte of it.
+        match unsafe { libc::write(write.as_raw_fd(), at as *const libc::c_void, 0) } {
+            0 => Ok(true),
+            _ => match std::io::Error::last_os_error().raw_os_error().unwrap_or(0) {
+                libc::EFAULT => Ok(false),
+                e => Err(e),
+            },
+        }
+    };
+    end_of(takes, END_BELOW)
+}
+
+/// macOS has no supervisor (its wire tests read the model), and a fuzz build asks no kernel: the built end.
+#[cfg(not(all(target_os = "linux", not(fuzzing))))]
+fn kernels_end() -> Result<u64, Untold> {
+    Ok(USER_MAX_BUILT)
+}
+
+/// The highest address at which `takes` takes an empty buffer (`Ok(true)`; refused `EFAULT`: `Ok(false)`; any other
+/// answer, an errno: untold, by `untold`), found by halves — 64 asks — and held to what a kernel's end is: taken at
+/// 0, refused at the top, taken at half the end (one end, not a hole), at least 2^32, and below `below` (arm64's tag
+/// byte). An answer that isn't one is untold for good: the kernel answered, and asked again answers the same.
+fn end_of(takes: impl Fn(u64) -> Result<bool, i32>, below: u64) -> Result<u64, Untold> {
+    let ask = |at: u64| takes(at).map_err(|e| untold(e, format!("an empty write at {at:#x}")));
+    let not_one = |why: String| Err(Untold::ForGood(why));
+    if !ask(0)? {
+        return not_one("an empty write at 0 refused".into());
+    }
+    if ask(u64::MAX)? {
+        return not_one("an empty write at the top taken".into());
+    }
+    let (mut taken, mut refused) = (0u64, u64::MAX);
+    while refused - taken > 1 {
+        let mid = taken + (refused - taken) / 2;
+        match ask(mid)? {
+            true => taken = mid,
+            false => refused = mid,
+        }
+    }
+    if taken < 1 << 32 || !ask(taken / 2)? {
+        return not_one(format!("no one end: taken to {taken:#x}, and not all below it"));
+    }
+    if taken >= below {
+        return not_one(format!("taken to {taken:#x}, past {below:#x}"));
+    }
+    Ok(taken)
+}
+
 /// `struct msghdr` and `struct mmsghdr` on the 64-bit architectures, and where `msg_len` sits in the latter.
 const MSGHDR: usize = 56;
 const MMSGHDR: usize = 64;
@@ -227,7 +464,7 @@ pub(super) fn named(level: i32, kind: i32) -> String {
 ///
 /// Its iovecs as the kernel takes them (`import_iovec`): the whole array first, every length checked before any
 /// buffer is read — one that isn't an `ssize_t` (its top bit set) `EINVAL` — then every buffer's reach, one past
-/// `USER_MAX` `EFAULT` (an empty one too), and a datagram whose total passes `SEND_MAX` `EMSGSIZE`, nothing of it
+/// `user_max` `EFAULT` (an empty one too), and a datagram whose total passes `SEND_MAX` `EMSGSIZE`, nothing of it
 /// read; then the buffers in order, up to `SEND_MAX`. Its control as the kernel
 /// takes it (`____sys_sendmsg`): read wherever `msg_control` points when it has a length, a null pointer too —
 /// `EFAULT` where nothing is mapped there (V2-4).
@@ -264,10 +501,11 @@ pub(super) fn read_msg<M: Mem, F: AsRawFd>(
     if iov.iter().any(|&(_, len)| len > isize::MAX as u64) {
         return Err(libc::EINVAL.into());
     }
-    // (`__import_iovec`'s `access_ok`, each buffer before any is read: one reaching past `USER_MAX` faults, an
+    // (`__import_iovec`'s `access_ok`, each buffer before any is read: one reaching past `user_max` faults, an
     // empty one too — a lone buffer's reach cut to `MAX_RW_COUNT` first, as `import_ubuf` takes it)
-    let reach = |len: u64| if iov.len() == 1 { len.min(MAX_RW_COUNT) } else { len };
-    if iov.iter().any(|&(base, len)| base.checked_add(reach(len)).is_none_or(|end| end > USER_MAX)) {
+    let (most, end) = (max_rw_count(), user_max());
+    let reach = |len: u64| if iov.len() == 1 { len.min(most) } else { len };
+    if iov.iter().any(|&(base, len)| base.checked_add(reach(len)).is_none_or(|e| e > end)) {
         return Err(libc::EFAULT.into());
     }
     let total = iov.iter().fold(0u64, |total, &(_, len)| total.saturating_add(len));

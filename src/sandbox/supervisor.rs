@@ -543,6 +543,9 @@ pub fn serve(
     }
     std::thread::Builder::new().name("tarae-serve".into()).spawn(move || {
         quiet_signals();
+        // (where a run's memory ends, asked of the kernel before the run's first call — once it's told, later ones find
+        // it known; where the last asking failed for now, asked again)
+        super::wire::user_max_asked_again();
         let Ok(fd) = rx.recv() else { return };
         let l = Arc::new(Listener(fd));
         let run = Arc::new(Stats::new());
@@ -870,11 +873,11 @@ impl Proc {
 }
 
 /// `len` bytes at `at` in a process's memory (`mem`: its `/proc/<tid>/mem`), read once — not all there, or reaching
-/// past where a process's memory ends (`wire::USER_MAX`, which the kernel's own reads keep to — `/proc` reads past
+/// past where a process's memory ends (`wire::user_max`, which the kernel's own reads keep to — `/proc` reads past
 /// it on arm64, a pointer's top byte dropped): `EFAULT`. Nothing is asked of a read of nothing. (`Caller::read`; the
 /// kernel oracle's reads of its own memory.)
 pub(super) fn read_mem(mem: &std::fs::File, at: u64, len: usize) -> Result<Vec<u8>, i32> {
-    if len > 0 && at.checked_add(len as u64).is_none_or(|end| end > super::wire::USER_MAX) {
+    if len > 0 && at.checked_add(len as u64).is_none_or(|end| end > super::wire::user_max()) {
         return Err(libc::EFAULT);
     }
     let mut buf = vec![0u8; len];

@@ -1370,6 +1370,8 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/supervisor.rs", "in fn routed: if p.resolvers.iter().any(|r| r.ip().to_canonical(", RECORD),
     ("src/sandbox/supervisor.rs", "in fn serve: ENDED.lock().unwrap_or_else(|e| e.into_inner()).pu", RECORD),
     ("src/sandbox/supervisor.rs", "in fn swapped_for: if let Some(pause) = p.swap_pause {", HOOK),
+    // (`TARAE_TEST_USER_MAX`, #693's break-once: unset, the kernel's end is asked as shipped)
+    ("src/sandbox/supervisor/wire.rs", "in fn user_max: if let Some(pinned) = *PINNED {", SEAM),
     (
         "src/sandbox/sysv.rs",
         "in fn after: made",

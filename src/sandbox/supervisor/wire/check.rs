@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use super::*;
 
-/// A run's memory as a test lays it out: pieces at addresses, nothing between them nor past `USER_MAX` (`EFAULT`, as
+/// A run's memory as a test lays it out: pieces at addresses, nothing between them nor past `user_max` (`EFAULT`, as
 /// `supervisor::read_mem` says it) — and every read asked of it, `(at, len)` in order. A memory: an address holds one byte whatever the
 /// read that reaches it (pieces laid over each other: the first laid), and pieces that meet read as one (V2-5).
 #[derive(Default, Clone)]
@@ -23,12 +23,12 @@ impl Fake {
     }
 
     /// What's there, unrecorded — a read of nothing anywhere (`read_exact_at` asks the kernel nothing); one past
-    /// `USER_MAX`, or with a byte no piece holds, `EFAULT`.
+    /// `user_max`, or with a byte no piece holds, `EFAULT`.
     pub(crate) fn peek(&self, at: u64, len: usize) -> Result<Vec<u8>, i32> {
         // (in u128: a piece laid near the top may claim bytes past 2^64, which no read reaches)
         let span = |(base, b): &(u64, Vec<u8>)| (u128::from(*base), u128::from(*base) + b.len() as u128);
         let (mut pos, end) = (u128::from(at), u128::from(at) + len as u128);
-        if end > u128::from(USER_MAX) && len > 0 {
+        if end > u128::from(user_max()) && len > 0 {
             return Err(libc::EFAULT);
         }
         let mut out = Vec::new();
@@ -227,7 +227,7 @@ pub(crate) type Refused = (i32, &'static str);
 ///   `EMSGSIZE`.
 /// - `import_iovec`: none read for none; else `copy_iovec_from_user` takes each `struct iovec` in turn (`EFAULT`),
 ///   a length that isn't an `ssize_t` `EINVAL` — every one before any buffer; `__import_iovec` checks each buffer's
-///   reach (`access_ok`: past `USER_MAX` or wrapping `EFAULT`, an empty one too; a lone one, `import_ubuf`, cut to
+///   reach (`access_ok`: past `user_max` or wrapping `EFAULT`, an empty one too; a lone one, `import_ubuf`, cut to
 ///   `MAX_RW_COUNT` first) and totals them (cut at
 ///   `MAX_RW_COUNT`, past tarae's 1 MiB whatever the page): a datagram past 1 MiB `EMSGSIZE` (tarae's limit, said
 ///   before any buffer is read; the kernel's own is the protocol's).
@@ -274,8 +274,9 @@ pub(crate) fn kernel(m: &Fake, at: u64, datagram: bool) -> (Vec<(u64, usize)>, R
             }
             iov.push((long(&v, 0), len as usize));
         }
-        let reach = |len: usize| if iov.len() == 1 { (len as u64).min(MAX_RW_COUNT) } else { len as u64 };
-        if iov.iter().any(|&(base, len)| base.checked_add(reach(len)).is_none_or(|end| end > USER_MAX)) {
+        let (most, end) = (max_rw_count(), user_max());
+        let reach = |len: usize| if iov.len() == 1 { (len as u64).min(most) } else { len as u64 };
+        if iov.iter().any(|&(base, len)| base.checked_add(reach(len)).is_none_or(|e| e > end)) {
             return Err((libc::EFAULT, "iovec past user space"));
         }
         let total: u128 = iov.iter().map(|&(_, len)| len as u128).sum();
