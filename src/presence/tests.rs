@@ -636,8 +636,9 @@ fn perf_budget_hover_burst() {
     let at = [(0, y), (0, y), (0, 0), (5, 0)];
     let ns = hover_burst(&mut ed, &at, 9);
     let swept = hover_burst(&mut ed, &sweep, 9);
+    let budget = 200.0 * f64::from(crate::test_results::perf_slack());
     for (name, ns, noise) in [("hover_ns", ns, 5), ("hover_sweep_ns", swept, 20)] {
-        let line = format!("PERF {name} {ns:.0} budget=200 noise={noise}\n");
+        let line = format!("PERF {name} {ns:.0} budget={budget:.0} noise={noise}\n");
         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
     }
     // (and it saw them: over the bar, its tag; away, none)
@@ -645,7 +646,7 @@ fn perf_budget_hover_burst() {
     assert_eq!(ed.presence.hover, Some(crate::event::WorkspaceId::HOME));
     ed.handle_event(crate::event::Event::Hover(0, 0));
     assert_eq!(ed.presence.hover, None);
-    assert!(ns < 200.0, "{ns:.0} ns a hover (budget 200)");
+    assert!(ns < budget, "{ns:.0} ns a hover (budget {budget:.0})");
 }
 
 /// The hover burst's scene: the bar's row `y`, and a sweep of 40 cells as a terminal reports one — each a cell away

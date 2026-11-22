@@ -1254,8 +1254,7 @@ fn perf_budget_stream_frame_with_live_rows() {
     if crate::test_results::unoptimized("writing::tests::perf_budget_stream_frame_with_live_rows") {
         return;
     }
-    let slack = std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
-    let budget = std::time::Duration::from_millis(16) * slack.max(1);
+    let budget = std::time::Duration::from_millis(16) * crate::test_results::perf_slack();
     let text: String =
         (0..200_000).map(|i| format!("line {i} 타래 fn main() {{ let x = {i}; }}\n")).collect();
     let old: String =
@@ -1305,8 +1304,7 @@ fn perf_budget_reveal_frame_with_live_rows() {
     if crate::test_results::unoptimized("writing::tests::perf_budget_reveal_frame_with_live_rows") {
         return;
     }
-    let slack = std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
-    let budget = Duration::from_millis(16) * slack.max(1);
+    let budget = Duration::from_millis(16) * crate::test_results::perf_slack();
     let text: String =
         (0..200_000).map(|i| format!("line {i} 타래 fn main() {{ let x = {i}; }}\n")).collect();
     let old: String =
@@ -1403,8 +1401,7 @@ fn perf_budget_reveal_far_below_the_view() {
         return;
     }
     let name = "writing::tests::perf_budget_reveal_far_below_the_view";
-    let slack = std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
-    let budget = Duration::from_millis(16) * slack.max(1);
+    let budget = Duration::from_millis(16) * crate::test_results::perf_slack();
     let corpus = crate::test_results::corpus();
     let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let out = crate::gitrepo::test_git(&here).args(["show", &format!("{corpus}:src/chat.rs")]).output();
@@ -1627,8 +1624,7 @@ fn perf_budget_stream_frame_of_a_big_write() {
     if crate::test_results::unoptimized("writing::tests::perf_budget_stream_frame_of_a_big_write") {
         return;
     }
-    let slack = std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
-    let budget = std::time::Duration::from_millis(16) * slack.max(1);
+    let budget = std::time::Duration::from_millis(16) * crate::test_results::perf_slack();
     let big = BigWrite::new(5_000);
     let mut best = vec![std::time::Duration::MAX; big.cuts.len() - 1];
     for _ in 0..3 {

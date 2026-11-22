@@ -440,9 +440,11 @@ fn perf_budget_feature_count() {
         .collect();
     crate::sorting::by(&mut runs, f64::total_cmp);
     let ns = runs[runs.len() / 2];
-    let line = format!("PERF feature_count_ns {ns:.2} budget=5 noise=0.5\n");
+    let slack = f64::from(crate::test_results::perf_slack());
+    let count_budget = 5.0 * slack;
+    let line = format!("PERF feature_count_ns {ns:.2} budget={count_budget:.0} noise=0.5\n");
     let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
-    assert!(ns < 5.0, "{ns:.2} ns a count (budget 5)");
+    assert!(ns < count_budget, "{ns:.2} ns a count (budget {count_budget:.0})");
     // A batch of events: today read (a clock read), nothing to save yet
     let mut ed = counting();
     const B: usize = 200_000;
@@ -457,7 +459,8 @@ fn perf_budget_feature_count() {
         .collect();
     crate::sorting::by(&mut runs, f64::total_cmp);
     let turn = runs[runs.len() / 2];
-    let line = format!("PERF feature_turn_ns {turn:.1} budget=200 noise=10\n");
+    let turn_budget = 200.0 * slack;
+    let line = format!("PERF feature_turn_ns {turn:.1} budget={turn_budget:.0} noise=10\n");
     let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
-    assert!(turn < 200.0, "{turn:.1} ns a batch (budget 200)");
+    assert!(turn < turn_budget, "{turn:.1} ns a batch (budget {turn_budget:.0})");
 }

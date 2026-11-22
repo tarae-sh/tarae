@@ -944,11 +944,9 @@ fn perf_budget_view_terminal() {
     // (measured 2026-10-21: 3.4 ms of 3.7 is vt100 handing out its rows, `Screen::rows` a page at a time — no
     // faster way in through its API; the document itself 0.17 ms. The document is read on entering, on `G`, and on a
     // new panel size once it has settled (`terminal_resized`) — never by a move)
-    let line = format!("PERF view_terminal_5k_rows_ms {best:.3} budget=5 noise=0.5\n");
+    let budget = 5.0 * f64::from(crate::test_results::perf_slack());
+    let line = format!("PERF view_terminal_5k_rows_ms {best:.3} budget={budget:.0} noise=0.5\n");
     let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
-    let slack =
-        std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1).max(1);
-    let budget = 5.0 * f64::from(slack);
     assert!(best < budget, "{best:.2} ms to view 5,000 rows (budget {budget} ms)");
 }
 

@@ -29836,8 +29836,7 @@ mod tests {
     /// One frame at 60 Hz. `TARAE_PERF_SLACK` (a multiplier) loosens it on slow shared machines — CI sets 3,
     /// which still catches an order-of-magnitude regression.
     fn frame_budget() -> Duration {
-        let slack = std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
-        Duration::from_millis(16) * slack.max(1)
+        Duration::from_millis(16) * crate::test_results::perf_slack()
     }
 
     /// The number behind a budget, for `cargo perf`'s history (`xtask perf`): `PERF <name> <ms> budget=<ms>`,

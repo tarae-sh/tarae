@@ -11144,15 +11144,17 @@ mod tests {
         // (measured 2026-11-03: the frame 1.5 ms; the grading 89 — its diff, outline and tests' spans of 18,000
         // functions, on the worker — against 272 with each definition held against every other in `cut`, and
         // 7,000 with an order's keys, the lines recorded and the place's lines walked again for each key)
-        for (name, v, budget) in [
-            ("review_first_frame_whole_look_ms", frame, 16.0),
-            ("review_graded_whole_look_ms", grading, 200.0),
+        let slack = f64::from(crate::test_results::perf_slack());
+        let (frame_budget, grading_budget) = (16.0 * slack, 200.0 * slack);
+        for (name, v, base, budget) in [
+            ("review_first_frame_whole_look_ms", frame, 16.0, frame_budget),
+            ("review_graded_whole_look_ms", grading, 200.0, grading_budget),
         ] {
-            let line = format!("PERF {name} {v:.2} budget={budget} noise={}\n", budget / 8.0);
+            let line = format!("PERF {name} {v:.2} budget={budget} noise={}\n", base / 8.0);
             let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
         }
-        assert!(frame < 16.0, "the first frame {frame:.2} ms (budget 16)");
-        assert!(grading < 200.0, "its grading {grading:.2} ms (budget 200)");
+        assert!(frame < frame_budget, "the first frame {frame:.2} ms (budget {frame_budget})");
+        assert!(grading < grading_budget, "its grading {grading:.2} ms (budget {grading_budget})");
         std::fs::remove_dir_all(&dir).ok();
     }
 

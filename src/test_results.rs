@@ -91,6 +91,23 @@ pub fn unoptimized(name: &str) -> bool {
     true
 }
 
+/// The environment variable multiplying `perf_budget_*` time assertions on slow shared machines (CI sets 3).
+#[cfg(test)]
+const PERF_SLACK: &str = "TARAE_PERF_SLACK";
+
+/// Multiplier for `perf_budget_*` time assertions on slow shared machines (`TARAE_PERF_SLACK` — CI sets 3;
+/// unset, invalid, or 0 falls back to 1). The one place that reads the variable
+/// (`every_perf_budget_uses_perf_slack`).
+#[cfg(test)]
+pub fn perf_slack() -> u32 {
+    parse_perf_slack(std::env::var(PERF_SLACK).ok().as_deref())
+}
+
+#[cfg(test)]
+fn parse_perf_slack(raw: Option<&str>) -> u32 {
+    raw.and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(1).max(1)
+}
+
 /// The commit the perf scenes copy this repository as of: `tests/perf.rs`'s `CORPUS`, read from there — one place
 /// (moving it is a new baseline for every scene).
 #[cfg(test)]
@@ -803,6 +820,59 @@ mod tests {
             }
         }
         assert!(n >= 17, "found {n}");
+    }
+
+    #[test]
+    fn slack_parses_env_values() {
+        assert_eq!(parse_perf_slack(None), 1);
+        assert_eq!(parse_perf_slack(Some("")), 1);
+        assert_eq!(parse_perf_slack(Some("0")), 1);
+        assert_eq!(parse_perf_slack(Some("-3")), 1);
+        assert_eq!(parse_perf_slack(Some("abc")), 1);
+        assert_eq!(parse_perf_slack(Some("1")), 1);
+        assert_eq!(parse_perf_slack(Some("3")), 3);
+        assert_eq!(parse_perf_slack(Some(" 4 ")), 4);
+    }
+
+    /// Every `perf_budget_*` test scales its time limit by `perf_slack()` (directly, or in `term.rs` via
+    /// `frame_budget()` which calls `perf_slack()`), and `TARAE_PERF_SLACK` is only named in `test_results.rs`.
+    #[test]
+    fn every_perf_budget_uses_perf_slack() {
+        let budgets = crate::sim::lint::test_counts(&["fn perf_budget_"], &["src/test_results.rs"]);
+        let direct = crate::sim::lint::test_counts(&["perf_slack("], &["src/test_results.rs"]);
+        let frame_defs = crate::sim::lint::test_counts(&["fn frame_budget("], &["src/test_results.rs"]);
+        let frame_uses = crate::sim::lint::test_counts(&["frame_budget("], &["src/test_results.rs"]);
+        let mut short = Vec::new();
+        for (file, &n) in &budgets {
+            let d = direct.get(file).copied().unwrap_or(0);
+            let h = frame_defs.get(file).copied().unwrap_or(0);
+            let scaled = match (d, h) {
+                (0, _) => 0,
+                (_, 0) => d,
+                _ => d.saturating_sub(h) + frame_uses.get(file).copied().unwrap_or(0).saturating_sub(h),
+            };
+            if n > scaled {
+                short.push(format!("{file}: {n} `fn perf_budget_`, {scaled} `perf_slack(`"));
+            }
+        }
+        assert!(short.is_empty(), "`perf_budget_*` tests without `perf_slack()`:\n{}", short.join("\n"));
+        let total: usize = budgets.values().sum();
+        assert!(total >= 28, "expected at least 28 perf_budget_* tests, found {total}");
+
+        // `sim::lint::test_counts` and `sources` both strip comments and keep literals, so counting `PERF_SLACK`
+        // directly catches any other file reading the env var (without colliding with unrelated `std::env::var`).
+        let in_tests = crate::sim::lint::test_counts(&[PERF_SLACK], &[]);
+        assert_eq!(
+            in_tests,
+            std::collections::BTreeMap::from([("src/test_results.rs".to_string(), 1)]),
+            "only `src/test_results.rs` may name `{PERF_SLACK}` in test code"
+        );
+        let in_code: Vec<String> = crate::sim::lint::sources()
+            .into_iter()
+            .filter(|(_, text)| text.contains(PERF_SLACK))
+            .map(|(file, _)| file)
+            .collect();
+        assert!(in_code.is_empty(), "non-test code naming `{PERF_SLACK}`: {}", in_code.join(", "));
     }
 
     /// A test that skipped itself (`SELF_SKIP`, written past the capture) reads as skipped — with the why —
