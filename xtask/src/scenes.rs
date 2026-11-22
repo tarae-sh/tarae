@@ -9440,6 +9440,13 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
+    /// Sleeps `d` when recording (`!self.pause.is_zero()`), never when a test runs with `Duration::ZERO`.
+    fn wait(&self, d: Duration) {
+        if !self.pause.is_zero() {
+            std::thread::sleep(d);
+        }
+    }
+
     /// V4's turn on `MAIN_V3_RS`: a read of `main.rs`'s `main` — the lines in front of you, so the view never leaves
     /// them —, a few words, then an edit of three changes a line apart (touching ones would be one change) — the doc
     /// comment's, the map's type dropped (the one to refuse) and the insert's — its input coming
@@ -9449,7 +9456,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("A thread owns its name, so the map needs a key of its own.")?;
         self.text("\n\n")?;
         self.call(1, "read", json!({"files": ["src/main.rs:8-16"]}))?;
-        std::thread::sleep(Duration::from_millis(1500));
+        self.wait(Duration::from_millis(1500));
         self.words("**insert** takes the key by value, and a repeated name replaces the first strand.")?;
         self.words("I will keep the first with the entry API, and say so in the doc comment.")?;
         self.text("\n")?;
@@ -9465,7 +9472,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         );
         self.edit_streamed(2, &format!(r#"{{"edits": [{doc}, {typed}, {insert}]}}"#))?;
         // (the review closes on its last answer: the three stamps stay in sight on the follow card's edit row)
-        std::thread::sleep(Duration::from_millis(2500));
+        self.wait(Duration::from_millis(2500));
         self.words("Done — **main.rs** keeps the first strand when a name repeats.")?;
         self.words("Nothing else reads the map, so no other change is needed.")?;
         self.line(json!({"type": "result", "result": "done"}))
@@ -9480,7 +9487,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         for piece in input.chars().collect::<Vec<_>>().chunks(8) {
             let delta = json!({"type": "input_json_delta", "partial_json": piece.iter().collect::<String>()});
             self.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": delta}}))?;
-            std::thread::sleep(Duration::from_millis(50));
+            self.wait(Duration::from_millis(50));
         }
         self.line(json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 1}}))?;
         self.call(n, "edit", serde_json::from_str(input).map_err(io::Error::other)?)
@@ -9502,30 +9509,30 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("First what the doc comment promises.")?;
         self.text("\n\n")?;
         self.call(1, "read", json!({"files": ["src/spool.rs:3-7"]}))?;
-        std::thread::sleep(Duration::from_millis(2500));
+        self.wait(Duration::from_millis(2500));
         self.words("The queue's order. Now the loop that winds.")?;
         self.text("\n\n")?;
         self.call(2, "read", json!({"files": ["src/spool.rs:42-56"]}))?;
-        std::thread::sleep(Duration::from_millis(1500));
+        self.wait(Duration::from_millis(1500));
         self.words("It pops from the back: the newest strand goes first.")?;
-        std::thread::sleep(Duration::from_millis(1500));
+        self.wait(Duration::from_millis(1500));
         self.words("And at the end:")?;
-        std::thread::sleep(Duration::from_millis(2000));
+        self.wait(Duration::from_millis(2000));
         self.text("\n\n")?;
         self.call(3, "read", json!({"files": ["src/spool.rs:75-83"]}))?;
-        std::thread::sleep(Duration::from_millis(2500));
+        self.wait(Duration::from_millis(2500));
         self.words("A sort hides it. I will pop from the front and drop the sort.")?;
         self.text("\n\n")?;
         let pop =
             item("    while let Some(s) = q.pop_back() {\n", "    while let Some(s) = q.pop_front() {\n");
         self.edit_streamed(4, &pop)?;
-        std::thread::sleep(Duration::from_millis(2000));
+        self.wait(Duration::from_millis(2000));
         let sort = item(
             "    // The last popped is the first\n    // that came, so the order here\n    // is the queue's reversed.\n    // Sorting by length makes it\n    // stable, whatever the order.\n    sp.wound.sort_by_key(measure);\n",
             "    // Popped from the front, they\n    // stay in the order they came.\n",
         );
         self.edit_streamed(5, &sort)?;
-        std::thread::sleep(Duration::from_millis(2000));
+        self.wait(Duration::from_millis(2000));
         self.words("Done — **src/spool.rs:46** winds from the front now, so `wound` keeps the queue's order with no sort.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
@@ -11894,6 +11901,27 @@ mod tests {
         let (second, pops) = (place(&read("src/spool.rs:42-56")), place(&text("pops")));
         let (end, third) = (place(&text("end:")), place(&read("src/spool.rs:75-83")));
         assert!(second < pops && pops < end && end < third, "{second} {pops} {end} {third}");
+    }
+
+    /// `Turn::wait` (used by `edit_in_buffer`, `edit_streamed`, `follow_replay`) skips sleeps when `pause == ZERO`
+    /// and sleeps when `pause` is non-zero (recording pace). No wall-clock upper bound is asserted — an upper bound
+    /// flakes on loaded runners; instead, the `ZERO` branch calls `wait` with an hour so returning at all proves it
+    /// didn't sleep, while the non-zero branch checks only the deterministic lower bound (`elapsed >= d`) through
+    /// `edit_streamed`.
+    #[test]
+    fn edit_streamed_honors_pause() {
+        let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+        let mut zero = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
+        zero.wait(Duration::from_secs(3600));
+        zero.edit_streamed(1, r#"{"edits":[]}"#).unwrap();
+
+        let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+        let mut paced = Turn { out: &mut out, lines: &mut lines, pause: Duration::from_millis(1) };
+        let t0 = std::time::Instant::now();
+        // (`{"edits":[]}` is 12 chars → two 8-char chunks → two 50 ms sleeps = 100 ms)
+        paced.edit_streamed(1, r#"{"edits":[]}"#).unwrap();
+        let d = Duration::from_millis(100);
+        assert!(t0.elapsed() >= d, "non-zero pause still sleeps at least {d:?}");
     }
 
     /// V6 (`managers-view`): the one read is the list, opened on the whole (`space W` one key: no which-key over the
