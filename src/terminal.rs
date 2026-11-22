@@ -63,6 +63,13 @@ pub struct Terminal {
     size: (u16, u16),
     /// Its process group's leader (`setsid`) — hung up when it goes.
     pid: u32,
+    /// Signalled by `tarae-term-wait` right after `child.wait()` reaps the program (#687).
+    #[cfg(test)]
+    reaped: Option<std::sync::mpsc::Receiver<()>>,
+    /// Test fixtures (`uistate::tests::terminal`): wait for the child to be reaped on drop, so parallel walks
+    /// don't pile up live pty children (#687).
+    #[cfg(test)]
+    reap_on_drop: bool,
 }
 
 /// The terminal's parser: `vt100`, with what it leaves undone done by its callbacks (`Erases`).
@@ -115,6 +122,12 @@ impl Terminal {
     /// Its program's process, while it runs (`:procs`).
     pub fn pid(&self) -> Option<u32> {
         self.exited.is_none().then_some(self.pid)
+    }
+
+    /// Test fixtures (#687): end and wait for the pty child to be reaped when this terminal drops.
+    #[cfg(test)]
+    pub(crate) fn reap_on_drop(&mut self) {
+        self.reap_on_drop = true;
     }
 
     /// Rows × columns the program sees — the panel's; it's told when that changes (SIGWINCH).
@@ -419,9 +432,13 @@ fn spawn(
     // the hangup) mustn't keep it a zombie (#131); then what's left to read, `DRAIN_AFTER_EXIT` at most — counted
     // only while nothing is held: while the view holds, the reader waits for a go-ahead and reaches no end, so
     // the end waits too, and comes after the batches it holds (a whole drain once the view lets go)
+    #[cfg(test)]
+    let (reaped_tx, reaped_rx) = std::sync::mpsc::sync_channel::<()>(1);
     crate::event::thread("tarae-term-wait", move || {
         use std::sync::atomic::Ordering::SeqCst;
         let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+        #[cfg(test)]
+        let _ = reaped_tx.try_send(());
         loop {
             let seen = held_meanwhile.load(SeqCst);
             match read_all.recv_timeout(crate::spawn::DRAIN_AFTER_EXIT) {
@@ -507,6 +524,10 @@ fn spawn(
         generation,
         size: (rows, cols),
         pid,
+        #[cfg(test)]
+        reaped: Some(reaped_rx),
+        #[cfg(test)]
+        reap_on_drop: false,
     })
 }
 
@@ -671,6 +692,16 @@ impl Drop for Terminal {
                 libc::kill(-front, libc::SIGHUP);
             }
             libc::kill(-program, libc::SIGHUP);
+            #[cfg(test)]
+            if self.reap_on_drop {
+                libc::kill(-program, libc::SIGTERM);
+            }
+        }
+        #[cfg(test)]
+        if self.reap_on_drop
+            && let Some(reaped) = self.reaped.take()
+        {
+            let _ = reaped.recv_timeout(crate::test_results::PATIENCE);
         }
     }
 }
@@ -966,6 +997,8 @@ pub(crate) fn stand_in(
         generation: ed.terminal_generation,
         size: (rows, cols),
         pid: 0,
+        reaped: None,
+        reap_on_drop: false,
     });
     ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
     ed.workspace.set_at(Here::Program);

@@ -339,9 +339,10 @@ fn no_pty_here(test: &str) -> bool {
     crate::sandbox::no_pty_here(&format!("uistate::tests::{test}"))
 }
 
-/// A terminal whose program sits there (`sleep`) — it hangs up when the editor goes.
+/// A terminal whose program sits there (`sleep`) — reaped when the editor drops (#687: `exec` leaves no grandchild
+/// behind and `reap_on_drop` waits for `child.wait()`, so parallel walks in one process never pile up live ptys).
 pub(crate) fn terminal(ed: &mut Editor) {
-    ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], Vec::new());
+    ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "exec sleep 30".into()], Vec::new());
     let end = Instant::now() + crate::test_results::PATIENCE;
     while ed.workspace.terminal.is_none() {
         assert!(Instant::now() < end, "the terminal started");
@@ -350,6 +351,7 @@ pub(crate) fn terminal(ed: &mut Editor) {
         }
     }
     let t = ed.workspace.terminal.as_mut().unwrap();
+    t.reap_on_drop();
     t.visible = true;
     ed.workspace.set_at(crate::workspace::Here::Program);
     ed.workspace.viewer.slot_front = Some(Slot::Terminal);
@@ -1101,6 +1103,14 @@ const MOVES: &[&str] =
 /// Every scene × every probe key and move: the handler that took the key (`took`) is the one `keys_to` said.
 /// A model that's off in any scene shows here as `scene · key: model says X, handle_key took Y`.
 fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String> {
+    mismatches_in(scenes, model, false)
+}
+
+fn has_mismatch(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> bool {
+    !mismatches_in(scenes, model, true).is_empty()
+}
+
+fn mismatches_in(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo, first_only: bool) -> Vec<String> {
     let mut off = Vec::new();
     for (name, setup) in scenes {
         for probe in PROBES.iter().chain(MOVES).chain(ROUTED) {
@@ -1141,6 +1151,9 @@ fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String
             let took = TOOK.get();
             if took != Some(said) {
                 off.push(format!("{name} · {probe:?}: keys_to says {said:?}, handle_key took {took:?}"));
+            }
+            if first_only && !off.is_empty() {
+                return off;
             }
         }
     }
@@ -1217,10 +1230,7 @@ fn the_routing_test_sees_each_case_broken() {
     let mut leaves = 0;
     for scene @ (name, setup) in SCENES {
         let one = std::slice::from_ref(scene);
-        assert!(
-            !mismatches(one, elsewhere).is_empty(),
-            "{name}: what has the keys named wrong, and the test passes"
-        );
+        assert!(has_mismatch(one, elsewhere), "{name}: what has the keys named wrong, and the test passes");
         let mut ed = editor();
         setup(&mut ed);
         frame(&mut ed);
@@ -1230,7 +1240,7 @@ fn the_routing_test_sees_each_case_broken() {
         let k = ed.keys_to();
         if matches!(k.chain[main(&k)].filter, Filter::Except(_)) {
             leaves += 1;
-            assert!(!mismatches(one, greedy).is_empty(), "{name}: taking every key, and the test passes");
+            assert!(has_mismatch(one, greedy), "{name}: taking every key, and the test passes");
         }
     }
     assert!(leaves >= 5, "scenes whose place leaves keys to the editor: {leaves}");
@@ -1248,7 +1258,7 @@ fn the_routing_test_sees_each_case_broken() {
     };
     let waiting: Vec<Scene> = SCENES.iter().filter(|s| s.0 == "a light card").copied().collect();
     assert_eq!(waiting.len(), 1);
-    assert!(!mismatches(&waiting, takes_answers).is_empty(), "a card that waits took y, and the test passes");
+    assert!(has_mismatch(&waiting, takes_answers), "a card that waits took y, and the test passes");
     // The way in's twin left out of the layers that take `C-q` (#291): `F2` routed as any other key — the test says so
     let no_twin = |ed: &Editor| {
         let mut k = ed.keys_to();
@@ -1259,7 +1269,7 @@ fn the_routing_test_sees_each_case_broken() {
         }
         k
     };
-    assert!(!mismatches(&waiting, no_twin).is_empty(), "F2 isn't the way in, and the test passes");
+    assert!(has_mismatch(&waiting, no_twin), "F2 isn't the way in, and the test passes");
 }
 
 /// The frame as text, as the user sees it.
@@ -1532,14 +1542,30 @@ fn every_key_is_shown_by_its_one_name() {
 }
 
 /// …and it would see a key shown by its notation: `Display` broken to write it (`ret`, `minus`, `up`) shows in every
-/// surface the test reads — a frame, what a key said, the palette, the reference.
+/// surface the test reads — a frame, what a key said, the palette, the reference. Sampled by surface kind rather than
+/// walking every scene (the real `every_key_is_shown_by_its_one_name` walks them all):
+/// - code (`the code`) — unused/refused keys (`said`) and prefix hints (`frame`)
+/// - which-key (`the space menu`) — keymap bindings on a frame
+/// - card (`a light card`) — floating offer card key hints
+/// - picker (`a picker`) — floating list/preview key hints
+/// - chat (`the chat, empty`) — chat pane hints and refusals
+/// - group list (`list:tests, the tests group's list`) — list pane hints and refusals
 #[test]
 fn the_one_name_test_sees_a_key_shown_by_its_notation() {
-    if no_pty_here("the_one_name_test_sees_a_key_shown_by_its_notation") {
-        return;
-    }
+    let kinds = [
+        "the code",
+        "the space menu",
+        "a light card",
+        "a picker",
+        "the chat, empty",
+        "list:tests, the tests group's list",
+    ];
+    let scenes: Vec<Scene> = kinds
+        .iter()
+        .map(|k| *SCENES.iter().find(|s| s.0 == *k).unwrap_or_else(|| panic!("no scene {k:?}")))
+        .collect();
     let _back = crate::key::Broken::ShownAsNotation.set();
-    let off = notation_shown();
+    let off = notation_shown_in(&scenes);
     for surface in ["frame · ", "said · ", "palette · ", "reference: "] {
         assert!(
             off.iter().any(|l| l.starts_with(surface)),
