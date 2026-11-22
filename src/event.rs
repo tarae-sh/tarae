@@ -908,10 +908,11 @@ mod tests {
                     code[j + m.len()..].split('|').next().map(|s| format!("{}.spawn(", s.trim()))
                 })
                 .collect();
-            for (i, line) in code.lines().enumerate() {
+            let lines: Vec<&str> = code.lines().collect();
+            for (i, &line) in lines.iter().enumerate() {
                 let at = || format!("{key}:{}", i + 1);
-                let from = code.lines().skip(i).take(4).collect::<String>();
-                let builder = line.contains("thread::Builder::new()") && !from.contains(".name(");
+                let builder = line.contains("thread::Builder::new()")
+                    && !lines[i..(i + 4).min(lines.len())].concat().contains(".name(");
                 let scope_spawn = scopes.iter().any(|s| line.contains(s.as_str()));
                 if line.contains("thread::spawn(") || builder || scope_spawn {
                     unnamed.push(at());
