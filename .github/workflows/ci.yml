@@ -25,16 +25,16 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
       - run: cargo fmt --all --check
 
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --locked --workspace --all-targets
       - run: cargo clippy --locked --workspace --all-targets --features bundled-grammars
 
@@ -51,9 +51,9 @@ jobs:
         features: ["", bundled-grammars]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.features }}
       # Tests commit into throwaway repos (git hunks, disk sync)
@@ -82,9 +82,9 @@ jobs:
         features: ["", bundled-grammars]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: perf-report-${{ matrix.features }}
       # Tests commit into throwaway repos (git hunks, disk sync)
@@ -140,7 +140,7 @@ jobs:
               echo "### perf budgets, report only (build did not succeed: outcome ${BUILD_OUTCOME:-unknown})"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         continue-on-error: true
         with:
@@ -160,9 +160,9 @@ jobs:
     # (as the test jobs: a hang ends the job)
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # RUSTFLAGS unset, not emptied (an empty value wins too): cargo takes rustflags from one place only and
       # RUSTFLAGS wins over a config's, so `tarae plugin test` would build the bundled db plugin without its
       # .cargo/config.toml's `--cfg getrandom_backend="custom"` and getrandom 0.4 refuses wasm32. The SDK's own
