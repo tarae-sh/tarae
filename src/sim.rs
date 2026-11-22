@@ -848,20 +848,57 @@ impl Drop for Sim {
     }
 }
 
+/// Parse `TARAE_SIM_SEEDS`: unset runs the scenario's fixed seeds (`Ok(None)`); `N` runs `0..N` (`N >= 1`);
+/// `A..B` runs `A..B` (`A < B`, B exclusive). Empty (`0`, `0..0`, `5..5`) and malformed values return `Err`
+/// naming the value and both allowed forms — so a typo or broken shard never silently passes zero seeds.
+fn parse_seeds(raw: Option<&str>) -> Result<Option<std::ops::Range<u64>>, String> {
+    let Some(raw) = raw else { return Ok(None) };
+    let bad = |why: &str| {
+        format!(
+            "bad TARAE_SIM_SEEDS={raw:?} ({why}) — expected N (0..N, N >= 1) or A..B (A < B, B exclusive)"
+        )
+    };
+    let range = match raw.split_once("..") {
+        Some((a, b)) => {
+            let start = a.parse::<u64>().map_err(|_| bad("not a range of unsigned integers"))?;
+            let end = b.parse::<u64>().map_err(|_| bad("not a range of unsigned integers"))?;
+            start..end
+        }
+        None => {
+            let n = raw.parse::<u64>().map_err(|_| bad("not an unsigned integer or A..B range"))?;
+            0..n
+        }
+    };
+    if range.is_empty() {
+        let why = if range.start == range.end { "empty range — no seeds to run" } else { "start > end" };
+        return Err(bad(why));
+    }
+    Ok(Some(range))
+}
+
 /// A scenario's seeds run twice each, the two traces the same — else the first step they part at fails it.
-/// `TARAE_SIM_REPLAY` runs that file's choices once instead; `TARAE_SIM_SEEDS=N` runs seeds `0..N` (the long
-/// runs), saying the steps a second; `TARAE_SIM_TRACE=1` prints each seed's trace (with `--nocapture`).
+/// `TARAE_SIM_REPLAY` runs that file's choices once instead; `TARAE_SIM_SEEDS=N` runs seeds `0..N` and
+/// `TARAE_SIM_SEEDS=A..B` runs seeds `A..B` (B exclusive) — the long runs, saying the range and steps a second
+/// (a bad or empty value panics); `TARAE_SIM_TRACE=1` prints each seed's trace (with `--nocapture`).
 pub fn seeds(name: &str, fixed: &[u64], run: impl Fn(Choices) -> Vec<String>) {
     if let Ok(file) = std::env::var("TARAE_SIM_REPLAY") {
         let trace = run(Choices::replay(Path::new(&file)));
         eprintln!("simulation {name}, {file}:\n{}", trace.join("\n"));
         return;
     }
-    let many: Option<u64> = std::env::var("TARAE_SIM_SEEDS").ok().and_then(|n| n.parse().ok());
-    let seeds: Vec<u64> = many.map_or_else(|| fixed.to_vec(), |n| (0..n).collect());
+    let many = match std::env::var("TARAE_SIM_SEEDS") {
+        Ok(raw) => parse_seeds(Some(&raw)).unwrap_or_else(|e| panic!("{e}")),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(v)) => {
+            panic!(
+                "bad TARAE_SIM_SEEDS={:?} (not UTF-8) — expected N (0..N, N >= 1) or A..B (A < B, B exclusive)",
+                v.to_string_lossy()
+            );
+        }
+    };
     let began = Instant::now();
     let mut steps = 0;
-    for &seed in &seeds {
+    let mut one_seed = |seed: u64| {
         let one = run(Choices::seeded(seed));
         if std::env::var_os("TARAE_SIM_TRACE").is_some() {
             eprintln!("simulation {name}, seed {seed}:\n{}", one.join("\n"));
@@ -876,20 +913,49 @@ pub fn seeds(name: &str, fixed: &[u64], run: impl Fn(Choices) -> Vec<String>) {
             );
         }
         steps += one.len() * 2;
-    }
-    if many.is_some() {
-        let secs = began.elapsed().as_secs_f64();
-        eprintln!(
-            "simulation {name}: {} seeds, {steps} steps in {secs:.1} s, {:.0} steps/s",
-            seeds.len(),
-            steps as f64 / secs
-        );
+    };
+    match many {
+        Some(range) => {
+            let count = range.end - range.start;
+            for seed in range.start..range.end {
+                one_seed(seed);
+            }
+            let secs = began.elapsed().as_secs_f64();
+            eprintln!(
+                "simulation {name}: seeds {}..{}, {count} seeds, {steps} steps in {secs:.1} s, {:.0} steps/s",
+                range.start,
+                range.end,
+                steps as f64 / secs
+            );
+        }
+        None => {
+            for &seed in fixed {
+                one_seed(seed);
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `TARAE_SIM_SEEDS` accepts `N` (`0..N`) or `A..B` (`A < B`, B exclusive); unset falls back to the
+    /// scenario's fixed seeds (`None`); empty (`0`, `0..0`, `5..5`) and malformed forms error, naming the
+    /// value and both allowed forms.
+    #[test]
+    fn tarae_sim_seeds_parses_count_or_range_and_refuses_bad_values() {
+        assert_eq!(parse_seeds(None), Ok(None));
+        assert_eq!(parse_seeds(Some("1")), Ok(Some(0..1)));
+        assert_eq!(parse_seeds(Some("200")), Ok(Some(0..200)));
+        assert_eq!(parse_seeds(Some("0..1")), Ok(Some(0..1)));
+        assert_eq!(parse_seeds(Some("1000..2000")), Ok(Some(1000..2000)));
+        for bad in ["", "abc", "0", "0..0", "5..5", "5..3", "..9", "3..", "1..2..3", "1..=5", "-1"] {
+            let err = parse_seeds(Some(bad)).expect_err(bad);
+            assert!(err.contains(bad), "{bad:?}: {err}");
+            assert!(err.contains("0..N") && err.contains("A..B"), "{bad:?}: {err}");
+        }
+    }
 
     /// A run's real time at most, in these tests.
     const LIMIT: Duration = crate::test_results::PATIENCE;
