@@ -1,8 +1,9 @@
 //! What the tests of tarae's crates share (a dev-dependency only): a test's own scratch folder (`scratch`), the
 //! one patience every test waits with (`PATIENCE`), the readers' seeded mutators (`mutate`), a loopback port that
-//! stays refusing (`net`) and a fresh binary's first exec run alone (`firstexec`).
+//! stays refusing (`net`), a fresh binary's first exec run alone (`firstexec`), and an isolated git command (`git`).
 
 pub mod firstexec;
+pub mod git;
 pub mod mutate;
 pub mod net;
 pub mod scratch;

@@ -294,3 +294,471 @@ fn the_mailbox_wakes_its_writer() {
     assert!(got.windows(2).all(|p| p[0] < p[1]), "in order: {got:?}");
     assert_eq!(got.last(), Some(&50));
 }
+
+// ── Build stamp (`stamp.rs`, #684 option D) ──────────────────────────────────────
+
+mod stamp_tests {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    use crate::stamp::{GitStamp, inspect, watch_paths};
+    use tarae_testkit::git::test_git;
+    use tarae_testkit::scratch::Scratch;
+
+    fn paths(list: &[&str]) -> Vec<PathBuf> {
+        list.iter().map(PathBuf::from).collect()
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = test_git(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn run_inspect(root: &Path, sources: &[&str]) -> Option<GitStamp> {
+        inspect(root, sources, |args| {
+            let out = test_git(root)
+                .args(["-c", "core.fsmonitor=", "--no-optional-locks"])
+                .args(args)
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .output()
+                .ok()?;
+            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        })
+    }
+
+    fn short_head(dir: &Path) -> String {
+        git_ok(dir, &["rev-parse", "--short=8", "HEAD"])
+    }
+
+    fn assert_all_exist(watches: &[PathBuf], label: &str) {
+        assert!(!watches.is_empty(), "{label}: expected at least one watch path");
+        for p in watches {
+            assert!(p.exists(), "{label}: watch path does not exist: {}", p.display());
+        }
+    }
+
+    fn assert_covered(watches: &[PathBuf], target: &Path, label: &str) {
+        let hit = watches.iter().any(|w| if w.is_dir() { target.starts_with(w) } else { target == w });
+        assert!(hit, "{label}: {} is not covered by watches {watches:?}", target.display());
+    }
+
+    fn init_repo(scratch: &Scratch, name: &str) -> PathBuf {
+        let root = std::fs::canonicalize(scratch.path()).unwrap().join(name);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "// init\n").unwrap();
+        git_ok(&root, &["init", "-q", "-b", "main"]);
+        git_ok(&root, &["add", "-A"]);
+        git_ok(&root, &["commit", "-qm", "init"]);
+        root
+    }
+
+    /// Pure table for `watch_paths` across every git state (loose, packed, nested packed with/without prefix dir,
+    /// unborn, detached, linked worktree loose & packed, and reftable main & worktree).
+    #[test]
+    fn each_git_state_watches_only_files_that_exist_and_move_with_head() {
+        struct Case {
+            name: &'static str,
+            dir: &'static str,
+            common: &'static str,
+            symref: Option<&'static str>,
+            present: &'static [&'static str],
+            want: &'static [&'static str],
+        }
+        let cases = [
+            Case {
+                name: "loose_no_packed_refs",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/main"),
+                present: &["/r/.git/HEAD", "/r/.git/refs/heads", "/r/.git/refs/heads/main"],
+                want: &["/r/.git/HEAD", "/r/.git/refs/heads/main"],
+            },
+            Case {
+                name: "loose_shadows_packed_refs",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/main"),
+                present: &[
+                    "/r/.git/HEAD",
+                    "/r/.git/packed-refs",
+                    "/r/.git/refs/heads",
+                    "/r/.git/refs/heads/main",
+                ],
+                want: &["/r/.git/HEAD", "/r/.git/refs/heads/main"],
+            },
+            Case {
+                name: "packed_top_level",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/main"),
+                present: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs", "/r/.git/refs/heads"],
+                want: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs/heads"],
+            },
+            Case {
+                name: "packed_nested_with_prefix_dir",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/feat/foo"),
+                present: &[
+                    "/r/.git/HEAD",
+                    "/r/.git/packed-refs",
+                    "/r/.git/refs",
+                    "/r/.git/refs/heads",
+                    "/r/.git/refs/heads/feat",
+                ],
+                want: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs/heads/feat"],
+            },
+            Case {
+                name: "packed_nested_pruned_prefix_dir",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/feat/foo"),
+                present: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs", "/r/.git/refs/heads"],
+                want: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs/heads"],
+            },
+            Case {
+                name: "packed_nested_only_refs_dir",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/feat/foo"),
+                present: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs"],
+                want: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs"],
+            },
+            Case {
+                name: "unborn_no_packed_refs",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/main"),
+                present: &["/r/.git/HEAD", "/r/.git/refs", "/r/.git/refs/heads"],
+                want: &["/r/.git/HEAD", "/r/.git/refs/heads"],
+            },
+            Case {
+                name: "detached_head",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: None,
+                present: &["/r/.git/HEAD", "/r/.git/packed-refs", "/r/.git/refs/heads"],
+                want: &["/r/.git/HEAD"],
+            },
+            Case {
+                name: "worktree_loose",
+                dir: "/r/.git/worktrees/wt",
+                common: "/r/.git",
+                symref: Some("refs/heads/wt"),
+                present: &[
+                    "/r/.git/worktrees/wt/HEAD",
+                    "/r/.git/packed-refs",
+                    "/r/.git/refs/heads",
+                    "/r/.git/refs/heads/wt",
+                ],
+                want: &["/r/.git/worktrees/wt/HEAD", "/r/.git/refs/heads/wt"],
+            },
+            Case {
+                name: "worktree_packed",
+                dir: "/r/.git/worktrees/wt",
+                common: "/r/.git",
+                symref: Some("refs/heads/wt"),
+                present: &["/r/.git/worktrees/wt/HEAD", "/r/.git/packed-refs", "/r/.git/refs/heads"],
+                want: &["/r/.git/worktrees/wt/HEAD", "/r/.git/packed-refs", "/r/.git/refs/heads"],
+            },
+            Case {
+                name: "reftable_main_deduped",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/main"),
+                present: &["/r/.git/HEAD", "/r/.git/reftable/tables.list"],
+                want: &["/r/.git/reftable/tables.list"],
+            },
+            Case {
+                name: "reftable_worktree_both",
+                dir: "/r/.git/worktrees/wt",
+                common: "/r/.git",
+                symref: Some("refs/heads/wt"),
+                present: &[
+                    "/r/.git/worktrees/wt/HEAD",
+                    "/r/.git/worktrees/wt/reftable/tables.list",
+                    "/r/.git/reftable/tables.list",
+                ],
+                want: &["/r/.git/worktrees/wt/reftable/tables.list", "/r/.git/reftable/tables.list"],
+            },
+            Case {
+                name: "reftable_worktree_common_only",
+                dir: "/r/.git/worktrees/wt",
+                common: "/r/.git",
+                symref: Some("refs/heads/wt"),
+                present: &["/r/.git/worktrees/wt/HEAD", "/r/.git/reftable/tables.list"],
+                want: &["/r/.git/reftable/tables.list"],
+            },
+            Case {
+                name: "ancestor_never_climbs_to_common",
+                dir: "/r/.git",
+                common: "/r/.git",
+                symref: Some("refs/heads/main"),
+                present: &["/r/.git", "/r/.git/HEAD"],
+                want: &["/r/.git/HEAD"],
+            },
+        ];
+
+        for c in cases {
+            let set: BTreeSet<PathBuf> = c.present.iter().map(PathBuf::from).collect();
+            let got = watch_paths(Path::new(c.dir), Path::new(c.common), c.symref, |p| set.contains(p));
+            assert_eq!(got, paths(c.want), "case {}", c.name);
+        }
+    }
+
+    /// Real-repo states 1–3: loose (no `packed-refs`), packed (`git pack-refs --all`), commit after packing,
+    /// and nested packed `feat/foo` then a commit.
+    #[test]
+    fn a_commit_moves_the_stamp_whether_its_branch_is_loose_or_packed() {
+        let scratch = Scratch::new("wire-stamp-123");
+        let root = init_repo(&scratch, "repo");
+        let git_dir = root.join(".git");
+
+        // State 1: fresh loose ref, no packed-refs
+        assert!(!git_dir.join("packed-refs").exists());
+        let s1 = run_inspect(&root, &["src"]).expect("in git repo");
+        assert_all_exist(&s1.watches, "state 1 loose");
+        assert_eq!(s1.watches, vec![git_dir.join("HEAD"), git_dir.join("refs/heads/main")]);
+        assert_eq!(s1.suffix.as_deref(), Some(short_head(&root).as_str()));
+
+        // Dirty tracked source adds '+'
+        std::fs::write(root.join("src/lib.rs"), "// dirty\n").unwrap();
+        let dirty = run_inspect(&root, &["src"]).unwrap();
+        assert_eq!(dirty.suffix, Some(format!("{}+", short_head(&root))));
+        std::fs::write(root.join("src/lib.rs"), "// init\n").unwrap();
+
+        // Empty commit updates loose ref (covered by watches) and next inspect gives new sha
+        let sha1 = short_head(&root);
+        git_ok(&root, &["commit", "--allow-empty", "-qm", "two"]);
+        let sha2 = short_head(&root);
+        assert_ne!(sha1, sha2);
+        assert_covered(&s1.watches, &git_dir.join("refs/heads/main"), "state 1 commit");
+        let s1_after = run_inspect(&root, &["src"]).unwrap();
+        assert_eq!(s1_after.suffix.as_deref(), Some(sha2.as_str()));
+
+        // State 2: all packed (loose ref deleted)
+        git_ok(&root, &["pack-refs", "--all"]);
+        assert!(!git_dir.join("refs/heads/main").exists());
+        assert!(git_dir.join("packed-refs").exists());
+        let s2 = run_inspect(&root, &["src"]).unwrap();
+        assert_all_exist(&s2.watches, "state 2 packed");
+        assert_eq!(
+            s2.watches,
+            vec![git_dir.join("HEAD"), git_dir.join("packed-refs"), git_dir.join("refs/heads")]
+        );
+
+        // State 3a: commit after packing on main creates loose ref under watched dir and narrows back
+        git_ok(&root, &["commit", "--allow-empty", "-qm", "three"]);
+        let sha3 = short_head(&root);
+        assert_ne!(sha2, sha3);
+        assert_covered(&s2.watches, &git_dir.join("refs/heads/main"), "state 3a commit");
+        let s3a = run_inspect(&root, &["src"]).unwrap();
+        assert_all_exist(&s3a.watches, "state 3a after");
+        assert_eq!(s3a.suffix.as_deref(), Some(sha3.as_str()));
+        assert_eq!(s3a.watches, vec![git_dir.join("HEAD"), git_dir.join("refs/heads/main")]);
+
+        // State 3b: nested packed feat/foo then a commit
+        git_ok(&root, &["checkout", "-qb", "feat/foo"]);
+        git_ok(&root, &["commit", "--allow-empty", "-qm", "feat-1"]);
+        let feat1 = short_head(&root);
+        git_ok(&root, &["pack-refs", "--all"]);
+        assert!(!git_dir.join("refs/heads/feat/foo").exists());
+        let s3b = run_inspect(&root, &["src"]).unwrap();
+        assert_all_exist(&s3b.watches, "state 3b packed feat/foo");
+        git_ok(&root, &["commit", "--allow-empty", "-qm", "feat-2"]);
+        let feat2 = short_head(&root);
+        assert_ne!(feat1, feat2);
+        assert_covered(&s3b.watches, &git_dir.join("refs/heads/feat/foo"), "state 3b feat/foo commit");
+        let s3b_after = run_inspect(&root, &["src"]).unwrap();
+        assert_all_exist(&s3b_after.watches, "state 3b after");
+        assert_eq!(s3b_after.suffix.as_deref(), Some(feat2.as_str()));
+        assert_eq!(s3b_after.watches, vec![git_dir.join("HEAD"), git_dir.join("refs/heads/feat/foo")]);
+    }
+
+    /// Real-repo states 4–6: detached HEAD (+ commit), linked worktree (loose / packed / commit), and no git.
+    #[test]
+    fn a_detached_head_or_a_linked_worktree_moves_the_stamp_and_no_git_watches_nothing() {
+        let scratch = Scratch::new("wire-stamp-456");
+        let base = std::fs::canonicalize(scratch.path()).unwrap();
+
+        // State 6: no git
+        let plain = base.join("no-git");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(run_inspect(&plain, &["src"]), None);
+
+        // State 4: detached HEAD (no packed-refs) + commit
+        let root = init_repo(&scratch, "repo");
+        let git_dir = root.join(".git");
+        git_ok(&root, &["checkout", "-q", "--detach", "HEAD"]);
+        assert!(!git_dir.join("packed-refs").exists());
+        let s4 = run_inspect(&root, &["src"]).unwrap();
+        assert_all_exist(&s4.watches, "state 4 detached");
+        assert_eq!(s4.watches, vec![git_dir.join("HEAD")]);
+        let d1 = short_head(&root);
+        git_ok(&root, &["commit", "--allow-empty", "-qm", "detached"]);
+        let d2 = short_head(&root);
+        assert_ne!(d1, d2);
+        assert_covered(&s4.watches, &git_dir.join("HEAD"), "state 4 detached commit");
+        assert_eq!(run_inspect(&root, &["src"]).unwrap().suffix.as_deref(), Some(d2.as_str()));
+
+        // State 5: linked worktree (loose -> commit -> packed -> commit)
+        let wt = base.join("wt");
+        git_ok(&root, &["worktree", "add", "-q", "-b", "wt-branch", wt.to_str().unwrap()]);
+        let wt_dir = PathBuf::from(git_ok(&wt, &["rev-parse", "--absolute-git-dir"]));
+        let common = PathBuf::from(git_ok(&wt, &["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+
+        // Loose worktree watches exact loose ref only, never common/refs/heads
+        let s5_loose = run_inspect(&wt, &["src"]).unwrap();
+        assert_all_exist(&s5_loose.watches, "state 5 loose wt");
+        assert_eq!(s5_loose.watches, vec![wt_dir.join("HEAD"), common.join("refs/heads/wt-branch")]);
+        assert!(!s5_loose.watches.contains(&common.join("refs/heads")));
+        let w1 = short_head(&wt);
+        git_ok(&wt, &["commit", "--allow-empty", "-qm", "wt-1"]);
+        let w2 = short_head(&wt);
+        assert_ne!(w1, w2);
+        assert_covered(&s5_loose.watches, &common.join("refs/heads/wt-branch"), "state 5 loose commit");
+        assert_eq!(run_inspect(&wt, &["src"]).unwrap().suffix.as_deref(), Some(w2.as_str()));
+
+        // Packed worktree watches HEAD + packed-refs + refs/heads, catches commit, narrows back
+        git_ok(&wt, &["pack-refs", "--all"]);
+        assert!(!common.join("refs/heads/wt-branch").exists());
+        let s5_packed = run_inspect(&wt, &["src"]).unwrap();
+        assert_all_exist(&s5_packed.watches, "state 5 packed wt");
+        assert_eq!(
+            s5_packed.watches,
+            vec![wt_dir.join("HEAD"), common.join("packed-refs"), common.join("refs/heads")]
+        );
+        git_ok(&wt, &["commit", "--allow-empty", "-qm", "wt-2"]);
+        let w3 = short_head(&wt);
+        assert_ne!(w2, w3);
+        assert_covered(&s5_packed.watches, &common.join("refs/heads/wt-branch"), "state 5 packed commit");
+        let s5_after = run_inspect(&wt, &["src"]).unwrap();
+        assert_all_exist(&s5_after.watches, "state 5 after");
+        assert_eq!(s5_after.suffix.as_deref(), Some(w3.as_str()));
+        assert_eq!(s5_after.watches, vec![wt_dir.join("HEAD"), common.join("refs/heads/wt-branch")]);
+    }
+
+    /// Edge cases: `core.logAllRefUpdates=false` (no reflogs) and unborn repo -> first commit.
+    #[test]
+    fn the_first_commit_moves_the_stamp_even_without_reflogs() {
+        let scratch = Scratch::new("wire-stamp-edges");
+        let base = std::fs::canonicalize(scratch.path()).unwrap();
+
+        // Edge 1: core.logAllRefUpdates=false
+        let no_log = init_repo(&scratch, "no-log");
+        let git_dir = no_log.join(".git");
+        git_ok(&no_log, &["config", "core.logAllRefUpdates", "false"]);
+        let _ = std::fs::remove_dir_all(git_dir.join("logs"));
+        git_ok(&no_log, &["pack-refs", "--all"]);
+        assert!(!git_dir.join("logs/HEAD").exists());
+        let before = run_inspect(&no_log, &["src"]).unwrap();
+        assert_all_exist(&before.watches, "no-reflog packed");
+        let c1 = short_head(&no_log);
+        git_ok(&no_log, &["commit", "--allow-empty", "-qm", "no-log-2"]);
+        let c2 = short_head(&no_log);
+        assert_ne!(c1, c2);
+        assert_covered(&before.watches, &git_dir.join("refs/heads/main"), "no-reflog commit");
+        assert_eq!(run_inspect(&no_log, &["src"]).unwrap().suffix.as_deref(), Some(c2.as_str()));
+
+        // Edge 2: unborn repo (0 commits) -> suffix is None (version alone), watches emitted before rev-parse
+        let unborn = base.join("unborn");
+        std::fs::create_dir_all(unborn.join("src")).unwrap();
+        std::fs::write(unborn.join("src/lib.rs"), "// unborn\n").unwrap();
+        git_ok(&unborn, &["init", "-q", "-b", "main"]);
+        let u_git = unborn.join(".git");
+        let u_before = run_inspect(&unborn, &["src"]).expect("unborn is still a git repo");
+        assert_eq!(u_before.suffix, None, "unborn repo emits version alone (no suffix)");
+        assert_all_exist(&u_before.watches, "unborn");
+        assert_eq!(u_before.watches, vec![u_git.join("HEAD"), u_git.join("refs/heads")]);
+
+        // First commit creates refs/heads/main under watched refs/heads and yields sha
+        git_ok(&unborn, &["add", "-A"]);
+        git_ok(&unborn, &["commit", "-qm", "first"]);
+        let first = short_head(&unborn);
+        assert_covered(&u_before.watches, &u_git.join("refs/heads/main"), "unborn first commit");
+        let u_after = run_inspect(&unborn, &["src"]).unwrap();
+        assert_all_exist(&u_after.watches, "unborn after first commit");
+        assert_eq!(u_after.suffix.as_deref(), Some(first.as_str()));
+        assert_eq!(u_after.watches, vec![u_git.join("HEAD"), u_git.join("refs/heads/main")]);
+    }
+
+    /// Real reftable repository via `git init --ref-format=reftable` (skipped out loud if the installed git lacks
+    /// reftable support).
+    #[test]
+    fn a_reftable_repository_moves_the_stamp_through_its_tables_list() {
+        let scratch = Scratch::new("wire-stamp-reftable");
+        let base = std::fs::canonicalize(scratch.path()).unwrap();
+        let root = base.join("rt");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "// rt\n").unwrap();
+
+        let init = test_git(&root)
+            .args(["init", "-q", "-b", "main", "--ref-format=reftable"])
+            .output()
+            .expect("spawn git");
+        if !init.status.success() {
+            let ver = test_git(&root)
+                .arg("--version")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "unknown git".into());
+            let why = String::from_utf8_lossy(&init.stderr).trim().to_string();
+            eprintln!(
+                "tarae-test: skipped a_reftable_repository_moves_the_stamp_through_its_tables_list — {ver} has no \
+                 --ref-format=reftable: {why}"
+            );
+            return;
+        }
+
+        let git_dir = root.join(".git");
+        let tables = git_dir.join("reftable/tables.list");
+        assert!(tables.exists(), "reftable tables.list missing");
+
+        // Unborn reftable repo
+        let unborn = run_inspect(&root, &["src"]).unwrap();
+        assert_eq!(unborn.suffix, None);
+        assert_all_exist(&unborn.watches, "reftable unborn");
+        assert_eq!(unborn.watches, vec![tables.clone()]);
+
+        // First commit + follow-up commit
+        git_ok(&root, &["add", "-A"]);
+        git_ok(&root, &["commit", "-qm", "rt-1"]);
+        let r1 = short_head(&root);
+        assert_covered(&unborn.watches, &tables, "reftable first commit");
+        let s1 = run_inspect(&root, &["src"]).unwrap();
+        assert_eq!(s1.suffix.as_deref(), Some(r1.as_str()));
+        assert_eq!(s1.watches, vec![tables.clone()]);
+
+        git_ok(&root, &["commit", "--allow-empty", "-qm", "rt-2"]);
+        let r2 = short_head(&root);
+        assert_ne!(r1, r2);
+        assert_covered(&s1.watches, &tables, "reftable second commit");
+        assert_eq!(run_inspect(&root, &["src"]).unwrap().suffix.as_deref(), Some(r2.as_str()));
+
+        // Linked worktree on a reftable repo
+        let wt = base.join("rt-wt");
+        git_ok(&root, &["worktree", "add", "-q", "-b", "rt-wt", wt.to_str().unwrap()]);
+        let wt_dir = PathBuf::from(git_ok(&wt, &["rev-parse", "--absolute-git-dir"]));
+        let s_wt = run_inspect(&wt, &["src"]).unwrap();
+        assert_all_exist(&s_wt.watches, "reftable worktree");
+        assert!(s_wt.watches.contains(&tables), "common tables.list watched: {:?}", s_wt.watches);
+        if wt_dir.join("reftable/tables.list").exists() {
+            assert!(s_wt.watches.contains(&wt_dir.join("reftable/tables.list")));
+        }
+        git_ok(&wt, &["commit", "--allow-empty", "-qm", "rt-wt-1"]);
+        let rw = short_head(&wt);
+        assert_ne!(r2, rw);
+        assert_covered(&s_wt.watches, &tables, "reftable worktree commit");
+        assert_eq!(run_inspect(&wt, &["src"]).unwrap().suffix.as_deref(), Some(rw.as_str()));
+    }
+}

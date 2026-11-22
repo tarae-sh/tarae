@@ -21,37 +21,13 @@ fn every_git_a_test_starts_goes_through_test_git() {
     crate::sim::lint::only_shrinks("git started directly in tests", &now, GIT_STARTED_IN_TESTS);
 }
 
-/// `test_git` takes nothing of git's from the test's environment: each of a repository's own names removed (a
-/// test run under `git -c …`, a hook or `rebase -x` would hand it config above every file, or tarae's own
-/// repository), and the three that shut out the machine's config set.
-#[test]
-fn test_git_takes_no_repository_or_config_from_the_environment() {
-    let git = test_git("/");
-    let envs: std::collections::HashMap<_, _> = git.get_envs().collect();
-    // (`git rev-parse --local-env-vars`, git 2.54, and the template folder `fixture_git` kept out)
-    let removed = "GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
-                   GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE \
-                   GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR \
-                   GIT_TEMPLATE_DIR";
-    for name in removed.split_whitespace() {
-        assert_eq!(envs.get(std::ffi::OsStr::new(name)), Some(&None), "{name}: not removed");
-    }
-    for (name, value) in
-        [("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1"), ("XDG_CONFIG_HOME", "/dev/null")]
-    {
-        assert_eq!(envs.get(std::ffi::OsStr::new(name)), Some(&Some(std::ffi::OsStr::new(value))), "{name}");
-    }
-}
-
 /// git a test starts itself, outside `test_git`, per file (from the repository's root). `tests/` and xtask are crates
-/// of their own: `test_git` is tarae's test build's, so theirs wait for a helper they can reach.
+/// of their own: `test_git` is in `tarae-testkit`, so theirs can migrate as they touch it.
 const GIT_STARTED_IN_TESTS: &[(&str, usize)] = &[
     ("src/allow.rs", 2),
     ("src/codereview.rs", 26),
     ("src/codetrust/tests.rs", 3),
     ("src/config.rs", 7),
-    // (`test_git` itself)
-    ("src/gitrepo.rs", 1),
     ("src/gitrepo/held/tests.rs", 10),
     ("src/gitrepo/tests.rs", 3),
     ("src/gittool/tests.rs", 2),

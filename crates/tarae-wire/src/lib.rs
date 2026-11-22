@@ -28,4 +28,6 @@ pub use mailbox::{IN_FLIGHT, Mailbox, Next, Order, Slot};
 pub use msg::*;
 
 #[cfg(test)]
+mod stamp;
+#[cfg(test)]
 mod tests;
