@@ -14867,9 +14867,11 @@ const CARD_MIN_INNER: usize = 24;
 /// How much wider a card's text may go than its reading width to take back a paragraph's last row.
 const CARD_SLACK: usize = 8;
 
-/// Drop ` · ` separators left hanging at wrap breaks: a row ending in ` ·` loses it, a continuation row starting with
-/// `· ` after its `indent` spaces loses it, and a row that is only the separator is left alone (#659).
+/// Drop ` · ` separators left hanging at wrap breaks: a row followed by another row loses a trailing ` ·`, a
+/// continuation row starting with `· ` after its `indent` spaces loses it, and a row that is only the separator is
+/// left alone (#659).
 fn strip_break_dots(rows: &mut [String], indent: usize) {
+    let last = rows.len().saturating_sub(1);
     for (idx, row) in rows.iter_mut().enumerate() {
         if idx > 0 && row.as_bytes().get(..indent).is_some_and(|b| b.iter().all(|&c| c == b' ')) {
             while let Some(rest) = row.get(indent..).and_then(|s| s.strip_prefix("· ")) {
@@ -14879,12 +14881,14 @@ fn strip_break_dots(rows: &mut [String], indent: usize) {
                 row.drain(indent..indent + "· ".len());
             }
         }
-        while let Some(head) = row.strip_suffix(" ·") {
-            if head.trim().is_empty() {
-                break;
+        if idx < last {
+            while let Some(head) = row.strip_suffix(" ·") {
+                if head.trim().is_empty() {
+                    break;
+                }
+                let len = head.len();
+                row.truncate(len);
             }
-            let len = head.len();
-            row.truncate(len);
         }
     }
 }
@@ -14892,7 +14896,8 @@ fn strip_break_dots(rows: &mut [String], indent: usize) {
 /// A paragraph of a card's text wrapped to `w`: an indented line (a setting, a command) goes on hanging 4 cells
 /// under its own start — its value never wraps back to the card's edge as if it were a line of its own; a
 /// warning (`▲ …`, `cardwarn.rs`) under its words, past its mark. A break at a ` · ` separator takes the
-/// separator with it: neither row ends nor begins with ` · ` (#659).
+/// separator with it: neither side of the break ends or begins with ` · ` (the last row's own trailing ` ·` stays)
+/// (#659).
 fn card_rows(text: &str, w: usize) -> Vec<String> {
     let lead = text.len() - text.trim_start_matches(' ').len();
     let indent = match (lead, text.starts_with("▲ ")) {

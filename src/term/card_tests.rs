@@ -392,6 +392,32 @@ fn card_rows_takes_dot_separator_at_wrap_breaks() {
     assert_eq!(super::card_rows("alpha · cafe\u{0301} · next", 12), vec!["alpha · cafe\u{0301}", "next"]);
 }
 
+/// #659 edge: trailing ` ·` is stripped only at wrap breaks (rows followed by another row) — a single row ending in
+/// ` ·` is left as written, and a wrapped paragraph's last row keeps its own trailing ` ·` while break rows lose theirs.
+#[test]
+fn card_rows_keeps_trailing_dot_on_last_row() {
+    let single = "alpha · beta ·";
+    let rows = super::card_rows(single, 80);
+    assert_eq!(rows, vec![single], "single row (row 0) keeps its trailing separator: {rows:?}");
+
+    let wrapped = "alpha · beta · gamma · delta ·";
+    // Break row loses trailing ` ·`; last row keeps its own trailing ` ·`.
+    let rows = super::card_rows(wrapped, 15);
+    assert_eq!(
+        rows,
+        vec!["alpha · beta", "gamma · delta ·"],
+        "w=15: break row 0 stripped, last row 1 keeps its trailing separator: {rows:?}"
+    );
+
+    // Continuation row loses leading `· `; last row still keeps its own trailing ` ·`.
+    let rows = super::card_rows(wrapped, 20);
+    assert_eq!(
+        rows,
+        vec!["alpha · beta · gamma", "delta ·"],
+        "w=20: continuation row 1 stripped at start, last row 1 keeps its trailing separator: {rows:?}"
+    );
+}
+
 /// Every row `card_rows(text, w)` returns fits within `w`, even for indented lines with 1–2-cell first words,
 /// long unbroken tokens, paths with/without trailing `/`, and ` · ` separators — preventing `OfferCard::draw`
 /// from underflowing `self.inner - text.width()`.
