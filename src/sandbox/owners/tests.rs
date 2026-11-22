@@ -127,14 +127,36 @@ fn the_kernel_lists_a_ports_sockets_with_their_v6only() {
     let mut want = vec![row(format!("127.0.0.1:{port}"), &v4, false), row(format!("[::]:{port}"), &v6, true)];
     want.sort_by_key(|r| r.inode);
     assert_eq!(tcp, want);
-    let udp_rows = diag::on_port(false, uport).unwrap();
-    assert_eq!(udp_rows, [row(format!("[::]:{uport}"), &udp, false)]);
-    // (every socket's cookie: these among them, the connected one too)
-    let every = diag::every().unwrap();
-    assert!([&v4 as &dyn AsRawFd, &v6, &udp, &connected].iter().all(|fd| every.contains(&cookie_of(*fd))));
+    let every = diag::every(true).unwrap();
+    assert!([&v4 as &dyn AsRawFd, &v6].iter().all(|fd| every.contains(&cookie_of(*fd))));
     // A connect to every address lands on loopback's listener (the kernel's own rule), which the lookup finds there
     assert!(std::net::TcpStream::connect((std::net::Ipv4Addr::UNSPECIFIED, port)).is_ok());
     assert_eq!(inodes(&listener_at(&tcp, at(&format!("0.0.0.0:{port}")))), [ino(&v4)]);
+    assert!(
+        diag::on_port(true, other.local_addr().unwrap().port())
+            .unwrap()
+            .iter()
+            .all(|r| r.inode == ino(&other))
+    );
+    let udp_rows = match diag::on_port(false, uport) {
+        Ok(rows) => rows,
+        // (#694: a kernel without `udp_diag` — the Pi's — can't list UDP, which is said, never an empty list; the
+        // lookups read tarae's tables there, which list the socket)
+        Err(e) if e.to_string().contains(&std::io::Error::from_raw_os_error(libc::ENOENT).to_string()) => {
+            let v6 = std::fs::read_to_string("/proc/self/net/udp6").unwrap();
+            assert!(rows(&v6, false).iter().any(|r| r.inode == ino(&udp)), "/proc/net/udp6: {v6}");
+            crate::test_results::said_skip(&format!(
+                "sandbox::owners::tests::the_kernel_lists_a_ports_sockets_with_their_v6only, its UDP half — \
+                 no udp_diag in this kernel ({e})"
+            ));
+            return;
+        }
+        Err(e) => panic!("UDP's list: {e}"),
+    };
+    assert_eq!(udp_rows, [row(format!("[::]:{uport}"), &udp, false)]);
+    // (every socket's cookie: these among them, the connected one too)
+    let every = diag::every(false).unwrap();
+    assert!([&udp as &dyn AsRawFd, &connected].iter().all(|fd| every.contains(&cookie_of(*fd))));
     let cport = connected.local_addr().unwrap().port();
     assert_eq!(diag::on_port(false, cport).unwrap(), [], "a connected one");
     // (what a bind on the peer's port could take from: the peer there, and the one connected to it — with its peer)
@@ -145,12 +167,129 @@ fn the_kernel_lists_a_ports_sockets_with_their_v6only() {
     let mut want = vec![(ino(&peer), None), (ino(&connected), Some(to_peer))];
     want.sort();
     assert_eq!(aimed, want, "a bind on the peer's port");
-    assert!(
-        diag::on_port(true, other.local_addr().unwrap().port())
-            .unwrap()
-            .iter()
-            .all(|r| r.inode == ino(&other))
+}
+
+/// The known-answer check (#694): a dump believed only once it lists a socket of tarae's own. One that ends clean
+/// but without it — or fails — isn't told, and a lookup then reads tarae's tables, where another session's socket
+/// is found: a call to it and a bind beside it both. The real dump of TCP lists it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_dump_that_leaves_out_taraes_own_socket_sends_lookups_to_the_tables() {
+    for tcp in [true, false] {
+        let clean_empty = diag::knows(tcp, |_| Ok(Vec::new()));
+        assert!(
+            matches!(&clean_empty, diag::Known::NotTold(e) if e.contains("without tarae's own socket")),
+            "{clean_empty:?}"
+        );
+        let failed = diag::knows(tcp, |_| Err(os(libc::ENOENT)));
+        assert!(matches!(failed, diag::Known::NotTold(_)), "{failed:?}");
+    }
+    assert_eq!(
+        diag::knows(true, |port| diag::on_port(true, port)),
+        diag::Known::Told,
+        "the kernel's TCP list"
     );
+    let o = Owners::with_cap(KEPT);
+    o.made((101, 1), 7, 1, || None);
+    o.made((107, 7), 7, 1, || None);
+    let to = at("127.0.0.1:8080");
+    let listed = || diag::checked(diag::knows(false, |_| Ok(Vec::new())).told(), || Ok(Vec::new()));
+    let tables = |t: &str| match t {
+        "udp" => Ok(format!("{UDP}{UDP_AIMED}")),
+        _ => Err(os(libc::ENOENT)),
+    };
+    assert_eq!(o.another_at(to, (false, 8), listed, tables), Ok(true), "a send, by the tables");
+    assert_eq!(o.another_on((to, false), (false, 8), listed, tables), Ok(true), "a bind, by the tables");
+    assert_eq!(o.another_on((to, false), (false, 7), listed, tables), Ok(false), "its own");
+    // (step 5 of the reading: a bind on the port another session's connected socket sends to, by the tables)
+    let aimed = at("127.0.0.1:9000");
+    assert_eq!(o.another_on((aimed, false), (false, 8), listed, tables), Ok(true), "where its sends go");
+    assert_eq!(o.another_on((aimed, false), (false, 7), listed, tables), Ok(false), "its own's");
+}
+
+/// A UDP socket of inode 7 at 127.0.0.1:41000 connected to 127.0.0.1:9000 (state 01), as `/proc/net/udp` prints it
+/// (little-endian): its plain sends land on what's bound at 9000.
+const UDP_AIMED: &str = "  126: 0100007F:A028 0100007F:2328 01 00000000:00000000 00:00000000 00000000  1000        0 7 2 0000000000000000 0\n";
+
+/// A UDP socket of inode 9 at `[::]:8080`, dual-stack, as `/proc/net/udp6` prints it.
+const UDP6: &str = "\
+   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
+  130: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 9 2 0000000000000000 0
+";
+
+/// An error as the OS gives it, by its errno.
+fn os(e: i32) -> std::io::Error {
+    std::io::Error::from_raw_os_error(e)
+}
+
+/// #694, Neon's finding 1: where only tarae's tables are read, an IPv6 table not there is IPv6 off — none of its
+/// sockets — but one there and unread (`EACCES`, `EMFILE`, `EIO`) is never read as none: a lookup is an Err
+/// (refused as untold), and a sweep's list is None (every row kept) — else another session's `[::]` socket read as
+/// nobody's, and its row went.
+#[test]
+fn an_ipv6_table_unread_is_never_read_as_none() {
+    let o = Owners::with_cap(KEPT);
+    o.made((109, 9), 7, 1, || None);
+    // (a send to `[::1]` lands on the `[::]` socket; a bind at 127.0.0.1 joins it, dual-stack)
+    let (to, bind) = (at("[::1]:8080"), at("127.0.0.1:8080"));
+    let unlisted = || Err(os(libc::ENOENT));
+    let tables = |v6: Result<&'static str, i32>| {
+        move |t: &str| match t {
+            "udp" => Ok(UDP.to_string()),
+            "udp6" => v6.map(str::to_string).map_err(os),
+            "tcp" => Ok(TCP.to_string()),
+            _ => Err(os(libc::ENOENT)),
+        }
+    };
+    let read = tables(Ok(UDP6));
+    assert_eq!(o.another_at(to, (false, 8), unlisted, read), Ok(true), "the `[::]` socket, read");
+    assert_eq!(o.another_on((bind, false), (false, 8), unlisted, read), Ok(true));
+    for e in [libc::EACCES, libc::EMFILE, libc::EIO] {
+        let unread = tables(Err(e));
+        let at_ = o.another_at(to, (false, 8), unlisted, unread);
+        assert!(at_.as_ref().is_err_and(|w| w.contains("/proc/net/udp6")), "{e}: {at_:?}");
+        assert!(o.another_on((bind, false), (false, 8), unlisted, unread).is_err(), "{e}: a bind");
+        let every = |_: bool| Err(os(libc::ENOENT));
+        assert_eq!(live_from(&o, every, unread), None, "{e}: no sweep");
+    }
+    let off = tables(Err(libc::ENOENT));
+    assert_eq!(o.another_at(to, (false, 8), unlisted, off), Ok(false), "IPv6 off: no IPv6 socket");
+    assert_eq!(live_from(&o, |_| Err(os(libc::ENOENT)), off), Some(HashSet::new()), "IPv6 off: swept");
+    assert_eq!(live_from(&o, |_| Err(os(libc::ENOENT)), read), Some(HashSet::from([109])));
+}
+
+/// Where the kernel's list can't be had for a protocol, what a sweep keeps is read from tarae's tables (#694: else
+/// no sweep ran and the rows grew until their keeper's end): a row stays while its inode is listed there, the
+/// other protocol's still by the kernel's cookies; past the cap the untouched rows not there go. Neither readable:
+/// None, no sweep.
+#[test]
+fn where_the_kernels_list_cant_be_had_a_sweep_reads_the_tables() {
+    let o = Owners::with_cap(2);
+    let tables = |t: &str| match t {
+        // (UDP's inodes 1 and 2 on 8080, as the kernel prints them)
+        "udp" => Ok(UDP.to_string()),
+        _ => Err(os(libc::ENOENT)),
+    };
+    let every = |tcp: bool| match tcp {
+        true => Ok(HashSet::from([300])),
+        false => Err(std::io::Error::from_raw_os_error(libc::ENOENT)),
+    };
+    o.made((101, 1), 7, 1, || None);
+    o.made((103, 3), 7, 1, || None);
+    assert_eq!(live_from(&o, every, tables), Some(HashSet::from([300, 101])), "inode 1 listed, 3 not");
+    let unread = |_: &str| Err(os(libc::EACCES));
+    assert_eq!(live_from(&o, every, unread), None);
+    // (past the cap of 2, twice: the second sweep drops what wasn't touched since the first and isn't there)
+    o.made((104, 4), 7, 1, || live_from(&o, every, tables));
+    o.made((105, 5), 7, 1, || live_from(&o, every, tables));
+    o.made((106, 6), 7, 1, || live_from(&o, every, tables));
+    o.made((107, 7), 7, 1, || live_from(&o, every, tables));
+    o.made((108, 8), 7, 1, || live_from(&o, every, tables));
+    o.made((109, 9), 7, 1, || live_from(&o, every, tables));
+    let kept: Vec<u64> = (101..=109).filter(|c| o.get(*c).is_some()).collect();
+    assert!(kept.contains(&101), "listed: kept ({kept:?})");
+    assert!(!kept.contains(&103), "untouched, not listed: gone ({kept:?})");
+    assert!(o.of(7) < 9, "bounded ({kept:?})");
 }
 
 /// A TCP listener at `[::]:port`, `IPV6_V6ONLY` (beside an IPv4 one on that port).
@@ -496,12 +635,13 @@ fn the_kernels_list_else_taraes_tables_else_refused() {
     let unlisted = || Err(std::io::Error::other("no sock_diag here"));
     let tables = |t: &str| match t {
         "udp" => Ok(UDP.to_string()),
-        _ => Err(std::io::Error::other("no IPv6 here")),
+        _ => Err(os(libc::ENOENT)),
     };
-    let unread = |_: &str| Err(std::io::Error::other("unread"));
+    let unread = |_: &str| Err(os(libc::EACCES));
     assert_eq!(o.another_at(to, (false, 8), listed, unread), Ok(true), "the kernel's list");
     assert_eq!(o.another_at(to, (false, 8), unlisted, tables), Ok(true), "tarae's tables");
     assert_eq!(o.another_at(to, (false, 7), unlisted, tables), Ok(false), "its own, by the tables");
+    assert_eq!(o.another_on((to, false), (false, 8), unlisted, tables), Ok(true), "a bind, by the tables");
     let neither = o.another_at(to, (false, 8), unlisted, unread);
     assert!(neither.as_ref().is_err_and(|e| e.contains("no sock_diag here")), "{neither:?}");
 }

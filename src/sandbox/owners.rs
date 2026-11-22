@@ -82,6 +82,11 @@ struct Rows {
 }
 
 impl Inner {
+    /// The cookies of the rows whose socket has one of `inodes` (`live_from`, where only tarae's tables are read).
+    fn of_inodes(&self, inodes: &HashSet<u64>) -> HashSet<u64> {
+        self.by_cookie.iter().filter(|(_, o)| inodes.contains(&o.inode)).map(|(c, _)| *c).collect()
+    }
+
     /// `n` rows of `session`'s gone.
     fn less(&mut self, session: u64, n: usize) {
         if let Some(r) = self.sessions.get_mut(&session) {
@@ -291,8 +296,9 @@ impl Owners {
     }
 }
 
-/// The sockets `listed` gives, else every one of tarae's `table`s of the kind (`tcp`, else UDP; an IPv6 one missing
-/// where IPv6 is off) — Err where neither can be read.
+/// The sockets `listed` gives, else every one of tarae's `table`s of the kind (`tcp`, else UDP; an IPv6 one not there
+/// where IPv6 is off: `v6`) — Err where neither can be read, an IPv6 table that's there but unread too (#694: its
+/// `[::]` sockets would read as nobody's).
 fn rows_from(
     tcp: bool,
     listed: impl FnOnce() -> io::Result<Vec<Row>>,
@@ -303,11 +309,23 @@ fn rows_from(
         Err(e) => e,
     };
     let names = if tcp { ["tcp", "tcp6"] } else { ["udp", "udp6"] };
+    fell_back(tcp, &listed, names[0]);
     let v4 = table(names[0])
         .map_err(|e| format!("sock_diag ({listed}) and /proc/net/{} ({e}) unread", names[0]))?;
+    let v6 = v6(table(names[1]))
+        .map_err(|e| format!("sock_diag ({listed}) and /proc/net/{} ({e}) unread", names[1]))?;
     let mut found = rows(&v4, tcp);
-    found.extend(rows(&table(names[1]).unwrap_or_default(), tcp));
+    found.extend(rows(&v6, tcp));
     Ok(found)
+}
+
+/// An IPv6 table as read: not there (`NotFound`) is IPv6 off — no sockets; any other failure (`EACCES`, `EMFILE`,
+/// `EIO`) is unread, never none.
+fn v6(read: io::Result<String>) -> io::Result<String> {
+    match read {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        r => r,
+    }
 }
 
 /// A socket as the kernel lists it: its local address, its inode and cookie (`/proc/net` gives none), whether a
@@ -437,11 +455,52 @@ pub fn overlap(a: (IpAddr, bool), b: (IpAddr, bool)) -> bool {
     meet(a4, b4) || meet(a6, b6)
 }
 
-/// The cookies of every socket the kernel lists in tarae's own netns (bound, listening or connected) — what a sweep
-/// keeps; None where its list can't be had (no sweep then: rows wait for their keeper).
+/// Said once per tarae and protocol (`tcp`, else UDP), in the log: the kernel's list couldn't be had (`why`), so
+/// tarae's table `table` is read — slower, per lookup and per sweep.
+fn fell_back(tcp: bool, why: &io::Error, table: &str) {
+    static SAID: [std::sync::atomic::AtomicBool; 2] =
+        [std::sync::atomic::AtomicBool::new(false), std::sync::atomic::AtomicBool::new(false)];
+    if !SAID[usize::from(tcp)].swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let line =
+            format!("sock_diag ({why}): whose a socket is read from /proc/net/{table}{{,6}} (said once)");
+        crate::log::line("sandbox", "warn", &line);
+    }
+}
+
+/// The cookies of every socket of tarae's own netns (bound, listening or connected) — what a sweep keeps; None where
+/// neither list can be had (no sweep then: rows wait for their keeper's end).
 #[cfg(target_os = "linux")]
 pub fn live() -> Option<HashSet<u64>> {
-    diag::every().ok()
+    let table = |t: &str| std::fs::read_to_string(format!("/proc/thread-self/net/{t}"));
+    live_from(&OWNERS, diag::every, table)
+}
+
+/// `live` by protocol: the kernel's list (`every`, its cookies) — where it can't be had, tarae's tables (`table`,
+/// by name), each socket there by its inode, as the cookies of `owners`' rows with that inode. So rows go as their
+/// sockets do where only the tables can be read (#694: else no sweep would ever run, the rows growing until the
+/// keeper ends). A number reused since by a newer socket keeps a row a while longer: errs to keeping. None where a
+/// protocol's tables can't be read either (an IPv6 one not there is IPv6 off: `v6`) — no sweep, every row kept.
+pub fn live_from(
+    owners: &Owners,
+    every: impl Fn(bool) -> io::Result<HashSet<u64>>,
+    table: impl Fn(&str) -> io::Result<String>,
+) -> Option<HashSet<u64>> {
+    let mut all = HashSet::new();
+    for tcp in [true, false] {
+        let why = match every(tcp) {
+            Ok(cookies) => {
+                all.extend(cookies);
+                continue;
+            }
+            Err(e) => e,
+        };
+        let names = if tcp { ["tcp", "tcp6"] } else { ["udp", "udp6"] };
+        fell_back(tcp, &why, names[0]);
+        let mut inodes: HashSet<u64> = rows(&table(names[0]).ok()?, tcp).iter().map(|r| r.inode).collect();
+        inodes.extend(rows(&v6(table(names[1])).ok()?, tcp).iter().map(|r| r.inode));
+        all.extend(owners.inner.lock().unwrap_or_else(|e| e.into_inner()).of_inodes(&inodes));
+    }
+    Some(all)
 }
 
 #[cfg(target_os = "linux")]

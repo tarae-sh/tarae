@@ -137,7 +137,8 @@ impl<'a> Iterator for Messages<'a> {
 }
 
 /// An `NLMSG_ERROR`'s payload (its code, then the request it answers) read: 0 an acknowledgement, else the errno the
-/// kernel negated. A payload too short for its code, or a code that's no negated errno, `EPROTO`.
+/// kernel negated. A payload too short for its code, or a code that's no negated errno, `EPROTO`. A dump's
+/// `NLMSG_DONE` carries its code the same way (`netlink_dump`'s `dump_done_errno`): read by this too.
 pub fn ack(payload: &[u8]) -> Result<(), i32> {
     match u32_at(payload, 0).map(|c| c as i32) {
         Some(0) => Ok(()),

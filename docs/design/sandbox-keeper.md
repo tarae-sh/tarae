@@ -432,9 +432,15 @@ tables and those touched since the sweep before (made, or named by a served bind
 while still unbound — where it binds itself, which makes it a row again; a bound one is in the kernel's list). The sweep
 reads that list with the table let go: every session's calls take the table, and a dump of every socket can take a
 while. Keyed by cookie, not inode: inode numbers come from one 32-bit counter the machine's pipes and pseudo files
-share, so a stale row would name a newer socket; sock_diag gives each socket's cookie in its sockid. Where sock_diag
-can't be had the lookup reads tarae's `/proc/net/{tcp,udp}[6]` whole, which find a row by its inode (no cookie) and
-don't say `IPV6_V6ONLY` — both err only to refusing; where neither can be read, whose the socket is can't be told and
+share, so a stale row would name a newer socket; sock_diag gives each socket's cookie in its sockid. A protocol's
+sock_diag is believed only once it lists a socket of tarae's own (the known-answer check, once per protocol: a kernel
+with `inet_diag` but not `udp_diag` ends the dump `NLMSG_DONE(-ENOENT)`, read as an error, never as an empty list —
+#694; a dump the kernel marks interrupted, `NLM_F_DUMP_INTR`, is asked once more, then isn't believed either). Where
+sock_diag can't be had the lookup reads tarae's `/proc/net/{tcp,udp}[6]` whole (said once in the log), which find
+a row by its inode (no cookie) and don't say `IPV6_V6ONLY` — both err only to refusing, and that's all they err
+by: an IPv6 table not there is IPv6 off, one there but unread (`EACCES`, `EMFILE`) is unread, never none —, and a sweep
+keeps the rows whose inode is listed there (a number reused since keeps one longer: errs to keeping; a table unread,
+no sweep); where neither can be read, whose the socket is can't be told and
 the call or bind is refused as that (`network-untold`, "refused: whose the port is couldn't be told here" — never said
 to be another session's; the report tells Claude to tell the user, the log says why: `supervisor::told`,
 `Refusal::Untold`). A UDP socket whose reuse options can't be turned off for the kernel's pick isn't bound, said
@@ -449,7 +455,8 @@ to be another session's; the report tells Claude to tell the user, the log says 
 A UDP ask walks every UDP socket of the namespace in the kernel (no table of listeners, as TCP has), the port
 filtered there: on Ubuntu a fifth more than TCP's at 10 000 sockets, on colima no more — nothing to change for it. The `/proc` fallback for UDP is dearer than TCP's at 10 000 (102 ms against 30 a lookup,
 each served call to an opened loopback port): a machine without sock_diag and that many UDP sockets would want the
-tables read once per batch of calls — not built while no supported kernel lacks sock_diag.
+tables read once per batch of calls — not built: a kernel without `udp_diag` (Raspberry Pi OS's) reads `/proc/net` per
+call, and one with that many UDP sockets hasn't been seen.
 (An earlier Ubuntu run, TCP only: 0.045 / 0.127 / 0.98 ms, `/proc` 2.0 / 4.5 / 30.8 ms.) What step 8 adds to one
 served call (M8.3, `keeper::tests::perf_a_served_loopback_send`: 2 000 UDP sends to the run's own socket on an
 opened loopback port, and to 192.0.2.1 — away from loopback, refused where the network is closed, served all the
