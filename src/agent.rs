@@ -1709,11 +1709,35 @@ mod tests {
         "gemini-pro",
     ];
 
+    /// Whether `needle` occurs in `haystack` with non-alphanumeric boundaries on both sides
+    /// (so `-` and `_` act as boundaries, catching `"gemini-4-neon"` and `"model_argon"` while
+    /// letting `"jargon"` and `"orchestrators"` pass).
+    fn contains_whole_word(haystack: &str, needle: &str) -> bool {
+        if needle.is_empty() {
+            return false;
+        }
+        let mut from = 0;
+        while let Some(rel) = haystack[from..].find(needle) {
+            let start = from + rel;
+            let end = start + needle.len();
+            let before = haystack[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+            let after = haystack[end..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+            if before && after {
+                return true;
+            }
+            let Some(c) = haystack[start..].chars().next() else {
+                break;
+            };
+            from = start + c.len_utf8();
+        }
+        false
+    }
+
     /// The literals of `src` naming one of agy's models.
     fn agy_model_literals(src: &str) -> Vec<String> {
         literals_where(src, |lit| {
             let lit = lit.to_lowercase();
-            AGY_MODEL_WORDS.iter().any(|w| lit.contains(w))
+            AGY_MODEL_WORDS.iter().any(|w| contains_whole_word(&lit, w))
         })
     }
 
@@ -1744,6 +1768,21 @@ mod tests {
             .collect();
         assert!(found.is_empty(), "agy's model names in tarae:\n{}", found.join("\n"));
         assert_eq!(agy_model_literals("fn f() { g(\"Gemini 4 Hydrogen\") }"), ["Gemini 4 Hydrogen"]);
+        for ok in ["jargon", "orchestrators", "dehydrogenate", "éargon"] {
+            assert!(
+                agy_model_literals(&format!("fn f() {{ g({ok:?}) }}")).is_empty(),
+                "{ok:?} should not match"
+            );
+        }
+        for hit in
+            ["argon", "jargon argon", "gpt-oss", "gemini-4-neon", "model_argon", "orchestrator", "«argon»"]
+        {
+            assert_eq!(
+                agy_model_literals(&format!("fn f() {{ g({hit:?}) }}")),
+                [hit],
+                "{hit:?} should match"
+            );
+        }
     }
 
     /// The literals of `src` (code as a non-test build compiles it, comments out) `keep` keeps, each its text.
