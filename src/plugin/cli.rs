@@ -937,12 +937,11 @@ mod tests {
         assert!(loads(&bytes).is_ok());
     }
 
-    /// The bundled plugins pass their own suites under `tarae plugin test` — tests, wasm built, loaded as tarae loads
-    /// it —, and the SDK's mock host its own (`:preflight-full` runs this, and CI's network job). (Ignored: it fetches
-    /// crates.)
+    /// The SDK's mock host passes its own suite (`:preflight-full` runs this, and CI's network job — with the bundled
+    /// plugins', one test a crate so their cold builds run side by side). (Ignored: it fetches crates.)
     #[test]
     #[ignore = "network: CI's network job runs it"]
-    fn the_bundled_plugins_pass_their_own_tests() {
+    fn the_bundled_sdk_passes_its_own_tests() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin-sdk");
         let mut sdk = std::process::Command::new("cargo");
         sdk.args(["test", "--features", "test", "--target", &host().unwrap()]).current_dir(root.join("sdk"));
@@ -953,10 +952,42 @@ mod tests {
         let sdk = sdk.output().unwrap();
         let said = String::from_utf8_lossy(&sdk.stdout);
         assert!(sdk.status.success(), "the SDK's tests: {said}{}", String::from_utf8_lossy(&sdk.stderr));
-        let dirs: Vec<PathBuf> =
-            ["db", "keycast", "kubernetes", "demo"].iter().map(|p| root.join(p)).collect();
-        let (said, ok) = tested(&dirs.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    /// The bundled plugin `plugin-sdk/<name>` passes its own suite under `tarae plugin test`: its tests, its wasm built
+    /// and loaded as tarae loads it.
+    fn bundled_passes(name: &str) {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin-sdk").join(name);
+        let (said, ok) = tested(&[&dir]);
         assert!(ok, "{said}");
+    }
+
+    /// (`bundled_passes`, as the SDK's above. Ignored: it fetches crates.)
+    #[test]
+    #[ignore = "network: CI's network job runs it"]
+    fn the_bundled_db_passes_its_own_tests() {
+        bundled_passes("db");
+    }
+
+    /// (`bundled_passes`. Ignored: it fetches crates.)
+    #[test]
+    #[ignore = "network: CI's network job runs it"]
+    fn the_bundled_keycast_passes_its_own_tests() {
+        bundled_passes("keycast");
+    }
+
+    /// (`bundled_passes`. Ignored: it fetches crates.)
+    #[test]
+    #[ignore = "network: CI's network job runs it"]
+    fn the_bundled_kubernetes_passes_its_own_tests() {
+        bundled_passes("kubernetes");
+    }
+
+    /// (`bundled_passes`. Ignored: it fetches crates.)
+    #[test]
+    #[ignore = "network: CI's network job runs it"]
+    fn the_bundled_demo_passes_its_own_tests() {
+        bundled_passes("demo");
     }
 
     /// Every file of the SDK and the rules is vendored (but the repository's own: a lock, a `.gitignore`, its

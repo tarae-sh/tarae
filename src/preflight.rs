@@ -1926,7 +1926,7 @@ mod tests {
                 "cargo test --locked --no-fail-fast --workspace --features \"${{ matrix.features }}\"",
                 "cargo test --locked --features dev-grammars --features \"${{ matrix.features }}\" --profile compat-tests --bin tarae --no-run && code=0 || code=$?",
                 "cargo test --locked --features dev-grammars --features \"${{ matrix.features }}\" --profile compat-tests --bin tarae -- perf_budget > perf-budgets.txt 2>&1 && code=0 || code=$?",
-                "cargo test --locked --bin tarae -- --ignored --exact grammar::tests::grammar_install_e2e plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin plugin::cli::tests::the_bundled_plugins_pass_their_own_tests web::fetch::tests::a_real_page_is_fetched",
+                "cargo test --locked --bin tarae -- --ignored --exact grammar::tests::grammar_install_e2e plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin plugin::cli::tests::the_bundled_sdk_passes_its_own_tests plugin::cli::tests::the_bundled_db_passes_its_own_tests plugin::cli::tests::the_bundled_keycast_passes_its_own_tests plugin::cli::tests::the_bundled_kubernetes_passes_its_own_tests plugin::cli::tests::the_bundled_demo_passes_its_own_tests web::fetch::tests::a_real_page_is_fetched",
             ]
         );
 

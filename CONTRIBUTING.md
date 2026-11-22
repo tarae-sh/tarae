@@ -56,7 +56,7 @@ cargo test --workspace
 cargo test --workspace --features bundled-grammars
 cargo perf
 TARAE_EXPECT_ENGINE=1 cargo test --bin tarae -- codetool:: sim::codeclock::
-cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_plugins_pass_their_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin
+cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_sdk_passes_its_own_tests plugin::cli::tests::the_bundled_db_passes_its_own_tests plugin::cli::tests::the_bundled_keycast_passes_its_own_tests plugin::cli::tests::the_bundled_kubernetes_passes_its_own_tests plugin::cli::tests::the_bundled_demo_passes_its_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin
 cargo test --bin tarae -- --ignored --exact plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run
 RUST_TEST_NOCAPTURE=1 cargo test --test live -- --ignored --exact a_jump_into_a_dependency_runs_nothing_there_nor_the_toolchain_it_names
 ```
