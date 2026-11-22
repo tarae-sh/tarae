@@ -31,8 +31,14 @@ fn keys(ed: &mut Editor, keys: &[&str]) {
 
 fn long_text(ed: &mut Editor) {
     let line =
-        |i| format!("let line_{i} = {i}; // {}\n", "a long comment that runs past the pane ".repeat(4));
-    ed.docs[0].text = ropey::Rope::from_str(&(0..200).map(line).collect::<String>());
+        |i| format!("let line_{i} = {i}; // {}\n", "a long comment that runs past the pane ".repeat(3));
+    let lines = 45;
+    ed.docs[0].text = ropey::Rope::from_str(&(0..lines).map(line).collect::<String>());
+    assert!(
+        ed.docs[0].text.len_lines() > H as usize,
+        "long_text must exceed a pane's height ({} <= {H})",
+        ed.docs[0].text.len_lines()
+    );
 }
 
 /// What a wheel could change.
@@ -286,11 +292,11 @@ const CASES: &[Case] = &[
     ("review rail, keys in the code", |ed| rail(ed, false), "f05.rs"),
     ("review rail, its keys", |ed| rail(ed, true), "f05.rs"),
     ("review rail, its keys, files on disk", |ed| rail_on_disk(ed), "f05.rs"),
-    ("test output, keys in the code", |ed| output(ed, false), "output line 195"),
-    ("test output, its keys", |ed| output(ed, true), "output line 195"),
-    ("terminal, its program's keys", |ed| terminal(ed, None), "line 290"),
-    ("terminal, its view mode", |ed| terminal(ed, Some(&["<C-\\>"])), "line 290"),
-    ("terminal, keys in the code", |ed| terminal(ed, Some(&["<C-\\>", "<C-\\>"])), "line 290"),
+    ("test output, keys in the code", |ed| output(ed, false), "output line 55"),
+    ("test output, its keys", |ed| output(ed, true), "output line 55"),
+    ("terminal, its program's keys", |ed| terminal(ed, None), "line 50"),
+    ("terminal, its view mode", |ed| terminal(ed, Some(&["<C-\\>"])), "line 50"),
+    ("terminal, keys in the code", |ed| terminal(ed, Some(&["<C-\\>", "<C-\\>"])), "line 50"),
     (":messages, its keys", |ed| messages(ed, false), "message 55"),
     (":messages, keys given back", |ed| messages(ed, true), "message 55"),
     ("session list, its keys", |ed| keys(ed, &[" ", "W"]), "│▎"),
@@ -321,7 +327,7 @@ const CASES: &[Case] = &[
         "hover text",
         |ed| {
             long_text(ed);
-            let md: String = (0..80).map(|i| format!("line {i} of the docs\n\n")).collect();
+            let md: String = (0..40).map(|i| format!("line {i} of the docs\n\n")).collect();
             ed.popup = Some(crate::markdown::render(&md, &ed.theme, None));
         },
         "line 3 of the docs",
@@ -429,7 +435,7 @@ fn rail_on_disk(ed: &mut Editor) {
 
 fn output(ed: &mut Editor, focused: bool) {
     long_text(ed);
-    let lines = (0..200).map(|i| format!("output line {i}")).collect();
+    let lines = (0..60).map(|i| format!("output line {i}")).collect();
     ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
     frame(ed);
     if focused {
@@ -440,7 +446,7 @@ fn output(ed: &mut Editor, focused: bool) {
 fn terminal(ed: &mut Editor, then: Option<&[&str]>) {
     long_text(ed);
     ed.terminal_run(
-        vec!["/bin/sh".into(), "-c".into(), "seq -f 'line %g' 1 300; sleep 30".into()],
+        vec!["/bin/sh".into(), "-c".into(), "seq -f 'line %g' 1 60; exec sleep 30".into()],
         Vec::new(),
     );
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -452,7 +458,7 @@ fn terminal(ed: &mut Editor, then: Option<&[&str]>) {
             t.visible = true;
             ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
             ed.workspace.set_at(Here::Program);
-            if shown(ed).contains("line 300") {
+            if shown(ed).contains("line 60") {
                 break;
             }
         }
@@ -739,8 +745,8 @@ fn the_wheel_only_scrolls() {
         let mut fail =
             |what: &str, a: &Look, b: &Look| off.push(format!("{name}: {what} — {}", changed(a, b)));
         let mut looks = vec![look(&mut ed)];
-        // (120 notches reach every case's end: its longest, the code's 200 lines wrapped, three rows a notch)
-        for (kind, n) in [(K::ScrollDown, 3), (K::ScrollUp, 3), (K::ScrollDown, 120)] {
+        // (40 notches reach every case's end: its longest, the code's 45 lines wrapped in a split, three rows a notch)
+        for (kind, n) in [(K::ScrollDown, 3), (K::ScrollUp, 3), (K::ScrollDown, 40)] {
             wheel(&mut ed, kind, cell, n);
             looks.push(look(&mut ed));
         }
@@ -751,7 +757,7 @@ fn the_wheel_only_scrolls() {
         let end_text = past_end.text.join("\n");
         wheel(&mut ed, K::ScrollUp, cell, 1);
         let back_from_end = look(&mut ed);
-        wheel(&mut ed, K::ScrollUp, cell, 120);
+        wheel(&mut ed, K::ScrollUp, cell, 40);
         let top = look(&mut ed);
         let top_view = list_view(&ed);
         wheel(&mut ed, K::ScrollUp, cell, 1);
@@ -787,6 +793,9 @@ fn the_wheel_only_scrolls() {
             }
         }
         let at_end = &looks[3];
+        if !name.starts_with("session list,") && top.text == at_end.text {
+            fail("its text fits in its pane (top and end are the same)", &top, at_end);
+        }
         if past_end.text != at_end.text {
             fail("a notch past its end moved it", at_end, &past_end);
         }
@@ -808,7 +817,7 @@ fn the_wheel_only_scrolls() {
             );
         }
         if name.starts_with("test output")
-            && !(end_text.contains("output line 195") && end_text.contains("output line 199"))
+            && !(end_text.contains("output line 55") && end_text.contains("output line 59"))
         {
             fail("its output went past its last line", &first, &past_end);
         }
