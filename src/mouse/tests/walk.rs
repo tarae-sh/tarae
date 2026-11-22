@@ -727,10 +727,8 @@ fn changed(a: &Snap, b: &Snap) -> String {
 }
 
 fn snap(ed: &mut Editor) -> Snap {
-    // (every mouse event drops the status line's old word first — not an act of the surface pressed; a second frame for
-    // what settles once a frame drew it)
+    // (every mouse event drops the status line's old word first — not an act of the surface pressed)
     ed.status = None;
-    frame(ed);
     frame(ed);
     let keys = format!("{:?} {:?}", ed.keys_to().region, ed.mode);
     // (the edit review's too: it has no cursor, its selection a ground only — tests draw no colours)
@@ -787,6 +785,27 @@ fn after(walk: &mut Walk, ed: &mut Editor, scene: &str, u: Under, when: &str) ->
         return (again, false);
     }
     (s, true)
+}
+
+/// The "before" snap for a target on a fresh editor: draws its settled frame (`ed.status = None; frame(ed)`),
+/// compares its colourless frame bytes against the scene's first `s0` (no vt100 parse), and reuses `s0` when equal.
+/// When the fresh editor's frame differs (a clock the walk doesn't hold, a thread's write), falls back to taking
+/// this editor's own `after()` so `did()` never attributes a prior drift to the act.
+fn before_act<'a>(
+    walk: &mut Walk,
+    ed: &mut Editor,
+    scene: &str,
+    u: Under,
+    when: &str,
+    s0: &'a Snap,
+) -> (std::borrow::Cow<'a, Snap>, bool) {
+    ed.status = None;
+    frame(ed);
+    if colourless(&ed.last_frame.as_ref().unwrap().0) == s0.frame {
+        return (std::borrow::Cow::Borrowed(s0), true);
+    }
+    let (own, still) = after(walk, ed, scene, u, when);
+    (std::borrow::Cow::Owned(own), still)
 }
 
 /// A frame's bytes without their colours (`38;2;r;g;b`, `48;2;…`, `58;2;…` in a style's sequence) — the walk judges a
@@ -1258,7 +1277,8 @@ fn walk_held(walk: &mut Walk, scene: &str, setup: fn(&mut Editor)) {
     SCENE_UNDER_WAY.set(UNDER_WAY.contains(&scene));
     let mut ed = fresh(setup);
     // (a scene whose frame moves by itself: what arrives on the stand-in Claude's stream, a draft revealed as it comes)
-    MOVING.set(scene.contains("being written") || snap(&mut ed) != snap(&mut ed));
+    let s0 = snap(&mut ed);
+    MOVING.set(scene.contains("being written") || s0 != snap(&mut ed));
     let text = shown(&mut ed);
     let (targets, bare) = targets(&ed, &text);
     if let Some(&(x, y)) = bare.first() {
@@ -1274,7 +1294,7 @@ fn walk_held(walk: &mut Walk, scene: &str, setup: fn(&mut Editor)) {
         }
         // A press, its release, and a second press at the same instant (a double)
         let mut ed = fresh(setup);
-        let (s0, still0) = after(walk, &mut ed, scene, u, "before the press");
+        let (s0, still0) = before_act(walk, &mut ed, scene, u, "before the press", &s0);
         let b0 = before(&ed, u, (x, y));
         let front = |ed: &Editor| ed.offers.first().map(|o| o.id);
         let card = front(&ed);
@@ -1323,7 +1343,7 @@ fn walk_held(walk: &mut Walk, scene: &str, setup: fn(&mut Editor)) {
         if still1 && still2 {
             judge(walk, scene, u, Act::Drag, before(&ed, u, (x, y)), did(&s1, &s2, Act::Drag, u));
         }
-        wheel_at(walk, scene, setup, (x, y), Some(u));
+        wheel_at(walk, scene, setup, &s0, (x, y), Some(u));
     }
     // (what only a wheel lands on — hover text: the press goes under it)
     let mut only: Vec<(Surface, (usize, usize))> = Vec::new();
@@ -1336,7 +1356,7 @@ fn walk_held(walk: &mut Walk, scene: &str, setup: fn(&mut Editor)) {
         }
     }
     for (_, cell) in only {
-        wheel_at(walk, scene, setup, cell, None);
+        wheel_at(walk, scene, setup, &s0, cell, None);
     }
 }
 
@@ -1499,13 +1519,14 @@ fn wheel_at(
     walk: &mut Walk,
     scene: &str,
     setup: fn(&mut Editor),
+    s0: &Snap,
     (x, y): (usize, usize),
     pressed: Option<Under>,
 ) {
     let mut ed = fresh(setup);
     let wheel = ed.mouse_under(K::ScrollDown, x, y);
     let at = pressed.unwrap_or(wheel);
-    let (s0, still0) = after(walk, &mut ed, scene, at, "before the hover");
+    let (s0, still0) = before_act(walk, &mut ed, scene, at, "before the hover", s0);
     ed.handle_event(Event::Hover(x as u16, y as u16));
     let (s1, still1) = after(walk, &mut ed, scene, at, "after the hover");
     if let Some(u) = pressed.filter(|_| still0 && still1) {
@@ -1886,9 +1907,9 @@ fn a_frame_moved_from_under_a_still_pointer_is_washed_again() {
 fn a_frame_that_moves_between_two_looks_is_named_not_blamed_on_an_act() {
     let scene = SCENES[0];
     // (`snaps`: after how many it lands — the scene's own look for a moving frame takes 2, then each act's snap and,
-    // guarded, its second look: 7 is after the release's snap, 8 after its second look; unguarded, 4 is after the
-    // release's. The first target is the pane's top line, where a release does nothing (`Not("the press did it")`) nor a
-    // double, so blamed they fail)
+    // guarded, its second look (`s0` is reused): 5 is after the release's snap, 6 after its second look; unguarded, 3
+    // is after the press's. The first target is the pane's top line, where a release does nothing (`Not("the press did
+    // it")`) nor a double, so blamed they fail)
     let drift = |unguarded, snaps| {
         DRIFT.set(snaps);
         UNGUARDED.set(unguarded);
@@ -1902,15 +1923,37 @@ fn a_frame_that_moves_between_two_looks_is_named_not_blamed_on_an_act() {
     let named = |w: &Walk| w.moved.iter().any(|m| m.starts_with(&at) && m.contains("moved by itself"));
     let blamed =
         |w: &Walk, act: &str| w.off.iter().any(|m| m.starts_with(&at) && m.contains(&format!(" · {act}:")));
-    let broken = drift(true, 4);
+    let broken = drift(true, 3);
     assert!(blamed(&broken, "Release"), "unguarded, the release blamed: {:?}", broken.off);
-    let w = drift(false, 7);
+    let w = drift(false, 5);
     assert!(named(&w), "between the looks: the drift named: {:?}", w.moved);
     assert!(w.off.is_empty(), "between the looks: no act blamed for it: {:?}", w.off);
     // (the limit, pinned: past the second look it isn't seen, and the next act takes the blame)
-    let late = drift(false, 8);
+    let late = drift(false, 6);
     assert!(!named(&late), "after the second look: not seen by it: {:?}", late.moved);
     assert!(blamed(&late, "Double"), "after the second look: the double still blamed: {:?}", late.off);
+}
+
+/// A later editor in the same scene whose initial frame differs from the scene's first (an unheld clock ticking
+/// mid-scene, a thread's write): `before_act` detects the differing frame and takes this editor's own `after()`
+/// instead of reusing the scene's `s0`, so `did()` doesn't blame the press for what changed before it.
+#[test]
+fn a_later_editor_that_differs_from_the_first_is_judged_against_its_own_look() {
+    thread_local! {
+        static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    fn ticked(ed: &mut Editor) {
+        let n = CALLS.get();
+        CALLS.set(n + 1);
+        if n > 0 {
+            ed.docs[0].text = ropey::Rope::from_str("one\ntwo\nthree (ticked)\n");
+        }
+    }
+    CALLS.set(0);
+    let mut walk = Walk::default();
+    walk_scene(&mut walk, ("the code, ticked mid-scene", ticked));
+    assert!(walk.moved.is_empty(), "each editor is still: {:?}", walk.moved);
+    assert!(walk.off.is_empty(), "press judged against its own look, not the stale s0: {:?}", walk.off);
 }
 
 /// A frame judged without its colours: two frames that differ only in them are the same, any other style or text
